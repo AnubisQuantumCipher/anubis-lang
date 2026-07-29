@@ -198,16 +198,35 @@ def paragraph_context(lines: List[str], index: int) -> str:
     return "\n".join(lines[lo : hi + 1])
 
 
-def scan(root: Path, measured: Dict[str, int]) -> Tuple[List[str], int, int]:
+def scan(
+    root: Path, measured: Dict[str, int], *, require_owned_files: bool = False
+) -> Tuple[List[str], int, int]:
     failures: List[str] = []
     stamps = 0
     claim_guards = 0
 
     for rel in LIVE_FILES:
-        path = root / rel
-        if not path.is_file():
+        p = root / rel
+        current = root
+        has_symlink_component = False
+        for component in Path(rel).parts:
+            current = current / component
+            if current.is_symlink():
+                has_symlink_component = True
+                break
+        if has_symlink_component:
+            failures.append(f"SYMLINK_OWNED_DOC {rel}")
             continue
-        lines = path.read_text(errors="replace").splitlines()
+        if not p.exists():
+            if require_owned_files:
+                failures.append(f"MISSING_OWNED_DOC {rel}")
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            failures.append(f"UNREADABLE_OWNED_DOC {rel}: {exc}")
+            continue
+        lines = text.splitlines()
         in_fence = False
         historical_section = False
         for i, line in enumerate(lines, 1):
@@ -407,8 +426,11 @@ def scan(root: Path, measured: Dict[str, int]) -> Tuple[List[str], int, int]:
 
 
 def main(argv: List[str]) -> int:
-    if len(argv) < 3:
-        print("usage: docs_drift_scan.py ROOT DERIVED_JSON", file=sys.stderr)
+    if len(argv) not in (3, 4) or (len(argv) == 4 and argv[3] != "--require-owned-files"):
+        print(
+            "usage: docs_drift_scan.py ROOT DERIVED_JSON [--require-owned-files]",
+            file=sys.stderr,
+        )
         return 2
     root = Path(argv[1]).resolve()
     derived = json.loads(Path(argv[2]).read_text())
@@ -424,7 +446,9 @@ def main(argv: List[str]) -> int:
         "lean_th": derived["lean"]["theorems"],
         "lean_mod": derived["lean"]["modules"],
     }
-    failures, stamps, claim_guards = scan(root, measured)
+    failures, stamps, claim_guards = scan(
+        root, measured, require_owned_files=len(argv) == 4
+    )
     out = {
         "stamps_checked": stamps,
         "claim_guards_checked": claim_guards,

@@ -92,6 +92,8 @@ WALKERS=(
 # Both gaps are real and named: a Pattern-aware contract, and tuple-variant field tracking. Neither
 # exists yet, so these four stay OUT.
 
+bash scripts/test_walker_completeness.sh
+
 if [[ "${1:-}" == "--self-test" ]]; then
   # Plant the defect in a SCRATCH COPY, never in the live file.
   #

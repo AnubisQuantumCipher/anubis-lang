@@ -24,8 +24,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
-OUT_DIR="out/docs_drift_gate"
+OUT_DIR=""
 SCAN_ROOT="$ROOT"
 SELF_TEST=0
 DERIVED_OVERRIDE=""
@@ -33,7 +34,7 @@ DERIVED_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) OUT_DIR="$2"; shift 2 ;;
-    --scan-root) SCAN_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
+    --scan-root) SCAN_ROOT="$(cd "$2" && pwd -P)"; shift 2 ;;
     --derived-json) DERIVED_OVERRIDE="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
     -h|--help)
@@ -52,14 +53,49 @@ if [[ -n "$DERIVED_OVERRIDE" && "$SELF_TEST" -ne 1 ]]; then
   exit 2
 fi
 
-mkdir -p "$OUT_DIR"
+if [[ -n "$OUT_DIR" ]]; then
+  mkdir -p "$OUT_DIR"
+else
+  mkdir -p "$ROOT/out"
+  OUT_DIR="$(mktemp -d "$ROOT/out/docs_drift_gate.XXXXXX")"
+fi
+OUT_LOCK="$OUT_DIR/.anubis-docs-drift.lock"
+if ! mkdir "$OUT_LOCK" 2>/dev/null; then
+  echo "DOCS_DRIFT_GATE: FAIL"
+  echo "output directory is already in use: $OUT_DIR" >&2
+  exit 2
+fi
+trap 'rmdir "$OUT_LOCK" 2>/dev/null || true' EXIT
+if ! assert_clean_output_dir "$OUT_DIR" ".anubis-docs-drift.lock" "docs drift gate"; then
+  echo "DOCS_DRIFT_GATE: FAIL"
+  echo "$GATE_OUTPUT_DIR_ERROR" >&2
+  exit 2
+fi
+echo "docs_drift_out=$OUT_DIR"
 REPORT_TXT="$OUT_DIR/docs_drift_report.txt"
 DERIVE_PY="$ROOT/scripts/lib/docs_drift_derive.py"
 SCAN_PY="$ROOT/scripts/lib/docs_drift_scan.py"
 
+json_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"
+}
+json_failures() {
+  python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["failures"]))' "$1"
+}
+json_write_failures() {
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[2],"w").write("\n".join(d["failures"])+("\n" if d["failures"] else ""))' "$1" "$2"
+}
+
 if [[ ! -f "$DERIVE_PY" || ! -f "$SCAN_PY" ]]; then
   echo "DOCS_DRIFT_GATE: FAIL"
   echo "missing derive/scan helpers under scripts/lib/" >&2
+  exit 1
+fi
+
+if ! python3 "$ROOT/scripts/test_docs_drift_scan.py" >"$OUT_DIR/scanner_unit.log" 2>&1; then
+  cat "$OUT_DIR/scanner_unit.log" >&2
+  echo "DOCS_DRIFT_GATE: FAIL"
+  echo "docs drift scanner unit tests failed" >&2
   exit 1
 fi
 
@@ -78,8 +114,8 @@ else
 fi
 
 eval "$(python3 -c '
-import json
-d=json.load(open("'"$OUT_DIR"'/derived.json"))
+import json, sys
+d=json.load(open(sys.argv[1]))
 q=d["quantities"]
 print("M_SECURITY=%d" % q["security_fixtures"]["value"])
 print("M_LANGUAGE=%d" % q["language_fixtures"]["value"])
@@ -90,7 +126,7 @@ print("M_NATIVE=%d" % q["native_corpus"]["value"])
 print("M_BUILTINS=%d" % q["builtins"]["value"])
 print("M_LEAN_TH=%d" % d["lean"]["theorems"])
 print("M_LEAN_MOD=%d" % d["lean"]["modules"])
-')"
+' "$OUT_DIR/derived.json")"
 
 {
   echo "docs_drift_gate"
@@ -108,19 +144,29 @@ print("M_LEAN_MOD=%d" % d["lean"]["modules"])
 } | tee -a "$REPORT_TXT"
 
 # ── 2. Scan live docs ────────────────────────────────────────────────────────
+SCAN_ARGS=("$SCAN_ROOT" "$OUT_DIR/derived.json")
+if [[ "$SCAN_ROOT" == "$ROOT" ]]; then
+  # Fixture roots are intentionally sparse; the canonical owned-doc inventory is not.
+  # A rename or deletion in the live tree must be a finding, never a silent `continue`.
+  SCAN_ARGS+=(--require-owned-files)
+fi
 set +e
-python3 "$SCAN_PY" "$SCAN_ROOT" "$OUT_DIR/derived.json" >"$OUT_DIR/scan.json"
+python3 "$SCAN_PY" "${SCAN_ARGS[@]}" >"$OUT_DIR/scan.json"
 SCAN_RC=$?
 set -e
 
-STAMPS_CHECKED="$(python3 -c 'import json; print(json.load(open("'"$OUT_DIR"'/scan.json"))["stamps_checked"])')"
-CLAIM_GUARDS_CHECKED="$(python3 -c 'import json; print(json.load(open("'"$OUT_DIR"'/scan.json"))["claim_guards_checked"])')"
-SCAN_FAILS="$(python3 -c 'import json; print(json.load(open("'"$OUT_DIR"'/scan.json"))["scan_failures"])')"
-python3 -c '
-import json
-d=json.load(open("'"$OUT_DIR"'/scan.json"))
-open("'"$OUT_DIR"'/scan_failures.log","w").write("\n".join(d["failures"])+("\n" if d["failures"] else ""))
-'
+# Test-only poison can only remove/corrupt scanner output, exercising fail-closed parsing.
+case "${ANUBIS_TEST_ONLY_DOCS_DRIFT_SCAN_POISON:-}" in
+  "") ;;
+  missing) rm -f "$OUT_DIR/scan.json" ;;
+  invalid) printf '{not-json\n' >"$OUT_DIR/scan.json" ;;
+  *) echo "DOCS_DRIFT_GATE: FAIL (unknown scan poison)" >&2; exit 2 ;;
+esac
+
+STAMPS_CHECKED="$(json_field "$OUT_DIR/scan.json" stamps_checked)"
+CLAIM_GUARDS_CHECKED="$(json_field "$OUT_DIR/scan.json" claim_guards_checked)"
+SCAN_FAILS="$(json_field "$OUT_DIR/scan.json" scan_failures)"
+json_write_failures "$OUT_DIR/scan.json" "$OUT_DIR/scan_failures.log"
 echo "stamps_checked=$STAMPS_CHECKED claim_guards_checked=$CLAIM_GUARDS_CHECKED scan_fails=$SCAN_FAILS" | tee -a "$REPORT_TXT"
 if [[ "$SCAN_FAILS" -gt 0 ]]; then
   echo "---- scan failures ----" | tee -a "$REPORT_TXT"
@@ -163,8 +209,8 @@ run_self_test() {
     python3 "$SCAN_PY" "$d" "$OUT_DIR/derived.json" >"$tdir/guards/fail_${name}.json"
     set -e
     local fc fails
-    fc="$(python3 -c 'import json; print(json.load(open("'"$tdir"'/guards/fail_'"$name"'.json"))["scan_failures"])')"
-    fails="$(python3 -c 'import json; print("\n".join(json.load(open("'"$tdir"'/guards/fail_'"$name"'.json"))["failures"]))')"
+    fc="$(json_field "$tdir/guards/fail_${name}.json" scan_failures)"
+    fails="$(json_failures "$tdir/guards/fail_${name}.json")"
     if [[ "$fc" -lt 1 ]] || ! echo "$fails" | grep -q "$needle"; then
       echo "SELFTEST FAIL: fail_$name did not fire needle=$needle fc=$fc fails=$fails" | tee -a "$REPORT_TXT"
       return 1
@@ -207,7 +253,7 @@ EOF
   python3 "$SCAN_PY" "$tdir/drift_fail" "$OUT_DIR/derived.json" >"$tdir/guards/drift_fail.json"
   set -e
   local fc
-  fc="$(python3 -c 'import json; print(json.load(open("'"$tdir"'/guards/drift_fail.json"))["scan_failures"])')"
+  fc="$(json_field "$tdir/guards/drift_fail.json" scan_failures)"
   if [[ "$fc" -lt 1 ]]; then
     echo "SELFTEST FAIL: drift_fail did not fire" | tee -a "$REPORT_TXT"
     return 1
@@ -230,10 +276,10 @@ EOF
   set +e
   python3 "$SCAN_PY" "$tdir/drift_pass" "$OUT_DIR/derived.json" >"$tdir/guards/drift_pass.json"
   set -e
-  fc="$(python3 -c 'import json; print(json.load(open("'"$tdir"'/guards/drift_pass.json"))["scan_failures"])')"
+  fc="$(json_field "$tdir/guards/drift_pass.json" scan_failures)"
   if [[ "$fc" -ne 0 ]]; then
     echo "SELFTEST FAIL: drift_pass not clean ($fc)" | tee -a "$REPORT_TXT"
-    python3 -c 'import json; print("\n".join(json.load(open("'"$tdir"'/guards/drift_pass.json"))["failures"]))' | tee -a "$REPORT_TXT"
+    json_failures "$tdir/guards/drift_pass.json" | tee -a "$REPORT_TXT"
     return 1
   fi
   echo "SELFTEST PASS: drift_pass clean" | tee -a "$REPORT_TXT"
@@ -253,10 +299,10 @@ EOF
   set +e
   python3 "$SCAN_PY" "$tdir/dated_pass" "$OUT_DIR/derived.json" >"$tdir/guards/dated_pass.json"
   set -e
-  fc="$(python3 -c 'import json; print(json.load(open("'"$tdir"'/guards/dated_pass.json"))["scan_failures"])')"
+  fc="$(json_field "$tdir/guards/dated_pass.json" scan_failures)"
   if [[ "$fc" -ne 0 ]]; then
     echo "SELFTEST FAIL: dated_pass not clean ($fc)" | tee -a "$REPORT_TXT"
-    python3 -c 'import json; print("\n".join(json.load(open("'"$tdir"'/guards/dated_pass.json"))["failures"]))' | tee -a "$REPORT_TXT"
+    json_failures "$tdir/guards/dated_pass.json" | tee -a "$REPORT_TXT"
     return 1
   fi
   echo "SELFTEST PASS: dated_pass ignores historical N" | tee -a "$REPORT_TXT"
@@ -297,10 +343,10 @@ EOF
   set +e
   python3 "$SCAN_PY" "$tdir/ban_pass" "$OUT_DIR/derived.json" >"$tdir/guards/ban_pass.json"
   set -e
-  fc="$(python3 -c 'import json; print(json.load(open("'"$tdir"'/guards/ban_pass.json"))["scan_failures"])')"
+  fc="$(json_field "$tdir/guards/ban_pass.json" scan_failures)"
   if [[ "$fc" -ne 0 ]]; then
     echo "SELFTEST FAIL: ban_pass not clean ($fc)" | tee -a "$REPORT_TXT"
-    python3 -c 'import json; print("\n".join(json.load(open("'"$tdir"'/guards/ban_pass.json"))["failures"]))' | tee -a "$REPORT_TXT"
+    json_failures "$tdir/guards/ban_pass.json" | tee -a "$REPORT_TXT"
     return 1
   fi
   echo "SELFTEST PASS: ban_pass residual-linked / meta banlist" | tee -a "$REPORT_TXT"
@@ -321,6 +367,7 @@ else
   SELF_RC=0
 fi
 
+write_report() {
 python3 - "$OUT_DIR" "$FAILS" "$STAMPS_CHECKED" "$SELF_TEST" "$SELF_RC" <<'PY'
 import json, sys
 from pathlib import Path
@@ -340,16 +387,31 @@ report = {
 }
 Path(out, "docs_drift_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 PY
+}
 
 # Coverage is part of the verdict. This gate printed
 #   DOCS_DRIFT_GATE: PASS / Overall: PASS (0 stamps checked, 0 drift)
 # with exit 0 against an empty scan root — demonstrated by counterexample 2026-07-28 — because the
 # verdict below reads only $FAILS and $STAMPS_CHECKED was decorative. A rename of an owned doc
 # produced the same vacuous green, and the seal consumes this gate by matching its PASS token.
-source "$ROOT/scripts/lib/gate_common.sh"
 if ! assert_tested "$STAMPS_CHECKED" "stamps_checked" "$CLAIM_GUARDS_CHECKED" "claim_guards_checked"; then
   echo "DOCS_DRIFT_GATE: FAIL"
   echo "Overall: FAIL (vacuous: $GATE_COVERAGE_ERROR)" >&2
+  exit 1
+fi
+
+if [[ "$SCAN_RC" -gt 1 \
+  || ( "$SCAN_RC" -eq 1 && "$SCAN_FAILS" -eq 0 ) \
+  || ( "$SCAN_RC" -eq 0 && "$SCAN_FAILS" -ne 0 ) ]]; then
+  echo "DOCS_DRIFT_GATE: FAIL"
+  echo "Overall: FAIL (inconsistent scanner result: exit=$SCAN_RC failures=$SCAN_FAILS)" >&2
+  exit 1
+fi
+
+if [[ "$FAILS" -ne 0 ]]; then
+  write_report
+  echo "DOCS_DRIFT_GATE: FAIL"
+  echo "Overall: FAIL (scan_failures=$FAILS)"
   exit 1
 fi
 
@@ -363,46 +425,15 @@ fi
 # one edit that makes a gate greener by making it check less, so it is the one edit that must not be
 # silent.
 #
-# The floor lives in a tracked file. Raising it is automatic. LOWERING it requires editing that file
-# in a commit someone can see, which is the whole mechanism — the same shape as the repo's rule that
-# formal-verification coverage can only increase.
+# The floor lives in a tracked file. Ordinary verification is read-only; reviewed maintenance may
+# raise it with ANUBIS_GATE_UPDATE_FLOORS=1. Lowering requires editing that file in a visible commit.
 FLOOR_FILE="$ROOT/docs/.docs_drift_coverage_floor"
-if [[ -f "$FLOOR_FILE" ]]; then
-  FLOOR="$(tr -dc '0-9' < "$FLOOR_FILE")"
-  if [[ -z "$FLOOR" ]]; then
-    echo "DOCS_DRIFT_GATE: FAIL"
-    echo "Overall: FAIL (coverage floor file is unparseable — refusing to grade)" >&2
-    exit 1
-  fi
-  if [[ "$STAMPS_CHECKED" -lt "$FLOOR" ]]; then
-    echo "DOCS_DRIFT_GATE: FAIL"
-    echo "Overall: FAIL (coverage fell: $STAMPS_CHECKED stamps checked, floor is $FLOOR)" >&2
-    echo "  A stamp stopped being checked. Either a doc lost a live claim, or an exemption grew." >&2
-    echo "  If the loss is correct, lower $FLOOR_FILE in the same commit and say why." >&2
-    exit 1
-  fi
-  if [[ "$STAMPS_CHECKED" -gt "$FLOOR" ]]; then
-    echo "$STAMPS_CHECKED" > "$FLOOR_FILE"
-    echo "coverage ratchet raised: $FLOOR -> $STAMPS_CHECKED"
-  fi
-else
-  echo "$STAMPS_CHECKED" > "$FLOOR_FILE"
-  echo "coverage floor initialised at $STAMPS_CHECKED"
-fi
-
-# SCAN_RC was captured at the scan call and never read. A scanner that exits non-zero but leaves
-# parseable JSON with zero failures would have been reported as PASS.
-if [[ "$SCAN_RC" -ne 0 ]]; then
+if ! assert_floor docs_drift_stamps "$STAMPS_CHECKED" "$FLOOR_FILE"; then
   echo "DOCS_DRIFT_GATE: FAIL"
-  echo "Overall: FAIL (scanner exited $SCAN_RC)" >&2
+  echo "Overall: FAIL ($GATE_FLOOR_ERROR)" >&2
   exit 1
 fi
 
-if [[ "$FAILS" -eq 0 ]]; then
-  echo "DOCS_DRIFT_GATE: PASS"
-  echo "Overall: PASS ($STAMPS_CHECKED stamps checked, 0 drift)"
-  exit 0
-fi
-echo "DOCS_DRIFT_GATE: FAIL"
-echo "Overall: FAIL (scan_failures=$FAILS)"
-exit 1
+write_report
+echo "DOCS_DRIFT_GATE: PASS"
+echo "Overall: PASS ($STAMPS_CHECKED stamps checked, 0 drift)"

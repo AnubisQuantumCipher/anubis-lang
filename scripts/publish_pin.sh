@@ -67,19 +67,25 @@ fi
 # "this binary was checked by THESE Lean proofs and THESE gates". A `formal/*.lean` edit or a change
 # to a gate script moved what the seal means while the pin kept reporting a match.
 #
-# So the sealed manifest includes the proofs and the three scripts that decide whether a seal is
-# earned. Anything listed here, when it changes, correctly invalidates the pin.
-PIN_SRC_DIRS=(compiler/src tools/anubis/src solver/src compiler/stdlib formal)
+# So the sealed manifest includes compiler/runtime sources, proofs, fixtures, and every gate/harness
+# implementation. A pin is not current when the meaning of PASS changed after it was built.
+PIN_SRC_DIRS=(
+  compiler/src tools/anubis/src solver/src compiler/stdlib selfhost kernel formal
+  scripts examples/security tests/fixtures
+)
 PIN_SRC_FILES=(
-  scripts/run_formal_gate.sh
-  scripts/run_native_authoritative_gate.sh
-  scripts/run_formal_kernel_gate.sh
+  Cargo.toml Cargo.lock compiler/Cargo.toml tools/anubis/Cargo.toml solver/Cargo.toml
+  lean-toolchain lakefile.toml
+  examples/security/.fixture_count_floor docs/.docs_drift_coverage_floor
+  .gate_floors/native_authoritative.floor .gate_floors/taint_selfhost.floor
+  .gate_floors/capset_selfhost.floor
 )
 
 src_tree_hash() {
   {
     find "${PIN_SRC_DIRS[@]}" \
-      -type f \( -name '*.rs' -o -name '*.anb' -o -name '*.lean' \
+      -type f \( -name '*.rs' -o -name '*.anb' -o -name '*.lean' -o -name '*.sh' \
+                  -o -name '*.py' -o -name '*.toml' -o -name '*.json' \
                   -o -name 'lean-toolchain' -o -name 'lakefile.toml' \) 2>/dev/null
     for f in "${PIN_SRC_FILES[@]}"; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
   } \
@@ -145,10 +151,19 @@ if [[ "${ANUBIS_PIN_ALLOW_STALE:-0}" != "1" ]]; then
   # "the sealed sources" that can drift apart is the producer/consumer split this repo keeps finding.
   for d in "${PIN_SRC_DIRS[@]}"; do
     [[ -d "$d" ]] || continue
-    found="$(find "$d" -type f \( -name '*.rs' -o -name '*.anb' -o -name '*.lean' \
+    found="$(find "$d" -type f \( -name '*.rs' -o -name '*.anb' -o -name '*.lean' -o -name '*.sh' \
+              -o -name '*.py' -o -name '*.toml' -o -name '*.json' \
               -o -name 'lean-toolchain' -o -name 'lakefile.toml' \) -newer "$SRC" -print 2>/dev/null | head -1)"
     if [[ -n "$found" ]]; then stale_src="$found"; break; fi
   done
+  if [[ -z "$stale_src" ]]; then
+    for f in "${PIN_SRC_FILES[@]}"; do
+      if [[ -f "$f" && "$f" -nt "$SRC" ]]; then
+        stale_src="$f"
+        break
+      fi
+    done
+  fi
   if [[ -n "$stale_src" ]]; then
     echo "REFUSING to publish a stale pin." >&2
     echo "  $stale_src" >&2

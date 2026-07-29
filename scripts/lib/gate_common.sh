@@ -191,6 +191,144 @@ assert_tested() {
   return 0
 }
 
+# assert_clean_output_dir DIRECTORY EXCLUDED_ENTRY DESCRIPTION
+#
+# Require a gate-owned output directory to contain only its already-acquired
+# lock. Enumeration failure is infrastructure failure, never evidence of an
+# empty directory.
+assert_clean_output_dir() {
+  GATE_OUTPUT_DIR_ERROR=""
+  if [[ $# -ne 3 ]]; then
+    GATE_OUTPUT_DIR_ERROR="assert_clean_output_dir requires DIRECTORY EXCLUDED_ENTRY DESCRIPTION"
+    echo "INVALID OUTPUT ASSERTION: $GATE_OUTPUT_DIR_ERROR" >&2
+    return 2
+  fi
+  local directory="$1" excluded_entry="$2" description="$3" entries
+  if [[ ! -d "$directory" ]]; then
+    GATE_OUTPUT_DIR_ERROR="missing output directory for $description: $directory"
+    echo "INVALID OUTPUT DIRECTORY: $GATE_OUTPUT_DIR_ERROR" >&2
+    return 2
+  fi
+  if ! entries="$(find "$directory" -mindepth 1 -maxdepth 1 \
+    ! -name "$excluded_entry" -print -quit)"; then
+    GATE_OUTPUT_DIR_ERROR="could not enumerate output directory for $description: $directory"
+    echo "INVALID OUTPUT DIRECTORY: $GATE_OUTPUT_DIR_ERROR" >&2
+    return 2
+  fi
+  if [[ -n "$entries" ]]; then
+    GATE_OUTPUT_DIR_ERROR="stale artifacts in output directory for $description: $directory"
+    echo "STALE OUTPUT DIRECTORY: $GATE_OUTPUT_DIR_ERROR" >&2
+    return 1
+  fi
+  return 0
+}
+
+# assert_rust_tests_exercised LOG_FILE DESCRIPTION
+#
+# A filtered `cargo test` exits 0 when its filter matches zero tests. Matching only
+# `test result: ok` therefore turns a renamed test into a vacuous PASS. Cargo may
+# run several libtest harnesses for one invocation, so sum every parsed `N passed`
+# summary and require the aggregate to be non-zero.
+#
+# Result variables: GATE_RUST_TESTS_PASSED and GATE_RUST_TESTS_ERROR.
+assert_rust_tests_exercised() {
+  GATE_RUST_TESTS_PASSED=0
+  GATE_RUST_TESTS_ERROR=""
+  if [[ $# -ne 2 ]]; then
+    GATE_RUST_TESTS_ERROR="assert_rust_tests_exercised requires LOG_FILE DESCRIPTION"
+    echo "INVALID RUST TEST ASSERTION: $GATE_RUST_TESTS_ERROR" >&2
+    return 2
+  fi
+  local log="$1" description="$2"
+  if [[ ! -f "$log" ]]; then
+    GATE_RUST_TESTS_ERROR="missing Rust test log: $log"
+    echo "INVALID RUST TEST LOG: $GATE_RUST_TESTS_ERROR" >&2
+    return 2
+  fi
+
+  local summaries parsed_count malformed_summaries
+  summaries="$(grep -E '^test result: ' "$log" 2>/dev/null || true)"
+  if [[ -z "$summaries" ]]; then
+    GATE_RUST_TESTS_ERROR="no libtest summaries for $description"
+    echo "INVALID RUST TEST LOG: $GATE_RUST_TESTS_ERROR" >&2
+    return 2
+  fi
+  if printf '%s\n' "$summaries" | grep -qE '^test result: (FAILED|failed)'; then
+    GATE_RUST_TESTS_ERROR="a libtest harness failed for $description"
+    echo "RUST TEST FAILURE: $GATE_RUST_TESTS_ERROR" >&2
+    return 1
+  fi
+
+  malformed_summaries="$(printf '%s\n' "$summaries" | grep -Ev \
+    '^test result: ok\. [0-9]+ passed; 0 failed; [0-9]+ ignored; [0-9]+ measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' \
+    || true)"
+  if [[ -n "$malformed_summaries" ]]; then
+    GATE_RUST_TESTS_ERROR="unparseable libtest summary for $description"
+    echo "INVALID RUST TEST LOG: $GATE_RUST_TESTS_ERROR" >&2
+    return 2
+  fi
+
+  parsed_count="$(printf '%s\n' "$summaries" \
+    | sed -nE 's/^test result: ok\. ([0-9]+) passed; 0 failed; [0-9]+ ignored; [0-9]+ measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$/\1/p' \
+    | awk '{ total += $1; rows += 1 } END { printf "%d %d", total, rows }')"
+  GATE_RUST_TESTS_PASSED="${parsed_count%% *}"
+  local parsed_rows="${parsed_count##* }"
+  local summary_rows
+  summary_rows="$(printf '%s\n' "$summaries" | wc -l | tr -d ' ')"
+  if [[ "$parsed_rows" -ne "$summary_rows" ]]; then
+    GATE_RUST_TESTS_ERROR="unparseable libtest summary for $description"
+    echo "INVALID RUST TEST LOG: $GATE_RUST_TESTS_ERROR" >&2
+    return 2
+  fi
+  if [[ "$GATE_RUST_TESTS_PASSED" -eq 0 ]]; then
+    GATE_RUST_TESTS_ERROR="filter matched zero tests for $description"
+    echo "VACUOUS RUST TEST FILTER: $GATE_RUST_TESTS_ERROR - refusing to report PASS" >&2
+    return 1
+  fi
+  return 0
+}
+
+# assert_anubis_tests_exercised LOG_FILE DESCRIPTION
+# Parse the CLI's declared `anubis test: PASSED/TOTAL passed` verdict and refuse
+# zero-work, partial, duplicate, or malformed summaries.
+assert_anubis_tests_exercised() {
+  GATE_ANUBIS_TESTS_TOTAL=0
+  GATE_ANUBIS_TESTS_PASSED=0
+  GATE_ANUBIS_TESTS_ERROR=""
+  if [[ $# -ne 2 ]]; then
+    GATE_ANUBIS_TESTS_ERROR="assert_anubis_tests_exercised requires LOG_FILE DESCRIPTION"
+    return 2
+  fi
+  local log="$1" description="$2" summary_lines summaries row passed total
+  if [[ ! -f "$log" ]]; then
+    GATE_ANUBIS_TESTS_ERROR="missing Anubis test log: $log"
+    return 2
+  fi
+  summary_lines="$(grep -E '^anubis test:' "$log" 2>/dev/null || true)"
+  summaries="$(printf '%s\n' "$summary_lines" \
+    | grep -E '^anubis test: [0-9]+/[0-9]+ passed$' 2>/dev/null || true)"
+  if [[ -z "$summary_lines" \
+    || "$(printf '%s\n' "$summary_lines" | wc -l | tr -d ' ')" -ne 1 \
+    || "$(printf '%s\n' "$summaries" | wc -l | tr -d ' ')" -ne 1 ]]; then
+    GATE_ANUBIS_TESTS_ERROR="expected exactly one parseable Anubis test summary for $description"
+    return 2
+  fi
+  row="$(printf '%s\n' "$summaries" | sed -E 's/^anubis test: ([0-9]+)\/([0-9]+) passed$/\1 \2/')"
+  passed="${row%% *}"
+  total="${row##* }"
+  GATE_ANUBIS_TESTS_PASSED="$passed"
+  GATE_ANUBIS_TESTS_TOTAL="$total"
+  if [[ "$total" -eq 0 ]]; then
+    GATE_ANUBIS_TESTS_ERROR="Anubis test matched zero fixtures for $description"
+    return 1
+  fi
+  if [[ "$passed" -ne "$total" ]]; then
+    GATE_ANUBIS_TESTS_ERROR="Anubis test incomplete for $description: passed=$passed total=$total"
+    return 1
+  fi
+  return 0
+}
+
 # finalize TOTAL PASSED FAILED [INCOMPLETE]
 # Result variables: GATE_FINAL_STATUS (PASS, FAIL, INCOMPLETE, or INVALID)
 # and GATE_FINAL_REASON.
@@ -238,11 +376,12 @@ finalize() {
 # indicate anything had changed. Every exemption that caused it was justified on review, which is
 # precisely the problem: the justified case and the careless case produce identical output.
 #
-# Raising the floor is automatic. LOWERING it means editing a tracked file in a visible commit,
-# which is the whole mechanism — the same shape as this repo's rule that formal-verification
-# coverage can only increase.
+# Ordinary verification is read-only. Raising or initialising a floor requires the explicit
+# maintenance switch `ANUBIS_GATE_UPDATE_FLOORS=1`; otherwise a test run could silently mutate the
+# source tree and certify its own newly-written baseline. Lowering still means editing the tracked
+# file in a visible commit.
 #
-# Returns 0 if COUNT >= FLOOR (raising the floor when it grew), 1 otherwise.
+# Returns 0 if COUNT >= FLOOR, 1 otherwise. In maintenance mode it atomically raises the floor.
 assert_floor() {
   GATE_FLOOR_ERROR=""
   if [[ $# -ne 3 ]]; then
@@ -256,14 +395,42 @@ assert_floor() {
     echo "INVALID FLOOR COUNT: $GATE_FLOOR_ERROR - refusing to report PASS" >&2
     return 2
   fi
+  local floor tmp lock update="${ANUBIS_GATE_UPDATE_FLOORS:-0}"
+  tmp="${file}.tmp.$$"
+  lock="${file}.lock"
+  if [[ "$update" != 0 && "$update" != 1 ]]; then
+    GATE_FLOOR_ERROR="ANUBIS_GATE_UPDATE_FLOORS must be 0 or 1"
+    echo "INVALID FLOOR MODE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+    return 2
+  fi
   if [[ ! -f "$file" ]]; then
-    printf '%s\n' "$count" > "$file"
+    if [[ "$update" != 1 ]]; then
+      GATE_FLOOR_ERROR="coverage floor is missing: $file (set ANUBIS_GATE_UPDATE_FLOORS=1 only for reviewed maintenance)"
+      echo "MISSING FLOOR FILE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+      return 2
+    fi
+    if ! mkdir "$lock" 2>/dev/null; then
+      GATE_FLOOR_ERROR="coverage floor is already being updated: $file"
+      echo "CONCURRENT FLOOR UPDATE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+      return 2
+    fi
+    if ! printf '%s\n' "$count" > "$tmp" || ! mv "$tmp" "$file"; then
+      rm -f "$tmp"
+      rmdir "$lock" 2>/dev/null || true
+      GATE_FLOOR_ERROR="could not atomically initialise floor file: $file"
+      echo "INVALID FLOOR FILE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+      return 2
+    fi
+    if ! rmdir "$lock" 2>/dev/null; then
+      GATE_FLOOR_ERROR="could not release coverage floor lock: $lock"
+      echo "INVALID FLOOR LOCK: $GATE_FLOOR_ERROR" >&2
+      return 2
+    fi
     echo "coverage floor initialised: $name=$count ($file)"
     return 0
   fi
-  local floor
-  floor="$(tr -dc '0-9' < "$file")"
-  if [[ -z "$floor" ]]; then
+  floor="$(<"$file")"
+  if [[ ! "$floor" =~ ^(0|[1-9][0-9]*)$ ]]; then
     GATE_FLOOR_ERROR="floor file is unparseable: $file"
     echo "INVALID FLOOR FILE: $GATE_FLOOR_ERROR - refusing to grade" >&2
     return 2
@@ -275,8 +442,36 @@ assert_floor() {
     return 1
   fi
   if [[ "$count" -gt "$floor" ]]; then
-    printf '%s\n' "$count" > "$file"
+    if [[ "$update" != 1 ]]; then
+      echo "coverage exceeds tracked floor (read-only): $name $floor -> $count"
+      return 0
+    fi
+    if ! mkdir "$lock" 2>/dev/null; then
+      GATE_FLOOR_ERROR="coverage floor is already being updated: $file"
+      echo "CONCURRENT FLOOR UPDATE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+      return 2
+    fi
+    # Re-read under the update lock; another maintenance process may have raised it.
+    floor="$(<"$file")"
+    if [[ ! "$floor" =~ ^(0|[1-9][0-9]*)$ || "$count" -lt "$floor" ]]; then
+      rmdir "$lock" 2>/dev/null || true
+      GATE_FLOOR_ERROR="floor changed incompatibly while acquiring update lock: $file"
+      echo "CONCURRENT FLOOR UPDATE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+      return 2
+    fi
+    if ! printf '%s\n' "$count" > "$tmp" || ! mv "$tmp" "$file"; then
+      rm -f "$tmp"
+      rmdir "$lock" 2>/dev/null || true
+      GATE_FLOOR_ERROR="could not atomically raise floor file: $file"
+      echo "INVALID FLOOR FILE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+      return 2
+    fi
     echo "coverage ratchet raised: $name $floor -> $count"
+    if ! rmdir "$lock" 2>/dev/null; then
+      GATE_FLOOR_ERROR="could not release coverage floor lock: $lock"
+      echo "INVALID FLOOR LOCK: $GATE_FLOOR_ERROR" >&2
+      return 2
+    fi
   fi
   return 0
 }

@@ -238,6 +238,24 @@ chmod +x "$SNAP" 2>/dev/null || true
 chmod a-w "$SNAP" 2>/dev/null || refuse "could not make snapshot read-only: $SNAP"
 [[ -x "$SNAP" ]] || refuse "snapshot binary not executable: $SNAP"
 
+# A binary hash alone proves identity, not provenance. The seal is available only for the current
+# published pin whose metadata binds it to this exact source/gate/fixture tree.
+set +e
+CURRENT_PIN="$(scripts/publish_pin.sh --current 2>"$SEAL_OUT/logs/publish_pin_verify.err")"
+current_rc=$?
+if [[ $current_rc -eq 0 ]]; then
+  scripts/publish_pin.sh --verify >>"$SEAL_OUT/logs/publish_pin_verify.log" 2>&1
+  verify_rc=$?
+else
+  verify_rc=$current_rc
+fi
+set -e
+[[ $current_rc -eq 0 ]] || refuse "could not resolve current pin for source binding (rc=$current_rc)"
+[[ "$(cd "$(dirname "$SOURCE_PIN")" && pwd)/$(basename "$SOURCE_PIN")" == "$(cd "$(dirname "$CURRENT_PIN")" && pwd)/$(basename "$CURRENT_PIN")" ]] \
+  || refuse "selected binary is not the current source-bound pin: selected=$SOURCE_PIN current=$CURRENT_PIN"
+[[ $verify_rc -eq 0 ]] || refuse "current pin does not match the live tree (rc=$verify_rc; see logs/publish_pin_verify.log)"
+log "source_binding=verified_current_pin"
+
 BIN_MTIME="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' "$SNAP" 2>/dev/null || stat -c '%y' "$SNAP" 2>/dev/null || echo unknown)"
 BIN_SIZE="$(stat -f '%z' "$SNAP" 2>/dev/null || stat -c '%s' "$SNAP" 2>/dev/null || echo 0)"
 if command -v shasum >/dev/null 2>&1; then
