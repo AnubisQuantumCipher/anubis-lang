@@ -113,6 +113,8 @@ run_in_disposable_guest() {
     echo "ANUBIS_POC_KIT_VZ_REQUIRED: guest never reached SSH" >&2
     return 1
   }
+  anubis_guard_stop_runtime_watch
+  anubis_guard_start_runtime_watch $$ "$guest" || return $?
 
   anubis_guard_sync_tree \
     "ssh ${sshopts[*]}" \

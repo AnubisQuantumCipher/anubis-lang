@@ -87,6 +87,8 @@ for _ in $(seq 1 75); do
 done
 [ -n "${IP:-}" ] || { echo "FATAL: guest never reached SSH"; exit 1; }
 echo "      guest ip=$IP"
+anubis_guard_stop_runtime_watch
+anubis_guard_start_runtime_watch $$ "$RUN" || exit $?
 
 echo "[3/6] rsync live source -> guest (exclude host-local build/agent/VM artifacts)"
 anubis_guard_sync_tree \

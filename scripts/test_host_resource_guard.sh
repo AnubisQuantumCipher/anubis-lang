@@ -111,6 +111,12 @@ for driver in \
   grep -Fq 'anubis_guard_start_runtime_watch' "$ROOT/$driver" || sync_ok=0
   grep -Fq 'anubis_guard_stop_runtime_watch' "$ROOT/$driver" || sync_ok=0
   grep -Fq 'anubis_guard_teardown_guest' "$ROOT/$driver" || sync_ok=0
+  case "$driver" in
+    scripts/vm/run-slice.sh)
+      grep -Fq 'anubis_guard_start_runtime_watch $$ "$RUN"' "$ROOT/$driver" || sync_ok=0 ;;
+    *)
+      grep -Fq 'anubis_guard_start_runtime_watch $$ "$guest"' "$ROOT/$driver" || sync_ok=0 ;;
+  esac
   if [[ "$driver" != scripts/vm/run-slice.sh ]]; then
     grep -Fq 'anubis_guard_require_torn_down "$teardown_final" || return 1' \
       "$ROOT/$driver" || sync_ok=0
@@ -388,6 +394,65 @@ watch_start_rc=$?
 set -e
 [[ "$watch_start_rc" -eq 1 ]] && ok=1 || ok=0
 record runtime_watch_checks_start "$ok" "rc=$watch_start_rc"
+
+if anubis_guard_guest_running anubis-run-999999 \
+  && ! anubis_guard_guest_running missing-guest; then ok=1; else ok=0; fi
+record guest_running_state_is_exact "$ok" "running twin accepted; missing twin rejected"
+
+valid_tart_json="$TART_JSON"
+set +e
+TART_JSON='[{"Name":"expected","Running":"false"}]'
+anubis_guard_guest_running expected >/dev/null 2>&1
+string_running_rc=$?
+TART_JSON='[{"Name":"expected","Running":1}]'
+anubis_guard_guest_running expected >/dev/null 2>&1
+integer_running_rc=$?
+set -e
+TART_JSON="$valid_tart_json"
+[[ "$string_running_rc" -ne 0 && "$integer_running_rc" -ne 0 ]] && ok=1 || ok=0
+record guest_running_rejects_nonboolean_types "$ok" \
+  "string_rc=$string_running_rc integer_rc=$integer_running_rc"
+
+set +e
+( anubis_guard_watch_once() { return 0; }; \
+  anubis_guard_guest_running() { return 1; }; \
+  anubis_guard_start_runtime_watch $$ expected-guest ) >/dev/null 2>&1
+missing_guest_start_rc=$?
+set -e
+[[ "$missing_guest_start_rc" -eq 1 ]] && ok=1 || ok=0
+record runtime_watch_rejects_stopped_guest_at_start "$ok" "rc=$missing_guest_start_rc"
+
+guest_watch_json="$TMP/guest-watch.json"
+guest_watch_events="$TMP/guest-watch.events"
+guest_watch_result="$TMP/guest-watch.result"
+printf '[{"Name":"expected-guest","Running":true}]\n' >"$guest_watch_json"
+: >"$guest_watch_events"
+set +e
+(
+  ANUBIS_GUARD_INTERVAL_SECS=1
+  anubis_guard_watch_once() { return 0; }
+  anubis_guard_read_tart_json() { command cat "$guest_watch_json"; }
+  ( sleep 5; printf 'after-sleep\n' >>"$guest_watch_events" ) &
+  watched_owner=$!
+  anubis_guard_start_runtime_watch "$watched_owner" expected-guest || exit 2
+  printf '[{"Name":"expected-guest","Running":false}]\n' >"$guest_watch_json"
+  wait "$watched_owner"
+  watched_owner_rc=$?
+  anubis_guard_stop_runtime_watch
+  printf '%s\n' "$watched_owner_rc" >"$guest_watch_result"
+) >/dev/null 2>&1
+guest_watch_harness_rc=$?
+set -e
+if [[ -f "$guest_watch_result" ]]; then
+  stopped_guest_watch_rc="$(<"$guest_watch_result")"
+else
+  stopped_guest_watch_rc=missing
+fi
+[[ "$guest_watch_harness_rc" -eq 0 && "$stopped_guest_watch_rc" =~ ^[0-9]+$ \
+  && "$stopped_guest_watch_rc" -ne 0 \
+  && ! -s "$guest_watch_events" ]] && ok=1 || ok=0
+record runtime_watch_terminates_stopped_guest "$ok" \
+  "harness_rc=$guest_watch_harness_rc owner_rc=$stopped_guest_watch_rc events=$(tr '\n' ',' <"$guest_watch_events")"
 
 set +e
 ( anubis_guard_read_tart_json() { return 1; }; anubis_guard_watch_once ) >/dev/null 2>&1

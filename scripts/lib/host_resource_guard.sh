@@ -203,7 +203,11 @@ import json, sys
 for vm in json.load(sys.stdin):
     name = vm.get("Name")
     if isinstance(name, str):
-        print(f"{name}\t{1 if vm.get(chr(82)+chr(117)+chr(110)+chr(110)+chr(105)+chr(110)+chr(103)) else 0}")
+        key = chr(82)+chr(117)+chr(110)+chr(110)+chr(105)+chr(110)+chr(103)
+        value = vm.get(key)
+        if type(value) is not bool:
+            raise SystemExit(f"invalid Tart inventory type for {name}")
+        print(f"{name}\t{1 if value else 0}")
 '
 }
 
@@ -271,6 +275,22 @@ anubis_guard_guest_absent() {
       return 1
     fi
   done <<<"$rows"
+}
+
+anubis_guard_guest_running() {
+  if [[ $# -ne 1 || -z "$1" ]]; then
+    echo "ANUBIS_HOST_GUARD_INVALID: guest_running requires a guest name" >&2
+    return 2
+  fi
+  local json rows name running
+  json="$(anubis_guard_read_tart_json 2>/dev/null)" || return 1
+  rows="$(printf '%s\n' "$json" | anubis_guard_json_rows)" || return 1
+  while IFS=$'\t' read -r name running; do
+    if [[ "$name" == "$1" && "$running" == 1 ]]; then
+      return 0
+    fi
+  done <<<"$rows"
+  return 1
 }
 
 # Stop/delete a generated guest and grade the final observable state, not the stop command's
@@ -360,8 +380,25 @@ anubis_guard_watch_once() {
   fi
 }
 
+anubis_guard_runtime_watch_loop() {
+  local parent_pid="$1" expected_guest="${2:-}"
+  while kill -0 "$parent_pid" 2>/dev/null; do
+    sleep "$ANUBIS_GUARD_INTERVAL_SECS"
+    if ! anubis_guard_watch_once; then
+      echo "ANUBIS_HOST_GUARD_RUNTIME_TRIPPED: terminating owner_pid=$parent_pid" >&2
+      kill -TERM "$parent_pid" 2>/dev/null || true
+      return 1
+    fi
+    if [[ -n "$expected_guest" ]] && ! anubis_guard_guest_running "$expected_guest"; then
+      echo "ANUBIS_HOST_GUARD_GUEST_STOPPED: guest=$expected_guest owner_pid=$parent_pid" >&2
+      kill -TERM "$parent_pid" 2>/dev/null || true
+      return 1
+    fi
+  done
+}
+
 anubis_guard_start_runtime_watch() {
-  local parent_pid="${1:-$$}"
+  local parent_pid="${1:-$$}" expected_guest="${2:-}"
   if [[ ! "$parent_pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$parent_pid" 2>/dev/null; then
     echo "ANUBIS_HOST_GUARD_INVALID: runtime watch requires a live parent PID" >&2
     return 2
@@ -370,16 +407,11 @@ anubis_guard_start_runtime_watch() {
     echo "ANUBIS_HOST_GUARD_RUNTIME_START_FAILED: initial watch check failed" >&2
     return 1
   }
-  (
-    while kill -0 "$parent_pid" 2>/dev/null; do
-      sleep "$ANUBIS_GUARD_INTERVAL_SECS"
-      if ! anubis_guard_watch_once; then
-        echo "ANUBIS_HOST_GUARD_RUNTIME_TRIPPED: terminating owner_pid=$parent_pid" >&2
-        kill -TERM "$parent_pid" 2>/dev/null || true
-        exit 1
-      fi
-    done
-  ) &
+  if [[ -n "$expected_guest" ]] && ! anubis_guard_guest_running "$expected_guest"; then
+    echo "ANUBIS_HOST_GUARD_GUEST_NOT_RUNNING: guest=$expected_guest" >&2
+    return 1
+  fi
+  anubis_guard_runtime_watch_loop "$parent_pid" "$expected_guest" &
   ANUBIS_GUARD_RUNTIME_WATCH_PID=$!
   export ANUBIS_GUARD_RUNTIME_WATCH_PID
   kill -0 "$ANUBIS_GUARD_RUNTIME_WATCH_PID" 2>/dev/null || {
