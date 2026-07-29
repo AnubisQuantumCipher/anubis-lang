@@ -79,7 +79,7 @@ sound. Its *soundness* claim was not. Keep the first, discard the second.
 | stdlib fail-closed | **104/104** |
 | stdlib integration gate | **10 pass / 1 fail** (was 7/4) |
 | builtin surface (213) | **179 FAIL_CLOSED_OK · 11 RUN_REFUSES · 23 RUNS**, 0 crashes |
-| native-authoritative corpus | **898 files, 0 mismatches** |
+| native-authoritative corpus | **906 files, 0 mismatches** (re-measured 2026-07-29; was 898) |
 | Lean | **162 theorems / 15 modules**, machine-checked on host (G21) |
 
 **Phase 1 — DONE.** 41/41 published carrier routes reject, element ladder 25/25, 25/25 pure guards
@@ -100,7 +100,7 @@ The 11 `RUN_REFUSES` are proof-lane/native-lowering constructs with no run-lane 
 refuse rather than assume, so the published promise holds and `check` is INCOMPLETE about runnability.
 `break`/`continue` outside a loop now reject at check time.
 
-**Phase 6 — DONE except the VM seal, which is deliberately NOT claimed.** `run_failclosed` reaches
+**Phase 6 — DONE, and the VM seal is now CLAIMED (2026-07-29).** The seal was taken 2026-07-28 at 19/19 and re-run 2026-07-29 at **22/22, fixpoint unchanged**; this line said the seal was "deliberately NOT claimed" for a day after it had been. `run_failclosed` reaches
 `PASS_RUNTIME_FAILCLOSED_WHOLE`; **G24 promise-coherence** gate registered (it caught a real drift in
 HANDOFF.md on first run); counts reconciled across README/AGENTS/CLAIMS.
 

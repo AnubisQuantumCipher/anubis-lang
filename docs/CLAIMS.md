@@ -74,7 +74,7 @@ Absence of a red row is **not** evidence of absence.
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
-| VM seal of post-registry fixpoint | **Pending** | Do not publish host fixpoint as sealed |
+| VM seal of post-registry fixpoint | **SEALED** — 19/19 on 2026-07-28, re-run **22/22 on 2026-07-29** (guest `anubis-run-14791`), fixpoint `46ddce14…ba60` == `scripts/vm/EXPECTED_FIXPOINT_VM` both times | `bash scripts/vm/run-slice.sh`; see § *VM seal* below. This row read **Pending** until 2026-07-29 while the section below already said SEALED — the same document asserting both |
 
 #### Honest-number methodology
 
@@ -122,8 +122,15 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    **(A)=0, (B)=7, (R)=3**; (R)+PCA **CLOSED**. **(B)** non-run by design — do not equate
    `check` PASS with ordinary `run` for shell/symbolic.
 
-3. **Self-host registry — HOST-FIXED; VM seal pending.**  
-   Do not publish post-drift host fixpoint as sealed.
+3. **Self-host registry — HOST-FIXED; VM seal DONE (corrected 2026-07-29).**  
+   This read "VM seal pending / do not publish post-drift host fixpoint as sealed" while the
+   § *VM seal* section below already recorded SEALED at 19/19 on 2026-07-28. The seal is real:
+   re-run 2026-07-29 in guest `anubis-run-14791` gave **22/22 gates `EXIT=0`**, `gate failures : 0`,
+   fixpoint `46ddce14…ba60` matching `scripts/vm/EXPECTED_FIXPOINT_VM` — the battery has grown
+   19 → 22 gates (`walker`, `formal-kernel`, `correspondence`) since the seal was taken.
+   **Two stale "pending" cells outlived the event they were gating.** Recorded rather than quietly
+   flipped: a status line that contradicts a section of the same document is the disease this file
+   exists to catch, and it survived here for a day.
 
 ### Phase 5 closed — builtin surface, and the instrument that was measuring it (2026-07-28)
 
