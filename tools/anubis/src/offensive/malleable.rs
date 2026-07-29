@@ -84,6 +84,54 @@ impl MalleableProfile {
         }
         Ok(())
     }
+
+    pub fn apply_transform(&self, data: &[u8]) -> Vec<u8> {
+        match self.transform.as_str() {
+            "base64" => {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .encode(data)
+                    .into_bytes()
+            }
+            "prepend_junk" => {
+                let junk = b"<!-- cached -->\n";
+                let mut out = Vec::with_capacity(junk.len() + data.len());
+                out.extend_from_slice(junk);
+                out.extend_from_slice(data);
+                out
+            }
+            _ => data.to_vec(),
+        }
+    }
+
+    pub fn format_server_headers(&self) -> String {
+        let mut out = String::new();
+        for pair in &self.server_headers {
+            out.push_str(&pair[0]);
+            out.push_str(": ");
+            out.push_str(&pair[1]);
+            out.push_str("\r\n");
+        }
+        out
+    }
+}
+
+pub fn load_from_engage(engage_dir: &Path) -> Option<MalleableProfile> {
+    let dir = engage_dir.join("profiles");
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut entries: Vec<_> = fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map_or(false, |ext| ext == "json")
+        })
+        .collect();
+    entries.sort_by_key(|e| e.path());
+    entries.first().and_then(|e| load(&e.path()).ok())
 }
 
 pub fn write_default(engage_dir: &Path, name: &str) -> Result<std::path::PathBuf> {
@@ -223,5 +271,38 @@ mod tests {
     fn sanitize_replaces_special_chars() {
         assert_eq!(sanitize("hello world!@#"), "hello_world___");
         assert_eq!(sanitize("abc-def_123"), "abc-def_123");
+    }
+
+    #[test]
+    fn transform_none_is_identity() {
+        let p = MalleableProfile::default();
+        assert_eq!(p.transform, "none");
+        let data = b"hello world";
+        assert_eq!(p.apply_transform(data), data);
+    }
+
+    #[test]
+    fn transform_base64_encodes() {
+        let mut p = MalleableProfile::default();
+        p.transform = "base64".into();
+        let out = p.apply_transform(b"hello");
+        assert_eq!(out, b"aGVsbG8=");
+    }
+
+    #[test]
+    fn transform_prepend_junk_adds_prefix() {
+        let mut p = MalleableProfile::default();
+        p.transform = "prepend_junk".into();
+        let out = p.apply_transform(b"data");
+        assert!(out.starts_with(b"<!-- cached -->\n"));
+        assert!(out.ends_with(b"data"));
+    }
+
+    #[test]
+    fn format_server_headers_emits_crlf() {
+        let p = MalleableProfile::default();
+        let hdr = p.format_server_headers();
+        assert!(hdr.contains("Server: nginx\r\n"));
+        assert!(hdr.contains("X-Content-Type-Options: nosniff\r\n"));
     }
 }

