@@ -921,6 +921,56 @@ never terminates is a check/run divergence of a different kind, and is being cha
     (`free≈16.5 GiB` vs the guard's `20480 MiB`). Status: **WIP — non-VM checks passed, VM
     verification blocked.**
 
+20. **The 48 new offensive commands BYPASS the VZ isolation guard — OPEN, live and public,
+    highest-severity item on this list (2026-07-29).**
+
+    **Do not run any `credential-*`, `privesc-*`, `discovery-*`, `collection-*`, `evasion-*`,
+    `exfil-*`, `postex-*` command on the host until this is closed.** They execute against the
+    host and seal the results into the engagement.
+
+    `isolation::require_vz_offensive(action)` is the guard behind this repo's most load-bearing
+    operational claim — *"Anything research-gated or crash-capable runs inside a disposable tart
+    guest… Calling a host run 'isolated' is FABRICATION."* Measured at `26f800a6`:
+
+    | | count |
+    |---|---:|
+    | call sites of `require_vz_offensive` in `main.rs` | **11**, all pre-existing (`listen`, `agent-generate`, `task-queue`, `exploit-run`, `persist-launchagent`, `inject-plan`, `lateral-ssh`, `lateral-smb`, `pack-xor`, `string-scramble`, `recon-scan`) |
+    | handler call sites for the 10 modules added in `4b83507b` | **48** |
+    | of those, VZ-gated | **0** |
+
+    **Demonstrated, not inferred.** On the host, with a valid engagement:
+
+    ```
+    $ anubis discovery-system-enum --engage <eng>
+    { "executed": true, "hostname": "<real host>", "id": "uid=501(...) gid=20(staff) groups=...",
+      "df": "<full host disk layout>", "attck": ["T1082","T1033"], ... }
+    ```
+
+    No refusal. Compare `listen`, which refuses with `ANUBIS_OFFENSIVE_HOST_FORBIDDEN` before it
+    even loads the engagement. Thirteen `Command::new` sites across `privesc`, `discovery`,
+    `collection`, `evasion`, `postex` run on the operator's own machine — `sudo -l -n`, `crontab -l`,
+    `ps aux`, `sqlite3` against the TCC privacy database, `osascript` for login items, clipboard
+    capture, `find` for "sensitive file discovery", SSH-key and environment credential scans.
+
+    **This is a broken promise, not a hidden backdoor** — each command is explicitly invoked with
+    an explicit `--engage`. The defect is that the platform states it will refuse and does not, and
+    that `run_offensive_platform_gate.sh` reports `isolation: tart-disposable-guest` while this
+    surface is unguarded.
+
+    **Gate by DEFAULT, not by enumeration.** A `Command::new` grep finds 17 host-touching
+    functions and **misses `discovery::system_enum`** — the one proven above to execute — because
+    it shells out through a `run_cmd` helper. An enumerated allow-list built from that grep would
+    have shipped the demonstrated hole. Every new-module handler should take the guard unless it is
+    provably pure (`payloads` encoders, `reporting` formatters, the `*-plan` emitters), and the
+    exemption should be a written list checked by a test, the same shape as item 19's parity fix.
+
+    **The refusal-probe metric in item 16 predicted this.** Six of the ten modules that assert no
+    refusal anywhere are exactly these. A module that never tests a denial is a module whose guard
+    surface nobody has looked at; here nobody had, because there was no guard.
+
+    Status: fix WIP in the working tree, **unsealed and uncommitted** — the VM battery is blocked
+    on admission headroom, and this repo does not commit code that has not passed its verify step.
+
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
 After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
