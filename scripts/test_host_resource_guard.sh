@@ -256,7 +256,7 @@ PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
     "admin@guest:anubis-lang/" >/dev/null 2>&1
 zsh_empty_pin_rc=$?
 set -e
-[[ "$zsh_empty_pin_rc" -eq 0 ]] && ok=1 || ok=0
+[[ "$zsh_empty_pin_rc" -eq 0 && -d "$zsh_home/anubis-lang/vm/pins" ]] && ok=1 || ok=0
 record vm_sync_accepts_empty_pin_archive_under_zsh "$ok" "rc=$zsh_empty_pin_rc"
 
 cleanup_home="$TMP/cleanup-home"
