@@ -1078,9 +1078,50 @@ never terminates is a check/run divergence of a different kind, and is being cha
     (the `carrier.rs` / `loopctl.rs` shape from Phase 2), applied to the write lane and to
     call-site discharge.
 
+    **ROOT CAUSES, located by the verifiers in source.** The refuters did not stop at reproducing —
+    each read the compiler and named the line. This turns the list above into a fix map, and it is
+    a much smaller set of mechanisms than the 30 witnesses suggest:
+
+    | # | site | mechanism | explains |
+    |---|---|---|---|
+    | 1 | `middle/mod.rs:17910-17935` `collect_unconditional_param_contract_stmts` | descends only into `If`/`While` **cond**, `For` **source**, and nothing for `Loop` — **bodies are never walked**, so `fn_param_contract_apps` (:3684) stays empty and `discharge_carried_call_requires` (:7630) folds an empty vector to `true` | item 10's `if 1==1` / for / while / loop / match-arm / if-let class |
+    | 2 | `middle/mod.rs:17964` | `Expr::Call` rebuilds the callee as `Expr::Var(name)` and records an application only if that NAME is a formal (`:17859-17869`) | the local-alias defeat |
+    | 3 | `middle/mod.rs:762-777` | `Expr::CallExpr` with a `FieldAccess` callee → `FnIdentitySet::Unknown` unless the field is in `method_returns_param`/`method_sole_return` | struct-field-stored fn applied as `b.h(-1)` |
+    | 4 | `middle/mod.rs:10100` vs `~10141` (`Stmt::Assign`) | the `Expr::Var` target branch refreshes identity via `fn_identities_of`; the **non-`Var` place-assign branch sets only `tainted`/`taint_source`** and never refreshes identity | the whole place-assignment class (item 7) |
+    | 5 | `middle/mod.rs:22765` (`walk_block_secret`) | non-`Var` `Stmt::Assign` only sets `b.secret`, never touches `field_closures`/`field_fn_identities` — **the stale initializer wins** | `b.f = key` still reading as `plain` |
+    | 6 | `middle/mod.rs:10311-10336` | **does** retain-and-insert the assigned identity into `field_fn_identities` — **and the consumer on that path never reads it** | — |
+    | 7 | `middle/mod.rs:22460` | the non-`Var` `Stmt::Assign` arm calls `expr_taint_source_m`; `container_element_taint` is called **only** from container-LITERAL arms (`:23295-23338`), never from the place handler | taint duals of the write class |
+    | 8 | `middle/mod.rs:8514-8552` `place_struct_type` | matches `Var`, `FieldAccess`, `Call`, `CallExpr`, then **`_ => None` — there is no `Expr::Index` arm**; `declared_field_type` (:8468) short-circuits on that `None` | `xs[0].k`, `m["a"].k`, `mk()[0].k`, index-at-root |
+    | 9 | `middle/mod.rs:8520` | `Expr::Var(v) => scope.get(v)…ty` is `None` for an **unannotated formal** | `fn leak(s) { print(s.k) }` |
+    | 10 | `middle/mod.rs:3706` | an unannotated fn gets the **EMPTY STRING** return type; the `Call` arm filters `!t.is_empty()` → `None` | factory with no declared return type |
+
+    **Row 6 is this project's disease stated verbatim, in its own compiler.** A producer computes
+    `field_fn_identities` on the place-assign path and the consumer on that same path ignores it.
+    Not a missing analysis — a written label that nothing reads.
+
+    **Row 8 is the Phase-2 discipline not having reached this walker.** `carrier.rs` and
+    `loopctl.rs` were made total so a new variant fails to compile; `place_struct_type` still ends
+    in `_ => None`, and `Expr::Index` fell straight through it. The fix shape already exists in the
+    repo — it was simply never applied here.
+
+    **These are TRUE ACCEPTS, not deferrals, and the verifiers proved it rather than asserting it.**
+    Discriminators run: the DIRECT call inside the same `if 1 == 1 { }` REJECTS (rc=1), and the
+    direct call inside a DEAD `if 1 == 2 { }` ACCEPTS — so the direct lane is path-condition aware,
+    while the carrier lane accepts **both** live and dead branches. That is blindness, not
+    deliberate under-approximation. The capability-lane twin of the identical shape REJECTS, so the
+    hole is specific to the contract lane. Instrument checked too: the binary post-dates the last
+    commit touching `mod.rs`, and `compiler/` was clean.
+
     Raw probes and verifier transcripts:
-    `subagents/workflows/wf_849c0fb2-478/` (journal.jsonl + per-agent jsonl). Findings are recorded
-    here as MEASURED, not yet triaged into individual fixes; no fix is claimed.
+    `subagents/workflows/wf_849c0fb2-478/` (journal.jsonl + per-agent jsonl). 73 agents, 0 errors,
+    ~58 min. Findings are recorded here as MEASURED and root-caused; **no fix is claimed and none
+    has been attempted** — every site above is in `compiler/src/middle/**`.
+
+    *Instrument note against myself:* the workflow's own post-processing returned empty
+    `raw_falsify`/`falsify_summary` arrays because I wrote a self-contradictory filter
+    (`r.verdict === undefined && r.surface`). The `surviving_findings` array and the journal were
+    unaffected and carry the full record, but the summary I first read was produced by a broken
+    reducer — recorded because a silently-empty aggregate is exactly the failure this file tracks.
 
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
