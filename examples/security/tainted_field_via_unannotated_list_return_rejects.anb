@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// W2.1 integrity-summary parity: unannotated array place typing must reach the callee return walk.
+struct S { k: tainted<i64> }
+
+fn input_value() {
+    let xs = [S { k: 7 }];
+    return xs[0].k;
+}
+
+fn main() uses(shell) {
+    shell(input_value());
+}

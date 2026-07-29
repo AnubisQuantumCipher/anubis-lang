@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// W2.1 nested pattern projection guard: nested public elements stay public.
+struct P { k: i64 }
+
+fn get_public() {
+    let xs = [[P { k: 0 }]];
+    match xs {
+        [[item]] => { return item.k; }
+        _ => { return 0; }
+    }
+}
+
+fn main() { print(get_public()); }

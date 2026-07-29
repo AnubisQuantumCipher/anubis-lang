@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// W2.1 shadow identity guard: a spanless pattern-local secret assignment must not taint its public outer.
+struct P { k: i64 }
+struct S { k: secret<i64> }
+
+fn keep_public(xs: list<P>) {
+    match 0 {
+        xs => { xs = [S { k: 7 }]; }
+    };
+    print(xs[0].k);
+}
+
+fn main() {
+    keep_public([P { k: 0 }]);
+}

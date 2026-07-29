@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// W2.1 no-guess assignment guard: a heterogeneous replacement must clear stale list<S> precision.
+// The read targets public P; selecting S from the previous value or either heterogeneous endpoint is wrong.
+struct S { k: secret<i64> }
+struct P { k: i64 }
+
+fn main() {
+    let mut xs = [S { k: 9 }];
+    xs = [P { k: 7 }, S { k: 9 }];
+    print(xs[0].k);
+}

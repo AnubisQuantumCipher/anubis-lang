@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// W2.1 alias no-guess guard: explicit unknown from a heterogeneous replacement must propagate
+// through an alias rather than resurrecting the stale list<S> candidate.
+struct S { k: secret<i64> }
+struct P { k: i64 }
+
+fn main() {
+    let mut xs = [S { k: 9 }];
+    xs = [P { k: 7 }, S { k: 9 }];
+    let ys = xs;
+    print(ys[0].k);
+}

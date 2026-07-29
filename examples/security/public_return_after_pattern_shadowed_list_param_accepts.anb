@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// W2.1 summary shadow guard: an arm-local secret assignment must not taint a public typed parameter.
+struct P { k: i64 }
+struct S { k: secret<i64> }
+
+fn keep_public(xs: list<P>) {
+    match 0 {
+        xs => { xs = [S { k: 7 }]; }
+    };
+    return xs[0].k;
+}
+
+fn main() {
+    print(keep_public([P { k: 0 }]));
+}

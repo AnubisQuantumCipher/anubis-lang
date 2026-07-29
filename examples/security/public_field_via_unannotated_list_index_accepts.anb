@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// W2.1 precision guard: exact unannotated list<P> recovery must not label an ordinary public field.
+struct P { k: i64 }
+
+fn main() {
+    let xs = [P { k: 7 }];
+    print(xs[0].k);
+}

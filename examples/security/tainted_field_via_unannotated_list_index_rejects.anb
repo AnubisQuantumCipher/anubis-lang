@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// W2.1 integrity dual: an unannotated homogeneous array must retain the element struct type.
+struct S { k: tainted<i64> }
+
+fn main() uses(shell) {
+    let xs = [S { k: 7 }];
+    shell(xs[0].k);
+}

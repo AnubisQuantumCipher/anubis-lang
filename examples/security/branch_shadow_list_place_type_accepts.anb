@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// W2.1 shadow guard: a block-local secret array must not replace the outer public array's place type.
+struct P { k: i64 }
+struct S { k: secret<i64> }
+
+fn main() {
+    let xs = [P { k: 1 }];
+    if true {
+        let xs = [S { k: 7 }];
+        print(0);
+    }
+    print(xs[0].k);
+}

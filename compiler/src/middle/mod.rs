@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 pub(crate) mod capability;
 /// Compile-time carrier classification. TOTAL over `Expr` with no wildcard arm, so adding a
@@ -158,8 +159,70 @@ pub struct TypedIR {
     pub symbolic_widths: BTreeMap<String, u32>, // var name -> bit width for faithful BV
 }
 
+/// Flow-sensitive exact place-type alternatives for a binding.
+///
+/// `Legacy` preserves the pre-W2 behavior by reading `BindingInfo::ty`. `Tracked` is used only once
+/// the exact array-place oracle has observed a value or a control-flow join. `unknown` is kept
+/// orthogonal to the known candidates: a join may retain a proven `list<S>` path while recording
+/// that another path could not be resolved, rather than silently treating the unresolved path as
+/// impossible.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum PlaceTypeState {
+    #[default]
+    Legacy,
+    Tracked {
+        known: BTreeSet<String>,
+        unknown: bool,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ResolvedPlaceTypes {
+    known: BTreeSet<String>,
+    unknown: bool,
+}
+
+impl PlaceTypeState {
+    fn exact(ty: String) -> Self {
+        Self::Tracked {
+            known: BTreeSet::from([ty]),
+            unknown: false,
+        }
+    }
+
+    fn unknown() -> Self {
+        Self::Tracked {
+            known: BTreeSet::new(),
+            unknown: true,
+        }
+    }
+
+    fn resolve(&self, legacy_ty: Option<&str>) -> ResolvedPlaceTypes {
+        match self {
+            Self::Legacy => match legacy_ty {
+                Some(ty) => ResolvedPlaceTypes {
+                    known: BTreeSet::from([ty.to_string()]),
+                    unknown: false,
+                },
+                None => ResolvedPlaceTypes {
+                    known: BTreeSet::new(),
+                    unknown: true,
+                },
+            },
+            Self::Tracked { known, unknown } => ResolvedPlaceTypes {
+                known: known.clone(),
+                unknown: *unknown,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ScopeBinding {
+    /// Analysis-only lexical identity. Clones retain identity; every new binding receives a fresh
+    /// token, so spanless parameters and pattern binders can never be mistaken for reassignment.
+    binding_origin: Arc<()>,
+    place_types: PlaceTypeState,
     info: BindingInfo,
     /// Arity of the value when it is a closure / first-class function bound here (a lambda literal or
     /// a named-function reference); `None` when unknown. Used to arity-check direct closure calls.
@@ -2276,6 +2339,8 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                 };
                 if let Some(lam) = lam {
                     let entry = scope.entry(name.clone()).or_insert_with(|| ScopeBinding {
+                        binding_origin: Arc::new(()),
+                        place_types: PlaceTypeState::default(),
                         info: BindingInfo {
                             name: name.clone(),
                             ty: None,
@@ -2345,6 +2410,67 @@ fn access_chain_has_symbolic_index(e: &Expr) -> bool {
 /// already recorded on the collection's binding — the direct `xs[0]()` form was ALREADY rejected —
 /// so this was a parity hole, not a missing feature.
 ///
+/// Seed a collection/range loop's ordinary value-flow binding. Exact place state is projected from
+/// a collection through one element hop; unresolved collections stay explicitly unknown. Shared by
+/// the enforcing statement walker and value-block effect walker so either both know `item.k` or
+/// neither guesses it.
+fn seed_loop_var_binding(
+    var: &str,
+    source: &crate::frontend::ForSource,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    types: &PlaceTypes<'_>,
+    mode: &str,
+    taint: Option<String>,
+    secret: bool,
+) {
+    let (ty, place_types) = match source {
+        crate::frontend::ForSource::Range { .. } => {
+            (Some("u32".to_string()), PlaceTypeState::default())
+        }
+        crate::frontend::ForSource::Collection { expr } => {
+            let projected = map_resolved_place_types(
+                place_struct_types(expr, scope, types),
+                ty::container_element_type,
+            );
+            let ty = (!projected.unknown && projected.known.len() == 1)
+                .then(|| projected.known.iter().next().cloned())
+                .flatten();
+            (
+                ty,
+                PlaceTypeState::Tracked {
+                    known: projected.known,
+                    unknown: projected.unknown,
+                },
+            )
+        }
+    };
+    scope.insert(
+        var.to_string(),
+        ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types,
+            info: BindingInfo {
+                name: var.to_string(),
+                ty,
+                mode: mode.to_string(),
+                tainted: taint.is_some(),
+                taint_source: taint,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            closure_lambda: None,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
+            secret,
+        },
+    );
+}
+
 /// Identity only. The charge still happens at the APPLICATION site, so a loop that never applies the
 /// variable pays nothing, which is what keeps this from being a wall.
 ///
@@ -2396,6 +2522,8 @@ fn seed_loop_var_callable(
             probe.insert(
                 tmp.to_string(),
                 ScopeBinding {
+                    binding_origin: Arc::new(()),
+                    place_types: PlaceTypeState::default(),
                     info: BindingInfo {
                         name: tmp.to_string(),
                         ty: None,
@@ -2426,6 +2554,8 @@ fn seed_loop_var_callable(
     let b = scope
         .entry(var.to_string())
         .or_insert_with(|| ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types: PlaceTypeState::default(),
             info: BindingInfo {
                 name: var.to_string(),
                 ty: None,
@@ -5496,6 +5626,8 @@ fn analyze_function(
                 (
                     n.clone(),
                     ScopeBinding {
+                        binding_origin: Arc::new(()),
+                        place_types: PlaceTypeState::default(),
                         info: BindingInfo {
                             name: n.clone(),
                             ty: Some(t.clone()),
@@ -5613,6 +5745,8 @@ fn analyze_function(
             scope.insert(
                 name.clone(),
                 ScopeBinding {
+                    binding_origin: Arc::new(()),
+                    place_types: PlaceTypeState::default(),
                     info: info.clone(),
                     closure_arity: None,
                     closure_lambda: None,
@@ -7022,8 +7156,10 @@ fn restore_block_scope(
     *scope = saved.clone();
 }
 
-/// Control-flow-merge for the two flow labels — INTEGRITY (`info.tainted`, may-taint) and
-/// CONFIDENTIALITY (`secret`, may-secret) — the sound closure of the reassignment fail-open. `scope`
+/// Control-flow merge for flow labels and exact place-type alternatives. INTEGRITY
+/// (`info.tainted`) and CONFIDENTIALITY (`secret`) are may-labels; exact place types use the same
+/// path inventory through `merge_place_types_over` below so a new join site cannot update labels
+/// while silently restoring a stale container element type. `scope`
 /// has already been restored to the pre-block state (so block-local `let`s are correctly dropped);
 /// this re-applies a label that any alternative PATH established on an outer binding. A variable
 /// carries a label after the block iff it carries it on ANY analyzed path, and is clean only if clean
@@ -7037,18 +7173,18 @@ fn merge_taint_over(
 ) {
     let names: Vec<String> = scope.keys().cloned().collect();
     for name in names {
-        // Identity by span: only the SAME binding — a reassignment (`x = …`), which preserves the
-        // binding's span — carries a label across the merge. A block-local `let x = …` SHADOW inside a
-        // branch is a NEW binding (its own span) that the restore already dropped; its label must not
-        // leak to the outer `x` (`let x = clean; if c { let x = taint(); } sink(x)` stays clean). The
-        // adversarial rounds that deferred this slice were about exactly this shadow-vs-reassign case.
-        let outer_span = scope.get(&name).and_then(|b| b.info.span);
+        // Only the SAME lexical binding carries state across the merge. Source spans are not an
+        // identity: parameters and pattern binders both legitimately have `None`, so span equality
+        // conflated a shadow with reassignment. Fresh origin tokens survive clones and assignments.
+        let Some(outer_origin) = scope.get(&name).map(|b| Arc::clone(&b.binding_origin)) else {
+            continue;
+        };
         let mut tainted = false;
         let mut source: Option<String> = None;
         let mut secret = false;
         for p in paths {
             if let Some(pb) = p.get(&name) {
-                if pb.info.span != outer_span {
+                if !Arc::ptr_eq(&pb.binding_origin, &outer_origin) {
                     continue;
                 }
                 if pb.info.tainted {
@@ -7071,14 +7207,60 @@ fn merge_taint_over(
             b.secret = secret;
         }
     }
+    merge_place_types_over(scope, paths);
+}
+
+/// Join exact place-type alternatives across branches and loop zero/body paths. Unlike ordinary
+/// value typing this is a may-analysis: every known alternative survives, and unresolved input is
+/// recorded separately instead of being mistaken for absence. Lexical identity keeps a block-local
+/// shadow from replacing the outer binding; on a shadowed path the outer pre-state is the value
+/// that remains visible after the block.
+fn merge_place_types_over(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+) {
+    let names: Vec<String> = scope.keys().cloned().collect();
+    for name in names {
+        let Some(outer) = scope.get(&name).cloned() else {
+            continue;
+        };
+        let outer_origin = Arc::clone(&outer.binding_origin);
+        let mut known = BTreeSet::new();
+        let mut unknown = false;
+        let mut tracked = !matches!(outer.place_types, PlaceTypeState::Legacy);
+        let mut common_ty: Option<Option<String>> = None;
+
+        for path in paths {
+            let binding = path
+                .get(&name)
+                .filter(|binding| Arc::ptr_eq(&binding.binding_origin, &outer_origin))
+                .unwrap_or(&outer);
+            tracked |= !matches!(binding.place_types, PlaceTypeState::Legacy);
+            let resolved = binding.place_types.resolve(binding.info.ty.as_deref());
+            known.extend(resolved.known);
+            unknown |= resolved.unknown;
+            match &common_ty {
+                None => common_ty = Some(binding.info.ty.clone()),
+                Some(expected) if expected == &binding.info.ty => {}
+                Some(_) => common_ty = Some(None),
+            }
+        }
+
+        if tracked {
+            if let Some(binding) = scope.get_mut(&name) {
+                binding.place_types = PlaceTypeState::Tracked { known, unknown };
+                binding.info.ty = common_ty.flatten();
+            }
+        }
+    }
 }
 
 /// Fn-value-alias branch/loop merge: keep a branch/body-local alias to a LEAKING free function (one with
 /// a NON-EMPTY egress/sink summary) after a join, so `let f = safe; <branch|loop|match-arm> { f = leak }
 /// f(k)` cannot launder a secret/tainted arg by resolving `f` back to `safe`. May-alias over-
 /// approximation (fail-closed): only ADDS a leaking resolution, and the interproc egress/sink check
-/// fires only when the arg is actually secret/tainted, so a clean call never false-rejects. Span-
-/// identity so a branch-local `let f` SHADOW is ignored. The NON-EMPTY filter is load-bearing (the
+/// fires only when the arg is actually secret/tainted, so a clean call never false-rejects. Lexical
+/// identity ensures a branch-local `let f` SHADOW is ignored. The NON-EMPTY filter is load-bearing (the
 /// summary maps hold an entry for EVERY fn, mostly empty). Extracted from the `Stmt::If` inline merge so
 /// the loop and statement-`match` joins share it (soundness hunt `wf_5b2a1bcc`: `while c { f = leak }`,
 /// `for i in 0..1 { f = leak }`, `match c { true => { f = leak } }` all laundered before this).
@@ -7096,10 +7278,12 @@ fn merge_fn_alias_over(
         .collect();
     let names: Vec<String> = scope.keys().cloned().collect();
     for name in names {
-        let outer_span = scope.get(&name).and_then(|b| b.info.span);
+        let Some(outer_origin) = scope.get(&name).map(|b| Arc::clone(&b.binding_origin)) else {
+            continue;
+        };
         for pp in paths {
             if let Some(pb) = pp.get(&name) {
-                if pb.info.span != outer_span {
+                if !Arc::ptr_eq(&pb.binding_origin, &outer_origin) {
                     continue;
                 }
                 if let Some(a) = &pb.fn_alias {
@@ -7122,7 +7306,7 @@ fn merge_fn_alias_over(
             .iter()
             .map(|path| {
                 path.get(&name)
-                    .filter(|binding| binding.info.span == outer_span)
+                    .filter(|binding| Arc::ptr_eq(&binding.binding_origin, &outer_origin))
                     .unwrap_or(&outer)
             })
             .collect();
@@ -8471,25 +8655,22 @@ fn struct_field_type_for_place(
         .cloned()
 }
 
-/// The DECLARED type of a field-access place, walking `scope[root].ty` through `struct_fields`: for
-/// `p.a.b` it returns b's type (`struct_fields[struct_fields[type_of(p)][a]][b]`). Generalizes the
-/// single-level `scope[p].ty → struct_fields[..][field]` lookup so a nested field write can pick its
-/// solver lane (int/float/string). `None` if any hop is untyped or unknown.
-/// The DECLARED type of `base.field`, or `None` when the base's struct type is unknown or the field
-/// is not declared on it. R1's single lookup, shared by the taint and secret `FieldAccess` arms so
-/// the two lanes cannot drift apart.
+/// The possible DECLARED types of `base.field`. Known alternatives are retained independently from
+/// unresolved paths so a proven secret/tainted branch still charges the corresponding policy lane;
+/// `unknown` records that this is not a total type proof.
 ///
 /// Keyed struct-type → field, never bare field name. The generic head is stripped (`Box<T>` → `Box`)
 /// because `struct_fields` is registered under the bare struct name; without that, a field access on
 /// any generic struct silently carries no declared charge.
-fn declared_field_type(
+fn declared_field_types(
     base: &Expr,
     field: &str,
     scope: &BTreeMap<String, ScopeBinding>,
     struct_fields: &PlaceTypes<'_>,
-) -> Option<String> {
-    let base_ty = place_struct_type(base, scope, struct_fields)?;
-    struct_field_type_for_place(&base_ty, field, struct_fields)
+) -> ResolvedPlaceTypes {
+    map_resolved_place_types(place_struct_types(base, scope, struct_fields), |base_ty| {
+        struct_field_type_for_place(base_ty, field, struct_fields)
+    })
 }
 
 /// The declaration lookups a PLACE's type resolution needs, bundled so the existing
@@ -8519,16 +8700,74 @@ impl SemanticContext {
     }
 }
 
-fn place_struct_type(
+fn map_resolved_place_types(
+    input: ResolvedPlaceTypes,
+    mut map: impl FnMut(&str) -> Option<String>,
+) -> ResolvedPlaceTypes {
+    let mut output = ResolvedPlaceTypes {
+        known: BTreeSet::new(),
+        unknown: input.unknown,
+    };
+    for ty in input.known {
+        if let Some(mapped) = map(&ty) {
+            output.known.insert(mapped);
+        } else {
+            output.unknown = true;
+        }
+    }
+    output
+}
+
+fn place_struct_types(
     e: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
     struct_fields: &PlaceTypes<'_>,
-) -> Option<String> {
+) -> ResolvedPlaceTypes {
     match e {
-        Expr::Var(v) => scope.get(v).and_then(|b| b.info.ty.clone()),
+        Expr::ArrayLiteral { elements } => {
+            let Some((first, rest)) = elements.split_first() else {
+                return ResolvedPlaceTypes {
+                    known: BTreeSet::new(),
+                    unknown: true,
+                };
+            };
+            let element_types = place_struct_types(first, scope, struct_fields);
+            if rest
+                .iter()
+                .any(|element| place_struct_types(element, scope, struct_fields) != element_types)
+            {
+                return ResolvedPlaceTypes {
+                    known: BTreeSet::new(),
+                    unknown: true,
+                };
+            }
+            map_resolved_place_types(element_types, |element_ty| {
+                Some(format!("list<{element_ty}>"))
+            })
+        }
+        Expr::Var(v) => scope.get(v).map_or_else(
+            || ResolvedPlaceTypes {
+                known: BTreeSet::new(),
+                unknown: true,
+            },
+            |binding| binding.place_types.resolve(binding.info.ty.as_deref()),
+        ),
+        Expr::StructLiteral { name, .. } => {
+            let known = struct_fields
+                .fields
+                .contains_key(name)
+                .then(|| name.clone())
+                .into_iter()
+                .collect();
+            ResolvedPlaceTypes {
+                unknown: !struct_fields.fields.contains_key(name),
+                known,
+            }
+        }
         Expr::FieldAccess { base, field, .. } => {
-            let base_ty = place_struct_type(base, scope, struct_fields)?;
-            struct_field_type_for_place(&base_ty, field, struct_fields)
+            map_resolved_place_types(place_struct_types(base, scope, struct_fields), |base_ty| {
+                struct_field_type_for_place(base_ty, field, struct_fields)
+            })
         }
         // D1/D3: a field read off a free-function CALL RESULT — `get().k`, and `let g = get; g().k`
         // through the binding's `fn_alias`, reusing the alias resolution the summary lookups already
@@ -8540,23 +8779,37 @@ fn place_struct_type(
                 .get(callee)
                 .and_then(|b| b.fn_alias.as_deref())
                 .unwrap_or(callee.as_str());
-            struct_fields
+            let ty = struct_fields
                 .fn_ret
                 .get(target)
                 .filter(|t| !t.is_empty())
-                .cloned()
+                .cloned();
+            ResolvedPlaceTypes {
+                known: ty.into_iter().collect(),
+                unknown: !struct_fields.fn_ret.contains_key(target)
+                    || struct_fields
+                        .fn_ret
+                        .get(target)
+                        .is_some_and(String::is_empty),
+            }
         }
         // D2: the impl-method twin — `v.make().k`. Bare-name keyed like every other method registry,
         // and an empty entry means unknown or ambiguous across impls, which stays fail-open rather
         // than attributing one struct type's field qualifiers to another.
-        Expr::CallExpr { callee, .. } => match callee.as_ref() {
-            Expr::FieldAccess { field, .. } => struct_fields
-                .method_ret
-                .get(field)
-                .filter(|t| !t.is_empty())
-                .cloned(),
-            _ => None,
-        },
+        Expr::CallExpr { callee, .. } => {
+            let ty = match callee.as_ref() {
+                Expr::FieldAccess { field, .. } => struct_fields
+                    .method_ret
+                    .get(field)
+                    .filter(|t| !t.is_empty())
+                    .cloned(),
+                _ => None,
+            };
+            ResolvedPlaceTypes {
+                unknown: ty.is_none(),
+                known: ty.into_iter().collect(),
+            }
+        }
         // The INDEX carrier — `xs[0].k`, `m["a"].k`, `xs[0].inner.k`, `mk()[0].k`. This arm did not
         // exist: `Expr::Index` fell to `_ => None` below, the enclosing `FieldAccess`'s `?`
         // short-circuited, and a declared `secret<T>`/`tainted<T>` STRUCT FIELD read off a container
@@ -8566,12 +8819,199 @@ fn place_struct_type(
         // `container_element_type` returns None for any spelling it does not recognise, so this
         // resolver never guesses an element identity. Unknown bases retain the callers' existing
         // behavior; this arm recovers exact place types but does not itself make unknowns fail closed.
-        Expr::Index { base, .. } => {
-            let base_ty = place_struct_type(base, scope, struct_fields)?;
-            ty::container_element_type(&base_ty)
-        }
-        _ => None,
+        Expr::Index { base, .. } => map_resolved_place_types(
+            place_struct_types(base, scope, struct_fields),
+            ty::container_element_type,
+        ),
+        _ => ResolvedPlaceTypes {
+            known: BTreeSet::new(),
+            unknown: true,
+        },
     }
+}
+
+/// The legacy exact-place API. Consumers that genuinely require one type receive it only when the
+/// alternatives are complete and singleton; security label lookups use `place_struct_types`
+/// directly so a known dangerous branch is never erased by a join.
+fn place_struct_type(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    struct_fields: &PlaceTypes<'_>,
+) -> Option<String> {
+    let resolved = place_struct_types(e, scope, struct_fields);
+    (!resolved.unknown && resolved.known.len() == 1)
+        .then(|| resolved.known.into_iter().next())
+        .flatten()
+}
+
+/// Recover a nominal place type for one array element without widening the legacy value-type
+/// inferer. Every accepted answer must name a registered struct; field-shape equality, a first
+/// resolvable branch, and generic/flow-wrapper spellings are deliberately not guesses of nominal
+/// identity.
+fn exact_place_type_reaches_registered_nominal(
+    candidate: &str,
+    place_types: &PlaceTypes<'_>,
+    depth: usize,
+) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    if ty::nominal_place_type_head(candidate)
+        .is_some_and(|head| place_types.fields.contains_key(head))
+    {
+        return true;
+    }
+    ty::container_element_type(candidate).is_some_and(|element| {
+        exact_place_type_reaches_registered_nominal(&element, place_types, depth + 1)
+    })
+}
+
+fn exact_nominal_array_element_type(
+    element: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    place_types: &PlaceTypes<'_>,
+) -> Option<String> {
+    let candidate = match element {
+        Expr::StructLiteral { name, .. } => Some(name.clone()),
+        Expr::Var(name) => scope.get(name).and_then(|binding| binding.info.ty.clone()),
+        Expr::ArrayLiteral { .. }
+        | Expr::FieldAccess { .. }
+        | Expr::Call { .. }
+        | Expr::CallExpr { .. }
+        | Expr::Index { .. } => place_struct_type(element, scope, place_types),
+        _ => None,
+    }?;
+    exact_place_type_reaches_registered_nominal(&candidate, place_types, 0).then_some(candidate)
+}
+
+/// Exact, carrier-only array typing for declared-field qualifier lookup.
+///
+/// The legacy value inferer intentionally keeps arrays as bare `list`; teaching it `list<S>` would
+/// change unrelated arithmetic/type consumers. A scope binding may carry `list<S>` only when this
+/// stricter oracle proves that the literal is nonempty and every element has the same registered
+/// nominal type. Any uncertainty returns `None`, after which the existing bare-list fallback runs.
+fn exact_homogeneous_array_place_type(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    place_types: &PlaceTypes<'_>,
+) -> Option<String> {
+    let Expr::ArrayLiteral { elements } = expr else {
+        return None;
+    };
+    let (first, rest) = elements.split_first()?;
+    let common = exact_nominal_array_element_type(first, scope, place_types)?;
+    rest.iter()
+        .all(|element| {
+            exact_nominal_array_element_type(element, scope, place_types).as_deref()
+                == Some(common.as_str())
+        })
+        .then(|| format!("list<{common}>"))
+}
+
+/// Shared let/assignment producer for flow-sensitive place typing. Array literals opt into W2's
+/// exact state (or explicit unknown on any ambiguity); every other expression retains the legacy
+/// single-type behavior. Keeping this producer shared is load-bearing: the main enforcement and
+/// reduced taint/secret summary walkers must not independently recompute assignment types.
+fn inferred_place_update(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    place_types: &PlaceTypes<'_>,
+) -> (Option<String>, PlaceTypeState) {
+    if let Expr::ArrayLiteral { elements } = expr {
+        if let [element] = elements.as_slice() {
+            let element_types = map_resolved_place_types(
+                place_struct_types(element, scope, place_types),
+                |element_ty| {
+                    exact_place_type_reaches_registered_nominal(element_ty, place_types, 0)
+                        .then(|| format!("list<{element_ty}>"))
+                },
+            );
+            let inferred_ty = if !element_types.unknown && element_types.known.len() == 1 {
+                element_types.known.iter().next().cloned()
+            } else {
+                infer_expr_type_scoped(expr, scope)
+            };
+            return (
+                inferred_ty,
+                PlaceTypeState::Tracked {
+                    known: element_types.known,
+                    unknown: element_types.unknown,
+                },
+            );
+        }
+        if let Some(exact) = exact_homogeneous_array_place_type(expr, scope, place_types) {
+            return (Some(exact.clone()), PlaceTypeState::exact(exact));
+        }
+        return (
+            infer_expr_type_scoped(expr, scope),
+            PlaceTypeState::unknown(),
+        );
+    }
+
+    if matches!(
+        expr,
+        Expr::Var(_)
+            | Expr::StructLiteral { .. }
+            | Expr::FieldAccess { .. }
+            | Expr::Index { .. }
+            | Expr::Call { .. }
+            | Expr::CallExpr { .. }
+    ) {
+        let resolved = place_struct_types(expr, scope, place_types);
+        let inferred_ty = if !resolved.unknown && resolved.known.len() == 1 {
+            resolved.known.iter().next().cloned()
+        } else {
+            infer_expr_type_scoped(expr, scope)
+        };
+        return (
+            inferred_ty,
+            PlaceTypeState::Tracked {
+                known: resolved.known,
+                unknown: resolved.unknown,
+            },
+        );
+    }
+
+    (
+        infer_expr_type_scoped(expr, scope).or_else(|| place_struct_type(expr, scope, place_types)),
+        PlaceTypeState::Legacy,
+    )
+}
+
+/// Widen a tracked list binding after an indexed write or `push`/`insert`. Existing and newly
+/// stored nominal element types are both retained; uncertainty is monotone. This intentionally
+/// refuses to invent map keys or a nominal type for a non-struct value.
+fn widen_list_binding_place_types(
+    root: &str,
+    value: &Expr,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    place_types: &PlaceTypes<'_>,
+) {
+    let value_types = place_struct_types(value, scope, place_types);
+    let additions: BTreeSet<String> = value_types
+        .known
+        .iter()
+        .filter_map(|value_ty| {
+            let nominal = ty::nominal_place_type_head(value_ty)?;
+            place_types
+                .fields
+                .contains_key(nominal)
+                .then(|| format!("list<{value_ty}>"))
+        })
+        .collect();
+    let Some(binding) = scope.get_mut(root) else {
+        return;
+    };
+    let current = binding.place_types.resolve(binding.info.ty.as_deref());
+    let mut known = current.known;
+    known.extend(additions);
+    let unknown = current.unknown || value_types.unknown;
+    binding.info.ty = if !unknown && known.len() == 1 {
+        known.iter().next().cloned()
+    } else {
+        None
+    };
+    binding.place_types = PlaceTypeState::Tracked { known, unknown };
 }
 
 /// Recursively seed a struct-literal LET's scalar field facts at ANY nesting depth. `base_sym` is the
@@ -8647,6 +9087,30 @@ fn seed_struct_literal_fields(
 
 // Threads the full intraprocedural analysis state (scope, symbols, effects, solver assumptions, ctx);
 // bundling into a struct would obscure the borrow pattern for no gain.
+/// Resolve both container-mutation spellings to one root/value view so every enforcing and summary
+/// walker widens the same producer. Unknown receiver roots are left untracked rather than guessed.
+fn container_mutation_parts(expr: &Expr) -> Option<(String, &[Expr])> {
+    match expr {
+        Expr::Call { callee, args }
+            if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+        {
+            Some((assign_target_root(&args[0])?.to_string(), &args[1..]))
+        }
+        Expr::CallExpr { callee, args }
+            if matches!(
+                callee.as_ref(),
+                Expr::FieldAccess { field, .. } if field == "push" || field == "insert"
+            ) && !args.is_empty() =>
+        {
+            let Expr::FieldAccess { base, .. } = callee.as_ref() else {
+                return None;
+            };
+            Some((assign_target_root(base)?.to_string(), args.as_slice()))
+        }
+        _ => None,
+    }
+}
+
 /// If `expr` is a mutating container builtin `push(xs, v)` / `insert(xs, k, v)` storing a tainted/secret
 /// argument, taint/secret the container ROOT binding (whole-binding, SET-only) — the stored data is read
 /// back via `xs[i]`. Shared by the `ExprStmt` AND `Let` handlers: `let _ = push(xs, input())` (push in a
@@ -8664,30 +9128,9 @@ fn apply_container_mutation_taint(
     struct_fields: &PlaceTypes<'_>,
     ctx: &SemanticContext,
 ) {
-    // Free-call form: `push(xs, v)` / `insert(xs, k, v)` — container is args[0], values in args[1..].
-    // Method form: `xs.push(v)` / `xs.insert(k, v)` — container is receiver, values in all args.
-    let (root, value_args): (Option<String>, &[Expr]) = match expr {
-        Expr::Call { callee, args }
-            if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-        {
-            (
-                assign_target_root(&args[0]).map(|s| s.to_string()),
-                &args[1..],
-            )
-        }
-        Expr::CallExpr { callee, args }
-            if matches!(
-                callee.as_ref(),
-                Expr::FieldAccess { field, .. } if field == "push" || field == "insert"
-            ) && !args.is_empty() =>
-        {
-            let root = match callee.as_ref() {
-                Expr::FieldAccess { base, .. } => assign_target_root(base).map(|s| s.to_string()),
-                _ => None,
-            };
-            (root, args.as_slice())
-        }
-        _ => return,
+    // Free-call form stores args[1..]; method form stores all args on the receiver.
+    let Some((root, value_args)) = container_mutation_parts(expr) else {
+        return;
     };
     // CLAIMS item 7: the fn-IDENTITY carrier through a container built by `push`/`insert`.
     //
@@ -8778,36 +9221,37 @@ fn apply_container_mutation_taint(
             _ => {}
         }
     }
-    if let Some(root) = root {
-        if let Some(b) = scope.get_mut(&root) {
-            if let Some(src) = &any_taint {
-                b.info.tainted = true;
-                b.info.taint_source = Some(src.clone());
-                b.info.declassified = false;
-            }
-            if any_secret {
-                b.secret = true;
-            }
-            for lam in seed_lams {
-                let key = format!("_p{}", b.field_closures.len());
-                b.field_closures.insert(key, lam);
-            }
-            // Recorded per synthetic slot, matching the `_p{n}` scheme the closure seeder above
-            // uses, so both seeders describe the container the same way. A pushed element's index
-            // is a runtime property, and `builtin_gate_tags_at_path_expr` already unions a
-            // binding's recorded paths when the index is not a literal — which is exactly the
-            // `fs[0](...)` read-back this closes.
-            for tags in seed_tags {
-                let key = format!(
-                    "{SYNTHETIC_BUILTIN_GATE_TAG_SLOT_PREFIX}{}",
-                    b.field_builtin_gate_tags.len()
-                );
-                b.field_builtin_gate_tags.insert(key, tags);
-            }
-            for identities in seed_identities {
-                let key = format!("_p{}", b.field_fn_identities.len());
-                b.field_fn_identities.insert(key, identities);
-            }
+    for value in value_args {
+        widen_list_binding_place_types(&root, value, scope, struct_fields);
+    }
+    if let Some(b) = scope.get_mut(&root) {
+        if let Some(src) = &any_taint {
+            b.info.tainted = true;
+            b.info.taint_source = Some(src.clone());
+            b.info.declassified = false;
+        }
+        if any_secret {
+            b.secret = true;
+        }
+        for lam in seed_lams {
+            let key = format!("_p{}", b.field_closures.len());
+            b.field_closures.insert(key, lam);
+        }
+        // Recorded per synthetic slot, matching the `_p{n}` scheme the closure seeder above
+        // uses, so both seeders describe the container the same way. A pushed element's index
+        // is a runtime property, and `builtin_gate_tags_at_path_expr` already unions a
+        // binding's recorded paths when the index is not a literal — which is exactly the
+        // `fs[0](...)` read-back this closes.
+        for tags in seed_tags {
+            let key = format!(
+                "{SYNTHETIC_BUILTIN_GATE_TAG_SLOT_PREFIX}{}",
+                b.field_builtin_gate_tags.len()
+            );
+            b.field_builtin_gate_tags.insert(key, tags);
+        }
+        for identities in seed_identities {
+            let key = format!("_p{}", b.field_fn_identities.len());
+            b.field_fn_identities.insert(key, identities);
         }
     }
 }
@@ -8824,6 +9268,8 @@ fn labelled_param_binding(
     secret: bool,
 ) -> ScopeBinding {
     ScopeBinding {
+        binding_origin: Arc::new(()),
+        place_types: PlaceTypeState::default(),
         info: BindingInfo {
             name: name.to_string(),
             ty: None,
@@ -9055,6 +9501,11 @@ fn analyze_stmts(
                 } else {
                     init_taint.clone()
                 };
+                let (inferred_place_ty, initial_place_types) = if ty.is_none() {
+                    inferred_place_update(init, scope, &ctx.place_types())
+                } else {
+                    (None, PlaceTypeState::Legacy)
+                };
                 let info = BindingInfo {
                     name: name.clone(),
                     // D1 residual (GROK-SEKHMET round 9): `let s = get(); print(s.k)` where `get`
@@ -9064,10 +9515,10 @@ fn analyze_stmts(
                     // declared field qualifier had nothing to key on. `place_struct_type` learned
                     // call results for D1/D2/D3; reuse it here rather than teaching a second
                     // resolver, and the binding-then-read form is the one real code actually writes.
-                    ty: ty
-                        .clone()
-                        .or_else(|| infer_expr_type_scoped(init, scope))
-                        .or_else(|| place_struct_type(init, scope, &ctx.place_types())),
+                    // W2.1: an exact homogeneous nominal array summary must run BEFORE the legacy
+                    // inferer, whose deliberate bare `list` answer would otherwise make this path
+                    // unreachable. Uncertain arrays still fall through to that old coarse answer.
+                    ty: ty.clone().or(inferred_place_ty),
                     mode: mode_name(mode).into(),
                     tainted,
                     taint_source: taint_source.clone(),
@@ -9294,6 +9745,8 @@ fn analyze_stmts(
                 scope.insert(
                     name.clone(),
                     ScopeBinding {
+                        binding_origin: Arc::new(()),
+                        place_types: initial_place_types,
                         info: info.clone(),
                         closure_arity: ca,
                         closure_lambda: cl,
@@ -10685,8 +11138,11 @@ fn analyze_stmts(
                     // only `infer_expr_type_scoped`, which does not resolve a Call or CallExpr — so
                     // `s = get()` WIPED the type to None and a field declared `secret<T>` read off
                     // `s` afterwards had nothing to key on. One path learned it, its sibling did not.
-                    let got = infer_expr_type_scoped(value, scope)
-                        .or_else(|| place_struct_type(value, scope, &ctx.place_types()));
+                    // W2.1 assignment parity: exact homogeneous array place typing must run before
+                    // the legacy bare-list answer here just as it does for `let`. A later uncertain
+                    // array still yields the old coarse `list`, clearing any stale `list<S>`.
+                    let (got, next_place_types) =
+                        inferred_place_update(value, scope, &ctx.place_types());
                     if ctx.annotated_vars.contains(name) {
                         if let (Some(expected), Some(got)) = (
                             scope.get(name).and_then(|b| b.info.ty.clone()),
@@ -10705,6 +11161,11 @@ fn analyze_stmts(
                         }
                     } else if let Some(b) = scope.get_mut(name) {
                         b.info.ty = got; // flow-sensitive: track the reassigned type (None if dynamic)
+                        b.place_types = next_place_types;
+                    }
+                } else if matches!(target, Expr::Index { .. }) {
+                    if let Some(root) = assign_target_root(target) {
+                        widen_list_binding_place_types(root, value, scope, &ctx.place_types());
                     }
                 }
             }
@@ -11361,38 +11822,18 @@ fn analyze_stmts(
                     .is_some(),
                 };
                 // The loop variable is a fresh in-scope binding for the body's analysis. A range
-                // loop (`for i in a..b`) binds a number; a collection loop (`for x in xs`) binds an
-                // element whose type is dynamic (unknown) — typing it `u32` was a heuristic that
-                // mis-flagged `for x in xs { x[0] }` as "indexing a number".
+                // loop binds `u32`; a collection loop projects exact element alternatives when they
+                // are known and keeps unresolved collections explicitly unknown.
                 // Snapshot BEFORE inserting the loop var so it (and any body `let`) do not escape.
                 let snap_scope = scope.clone();
-                let var_ty = match source {
-                    crate::frontend::ForSource::Range { .. } => Some("u32".into()),
-                    crate::frontend::ForSource::Collection { .. } => None,
-                };
-                let info = BindingInfo {
-                    name: var.clone(),
-                    ty: var_ty,
-                    mode: mode_name(mode).into(),
-                    tainted: taint_src.is_some(),
-                    taint_source: taint_src,
-                    declassified: false,
-                    span: None,
-                };
-                scope.insert(
-                    var.clone(),
-                    ScopeBinding {
-                        info: info.clone(),
-                        closure_arity: None,
-                        closure_lambda: None,
-                        field_closures: BTreeMap::new(),
-                        fn_alias: None,
-                        fn_identities: FnIdentitySet::Unknown,
-                        field_fn_identities: BTreeMap::new(),
-                        builtin_gate_tags: BuiltinGateTags::Unknown,
-                        field_builtin_gate_tags: BTreeMap::new(),
-                        secret: secret_src,
-                    },
+                seed_loop_var_binding(
+                    var,
+                    source,
+                    scope,
+                    &ctx.place_types(),
+                    mode_name(mode),
+                    taint_src,
+                    secret_src,
                 );
                 ctx.known_bindings.insert(var.clone());
                 // Solver soundness: the loop VARIABLE shadows any outer binding of the same name inside
@@ -12190,6 +12631,8 @@ fn scope_with_closure_params(
         local.insert(
             p.clone(),
             ScopeBinding {
+                binding_origin: Arc::new(()),
+                place_types: PlaceTypeState::default(),
                 info: BindingInfo {
                     name: p.clone(),
                     ty: None,
@@ -13099,6 +13542,8 @@ fn analyze_expr_effect(
                             local.insert(
                                 pp.clone(),
                                 ScopeBinding {
+                                    binding_origin: Arc::new(()),
+                                    place_types: PlaceTypeState::default(),
                                     info: BindingInfo {
                                         name: pp.clone(),
                                         ty: None,
@@ -14080,9 +14525,8 @@ fn fn_identities_carried_by_value(
 /// (double-)enforce those on block-local `let`s, out of this slice's scope. Here we only: seed each
 /// block-local binding (both labels, in `let`-then-analyze order matching the main analyzer) so a
 /// later/tail sink sees the right taint/secret, and hand each statement's effect-bearing
-/// sub-expressions back to `analyze_expr_effect`. Nested control-flow STATEMENTS recurse with
-/// snapshot/restore (no cross-body merge — a loop-carried label escaping to the block tail is a named
-/// fail-open residual, unchanged from the pre-slice opaque behavior). `Assume`-inner, non-`Var`
+/// sub-expressions back to `analyze_expr_effect`. Nested control-flow STATEMENTS recurse with the
+/// same may-merge and loop-carried state as the statement analyzer. `Assume`-inner, non-`Var`
 /// assign LHS, and research/exploit/spec blocks (mode-elevated) are left to their existing handling.
 fn walk_block_effects(
     stmts: &[Stmt],
@@ -14096,6 +14540,17 @@ fn walk_block_effects(
         match stmt {
             Stmt::Let { name, ty, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
+                apply_container_mutation_taint(
+                    init,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                    ctx,
+                );
                 seed_effect_let(
                     name,
                     ty.as_deref(),
@@ -14165,6 +14620,8 @@ fn walk_block_effects(
                     &ctx.place_types(),
                 )
                 .is_some();
+                let (next_ty, next_place_types) =
+                    inferred_place_update(value, scope, &ctx.place_types());
                 if let Some(b) = scope.get_mut(name) {
                     b.info.tainted = t.is_some();
                     if t.is_some() {
@@ -14172,16 +14629,36 @@ fn walk_block_effects(
                     }
                     b.info.taint_source = t;
                     b.secret = s;
+                    b.info.ty = next_ty;
+                    b.place_types = next_place_types;
                 }
             }
-            Stmt::Assign { value, .. } => {
-                // Non-`Var` LHS: still walk the value for buried effects; the binding is untracked.
+            Stmt::Assign { target, value } => {
+                // Non-`Var` LHS: still walk the value for buried effects and widen indexed-list state.
                 analyze_expr_effect(value, mode, scope, effects, ctx);
+                if matches!(target, Expr::Index { .. }) {
+                    if let Some(root) = assign_target_root(target) {
+                        widen_list_binding_place_types(root, value, scope, &ctx.place_types());
+                    }
+                }
             }
             Stmt::ExprStmt(Expr::Assert(inner)) => {
                 analyze_expr_effect(inner, mode, scope, effects, ctx);
             }
-            Stmt::ExprStmt(e) => analyze_expr_effect(e, mode, scope, effects, ctx),
+            Stmt::ExprStmt(e) => {
+                apply_container_mutation_taint(
+                    e,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                    ctx,
+                );
+                analyze_expr_effect(e, mode, scope, effects, ctx);
+            }
             Stmt::If { cond, then, else_ } => {
                 // Implicit-flow REJECT inside descended closure bodies (mirrors analyze_stmts).
                 {
@@ -14201,11 +14678,16 @@ fn walk_block_effects(
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 let snap = scope.clone();
                 walk_block_effects(then, None, mode, scope, effects, ctx);
+                let then_scope = scope.clone();
                 *scope = snap.clone();
-                if let Some(else_body) = else_ {
+                let else_scope = if let Some(else_body) = else_ {
                     walk_block_effects(else_body, None, mode, scope, effects, ctx);
-                }
+                    scope.clone()
+                } else {
+                    snap.clone()
+                };
                 *scope = snap;
+                merge_taint_over(scope, &[&then_scope, &else_scope]);
             }
             Stmt::While { cond, body, .. } => {
                 {
@@ -14221,10 +14703,27 @@ fn walk_block_effects(
                 }
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 let snap = scope.clone();
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                );
                 walk_block_effects(body, None, mode, scope, effects, ctx);
-                *scope = snap;
+                let body_scope = scope.clone();
+                *scope = snap.clone();
+                merge_taint_over(scope, &[&snap, &body_scope]);
             }
-            Stmt::WhileLet { expr, body, .. } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+                ..
+            } => {
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(body, &mut assigned);
@@ -14238,13 +14737,63 @@ fn walk_block_effects(
                 }
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 let snap = scope.clone();
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                );
+                let taint = expr_taint_source_m(
+                    expr,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.place_types(),
+                );
+                let secret = expr_secret_source_m(
+                    expr,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                )
+                .is_some();
+                seed_effect_pattern(
+                    scope,
+                    pattern,
+                    expr,
+                    &taint,
+                    secret,
+                    &ctx.place_types(),
+                    ctx,
+                );
                 walk_block_effects(body, None, mode, scope, effects, ctx);
-                *scope = snap;
+                let body_scope = scope.clone();
+                *scope = snap.clone();
+                merge_taint_over(scope, &[&snap, &body_scope]);
             }
             Stmt::Loop { body, .. } => {
                 let snap = scope.clone();
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                );
                 walk_block_effects(body, None, mode, scope, effects, ctx);
-                *scope = snap;
+                let body_scope = scope.clone();
+                *scope = snap.clone();
+                merge_taint_over(scope, &[&snap, &body_scope]);
             }
             Stmt::For {
                 var, source, body, ..
@@ -14280,10 +14829,52 @@ fn walk_block_effects(
                     }
                 }
                 let snap = scope.clone();
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                );
+                let source_expr = match source {
+                    crate::frontend::ForSource::Range { start, .. } => start,
+                    crate::frontend::ForSource::Collection { expr } => expr,
+                };
+                let taint = expr_taint_source_m(
+                    source_expr,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.place_types(),
+                );
+                let secret = expr_secret_source_m(
+                    source_expr,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                )
+                .is_some();
+                seed_loop_var_binding(
+                    var,
+                    source,
+                    scope,
+                    &ctx.place_types(),
+                    mode_name(mode),
+                    taint,
+                    secret,
+                );
                 // M1: see `seed_loop_var_callable` — seeded in this walker AND in `analyze_stmts`.
                 seed_loop_var_callable(var, source, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
-                *scope = snap;
+                let body_scope = scope.clone();
+                *scope = snap.clone();
+                merge_taint_over(scope, &[&snap, &body_scope]);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
@@ -22385,10 +22976,33 @@ fn seed_loop_carried_labels(
         let mut changed = false;
         let names: Vec<String> = c.keys().cloned().collect();
         for n in names {
-            let (ct, cs, csrc) = c
+            let (ct, cs, csrc, c_place_types, c_origin) = c
                 .get(&n)
-                .map(|b| (b.info.tainted, b.secret, b.info.taint_source.clone()))
-                .unwrap_or((false, false, None));
+                .map(|b| {
+                    (
+                        b.info.tainted,
+                        b.secret,
+                        b.info.taint_source.clone(),
+                        b.place_types.resolve(b.info.ty.as_deref()),
+                        Arc::clone(&b.binding_origin),
+                    )
+                })
+                .unwrap_or((
+                    false,
+                    false,
+                    None,
+                    ResolvedPlaceTypes {
+                        known: BTreeSet::new(),
+                        unknown: true,
+                    },
+                    Arc::new(()),
+                ));
+            let Some(scope_origin) = scope.get(&n).map(|b| Arc::clone(&b.binding_origin)) else {
+                continue;
+            };
+            if !Arc::ptr_eq(&c_origin, &scope_origin) {
+                continue;
+            }
             if let Some(sb) = scope.get_mut(&n) {
                 if ct && !sb.info.tainted {
                     sb.info.tainted = true;
@@ -22398,6 +23012,23 @@ fn seed_loop_carried_labels(
                 }
                 if cs && !sb.secret {
                     sb.secret = true;
+                    changed = true;
+                }
+                let current = sb.place_types.resolve(sb.info.ty.as_deref());
+                let mut known = current.known.clone();
+                known.extend(c_place_types.known.iter().cloned());
+                let unknown = current.unknown || c_place_types.unknown;
+                let joined = ResolvedPlaceTypes { known, unknown };
+                if joined != current {
+                    sb.info.ty = if !joined.unknown && joined.known.len() == 1 {
+                        joined.known.iter().next().cloned()
+                    } else {
+                        None
+                    };
+                    sb.place_types = PlaceTypeState::Tracked {
+                        known: joined.known,
+                        unknown: joined.unknown,
+                    };
                     changed = true;
                 }
             }
@@ -22470,12 +23101,16 @@ fn walk_block_taint(
                     method_tainting_fns,
                     struct_fields,
                 );
+                let (next_ty, next_place_types) =
+                    inferred_place_update(value, local, struct_fields);
                 if let Some(b) = local.get_mut(name) {
                     b.info.tainted = label.is_some();
                     if label.is_some() {
                         b.info.declassified = false;
                     }
                     b.info.taint_source = label;
+                    b.info.ty = next_ty;
+                    b.place_types = next_place_types;
                 }
             }
             Stmt::Assign { target, value } => {
@@ -22495,6 +23130,9 @@ fn walk_block_taint(
                             b.info.taint_source = Some(src);
                             b.info.declassified = false;
                         }
+                    }
+                    if matches!(target, Expr::Index { .. }) {
+                        widen_list_binding_place_types(root, value, local, struct_fields);
                     }
                 }
             }
@@ -22578,6 +23216,8 @@ fn walk_block_taint(
                 body_c.insert(
                     var.clone(),
                     ScopeBinding {
+                        binding_origin: Arc::new(()),
+                        place_types: PlaceTypeState::default(),
                         info: BindingInfo {
                             name: var.clone(),
                             ty: None,
@@ -22685,26 +23325,27 @@ fn walk_block_taint(
             }
             // `push`/`insert` inside a value block MAY-taints the container root (set-only) — the value-
             // block dual of the statement-level container-mutation taint.
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if let Some(src) = args[1..].iter().find_map(|a| {
-                        expr_taint_source_m(
-                            a,
-                            local,
-                            tainting_fns,
-                            param_return_taint,
-                            method_tainting_fns,
-                            struct_fields,
-                        )
-                    }) {
-                        if let Some(b) = local.get_mut(root) {
-                            b.info.tainted = true;
-                            b.info.taint_source = Some(src);
-                            b.info.declassified = false;
-                        }
+            Stmt::ExprStmt(expr) if container_mutation_parts(expr).is_some() => {
+                let (root, value_args) =
+                    container_mutation_parts(expr).expect("guarded container mutation");
+                if let Some(src) = value_args.iter().find_map(|a| {
+                    expr_taint_source_m(
+                        a,
+                        local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                        struct_fields,
+                    )
+                }) {
+                    if let Some(b) = local.get_mut(&root) {
+                        b.info.tainted = true;
+                        b.info.taint_source = Some(src);
+                        b.info.declassified = false;
                     }
+                }
+                for value in value_args {
+                    widen_list_binding_place_types(&root, value, local, struct_fields);
                 }
             }
             _ => {}
@@ -22779,8 +23420,12 @@ fn walk_block_secret(
                     struct_fields,
                 )
                 .is_some();
+                let (next_ty, next_place_types) =
+                    inferred_place_update(value, local, struct_fields);
                 if let Some(b) = local.get_mut(name) {
                     b.secret = secret;
+                    b.info.ty = next_ty;
+                    b.place_types = next_place_types;
                 }
             }
             Stmt::Assign { target, value } => {
@@ -22800,6 +23445,9 @@ fn walk_block_secret(
                         if let Some(b) = local.get_mut(root) {
                             b.secret = true;
                         }
+                    }
+                    if matches!(target, Expr::Index { .. }) {
+                        widen_list_binding_place_types(root, value, local, struct_fields);
                     }
                 }
             }
@@ -22884,6 +23532,8 @@ fn walk_block_secret(
                 body_c.insert(
                     var.clone(),
                     ScopeBinding {
+                        binding_origin: Arc::new(()),
+                        place_types: PlaceTypeState::default(),
                         info: BindingInfo {
                             name: var.clone(),
                             ty: None,
@@ -22989,25 +23639,26 @@ fn walk_block_secret(
                 merge_taint_over(local, &[&then_c, &else_c]);
             }
             // `push`/`insert` inside a value block MAY-secrets the container root (set-only).
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if args[1..].iter().any(|a| {
-                        expr_secret_source_m(
-                            a,
-                            local,
-                            secret_fns,
-                            param_return_taint,
-                            method_secret_fns,
-                            struct_fields,
-                        )
-                        .is_some()
-                    }) {
-                        if let Some(b) = local.get_mut(root) {
-                            b.secret = true;
-                        }
+            Stmt::ExprStmt(expr) if container_mutation_parts(expr).is_some() => {
+                let (root, value_args) =
+                    container_mutation_parts(expr).expect("guarded container mutation");
+                if value_args.iter().any(|a| {
+                    expr_secret_source_m(
+                        a,
+                        local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    )
+                    .is_some()
+                }) {
+                    if let Some(b) = local.get_mut(&root) {
+                        b.secret = true;
                     }
+                }
+                for value in value_args {
+                    widen_list_binding_place_types(&root, value, local, struct_fields);
                 }
             }
             _ => {}
@@ -23292,9 +23943,11 @@ fn expr_taint_source_m(
             struct_fields,
         )
         .or_else(|| {
-            let field_ty = declared_field_type(base, field, scope, struct_fields)?;
-            is_tainted_type(Some(field_ty.as_str()))
-                .then(|| format!("declared field `{field}` of type `{field_ty}`"))
+            declared_field_types(base, field, scope, struct_fields)
+                .known
+                .into_iter()
+                .find(|field_ty| is_tainted_type(Some(field_ty.as_str())))
+                .map(|field_ty| format!("declared field `{field}` of type `{field_ty}`"))
         }),
         // A cast reinterprets a value without changing its provenance — `secret as u64` is still the
         // secret. Without this arm, `sink(s as u64)` (and `return s as u64` interprocedurally)
@@ -24007,9 +24660,11 @@ fn expr_secret_source_m(
             struct_fields,
         )
         .or_else(|| {
-            let field_ty = declared_field_type(base, field, scope, struct_fields)?;
-            is_secret_type(Some(field_ty.as_str()))
-                .then(|| format!("declared field `{field}` of type `{field_ty}`"))
+            declared_field_types(base, field, scope, struct_fields)
+                .known
+                .into_iter()
+                .find(|field_ty| is_secret_type(Some(field_ty.as_str())))
+                .map(|field_ty| format!("declared field `{field}` of type `{field_ty}`"))
         }),
         Expr::Cast { expr, .. } => expr_secret_source_m(
             expr,
@@ -24478,6 +25133,11 @@ fn seed_one_let(
     method_tainting_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
+    let (inferred_ty, place_types) = if ty.is_none() {
+        inferred_place_update(init, scope, struct_fields)
+    } else {
+        (None, PlaceTypeState::Legacy)
+    };
     let explicit = is_tainted_type(ty);
     let init_taint = expr_taint_source_m(
         init,
@@ -24500,9 +25160,11 @@ fn seed_one_let(
     scope.insert(
         name.to_string(),
         ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types,
             info: BindingInfo {
                 name: name.to_string(),
-                ty: ty.map(str::to_string),
+                ty: ty.map(str::to_string).or(inferred_ty),
                 mode: String::new(),
                 tainted,
                 taint_source,
@@ -24553,6 +25215,8 @@ fn seed_taint_pattern(
         scope.insert(
             n.clone(),
             ScopeBinding {
+                binding_origin: Arc::new(()),
+                place_types: PlaceTypeState::default(),
                 info: BindingInfo {
                     name: n,
                     ty: None,
@@ -24653,6 +25317,13 @@ fn seed_effect_let(
     // A `secret<T>` annotation on a value-position block-local `let` auto-labels it secret, mirroring
     // the statement-level let arm (keeps the two seeders byte-consistent for the qualifier).
     let explicit_secret = is_secret_type(ty);
+    let (inferred_ty, inferred_place_types) = inferred_place_update(init, scope, struct_fields);
+    let binding_ty = ty.map(str::to_string).or(inferred_ty);
+    let binding_place_types = if ty.is_some() {
+        PlaceTypeState::Legacy
+    } else {
+        inferred_place_types
+    };
     let tainted = explicit || (init_taint.is_some() && declass.is_none());
     let taint_source = if explicit {
         Some(name.to_string())
@@ -24664,9 +25335,11 @@ fn seed_effect_let(
     scope.insert(
         name.to_string(),
         ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types: binding_place_types,
             info: BindingInfo {
                 name: name.to_string(),
-                ty: ty.map(str::to_string),
+                ty: binding_ty,
                 mode: String::new(),
                 tainted,
                 taint_source,
@@ -24737,6 +25410,26 @@ fn collect_pattern_binding_paths(
     }
 }
 
+/// Project exact place alternatives through a destructuring-pattern access path. Numeric segments
+/// peel one container layer; named segments resolve a declared struct field across every reachable
+/// nominal alternative. The fold is deliberately depth-sensitive (`0.0` peels twice).
+fn project_pattern_place_types(
+    mut state: ResolvedPlaceTypes,
+    path: &str,
+    types: &PlaceTypes<'_>,
+) -> ResolvedPlaceTypes {
+    for segment in path.split('.').filter(|segment| !segment.is_empty()) {
+        state = if segment == "*" || segment.parse::<usize>().is_ok() {
+            map_resolved_place_types(state, ty::container_element_type)
+        } else {
+            map_resolved_place_types(state, |base_ty| {
+                struct_field_type_for_place(base_ty, segment, types)
+            })
+        };
+    }
+    state
+}
+
 /// Seed every name a pattern binds with BOTH the scrutinee's integrity AND confidentiality labels
 /// (whole-value granularity). The effect dual of `seed_taint_pattern`/`seed_secret_pattern`, written
 /// as one insert so a destructured pattern var carries both labels the effect pass reads. Sets
@@ -24768,6 +25461,7 @@ fn seed_effect_pattern(
     collect_container_builtin_gate_tags(scrutinee, "", scope, ctx, &mut scrutinee_fields);
     let mut scrutinee_identities = BTreeMap::new();
     collect_container_fn_identities(scrutinee, "", scope, ctx, &mut scrutinee_identities);
+    let scrutinee_place_types = place_struct_types(scrutinee, scope, types);
     for n in pattern.bound_names() {
         let secret = secret || declared_secret.contains(&n);
         let taint = if taint.is_none() && declared_taint.contains(&n) {
@@ -24776,6 +25470,12 @@ fn seed_effect_pattern(
             taint.clone()
         };
         let path = binding_paths.get(&n).map(String::as_str).unwrap_or("");
+        let projected_place_types =
+            project_pattern_place_types(scrutinee_place_types.clone(), path, types);
+        let projected_ty = (!projected_place_types.unknown
+            && projected_place_types.known.len() == 1)
+            .then(|| projected_place_types.known.iter().next().cloned())
+            .flatten();
         let builtin_gate_tags = if path.is_empty() {
             builtin_gate_tags_of(scrutinee, scope, ctx)
         } else {
@@ -24816,9 +25516,14 @@ fn seed_effect_pattern(
         scope.insert(
             n.clone(),
             ScopeBinding {
+                binding_origin: Arc::new(()),
+                place_types: PlaceTypeState::Tracked {
+                    known: projected_place_types.known,
+                    unknown: projected_place_types.unknown,
+                },
                 info: BindingInfo {
                     name: n,
-                    ty: None,
+                    ty: projected_ty,
                     mode: String::new(),
                     tainted: taint.is_some(),
                     taint_source: taint.clone(),
@@ -24869,6 +25574,8 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
             let e = scope
                 .entry(name.to_string())
                 .or_insert_with(|| ScopeBinding {
+                    binding_origin: Arc::new(()),
+                    place_types: PlaceTypeState::default(),
                     info: BindingInfo {
                         name: name.to_string(),
                         ty: None,
@@ -24967,6 +25674,8 @@ fn seed_declared_pattern_binders(
     }
     for n in names {
         let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types: PlaceTypeState::default(),
             info: BindingInfo {
                 name: n.clone(),
                 ty: None,
@@ -24987,6 +25696,89 @@ fn seed_declared_pattern_binders(
             secret: false,
         });
         mark(b);
+    }
+}
+
+/// Seed one summary match arm with FRESH lexical bindings. The summary walkers used to seed all
+/// declared binders into a shared clone via `entry`, so a spanless arm binder named like a spanless
+/// parameter silently mutated the parameter's exact place state. That is the same shadow/assignment
+/// conflation the enforcing joins reject with `binding_origin`.
+#[derive(Clone, Copy)]
+enum SummaryPatternQualifier {
+    Taint,
+    Secret,
+}
+
+fn seed_summary_match_arm_binders(
+    pattern: &Pattern,
+    scrutinee: &Expr,
+    types: &PlaceTypes<'_>,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    scrutinee_taint: Option<String>,
+    scrutinee_secret: bool,
+    qualifier: SummaryPatternQualifier,
+) {
+    let (root_ty, root_place_types) = inferred_place_update(scrutinee, scope, types);
+    let root_resolved = root_place_types.resolve(root_ty.as_deref());
+
+    let mut binding_paths = BTreeMap::new();
+    collect_pattern_binding_paths(pattern, "", &mut binding_paths);
+    let mut qualified = BTreeSet::new();
+    let is_qualified: fn(&str) -> bool = match qualifier {
+        SummaryPatternQualifier::Taint => ty::is_tainted,
+        SummaryPatternQualifier::Secret => ty::is_secret,
+    };
+    let qualifier_is_taint = matches!(qualifier, SummaryPatternQualifier::Taint);
+    qualified_pattern_binders(pattern, types, is_qualified, &mut qualified);
+
+    let mut names: BTreeSet<String> = pattern.bound_names().into_iter().collect();
+    names.extend(qualified.iter().cloned());
+    for name in names {
+        let path = binding_paths.get(&name);
+        let projected = path.map_or_else(
+            || ResolvedPlaceTypes {
+                known: BTreeSet::new(),
+                unknown: true,
+            },
+            |path| project_pattern_place_types(root_resolved.clone(), path, types),
+        );
+        let ty = (!projected.unknown && projected.known.len() == 1)
+            .then(|| projected.known.iter().next().cloned())
+            .flatten();
+        let place_types = PlaceTypeState::Tracked {
+            known: projected.known,
+            unknown: projected.unknown,
+        };
+        let declared_qualified = qualified.contains(&name);
+        scope.insert(
+            name.clone(),
+            ScopeBinding {
+                binding_origin: Arc::new(()),
+                place_types,
+                info: BindingInfo {
+                    name,
+                    ty,
+                    mode: String::new(),
+                    tainted: scrutinee_taint.is_some()
+                        || (declared_qualified && qualifier_is_taint),
+                    taint_source: scrutinee_taint.clone().or_else(|| {
+                        (declared_qualified && qualifier_is_taint)
+                            .then(|| "declared enum payload".to_string())
+                    }),
+                    declassified: false,
+                    span: None,
+                },
+                closure_arity: None,
+                closure_lambda: None,
+                field_closures: BTreeMap::new(),
+                fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
+                secret: scrutinee_secret || (declared_qualified && !qualifier_is_taint),
+            },
+        );
     }
 }
 
@@ -25157,8 +25949,9 @@ fn body_returns_taint(
                 ) {
                     return true;
                 }
+                let then_scope = scope.clone();
                 *scope = saved.clone();
-                if let Some(else_body) = else_ {
+                let else_scope = if let Some(else_body) = else_ {
                     if body_returns_taint(
                         else_body,
                         scope,
@@ -25170,17 +25963,36 @@ fn body_returns_taint(
                     ) {
                         return true;
                     }
-                }
+                    scope.clone()
+                } else {
+                    saved.clone()
+                };
                 *scope = saved;
+                merge_taint_over(scope, &[&then_scope, &else_scope]);
             }
             Stmt::While { body, .. }
             | Stmt::WhileLet { body, .. }
             | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
-                // A loop/research body is never the function's implicit return value (tail = false);
+            | Stmt::For { body, .. } => {
+                // A loop body is never the function's implicit return value (tail = false);
                 // only an explicit `return` inside it counts. Its `let`s are block-scoped.
+                let saved = scope.clone();
+                if body_returns_taint(
+                    body,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                    false,
+                    struct_fields,
+                ) {
+                    return true;
+                }
+                let body_scope = scope.clone();
+                *scope = saved.clone();
+                merge_taint_over(scope, &[&saved, &body_scope]);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
                 let saved = scope.clone();
                 if body_returns_taint(
                     body,
@@ -25226,12 +26038,16 @@ fn body_returns_taint(
                     method_tainting_fns,
                     struct_fields,
                 );
+                let (next_ty, next_place_types) =
+                    inferred_place_update(value, scope, struct_fields);
                 if let Some(b) = scope.get_mut(name) {
                     b.info.tainted = label.is_some();
                     if label.is_some() {
                         b.info.declassified = false;
                     }
                     b.info.taint_source = label;
+                    b.info.ty = next_ty;
+                    b.place_types = next_place_types;
                 }
             }
             Stmt::Assign { target, value } => {
@@ -25250,30 +26066,121 @@ fn body_returns_taint(
                             b.info.declassified = false;
                         }
                     }
+                    if matches!(target, Expr::Index { .. }) {
+                        widen_list_binding_place_types(root, value, scope, struct_fields);
+                    }
                 }
             }
             // `push`/`insert` taints the container so `push(xs, input()); return xs` is return-tainted.
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if let Some(src) = args[1..].iter().find_map(|a| {
-                        expr_taint_source_m(
-                            a,
-                            scope,
+            Stmt::ExprStmt(expr) if container_mutation_parts(expr).is_some() => {
+                let (root, value_args) =
+                    container_mutation_parts(expr).expect("guarded container mutation");
+                if let Some(src) = value_args.iter().find_map(|a| {
+                    expr_taint_source_m(
+                        a,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                        struct_fields,
+                    )
+                }) {
+                    if let Some(b) = scope.get_mut(&root) {
+                        b.info.tainted = true;
+                        b.info.taint_source = Some(src);
+                        b.info.declassified = false;
+                    }
+                }
+                for value in value_args {
+                    widen_list_binding_place_types(&root, value, scope, struct_fields);
+                }
+            }
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
+                let saved = scope.clone();
+                let scrutinee_taint = expr_taint_source_m(
+                    scrutinee,
+                    &saved,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                    struct_fields,
+                );
+                let mut arm_scopes = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    let mut arm_scope = saved.clone();
+                    seed_summary_match_arm_binders(
+                        &arm.pattern,
+                        scrutinee,
+                        struct_fields,
+                        &mut arm_scope,
+                        scrutinee_taint.clone(),
+                        false,
+                        SummaryPatternQualifier::Taint,
+                    );
+                    if let Expr::Block { stmts, tail } = &arm.body {
+                        if body_returns_taint(
+                            stmts,
+                            &mut arm_scope,
                             tainting_fns,
                             param_return_taint,
                             method_tainting_fns,
+                            false,
                             struct_fields,
-                        )
-                    }) {
-                        if let Some(b) = scope.get_mut(root) {
-                            b.info.tainted = true;
-                            b.info.taint_source = Some(src);
-                            b.info.declassified = false;
+                        ) {
+                            return true;
+                        }
+                        if stmt_is_tail
+                            && tail.as_deref().is_some_and(|value| {
+                                expr_taint_source_m(
+                                    value,
+                                    &arm_scope,
+                                    tainting_fns,
+                                    param_return_taint,
+                                    method_tainting_fns,
+                                    struct_fields,
+                                )
+                                .is_some()
+                            })
+                        {
+                            return true;
+                        }
+                    } else {
+                        let mut returns = Vec::new();
+                        expr_returns(&arm.body, &mut returns);
+                        if returns.iter().any(|value| {
+                            expr_taint_source_m(
+                                value,
+                                &arm_scope,
+                                tainting_fns,
+                                param_return_taint,
+                                method_tainting_fns,
+                                struct_fields,
+                            )
+                            .is_some()
+                        }) {
+                            return true;
+                        }
+                        if stmt_is_tail
+                            && expr_taint_source_m(
+                                &arm.body,
+                                &arm_scope,
+                                tainting_fns,
+                                param_return_taint,
+                                method_tainting_fns,
+                                struct_fields,
+                            )
+                            .is_some()
+                        {
+                            return true;
                         }
                     }
+                    arm_scopes.push(arm_scope);
                 }
+                *scope = saved;
+                let paths: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
+                merge_taint_over(scope, &paths);
             }
             _ => {
                 // Explicit `return X` in this (non-block) statement — statement position or hidden in
@@ -25353,6 +26260,8 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
         scope.insert(
             name.clone(),
             ScopeBinding {
+                binding_origin: Arc::new(()),
+                place_types: PlaceTypeState::default(),
                 info: BindingInfo {
                     name: name.clone(),
                     ty: Some(ty.clone()),
@@ -25588,6 +26497,11 @@ fn seed_one_let_secret(
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
+    let (inferred_ty, place_types) = if ty.is_none() {
+        inferred_place_update(init, scope, struct_fields)
+    } else {
+        (None, PlaceTypeState::Legacy)
+    };
     let secret = is_secret_type(ty)
         || expr_secret_source_m(
             init,
@@ -25601,9 +26515,11 @@ fn seed_one_let_secret(
     scope.insert(
         name.to_string(),
         ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types,
             info: BindingInfo {
                 name: name.to_string(),
-                ty: ty.map(str::to_string),
+                ty: ty.map(str::to_string).or(inferred_ty),
                 mode: String::new(),
                 tainted: false,
                 taint_source: None,
@@ -25716,6 +26632,8 @@ fn seed_secret_pattern(
         scope.insert(
             n.clone(),
             ScopeBinding {
+                binding_origin: Arc::new(()),
+                place_types: PlaceTypeState::default(),
                 info: BindingInfo {
                     name: n,
                     ty: None,
@@ -25831,8 +26749,9 @@ fn body_returns_secret(
                 ) {
                     return true;
                 }
+                let then_scope = scope.clone();
                 *scope = saved.clone();
-                if let Some(else_body) = else_ {
+                let else_scope = if let Some(else_body) = else_ {
                     if body_returns_secret(
                         else_body,
                         scope,
@@ -25844,15 +26763,17 @@ fn body_returns_secret(
                     ) {
                         return true;
                     }
-                }
+                    scope.clone()
+                } else {
+                    saved.clone()
+                };
                 *scope = saved;
+                merge_taint_over(scope, &[&then_scope, &else_scope]);
             }
             Stmt::While { body, .. }
             | Stmt::WhileLet { body, .. }
             | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
+            | Stmt::For { body, .. } => {
                 let saved = scope.clone();
                 // A `while let` BINDS a pattern; without seeding it, a declared enum payload
                 // extracted here and returned leaks at the CALL SITE while the in-function form
@@ -25862,6 +26783,8 @@ fn body_returns_secret(
                     qualified_pattern_binders(pattern, struct_fields, ty::is_secret, &mut names);
                     for n in names {
                         let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
+                            binding_origin: Arc::new(()),
+                            place_types: PlaceTypeState::default(),
                             info: BindingInfo {
                                 name: n.clone(),
                                 ty: None,
@@ -25884,6 +26807,23 @@ fn body_returns_secret(
                         b.secret = true;
                     }
                 }
+                if body_returns_secret(
+                    body,
+                    scope,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                    false,
+                    struct_fields,
+                ) {
+                    return true;
+                }
+                let body_scope = scope.clone();
+                *scope = saved.clone();
+                merge_taint_over(scope, &[&saved, &body_scope]);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                let saved = scope.clone();
                 if body_returns_secret(
                     body,
                     scope,
@@ -25929,8 +26869,12 @@ fn body_returns_secret(
                     struct_fields,
                 )
                 .is_some();
+                let (next_ty, next_place_types) =
+                    inferred_place_update(value, scope, struct_fields);
                 if let Some(b) = scope.get_mut(name) {
                     b.secret = secret;
+                    b.info.ty = next_ty;
+                    b.place_types = next_place_types;
                 }
             }
             Stmt::Assign { target, value } => {
@@ -25949,28 +26893,120 @@ fn body_returns_secret(
                             b.secret = true;
                         }
                     }
+                    if matches!(target, Expr::Index { .. }) {
+                        widen_list_binding_place_types(root, value, scope, struct_fields);
+                    }
                 }
             }
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if args[1..].iter().any(|a| {
-                        expr_secret_source_m(
-                            a,
-                            scope,
+            Stmt::ExprStmt(expr) if container_mutation_parts(expr).is_some() => {
+                let (root, value_args) =
+                    container_mutation_parts(expr).expect("guarded container mutation");
+                if value_args.iter().any(|a| {
+                    expr_secret_source_m(
+                        a,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    )
+                    .is_some()
+                }) {
+                    if let Some(b) = scope.get_mut(&root) {
+                        b.secret = true;
+                    }
+                }
+                for value in value_args {
+                    widen_list_binding_place_types(&root, value, scope, struct_fields);
+                }
+            }
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
+                let saved = scope.clone();
+                let scrutinee_secret = expr_secret_source_m(
+                    scrutinee,
+                    &saved,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                    struct_fields,
+                )
+                .is_some();
+                let mut arm_scopes = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    let mut arm_scope = saved.clone();
+                    seed_summary_match_arm_binders(
+                        &arm.pattern,
+                        scrutinee,
+                        struct_fields,
+                        &mut arm_scope,
+                        None,
+                        scrutinee_secret,
+                        SummaryPatternQualifier::Secret,
+                    );
+                    if let Expr::Block { stmts, tail } = &arm.body {
+                        if body_returns_secret(
+                            stmts,
+                            &mut arm_scope,
                             secret_fns,
                             param_return_taint,
                             method_secret_fns,
+                            false,
                             struct_fields,
-                        )
-                        .is_some()
-                    }) {
-                        if let Some(b) = scope.get_mut(root) {
-                            b.secret = true;
+                        ) {
+                            return true;
+                        }
+                        if stmt_is_tail
+                            && tail.as_deref().is_some_and(|value| {
+                                expr_secret_source_m(
+                                    value,
+                                    &arm_scope,
+                                    secret_fns,
+                                    param_return_taint,
+                                    method_secret_fns,
+                                    struct_fields,
+                                )
+                                .is_some()
+                            })
+                        {
+                            return true;
+                        }
+                    } else {
+                        let mut returns = Vec::new();
+                        expr_returns(&arm.body, &mut returns);
+                        if returns.iter().any(|value| {
+                            expr_secret_source_m(
+                                value,
+                                &arm_scope,
+                                secret_fns,
+                                param_return_taint,
+                                method_secret_fns,
+                                struct_fields,
+                            )
+                            .is_some()
+                        }) {
+                            return true;
+                        }
+                        if stmt_is_tail
+                            && expr_secret_source_m(
+                                &arm.body,
+                                &arm_scope,
+                                secret_fns,
+                                param_return_taint,
+                                method_secret_fns,
+                                struct_fields,
+                            )
+                            .is_some()
+                        {
+                            return true;
                         }
                     }
+                    arm_scopes.push(arm_scope);
                 }
+                *scope = saved;
+                let paths: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
+                merge_taint_over(scope, &paths);
             }
             _ => {
                 // D4 residual, confidentiality twin of the taint summary walker: the scope a
@@ -28209,6 +29245,8 @@ mod fn_identity_spine_tests {
 
     fn binding(identities: FnIdentitySet) -> ScopeBinding {
         ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types: PlaceTypeState::default(),
             info: BindingInfo {
                 name: "fixture".into(),
                 ty: None,
@@ -28481,6 +29519,8 @@ mod builtin_gate_tag_tests {
 
     fn binding(tags: BuiltinGateTags) -> ScopeBinding {
         ScopeBinding {
+            binding_origin: Arc::new(()),
+            place_types: PlaceTypeState::default(),
             info: BindingInfo {
                 name: "fixture".into(),
                 ty: None,

@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// W2.1 collection-for projection guard: public element fields remain public.
+struct P { k: i64 }
+
+fn main() {
+    let xs = [P { k: 0 }];
+    for item in xs {
+        print(item.k);
+    }
+}

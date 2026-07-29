@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// W2.1 value-block collection-for parity: element binders carry exact place types.
+struct S { k: tainted<i64> }
+
+fn main() uses(shell) {
+    let _v = if true {
+        let xs = [S { k: 7 }];
+        for item in xs {
+            shell(item.k);
+        }
+        0
+    } else { 0 };
+}

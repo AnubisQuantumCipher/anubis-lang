@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// W2.1 pattern projection guard: a public list-element binder stays public.
+struct P { k: i64 }
+
+fn get_public() {
+    let xs = [P { k: 0 }];
+    match xs {
+        [item] => { return item.k; }
+        _ => { return 0; }
+    }
+}
+
+fn main() {
+    print(get_public());
+}

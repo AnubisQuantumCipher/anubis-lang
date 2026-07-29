@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// W2.1 branch precision guard: a secret field on one possible element type must not label a
+// different field that is public on every alternative.
+struct P { k: i64, q: i64 }
+struct S { k: secret<i64>, q: i64 }
+
+fn main() {
+    let mut xs = [P { k: 0, q: 1 }];
+    if true {
+        xs = [S { k: 7, q: 2 }];
+    }
+    print(xs[0].q);
+}

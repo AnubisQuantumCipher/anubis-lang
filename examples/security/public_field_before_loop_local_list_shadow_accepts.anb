@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// W2.1 loop fixed-point shadow guard: an inner secret shadow must not seed the outer public place.
+struct P { k: i64 }
+struct S { k: secret<i64> }
+
+fn main() {
+    let xs = [P { k: 0 }];
+    let mut i = 0;
+    while i < 1 {
+        print(xs[0].k);
+        let xs = [S { k: 7 }];
+        print(0);
+        i = i + 1;
+    }
+}

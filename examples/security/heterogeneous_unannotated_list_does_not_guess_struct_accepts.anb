@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// W2.1 no-guess guard: heterogeneous nominal arrays must not select the first or last struct type.
+// Both reads target the public P element; the exact homogeneous oracle must defer in either order.
+struct P { k: i64 }
+struct S { k: secret<i64> }
+
+fn main() {
+    let public_first = [P { k: 7 }, S { k: 9 }];
+    print(public_first[0].k);
+
+    let public_last = [S { k: 9 }, P { k: 7 }];
+    print(public_last[1].k);
+}

@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// W2.1 mutation guard: widening nominal alternatives must not label a field public on every type.
+struct P { k: i64 }
+struct Q { k: i64 }
+
+fn main() {
+    let xs = [P { k: 0 }];
+    xs[0] = Q { k: 7 };
+    print(xs[0].k);
+}

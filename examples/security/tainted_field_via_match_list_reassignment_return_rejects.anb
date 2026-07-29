@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// W2.1 reduced integrity match join: arm-updated array alternatives must reach a later return.
+struct P { k: i64 }
+struct S { k: tainted<i64> }
+
+fn leak() {
+    let mut xs = [P { k: 0 }];
+    match true {
+        true => { xs = [S { k: 7 }]; }
+        false => { xs = [P { k: 1 }]; }
+    }
+    return xs[0].k;
+}
+
+fn main() uses(shell) {
+    shell(leak());
+}
