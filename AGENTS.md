@@ -119,9 +119,14 @@ red: STOP and say so. Do not fall through to the host.**
 Commit `03210603` has a source-matched immutable candidate
 `vm/pins/anubis-58ba4abc0a63`, SHA-256
 `58ba4abc0a636d909aa72e4f8df06d6e2adcad3ae378396a4c62a63f106a25bf`.
-Against that pin, compiler library **766/766**, security **327/327**, language **252/252**,
-stdlib fail-closed **104/104**, native-authoritative **916 files, 0 mismatches**, and the formal gate
-PASS. The bounded W1 place-resolution slice is green.
+Historical W1 observation against that dated pin: compiler library **766/766**, security
+**327/327**, language **252/252**,
+stdlib fail-closed **104/104**, and the formal gate PASS. The bounded W1 place-resolution slice is
+green.
+
+The current W2.1 branch security corpus is **375/375 PASS** under its source-matched candidate, and
+native-authoritative is **964 files, 0 mismatches**. Those current counts are not retroactively
+attributed to the historical W1 pin.
 
 The branch also contains the subsequent `889d9a7c` offensive isolation/evidence slice; its
 source-stable tool run passed **357/357** unit tests plus every integration-test binary. A combined
