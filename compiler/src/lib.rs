@@ -6645,13 +6645,28 @@ fn main() {
             "tart-disposable-guest",
             "anubis-xcode",
             "ANUBIS_POC_KIT_VZ_REQUIRED",
-            "--no-specials",
-            "implementer/a_plus_audit_run/",
+            "host_resource_guard.sh",
+            "anubis_guard_sync_tree",
             "tart delete",
         ] {
             assert!(
                 script.contains(marker),
                 "PoC gate must preserve mandatory disposable-VZ marker {marker:?}"
+            );
+        }
+        let sync_policy = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../scripts/lib/host_resource_guard.sh"),
+        )
+        .expect("scripts/lib/host_resource_guard.sh must exist");
+        for marker in [
+            "--no-specials",
+            "--delete-excluded",
+            "implementer/a_plus_audit_run/",
+        ] {
+            assert!(
+                sync_policy.contains(marker),
+                "shared guest-sync policy lost required marker {marker:?}"
             );
         }
         assert!(

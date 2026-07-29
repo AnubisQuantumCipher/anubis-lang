@@ -44,6 +44,86 @@ anubis_guard_validate_vm_limits() {
   fi
 }
 
+# Copy the live repository into a disposable guest without traversing host-local
+# artifact forests. These paths are not build/gate inputs: they are shared build
+# outputs, agent worktrees, archived binary pins/exports, or scratch evidence.
+# Keeping this seam here makes the full slice and offensive gate use one policy;
+# a new launcher cannot silently reintroduce the measured 36-GiB cache blowout.
+anubis_guard_sync_tree() {
+  if [[ $# -ne 3 || -z "$1" || -z "$2" || -z "$3" ]]; then
+    echo "ANUBIS_HOST_GUARD_INVALID: sync_tree requires RSYNC_RSH, source, and destination" >&2
+    return 2
+  fi
+  local rsh="$1" source="$2" destination="$3" source_root remote_host remote_path remote_rel
+  local -a rsh_argv pin_manifests
+  source_root="${source%/}"
+  if [[ "$source_root" != /* ]]; then source_root="$PWD/$source_root"; fi
+  local source_component="$source_root"
+  while [[ "$source_component" != / ]]; do
+    if [[ -L "$source_component" ]]; then
+      echo "ANUBIS_HOST_GUARD_SYNC_SOURCE: symlinked source component: $source_component" >&2
+      return 2
+    fi
+    source_component="${source_component%/*}"
+    [[ -n "$source_component" ]] || source_component=/
+  done
+  if [[ ! -d "$source_root" ]]; then
+    echo "ANUBIS_HOST_GUARD_SYNC_SOURCE: source must be a real directory: $source" >&2
+    return 2
+  fi
+  shopt -s nullglob
+  pin_manifests=("$source_root"/vm/pins/CURRENT "$source_root"/vm/pins/*.meta)
+  shopt -u nullglob
+  local manifest
+  for manifest in "${pin_manifests[@]}"; do
+    if [[ -L "$manifest" ]]; then
+      echo "ANUBIS_HOST_GUARD_SYNC_SYMLINK: refusing pin manifest symlink: $manifest" >&2
+      return 2
+    fi
+  done
+  if [[ "$destination" != *:* ]]; then
+    echo "ANUBIS_HOST_GUARD_SYNC_DESTINATION: expected host:path destination" >&2
+    return 2
+  fi
+  remote_host="${destination%%:*}"
+  remote_path="${destination#*:}"
+  case "$remote_path" in
+    '~/'*) remote_rel="${remote_path#\~/}" ;;
+    /*) echo "ANUBIS_HOST_GUARD_SYNC_DESTINATION: absolute remote path denied" >&2; return 2 ;;
+    *) remote_rel="$remote_path" ;;
+  esac
+  remote_rel="${remote_rel%/}"
+  if [[ ! "$remote_rel" =~ ^[A-Za-z0-9._/-]+$ \
+    || "$remote_rel" == .. || "$remote_rel" == ../* \
+    || "$remote_rel" == */../* || "$remote_rel" == */.. ]]; then
+    echo "ANUBIS_HOST_GUARD_SYNC_DESTINATION: unsafe remote path" >&2
+    return 2
+  fi
+  read -r -a rsh_argv <<<"$rsh"
+  if (( ${#rsh_argv[@]} == 0 )); then
+    echo "ANUBIS_HOST_GUARD_SYNC_SHELL: empty remote shell" >&2
+    return 2
+  fi
+  if ! "${rsh_argv[@]}" "$remote_host" \
+    "set -u; test ! -L \"\$HOME\" || exit 42; d=\"\$HOME\"; rel=\"$remote_rel\"; while test -n \"\$rel\"; do case \"\$rel\" in */*) part=\"\${rel%%/*}\"; rel=\"\${rel#*/}\" ;; *) part=\"\$rel\"; rel= ;; esac; test -n \"\$part\" || exit 42; d=\"\$d/\$part\"; test -d \"\$d\" || exit 42; test ! -L \"\$d\" || exit 42; done"; then
+    echo "ANUBIS_HOST_GUARD_SYNC_DESTINATION: remote tree is missing or symlinked" >&2
+    return 2
+  fi
+  RSYNC_RSH="$rsh" rsync -aH --delete --delete-excluded --no-devices --no-specials \
+    --exclude=target/ \
+    --exclude=out/ \
+    --exclude=implementer/a_plus_audit_run/ \
+    --exclude=.claude/worktrees/ \
+    --include=vm/pins/ \
+    --include='vm/pins/*.meta' \
+    --include=vm/pins/CURRENT \
+    --exclude='vm/pins/*' \
+    --exclude=vm/exports/ \
+    --exclude=scratchpad/ \
+    --exclude=.DS_Store \
+    -- "$source" "$destination"
+}
+
 # Parse vm_stat from stdin and report immediately unused memory. Inactive/cache
 # pages are deliberately excluded: the prior WindowServer watchdog event occurred
 # with memoryPressure=false, so pressure/reclaimability alone is not a safe signal.
@@ -103,7 +183,7 @@ anubis_guard_preflight() {
     return 2
   fi
   anubis_guard_validate_vm_limits "$1" "$2" || return
-  local pressure free_mib
+  local pressure free_mib required_mib
   pressure="$(anubis_guard_read_pressure 2>/dev/null)" || {
     echo "ANUBIS_HOST_GUARD_UNREADABLE: cannot read macOS memory pressure" >&2
     return 1
@@ -116,11 +196,51 @@ anubis_guard_preflight() {
     echo "ANUBIS_HOST_GUARD_PRESSURE: level=$pressure; refusing to start VM" >&2
     return 1
   fi
-  if (( free_mib < ANUBIS_HOST_START_MIN_FREE_MIB )); then
-    echo "ANUBIS_HOST_GUARD_HEADROOM: free=${free_mib}MiB required=${ANUBIS_HOST_START_MIN_FREE_MIB}MiB; refusing to start VM" >&2
+  required_mib=$(( $2 + ANUBIS_HOST_MIN_FREE_MIB ))
+  if (( required_mib < ANUBIS_HOST_START_MIN_FREE_MIB )); then
+    required_mib=$ANUBIS_HOST_START_MIN_FREE_MIB
+  fi
+  if (( free_mib < required_mib )); then
+    echo "ANUBIS_HOST_GUARD_HEADROOM: free=${free_mib}MiB required=${required_mib}MiB (guest=$2MiB + host_reserve=${ANUBIS_HOST_MIN_FREE_MIB}MiB); refusing to start VM" >&2
     return 1
   fi
-  printf 'ANUBIS_HOST_GUARD_PREFLIGHT: PASS cpu=%s mem=%sMiB free=%sMiB pressure=%s\n' "$1" "$2" "$free_mib" "$pressure"
+  printf 'ANUBIS_HOST_GUARD_PREFLIGHT: PASS cpu=%s mem=%sMiB free=%sMiB required=%sMiB pressure=%s\n' "$1" "$2" "$free_mib" "$required_mib" "$pressure"
+}
+
+anubis_guard_launchctl_print() {
+  launchctl print "gui/${UID}/com.anubis.host-resource-guard"
+}
+
+anubis_guard_require_launchagent() {
+  local status
+  status="$(anubis_guard_launchctl_print 2>/dev/null)" || {
+    echo "ANUBIS_HOST_GUARD_LAUNCHAGENT_MISSING: com.anubis.host-resource-guard is not loaded" >&2
+    return 1
+  }
+  if ! grep -Eq 'state[[:space:]]*=[[:space:]]*running' <<<"$status"; then
+    echo "ANUBIS_HOST_GUARD_LAUNCHAGENT_INACTIVE: com.anubis.host-resource-guard is not running" >&2
+    return 1
+  fi
+  printf 'ANUBIS_HOST_GUARD_LAUNCHAGENT: PASS\n'
+}
+
+anubis_guard_guest_absent() {
+  if [[ $# -ne 1 || -z "$1" ]]; then
+    echo "ANUBIS_HOST_GUARD_INVALID: guest_absent requires a guest name" >&2
+    return 2
+  fi
+  local json rows name running
+  json="$(anubis_guard_read_tart_json 2>/dev/null)" || {
+    echo "ANUBIS_HOST_GUARD_UNAVAILABLE: cannot verify guest teardown" >&2
+    return 1
+  }
+  rows="$(printf '%s\n' "$json" | anubis_guard_json_rows)" || return 1
+  while IFS=$'\t' read -r name running; do
+    if [[ "$name" == "$1" ]]; then
+      echo "ANUBIS_HOST_GUARD_GUEST_SURVIVED: $1" >&2
+      return 1
+    fi
+  done <<<"$rows"
 }
 
 anubis_guard_start_caffeinate() {
@@ -135,8 +255,8 @@ anubis_guard_watch_once() {
   pressure="$(anubis_guard_read_pressure 2>/dev/null)" || pressure=unknown
   free_mib="$(anubis_guard_read_vm_stat | anubis_guard_free_mib_from_vm_stat 2>/dev/null)" || free_mib=0
   json="$(anubis_guard_read_tart_json 2>/dev/null)" || {
-    printf 'ANUBIS_HOST_GUARD: tart unavailable free=%sMiB pressure=%s\n' "$free_mib" "$pressure"
-    return 0
+    printf 'ANUBIS_HOST_GUARD_UNAVAILABLE: tart inventory unreadable free=%sMiB pressure=%s\n' "$free_mib" "$pressure" >&2
+    return 1
   }
   rows="$(printf '%s\n' "$json" | anubis_guard_json_rows)" || {
     echo "ANUBIS_HOST_GUARD: invalid tart JSON; no destructive action taken" >&2
@@ -173,9 +293,50 @@ anubis_guard_watch_once() {
       printf 'ANUBIS_HOST_GUARD_DELETE_FAILED: VM=%s\n' "$name" >&2
   done <<<"$rows"
 
+  if [[ "$emergency" != 0 ]]; then
+    return 1
+  fi
+
   if [[ "$emergency" == 0 && "$ANUBIS_GUARD_QUIET_OK" != 1 ]]; then
     printf 'ANUBIS_HOST_GUARD_OK: free=%sMiB pressure=%s\n' "$free_mib" "$pressure"
   fi
+}
+
+anubis_guard_start_runtime_watch() {
+  local parent_pid="${1:-$$}"
+  if [[ ! "$parent_pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$parent_pid" 2>/dev/null; then
+    echo "ANUBIS_HOST_GUARD_INVALID: runtime watch requires a live parent PID" >&2
+    return 2
+  fi
+  anubis_guard_watch_once || {
+    echo "ANUBIS_HOST_GUARD_RUNTIME_START_FAILED: initial watch check failed" >&2
+    return 1
+  }
+  (
+    while kill -0 "$parent_pid" 2>/dev/null; do
+      sleep "$ANUBIS_GUARD_INTERVAL_SECS"
+      if ! anubis_guard_watch_once; then
+        echo "ANUBIS_HOST_GUARD_RUNTIME_TRIPPED: terminating owner_pid=$parent_pid" >&2
+        kill -TERM "$parent_pid" 2>/dev/null || true
+        exit 1
+      fi
+    done
+  ) &
+  ANUBIS_GUARD_RUNTIME_WATCH_PID=$!
+  export ANUBIS_GUARD_RUNTIME_WATCH_PID
+  kill -0 "$ANUBIS_GUARD_RUNTIME_WATCH_PID" 2>/dev/null || {
+    echo "ANUBIS_HOST_GUARD_RUNTIME_START_FAILED: watcher exited during startup" >&2
+    return 1
+  }
+}
+
+anubis_guard_stop_runtime_watch() {
+  local watch_pid="${ANUBIS_GUARD_RUNTIME_WATCH_PID:-}"
+  [[ -n "$watch_pid" ]] || return 0
+  kill "$watch_pid" 2>/dev/null || true
+  wait "$watch_pid" 2>/dev/null || true
+  ANUBIS_GUARD_RUNTIME_WATCH_PID=""
+  export ANUBIS_GUARD_RUNTIME_WATCH_PID
 }
 
 anubis_guard_watch() {

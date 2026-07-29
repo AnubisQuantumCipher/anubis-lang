@@ -74,6 +74,7 @@ run_in_disposable_guest() {
   POC_KIT_GUEST="$guest"
   POC_KIT_TEARDOWN_FILE="$teardown_file"
   cleanup_poc_guest() {
+    anubis_guard_stop_runtime_watch
     local g="${POC_KIT_GUEST:-}"
     local tf="${POC_KIT_TEARDOWN_FILE:-}"
     if [[ -z "$g" ]]; then
@@ -84,7 +85,7 @@ run_in_disposable_guest() {
     local stop_rc=0 del_rc=0
     tart stop "$g" --timeout 5 >/dev/null 2>&1 || stop_rc=$?
     tart delete "$g" >/dev/null 2>&1 || del_rc=$?
-    if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]]; then
+    if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]] && anubis_guard_guest_absent "$g"; then
       [[ -n "$tf" ]] && echo "torn_down" >"$tf"
     else
       [[ -n "$tf" ]] && echo "teardown_failed" >"$tf"
@@ -93,37 +94,44 @@ run_in_disposable_guest() {
   }
   trap cleanup_poc_guest EXIT
 
-  anubis_guard_preflight "$cpu" "$mem"
+  anubis_guard_preflight "$cpu" "$mem" || return $?
+  anubis_guard_require_launchagent || return $?
   anubis_guard_start_caffeinate $$
+  anubis_guard_start_runtime_watch $$ || return $?
   echo "[poc-kit] isolation=tart-disposable-guest base=$base guest=$guest"
-  tart clone "$base" "$guest" >/dev/null
-  tart set "$guest" --cpu "$cpu" --memory "$mem" >/dev/null
+  tart clone "$base" "$guest" >/dev/null || return $?
+  tart set "$guest" --cpu "$cpu" --memory "$mem" >/dev/null || return $?
   tart run "$guest" --no-graphics >/dev/null 2>&1 &
 
+  local ssh_ready=0
   for _ in $(seq 1 75); do
     ip="$(tart ip "$guest" 2>/dev/null || true)"
     if [[ -n "$ip" ]] && nc -z -w 3 "$ip" 22 2>/dev/null; then
+      ssh_ready=1
       break
     fi
     sleep 4
   done
-  [[ -n "$ip" ]] || {
+  [[ "$ssh_ready" == 1 ]] || {
     echo "ANUBIS_POC_KIT_VZ_REQUIRED: guest never reached SSH" >&2
     return 1
   }
 
-  # --delete: guest tree matches host working tree (safe: disposable clone, unique name).
-  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --delete --no-devices --no-specials \
-    --exclude 'target/' --exclude 'out/' --exclude 'implementer/a_plus_audit_run/' \
-    --exclude '.DS_Store' \
-    "$ROOT/" "${user_}@${ip}:anubis-lang/"
-  ssh "${sshopts[@]}" "${user_}@${ip}" 'mkdir -p "$HOME/anubis-lang/target/release"'
+  anubis_guard_sync_tree \
+    "ssh ${sshopts[*]}" \
+    "$ROOT/" \
+    "${user_}@${ip}:anubis-lang/" || return $?
+  ssh "${sshopts[@]}" "${user_}@${ip}" \
+    'mkdir -p "$HOME/anubis-lang/target/release"' || return $?
   RSYNC_RSH="ssh ${sshopts[*]}" rsync -a \
-    "$host_bin" "${user_}@${ip}:anubis-lang/target/release/anubis"
-  guest_sha_line="$(
+    "$host_bin" "${user_}@${ip}:anubis-lang/target/release/anubis" || return $?
+  if ! guest_sha_line="$(
     ssh "${sshopts[@]}" "${user_}@${ip}" \
       'shasum -a 256 "$HOME/anubis-lang/target/release/anubis"'
-  )"
+  )"; then
+    echo "ANUBIS_POC_KIT_BINARY_HASH_UNREADABLE" >&2
+    return 1
+  fi
   guest_sha="${guest_sha_line%% *}"
   [[ "$guest_sha" == "$binary_sha" ]] || {
     echo "ANUBIS_POC_KIT_BINARY_MISMATCH: host=$binary_sha guest=$guest_sha" >&2

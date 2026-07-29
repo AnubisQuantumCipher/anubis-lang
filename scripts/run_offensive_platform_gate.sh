@@ -68,12 +68,14 @@ run_in_guest() {
   # RAM CEILING — see scripts/vm/run-slice.sh for why 12288 and not 24576: a 24 GiB
   # guest plus the normal host process load left 755 MB free and starved WindowServer
   # past its watchdog, which is what caused the 2026-07-24/26/28 unclean restarts.
-  local mem="${ANUBIS_OFFENSIVE_GATE_VM_MEM:-12288}"
+  local mem="${ANUBIS_OFFENSIVE_GATE_VM_MEM:-8192}"
   local key="${ANUBIS_VM_KEY:-$HOME/.ssh/tart_anubis}"
   local user_="${ANUBIS_VM_USER:-admin}"
   local keep="${ANUBIS_OFFENSIVE_GATE_KEEP_GUEST:-0}"
   local guest="anubis-offensive-gate-$$"
-  local guest_out="out/offensive_gate_guest"
+  local guest_out="out/offensive_gate_guest_export"
+  local build_jobs="${ANUBIS_OFFENSIVE_GATE_BUILD_JOBS:-6}"
+  local rayon_threads="${ANUBIS_OFFENSIVE_GATE_RAYON_THREADS:-6}"
   local host_bin=""
   local binary_sha=""
   local guest_sha_line=""
@@ -94,6 +96,11 @@ run_in_guest() {
   mkdir -p "$out"
   local teardown_file="$out/teardown_status.txt"
   echo "not_started" >"$teardown_file"
+  [[ "$build_jobs" =~ ^[1-8]$ && "$rayon_threads" =~ ^[1-8]$ ]] || {
+    echo "PREREQ_INVALID: build/rayon thread controls must be integers in 1..8" >&2
+    echo "prereq_missing" >"$teardown_file"
+    return 2
+  }
 
   # Prerequisites for disposable-guest full battery. Missing tools/images are NOT
   # a green full-suite claim — caller must NOT fall back to the 5/5 witness unless
@@ -124,6 +131,7 @@ run_in_guest() {
   OFFENSIVE_GATE_KEEP="$keep"
   OFFENSIVE_GATE_TEARDOWN_FILE="$teardown_file"
   cleanup_offensive_guest() {
+    anubis_guard_stop_runtime_watch
     local g="${OFFENSIVE_GATE_GUEST:-}"
     local k="${OFFENSIVE_GATE_KEEP:-0}"
     local tf="${OFFENSIVE_GATE_TEARDOWN_FILE:-}"
@@ -140,7 +148,7 @@ run_in_guest() {
       local stop_rc=0 del_rc=0
       tart stop "$g" --timeout 5 >/dev/null 2>&1 || stop_rc=$?
       tart delete "$g" >/dev/null 2>&1 || del_rc=$?
-      if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]]; then
+      if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]] && anubis_guard_guest_absent "$g"; then
         [[ -n "$tf" ]] && echo "torn_down" >"$tf"
       else
         [[ -n "$tf" ]] && echo "teardown_failed" >"$tf"
@@ -150,36 +158,44 @@ run_in_guest() {
   }
   trap cleanup_offensive_guest EXIT
 
-  anubis_guard_preflight "$cpu" "$mem"
+  anubis_guard_preflight "$cpu" "$mem" || return $?
+  anubis_guard_require_launchagent || return $?
   anubis_guard_start_caffeinate $$
+  anubis_guard_start_runtime_watch $$ || return $?
   echo "[offensive-gate] isolation=tart-disposable-guest base=$base guest=$guest"
-  tart clone "$base" "$guest" >/dev/null
-  tart set "$guest" --cpu "$cpu" --memory "$mem" >/dev/null
+  tart clone "$base" "$guest" >/dev/null || return $?
+  tart set "$guest" --cpu "$cpu" --memory "$mem" >/dev/null || return $?
   tart run "$guest" --no-graphics >/dev/null 2>&1 &
 
+  local ssh_ready=0
   for _ in $(seq 1 75); do
     ip="$(tart ip "$guest" 2>/dev/null || true)"
     if [[ -n "$ip" ]] && nc -z -w 3 "$ip" 22 2>/dev/null; then
+      ssh_ready=1
       break
     fi
     sleep 4
   done
-  [[ -n "$ip" ]] || {
+  [[ "$ssh_ready" == 1 ]] || {
     echo "FAIL: guest never reached SSH" >&2
     return 1
   }
 
-  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --delete --no-devices --no-specials \
-    --exclude 'target/' --exclude 'out/' --exclude 'implementer/a_plus_audit_run/' \
-    --exclude '.DS_Store' \
-    "$ROOT/" "${user_}@${ip}:anubis-lang/"
-  ssh "${sshopts[@]}" "${user_}@${ip}" 'mkdir -p "$HOME/anubis-lang/target/release"'
+  anubis_guard_sync_tree \
+    "ssh ${sshopts[*]}" \
+    "$ROOT/" \
+    "${user_}@${ip}:anubis-lang/" || return $?
+  ssh "${sshopts[@]}" "${user_}@${ip}" \
+    'mkdir -p "$HOME/anubis-lang/target/release"' || return $?
   RSYNC_RSH="ssh ${sshopts[*]}" rsync -a \
-    "$host_bin" "${user_}@${ip}:anubis-lang/target/release/anubis"
-  guest_sha_line="$(
+    "$host_bin" "${user_}@${ip}:anubis-lang/target/release/anubis" || return $?
+  if ! guest_sha_line="$(
     ssh "${sshopts[@]}" "${user_}@${ip}" \
       'shasum -a 256 "$HOME/anubis-lang/target/release/anubis"'
-  )"
+  )"; then
+    echo "FAIL: cannot hash synced guest binary" >&2
+    return 1
+  fi
   guest_sha="${guest_sha_line%% *}"
   if [[ "$guest_sha" != "$binary_sha" ]]; then
     echo "FAIL: synced binary hash mismatch host=$binary_sha guest=$guest_sha" >&2
@@ -187,7 +203,10 @@ run_in_guest() {
   fi
 
   set +e
-  ssh "${sshopts[@]}" "${user_}@${ip}" 'bash -s' >"$log_path" 2>&1 <<'REMOTE'
+  ssh "${sshopts[@]}" "${user_}@${ip}" \
+    env "ANUBIS_OFFENSIVE_GATE_BUILD_JOBS=$build_jobs" \
+        "ANUBIS_OFFENSIVE_GATE_RAYON_THREADS=$rayon_threads" \
+    'bash -s' >"$log_path" 2>&1 <<'REMOTE'
 set -euo pipefail
 . "$HOME/.cargo/env" 2>/dev/null || true
 export PATH=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:$PATH
@@ -207,7 +226,55 @@ export ANUBIS_BIN=target/release/anubis
 # Never inherit host force-witness into the guest battery.
 unset ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS || true
 touch "$HOME/.anubis-vz-guest" 2>/dev/null || true
-ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 bash scripts/run_offensive_platform_gate.sh --out out/offensive_gate_guest
+work=out/offensive_gate_guest_work
+export_dir=out/offensive_gate_guest_export
+ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 bash scripts/run_offensive_platform_gate.sh --out "$work"
+
+# Only explicitly public verdict evidence crosses the guest boundary. The work
+# tree contains operator tokens, PSKs, receipt MAC keys, and private mTLS keys.
+rm -rf "$export_dir"
+mkdir -m 700 -p "$export_dir"
+python3 - "$work" "$export_dir" <<'PY'
+import hashlib
+import json
+import pathlib
+import shutil
+import sys
+
+work = pathlib.Path(sys.argv[1])
+export_dir = pathlib.Path(sys.argv[2])
+allowed = ("report.json",)
+for name in allowed:
+    source = work / name
+    if not source.is_file() or source.is_symlink():
+        raise SystemExit(f"ANUBIS_OFFENSIVE_EXPORT_MISSING: {source}")
+    shutil.copyfile(source, export_dir / name)
+
+secrets = set()
+for path, key in (
+    (work / "engagement" / "engagement.json", "psk_hex"),
+    (work / "tok.json", "token"),
+    (work / "eng_doh" / "engagement.json", "psk_hex"),
+):
+    if path.is_file():
+        value = json.loads(path.read_text()).get(key)
+        if isinstance(value, str) and value:
+            secrets.add(value.encode())
+
+manifest = {"schema": "anubis-offensive-gate-export-v1", "secret_scan": "PASS", "files": []}
+for path in sorted(export_dir.iterdir()):
+    if path.name not in allowed or not path.is_file() or path.is_symlink():
+        raise SystemExit(f"ANUBIS_OFFENSIVE_EXPORT_UNEXPECTED: {path}")
+    payload = path.read_bytes()
+    if any(secret in payload for secret in secrets):
+        raise SystemExit(f"ANUBIS_OFFENSIVE_EXPORT_SECRET: {path.name}")
+    manifest["files"].append({
+        "path": path.name,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    })
+(export_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+PY
 REMOTE
   rc=$?
   set -e
@@ -334,8 +401,8 @@ def redact_json(path, keys):
     try:
         with open(path) as f:
             data = json.load(f)
-    except Exception:
-        return
+    except Exception as exc:
+        raise SystemExit(f"ANUBIS_OFFENSIVE_SANITIZE_PARSE: {path}: {exc}")
     touched = False
     for key in keys:
         if key in data:

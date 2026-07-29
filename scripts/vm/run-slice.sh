@@ -3,10 +3,10 @@
 # run-slice.sh — validate the current Anubis working tree inside a THROWAWAY
 # macOS VM clone, so heavy builds never run on the host.
 #
-# WHY: an all-core build/seal on the host twice starved WindowServer past its
-# ~120 s watchdog check-in → kernel reset → wedged trackpad. A tart guest capped
-# at 8 vCPU structurally reserves >=4 P + 4 E cores for the host, so the host UI
-# can never starve. See scripts/vm/README.md.
+# WHY: all-core build/seal runs starved WindowServer past its watchdog check-in
+# → reset → wedged trackpad. A Tart guest capped at 8 vCPU closes the measured
+# CPU axis; the 12 GiB RAM ceiling plus the live host guard below closes the
+# measured memory axis and aborts the VM before host headroom is exhausted.
 #
 # WHAT IT DOES: clone the provisioned golden image (APFS copy-on-write, instant)
 # → boot headless → rsync the host working tree in → run the full gate battery
@@ -46,6 +46,7 @@ for a in "$@"; do case "$a" in --keep) KEEP=1;; *) echo "unknown arg: $a"; exit 
 
 RUN="anubis-run-$$"
 cleanup() {
+  anubis_guard_stop_runtime_watch
   if [ "$KEEP" = 1 ]; then
     anubis_guard_mark_kept "$RUN"
     echo "[keep] clone left running: $RUN (ip $(tart ip "$RUN" 2>/dev/null || echo '?'))"
@@ -53,8 +54,14 @@ cleanup() {
   fi
   anubis_guard_clear_kept "$RUN"
   echo "[cleanup] stop + delete $RUN"
-  tart stop "$RUN" --timeout 5 >/dev/null 2>&1 || true
-  tart delete "$RUN" >/dev/null 2>&1 || true
+  local stop_rc=0 del_rc=0
+  tart stop "$RUN" --timeout 5 >/dev/null 2>&1 || stop_rc=$?
+  tart delete "$RUN" >/dev/null 2>&1 || del_rc=$?
+  if [[ $stop_rc -ne 0 || $del_rc -ne 0 ]] || ! anubis_guard_guest_absent "$RUN"; then
+    echo "FATAL: teardown failed for $RUN (stop_rc=$stop_rc delete_rc=$del_rc)" >&2
+    return 1
+  fi
+  echo "[cleanup] verified absent: $RUN"
 }
 trap cleanup EXIT
 
@@ -64,8 +71,10 @@ tart list 2>/dev/null | awk '{print $2}' | grep -qx "$BASE" || { echo "FATAL: go
 [ -f "$EXPECTED_FILE" ] || { echo "FATAL: missing $EXPECTED_FILE"; exit 1; }
 EXPECTED=$(grep -oE '[0-9a-f]{64}' "$EXPECTED_FILE" | head -1)
 [ -n "$EXPECTED" ] || { echo "FATAL: no fixpoint hash in $EXPECTED_FILE"; exit 1; }
-anubis_guard_preflight "$CPU" "$MEM"
+anubis_guard_preflight "$CPU" "$MEM" || exit $?
+anubis_guard_require_launchagent || exit $?
 anubis_guard_start_caffeinate $$
+anubis_guard_start_runtime_watch $$ || exit $?
 
 echo "[1/6] clone $BASE -> $RUN (APFS CoW, instant)"
 tart clone "$BASE" "$RUN"
@@ -82,11 +91,11 @@ done
 [ -n "${IP:-}" ] || { echo "FATAL: guest never reached SSH"; exit 1; }
 echo "      guest ip=$IP"
 
-echo "[3/6] rsync host working tree -> guest (delta; excl target/ out/)"
-RSYNC_RSH="ssh ${SSHOPTS[*]}" rsync -aH --delete --no-devices --no-specials \
-  --exclude 'target/' --exclude 'out/' --exclude 'implementer/a_plus_audit_run/' \
-  --exclude '.DS_Store' \
-  "$REPO/" "${USER_}@${IP}:anubis-lang/"
+echo "[3/6] rsync live source -> guest (exclude host-local build/agent/VM artifacts)"
+anubis_guard_sync_tree \
+  "ssh ${SSHOPTS[*]}" \
+  "$REPO/" \
+  "${USER_}@${IP}:anubis-lang/"
 
 echo "[4/6] run full gate battery in guest (this is the heavy part — in the capped VM)"
 ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'bash -s' <<'REMOTE'
@@ -218,6 +227,20 @@ if [ -z "${VMFP:-}" ]; then echo "  ✗ no fixpoint produced (seal did not run/f
 elif [ "$VMFP" != "$EXPECTED" ]; then
   echo "  ✗ FIXPOINT MOVED — investigate (real defect, or a deliberate re-baseline: update EXPECTED_FIXPOINT_VM)"; rc=1
 else echo "  ✓ fixpoint matches baseline"; fi
+
+# Teardown is part of the verdict, not an after-verdict best effort. A stopped
+# guest is still present and still owns host resources; only absence from Tart's
+# inventory seals this disposable run. `--keep` is a debugging mode and can
+# never emit the committable PASS below.
+trap - EXIT
+if [ "$KEEP" = 1 ]; then
+  cleanup
+  echo "  ✗ --keep requested: guest retained, so disposable-isolation seal is unavailable"
+  rc=1
+elif ! cleanup; then
+  echo "  ✗ guest teardown was not verified"
+  rc=1
+fi
 
 if [ "$rc" = 0 ]; then
   echo
