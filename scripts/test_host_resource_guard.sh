@@ -66,6 +66,7 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'printf "SSH_ARG=%s\n" "$@" >>"$ANUBIS_FAKE_SSH_LOG"' \
   '[[ "${ANUBIS_FAKE_SSH_FAIL:-0}" == 1 ]] && exit 1' \
+  'if [[ "${ANUBIS_FAKE_SSH_EXEC_ZSH:-0}" == 1 ]]; then command="${!#}"; HOME="$ANUBIS_FAKE_SSH_HOME" /bin/zsh -c "$command"; exit $?; fi' \
   'if [[ "${ANUBIS_FAKE_SSH_EXEC_LOCAL:-0}" == 1 ]]; then command="${!#}"; HOME="$ANUBIS_FAKE_SSH_HOME" bash -c "$command"; exit $?; fi' \
   'exit 0' \
   >"$TMP/sync-fakebin/ssh"
@@ -194,6 +195,20 @@ mv "$TMP/source/vm/pins/$PIN_NAME.saved" "$TMP/source/vm/pins/$PIN_NAME"
 [[ "$missing_pin_rc" -eq 2 ]] && ok=1 || ok=0
 record vm_sync_rejects_missing_selected_pin "$ok" "rc=$missing_pin_rc"
 
+mv "$TMP/source/vm/pins" "$TMP/source/vm/pins-real"
+ln -s pins-real "$TMP/source/vm/pins"
+set +e
+PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
+  ANUBIS_FAKE_SSH_LOG="$TMP/fake-ssh.log" \
+  anubis_guard_sync_tree "ssh -i fake-key" "$TMP/source/" "admin@guest:anubis-lang/" \
+  >/dev/null 2>&1
+source_pin_ancestor_rc=$?
+set -e
+rm "$TMP/source/vm/pins"
+mv "$TMP/source/vm/pins-real" "$TMP/source/vm/pins"
+[[ "$source_pin_ancestor_rc" -eq 2 ]] && ok=1 || ok=0
+record vm_sync_rejects_symlink_pin_ancestor "$ok" "rc=$source_pin_ancestor_rc"
+
 set +e
 PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
   ANUBIS_FAKE_SSH_LOG="$TMP/fake-ssh.log" ANUBIS_FAKE_SSH_FAIL=1 \
@@ -217,6 +232,33 @@ set -e
 [[ "$remote_ancestor_rc" -eq 2 ]] && ok=1 || ok=0
 record vm_sync_rejects_symlink_remote_ancestor "$ok" "rc=$remote_ancestor_rc"
 
+remote_pin_home="$TMP/remote-pin-symlink-home"
+mkdir -p "$remote_pin_home/anubis-lang/vm" "$remote_pin_home/outside-pins"
+ln -s "$remote_pin_home/outside-pins" "$remote_pin_home/anubis-lang/vm/pins"
+set +e
+PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
+  ANUBIS_FAKE_SSH_LOG="$TMP/fake-ssh.log" ANUBIS_FAKE_SSH_EXEC_ZSH=1 \
+  ANUBIS_FAKE_SSH_HOME="$remote_pin_home" \
+  anubis_guard_sync_tree "ssh -i fake-key" "$TMP/source/" \
+    "admin@guest:anubis-lang/" >/dev/null 2>&1
+remote_pin_symlink_rc=$?
+set -e
+[[ "$remote_pin_symlink_rc" -eq 2 ]] && ok=1 || ok=0
+record vm_sync_rejects_symlink_remote_pin_dir "$ok" "rc=$remote_pin_symlink_rc"
+
+zsh_home="$TMP/zsh-empty-pin-home"
+mkdir -p "$zsh_home/anubis-lang/vm/pins"
+set +e
+PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
+  ANUBIS_FAKE_SSH_LOG="$TMP/fake-ssh.log" ANUBIS_FAKE_SSH_EXEC_ZSH=1 \
+  ANUBIS_FAKE_SSH_HOME="$zsh_home" \
+  anubis_guard_sync_tree "ssh -i fake-key" "$TMP/source/" \
+    "admin@guest:anubis-lang/" >/dev/null 2>&1
+zsh_empty_pin_rc=$?
+set -e
+[[ "$zsh_empty_pin_rc" -eq 0 ]] && ok=1 || ok=0
+record vm_sync_accepts_empty_pin_archive_under_zsh "$ok" "rc=$zsh_empty_pin_rc"
+
 cleanup_home="$TMP/cleanup-home"
 cleanup_repo="$cleanup_home/anubis-lang"
 mkdir -p \
@@ -228,12 +270,15 @@ mkdir -p \
   "$cleanup_repo/.hermes/stale" \
   "$cleanup_repo/adversary/stale" \
   "$cleanup_repo/vm/exports/stale" \
-  "$cleanup_repo/scratchpad/stale" \
   "$cleanup_repo/vm/pins/junk-dir"
+mkdir -p "$cleanup_home/outside-scratchpad"
+printf 'outside\n' >"$cleanup_home/outside-scratchpad/keep"
+ln -s "$cleanup_home/outside-scratchpad" "$cleanup_repo/scratchpad"
 printf 'cache\n' >"$cleanup_repo/target/cache/keep"
 printf 'archive\n' >"$cleanup_repo/vm/pins/anubis-bbbbbbbbbbbb"
 printf 'old-meta\n' >"$cleanup_repo/vm/pins/anubis-bbbbbbbbbbbb.meta"
 printf 'malformed\n' >"$cleanup_repo/vm/pins/anubis-not-a-pin"
+printf 'hidden\n' >"$cleanup_repo/vm/pins/.hidden-junk"
 printf 'junk\n' >"$cleanup_repo/vm/pins/junk-dir/payload"
 ln -s "$cleanup_repo/target" "$cleanup_repo/vm/pins/anubis-cccccccccccc"
 printf 'old-current\n' >"$cleanup_repo/vm/pins/CURRENT"
@@ -254,9 +299,9 @@ cleanup_ok=1
 [[ -f "$cleanup_repo/vm/pins/anubis-bbbbbbbbbbbb" ]] || cleanup_ok=0
 for removed in \
   .git/worktrees/stale out/stale implementer/a_plus_audit_run/stale .claude/worktrees/stale \
-  .hermes/stale adversary/stale vm/exports/stale scratchpad/stale \
+  .hermes/stale adversary/stale vm/exports/stale scratchpad \
   vm/pins/anubis-bbbbbbbbbbbb.meta vm/pins/anubis-not-a-pin \
-  vm/pins/anubis-cccccccccccc vm/pins/junk-dir vm/pins/CURRENT; do
+  vm/pins/.hidden-junk vm/pins/anubis-cccccccccccc vm/pins/junk-dir vm/pins/CURRENT; do
   [[ ! -e "$cleanup_repo/$removed" ]] || cleanup_ok=0
 done
 [[ "${#cleanup_quarantines[@]}" -eq 1 ]] || cleanup_ok=0
@@ -264,9 +309,12 @@ if [[ "${#cleanup_quarantines[@]}" -eq 1 ]]; then
   [[ -d "${cleanup_quarantines[0]}/out" ]] || cleanup_ok=0
   [[ -d "${cleanup_quarantines[0]}/.git__worktrees" ]] || cleanup_ok=0
   [[ -f "${cleanup_quarantines[0]}/pin__anubis-not-a-pin" ]] || cleanup_ok=0
+  [[ -f "${cleanup_quarantines[0]}/pin__.hidden-junk" ]] || cleanup_ok=0
   [[ -d "${cleanup_quarantines[0]}/pin__junk-dir" ]] || cleanup_ok=0
   [[ -L "${cleanup_quarantines[0]}/pin__anubis-cccccccccccc" ]] || cleanup_ok=0
+  [[ -L "${cleanup_quarantines[0]}/scratchpad" ]] || cleanup_ok=0
 fi
+[[ -f "$cleanup_home/outside-scratchpad/keep" ]] || cleanup_ok=0
 record vm_sync_cleanup_preserves_only_guest_cache "$cleanup_ok" \
   "rc=$cleanup_rc host-only trees quarantined"
 

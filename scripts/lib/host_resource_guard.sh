@@ -73,6 +73,13 @@ anubis_guard_sync_tree() {
     echo "ANUBIS_HOST_GUARD_SYNC_SOURCE: source must be a real directory: $source" >&2
     return 2
   fi
+  local pin_dir
+  for pin_dir in "$source_root/vm" "$source_root/vm/pins"; do
+    if [[ ! -d "$pin_dir" || -L "$pin_dir" ]]; then
+      echo "ANUBIS_HOST_GUARD_SYNC_PIN: pin path ancestor is missing or symlinked: $pin_dir" >&2
+      return 2
+    fi
+  done
   if [[ ! -f "$source_root/vm/pins/CURRENT" || -L "$source_root/vm/pins/CURRENT" ]]; then
     echo "ANUBIS_HOST_GUARD_SYNC_PIN: CURRENT is missing, non-regular, or symlinked" >&2
     return 2
@@ -124,7 +131,7 @@ anubis_guard_sync_tree() {
   # Do not recursively delete excluded forests here: scanning a 48-GiB base cache exhausted host
   # headroom. The disposable clone's final deletion reclaims the quarantine.
   if ! "${rsh_argv[@]}" "$remote_host" \
-    "set -u; root=\"\$HOME/$remote_rel\"; q=\$(mktemp -d \"\$HOME/.anubis-sync-quarantine.XXXXXX\") || exit 42; for spec in .git/worktrees=.git__worktrees out=out implementer/a_plus_audit_run=implementer__a_plus_audit_run .claude/worktrees=.claude__worktrees .hermes=.hermes adversary=adversary vm/exports=vm__exports scratchpad=scratchpad; do rel=\${spec%%=*}; name=\${spec#*=}; src=\"\$root/\$rel\"; if test -e \"\$src\" || test -L \"\$src\"; then mv \"\$src\" \"\$q/\$name\" || exit 42; fi; done; mkdir -p \"\$root/vm/pins\" || exit 42; for p in \"\$root/vm/pins/\"*; do if ! test -e \"\$p\" && ! test -L \"\$p\"; then continue; fi; base=\${p##*/}; case \"\$base\" in anubis-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) if test -f \"\$p\" && test ! -L \"\$p\"; then continue; fi ;; esac; mv \"\$p\" \"\$q/pin__\$base\" || exit 42; done; rm -f -- \"\$root/.DS_Store\" || exit 42"; then
+    "set -u; root=\"\$HOME/$remote_rel\"; q=\$(mktemp -d \"\$HOME/.anubis-sync-quarantine.XXXXXX\") || exit 42; for spec in .git/worktrees=.git__worktrees out=out implementer/a_plus_audit_run=implementer__a_plus_audit_run .claude/worktrees=.claude__worktrees .hermes=.hermes adversary=adversary vm/exports=vm__exports scratchpad=scratchpad; do rel=\${spec%%=*}; name=\${spec#*=}; src=\"\$root/\$rel\"; if test -e \"\$src\" || test -L \"\$src\"; then mv \"\$src\" \"\$q/\$name\" || exit 42; fi; done; test -d \"\$root/vm\" && test ! -L \"\$root/vm\" || exit 42; if test -e \"\$root/vm/pins\" || test -L \"\$root/vm/pins\"; then test -d \"\$root/vm/pins\" && test ! -L \"\$root/vm/pins\" || exit 42; else mkdir \"\$root/vm/pins\" || exit 42; fi; setopt NULL_GLOB 2>/dev/null || :; for p in \"\$root/vm/pins/\"* \"\$root/vm/pins/\".[!.]* \"\$root/vm/pins/\"..?*; do if ! test -e \"\$p\" && ! test -L \"\$p\"; then continue; fi; base=\${p##*/}; case \"\$base\" in anubis-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) if test -f \"\$p\" && test ! -L \"\$p\"; then continue; fi ;; esac; mv \"\$p\" \"\$q/pin__\$base\" || exit 42; done; rm -f -- \"\$root/.DS_Store\" || exit 42"; then
     echo "ANUBIS_HOST_GUARD_SYNC_CLEANUP: could not quarantine host-only guest artifacts" >&2
     return 2
   fi
