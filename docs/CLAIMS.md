@@ -788,7 +788,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
     | `listener.rs` unvalidated module names | **CLOSED** | `is_valid_agent_module()` filters `modules::catalog()` to `side == "agent"`; three tests, incl. over-rejection and operator-only rejection |
     | `modules.rs` catalog ↔ `agent.rs:run_module` | **CLOSED** (this entry) | three parity tests in `agent.rs`, both directions plus a stale-exemption guard — see below |
     | evidence `kind` underscores vs `aop_surface` hyphens | **CLOSED** | `map_action` keys on delimiter-free substrings (`engage`, `recon`, `exploit`, …), so both spellings reach the same IDs; `map_action_engage_init_maps_to_t1583` pins `engage-init` **and** `engage_init`. Verified across the catalog's underscore names: `recon_scan`, `exploit_run`, `persist_launchagent`, `lateral_ssh`, `lateral_smb`, `string_scramble`, `xor_pack`, `malleable_profile`, `phish_plan`, `lolbas_catalog`, `inject_plan`, `vz_exploit`, `vz_fuzz` all map |
-    | `malleable.rs` `transform` validated-but-never-read | **OPEN** | still only written, defaulted and asserted in a test; the listener hard-codes its headers independently |
+    | `malleable.rs` `transform` validated-but-never-read | **SUPERSEDED by 19a below** — closed as "never read" in `fded3c85` (the listener now applies it), and closing it that way opened a worse defect | see 19a |
 
     **The catalog↔dispatch instance was worse than first recorded, and the record was wrong about
     why.** It was filed as "independent enumerations, agree today, no validation either way". The
@@ -851,6 +851,44 @@ never terminates is a check/run divergence of a different kind, and is being cha
     typed struct — though its `transform` field turns out to be validated-but-never-read, with the
     listener hard-coding its headers independently. A different disease, recorded here so it is not
     lost.
+
+19a. **The malleable `transform` is ONE-DIRECTIONAL — OPEN, live in the published tree
+    (2026-07-29).**
+
+    Closing 19's `transform` residual by wiring `apply_transform` into the listener
+    (`fded3c85`, pushed) removed a dead field and introduced two defects the dead field did not
+    have. **Inert is harmless; one-directional is a silent break.** Recorded against the
+    committed tree, not against a fix — the fix is WIP in the working tree and unsealed, so this
+    entry stands until a seal says otherwise.
+
+    | # | defect | witness |
+    |---|---|---|
+    | 1 | **No inverse exists anywhere.** `listener.rs` transforms every beacon response (`encode_response`); nothing reverses it. `grep -rn 'unapply\|untransform\|decode_transform' tools/anubis/src` returns nothing. The beacon's own base64 (`agent.rs` B64 encode/decode) is the CRYPTO ENVELOPE, a different layer. | a profile with `transform: "base64"` or `"prepend_junk"` makes the listener emit a body the beacon cannot parse — **silent C2 failure**, surfacing only once an operator writes a non-default profile |
+    | 2 | **`validate()` never constrained `transform`**, and `apply_transform`'s `_ =>` arm returns identity. | `"base64 "` (trailing space) or `"xor"` are accepted and silently shape nothing while the operator believes the profile is live — the fail-open-on-declaration pattern closed for unknown attributes in `ec65724` |
+    | 3 | **`load_from_engage` ended in `.ok()`**, collapsing a REJECTED profile to `None`. | the listener came up unprofiled and reported nothing wrong. Consequence for any fix: **adding validation alone is inert**, because the only consumer swallows the error |
+
+    Defect 3 is the one worth carrying forward as a rule. It is the same producer/consumer split
+    as the rest of item 19, one layer up: enforcement was added at the producer while the single
+    consumer discarded the result. **When adding a check, verify the consumer does not swallow
+    it** — otherwise the check is decorative and the board still reads green.
+
+    **Fix shape (WIP, working tree, NOT sealed and NOT committed):** the same parity shape used
+    for the ATT&CK catalog — `KNOWN_TRANSFORMS` + `TRANSFORMS_WITH_BEACON_INVERSE` (only `none`
+    today), `validate()` rejecting the two classes with distinct errors
+    (`ANUBIS_MALLEABLE_TRANSFORM_UNKNOWN` / `_NO_INVERSE`), `load_from_engage` returning
+    `Result<Option<_>>`, and a parity test asserting every KNOWN transform has a non-identity arm.
+
+    **Verification boundary, stated exactly.** The negative-control matrix (5 transform values,
+    each producing its correct distinct error) was run against the **mutable, unsealed** release
+    binary `d0394c6397…`. The published pin `be1db3a34b77…` **accepts `base64`** — it predates
+    the change — and `publish_pin.sh --verify` fails on source-tree hash, so **no pinned
+    instrument can currently measure this**. The listener consumer path is **unexecuted**: host
+    `listen` is refused by `ANUBIS_OFFENSIVE_HOST_FORBIDDEN` before engagement or profile loading
+    is reached, so ordering (`listener.rs` loads the profile before it binds) plus a passing
+    loader regression is **inference, not execution**. End-to-end requires
+    `run_offensive_platform_gate.sh` in a guest; the VM seal is blocked on admission headroom
+    (`free≈16.5 GiB` vs the guard's `20480 MiB`). Status: **WIP — non-VM checks passed, VM
+    verification blocked.**
 
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
