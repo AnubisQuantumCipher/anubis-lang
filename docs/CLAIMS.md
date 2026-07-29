@@ -1138,6 +1138,31 @@ never terminates is a check/run divergence of a different kind, and is being cha
     on `Stmt::Let` and both `Stmt::Assign` arms. Both `Assign` arms in that walker currently update
     only `b.secret` (`:22748-22783`). Estimating this as a small patch would be wrong.
 
+    **Row 1, refined by source reading 2026-07-29 — the exclusion is DELIBERATE, and a naive fix
+    over-rejects.** `collect_unconditional_param_contract_stmts` (`:17883-17956`) does not *fail* to
+    walk bodies; it **names them as ignore-patterns**: `Stmt::If { then: _, else_: _ }`,
+    `Stmt::While { body: _ }`, `Stmt::For { body: _ }`, `Stmt::WhileLet { body: _ }`, and
+    `Stmt::Loop { body: _ } => {}`. Its expression twin does the same:
+    `Expr::IfLet { then: _, else_: _ }` walks only the scrutinee and `Expr::Lambda { body: _ }`
+    ignores the body — while plain `Expr::Block` **is** recursed (`:18074`). The rule is exact:
+    *plain blocks are walked; anything guarded or deferred is excluded.* The function name states
+    the premise — it collects only **unconditionally executed** applications.
+
+    **That premise is the defect.** For a *precondition obligation*, a call that MIGHT execute
+    carries exactly the same obligation as one that does; collecting only unconditional
+    applications is fail-open by construction. The DIRECT lane already gets this right — it calls
+    `discharge_calls_in_expr(ctx, assumptions, scope, expr)` per statement with the branch guard in
+    scope, which is precisely why the verifiers measured the direct twin **rejecting** inside
+    `if 1 == 1 { }` and **accepting** inside a dead `if 1 == 2 { }`. The carrier lane bypasses that
+    machinery with this weaker pre-collection.
+
+    **So the fix is not "add the missing arms."** Walking the bodies without carrying the path
+    condition would reject the dead-branch case that the direct lane correctly accepts — trading a
+    false accept for a false reject. The correct change is to make the carrier lane **reuse the
+    direct lane's path-condition-aware discharge** rather than pre-collect with a separate
+    "unconditional" walker. Recorded before anyone starts, because the mechanical reading of row 1
+    leads straight to an over-rejection regression.
+
     **Row 8 is the Phase-2 discipline not having reached this walker.** `carrier.rs` and
     `loopctl.rs` were made total so a new variant fails to compile; `place_struct_type` still ends
     in `_ => None`, and `Expr::Index` fell straight through it. The fix shape already exists in the
