@@ -6647,7 +6647,8 @@ fn main() {
             "ANUBIS_POC_KIT_VZ_REQUIRED",
             "host_resource_guard.sh",
             "anubis_guard_sync_tree",
-            "tart delete",
+            "anubis_guard_teardown_guest",
+            "anubis_guard_require_torn_down",
         ] {
             assert!(
                 script.contains(marker),
@@ -6661,7 +6662,11 @@ fn main() {
         .expect("scripts/lib/host_resource_guard.sh must exist");
         for marker in [
             "--no-specials",
-            "--delete-excluded",
+            "--checksum",
+            "--no-times",
+            "ANUBIS_HOST_GUARD_SYNC_CLEANUP",
+            "Preserve target/ as the sole excluded guest cache",
+            "vm/pins/$current_pin_name",
             "implementer/a_plus_audit_run/",
         ] {
             assert!(

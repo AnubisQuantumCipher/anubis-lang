@@ -145,10 +145,7 @@ run_in_guest() {
       [[ -n "$tf" ]] && echo "kept" >"$tf"
     else
       anubis_guard_clear_kept "$g"
-      local stop_rc=0 del_rc=0
-      tart stop "$g" --timeout 5 >/dev/null 2>&1 || stop_rc=$?
-      tart delete "$g" >/dev/null 2>&1 || del_rc=$?
-      if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]] && anubis_guard_guest_absent "$g"; then
+      if anubis_guard_teardown_guest "$g"; then
         [[ -n "$tf" ]] && echo "torn_down" >"$tf"
       else
         [[ -n "$tf" ]] && echo "teardown_failed" >"$tf"
@@ -331,6 +328,7 @@ PY
   trap - EXIT
   local teardown_final
   teardown_final="$(cat "$teardown_file" 2>/dev/null || echo unknown)"
+  anubis_guard_require_torn_down "$teardown_final" || return 1
   if [[ -f "$iso_path" ]]; then
     python3 - "$iso_path" "$teardown_final" <<'PY'
 import json, sys

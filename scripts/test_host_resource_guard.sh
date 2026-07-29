@@ -46,15 +46,16 @@ free_mib="$(printf '%s\n' "$vm_fixture" | anubis_guard_free_mib_from_vm_stat)"
 [[ "$free_mib" == 9216 ]] && ok=1 || ok=0
 record free_parser "$ok" "immediately_free_mib=$free_mib"
 
-# Repository sync into disposable guests must copy the live source tree without
-# traversing local build products, agent worktrees, VM binary archives, exports,
-# or scratch evidence. Those forests are not gate inputs and can be tens of GiB;
-# touching them filled the host file cache until the runtime breaker correctly
-# killed the guest before a single gate ran. Exercise the shared sync seam with a
-# fake rsync so this regression stays fast and cannot allocate a real VM.
+# Repository sync into disposable guests copies the live source plus exactly the selected pin,
+# removes host-only evidence/worktree paths, and preserves the warm guest target cache. Recursive
+# deletion of that 48-GiB cache filled host memory until the breaker stopped the guest. Exercise the
+# shared seam with fake rsync/SSH so this regression stays fast and cannot allocate a real VM.
 mkdir -p "$TMP/sync-fakebin"
 mkdir -p "$TMP/source/vm/pins"
-printf 'pin\n' >"$TMP/source/vm/pins/CURRENT"
+PIN_NAME=anubis-aaaaaaaaaaaa
+printf 'vm/pins/%s\n' "$PIN_NAME" >"$TMP/source/vm/pins/CURRENT"
+printf 'binary\n' >"$TMP/source/vm/pins/$PIN_NAME"
+printf 'meta\n' >"$TMP/source/vm/pins/$PIN_NAME.meta"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'printf "RSH=%s\n" "${RSYNC_RSH:-}" >"$ANUBIS_FAKE_RSYNC_LOG"' \
@@ -86,15 +87,18 @@ else
   sync_ok=0
 fi
 for excluded in \
-  target/ out/ implementer/a_plus_audit_run/ .claude/worktrees/ \
-  'vm/pins/*' vm/exports/ scratchpad/ .DS_Store; do
+  /target/ /out/ /implementer/a_plus_audit_run/ /.claude/worktrees/ '/.git/worktrees/***' \
+  /.hermes/ /adversary/ '/vm/pins/*' /vm/exports/ /scratchpad/ /.DS_Store; do
   grep -Fxq "ARG=--exclude=$excluded" "$TMP/fake-rsync.log" || sync_ok=0
 done
-for included in vm/pins/ 'vm/pins/*.meta' vm/pins/CURRENT; do
+for included in /vm/pins/ /vm/pins/CURRENT "/vm/pins/$PIN_NAME" "/vm/pins/$PIN_NAME.meta"; do
   grep -Fxq "ARG=--include=$included" "$TMP/fake-rsync.log" || sync_ok=0
 done
 grep -Fxq 'RSH=ssh -i fake-key' "$TMP/fake-rsync.log" || sync_ok=0
-grep -Fxq 'ARG=--delete-excluded' "$TMP/fake-rsync.log" || sync_ok=0
+grep -Fxq 'ARG=--checksum' "$TMP/fake-rsync.log" || sync_ok=0
+grep -Fxq 'ARG=--no-times' "$TMP/fake-rsync.log" || sync_ok=0
+grep -Fxq 'ARG=--delete' "$TMP/fake-rsync.log" || sync_ok=0
+if grep -Fxq 'ARG=--delete-excluded' "$TMP/fake-rsync.log"; then sync_ok=0; fi
 grep -Fxq "ARG=$TMP/source/" "$TMP/fake-rsync.log" || sync_ok=0
 grep -Fxq 'ARG=admin@guest:anubis-lang/' "$TMP/fake-rsync.log" || sync_ok=0
 grep -Fq 'SSH_ARG=admin@guest' "$TMP/fake-ssh.log" || sync_ok=0
@@ -105,8 +109,41 @@ for driver in \
   grep -Fq 'anubis_guard_sync_tree' "$ROOT/$driver" || sync_ok=0
   grep -Fq 'anubis_guard_start_runtime_watch' "$ROOT/$driver" || sync_ok=0
   grep -Fq 'anubis_guard_stop_runtime_watch' "$ROOT/$driver" || sync_ok=0
+  grep -Fq 'anubis_guard_teardown_guest' "$ROOT/$driver" || sync_ok=0
+  if [[ "$driver" != scripts/vm/run-slice.sh ]]; then
+    grep -Fq 'anubis_guard_require_torn_down "$teardown_final" || return 1' \
+      "$ROOT/$driver" || sync_ok=0
+  fi
 done
 record vm_sync_excludes_artifacts "$sync_ok" "rc=$sync_rc"
+
+filter_src="$TMP/filter-src"
+filter_dst="$TMP/filter-dst"
+mkdir -p "$filter_src/nested/out" "$filter_src/nested/target" \
+  "$filter_src/nested/.git/worktrees" "$filter_src/.git" \
+  "$filter_dst/nested/out" "$filter_dst/nested/target" \
+  "$filter_dst/nested/.git/worktrees" "$filter_dst/target" "$filter_dst/.git/worktrees"
+printf 'current\n' >"$filter_src/nested/out/current"
+printf 'current\n' >"$filter_src/nested/target/current"
+printf 'stale\n' >"$filter_dst/nested/out/stale"
+printf 'stale\n' >"$filter_dst/nested/target/stale"
+printf 'current\n' >"$filter_src/nested/.git/worktrees/current"
+printf 'stale\n' >"$filter_dst/nested/.git/worktrees/stale"
+printf 'warm\n' >"$filter_dst/target/warm-cache"
+printf 'root-metadata\n' >"$filter_dst/.git/worktrees/root-metadata"
+printf 'source-parent\n' >"$filter_src/.git/source-parent"
+rsync -a --delete --exclude=/target/ --exclude=/out/ --exclude='/.git/worktrees/***' \
+  "$filter_src/" "$filter_dst/"
+if [[ -f "$filter_dst/nested/out/current" && -f "$filter_dst/nested/target/current" \
+  && -f "$filter_dst/nested/.git/worktrees/current" \
+  && ! -e "$filter_dst/nested/out/stale" && ! -e "$filter_dst/nested/target/stale" \
+  && ! -e "$filter_dst/nested/.git/worktrees/stale" \
+  && -f "$filter_dst/target/warm-cache" && -f "$filter_dst/.git/worktrees/root-metadata" ]]; then
+  ok=1
+else
+  ok=0
+fi
+record vm_sync_filters_are_root_anchored "$ok" "nested source synchronized; root target preserved"
 
 ln -s "$TMP/source" "$TMP/source-link"
 set +e
@@ -141,9 +178,21 @@ PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
 symlink_pin_rc=$?
 set -e
 rm "$TMP/source/vm/pins/CURRENT"
-printf 'pin\n' >"$TMP/source/vm/pins/CURRENT"
+printf 'vm/pins/%s\n' "$PIN_NAME" >"$TMP/source/vm/pins/CURRENT"
 [[ "$symlink_pin_rc" -eq 2 ]] && ok=1 || ok=0
 record vm_sync_rejects_symlink_pin_manifest "$ok" "rc=$symlink_pin_rc"
+
+mv "$TMP/source/vm/pins/$PIN_NAME" "$TMP/source/vm/pins/$PIN_NAME.saved"
+set +e
+PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
+  ANUBIS_FAKE_SSH_LOG="$TMP/fake-ssh.log" \
+  anubis_guard_sync_tree "ssh -i fake-key" "$TMP/source/" "admin@guest:anubis-lang/" \
+  >/dev/null 2>&1
+missing_pin_rc=$?
+set -e
+mv "$TMP/source/vm/pins/$PIN_NAME.saved" "$TMP/source/vm/pins/$PIN_NAME"
+[[ "$missing_pin_rc" -eq 2 ]] && ok=1 || ok=0
+record vm_sync_rejects_missing_selected_pin "$ok" "rc=$missing_pin_rc"
 
 set +e
 PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
@@ -167,6 +216,90 @@ remote_ancestor_rc=$?
 set -e
 [[ "$remote_ancestor_rc" -eq 2 ]] && ok=1 || ok=0
 record vm_sync_rejects_symlink_remote_ancestor "$ok" "rc=$remote_ancestor_rc"
+
+cleanup_home="$TMP/cleanup-home"
+cleanup_repo="$cleanup_home/anubis-lang"
+mkdir -p \
+  "$cleanup_repo/target/cache" \
+  "$cleanup_repo/.git/worktrees/stale" \
+  "$cleanup_repo/out/stale" \
+  "$cleanup_repo/implementer/a_plus_audit_run/stale" \
+  "$cleanup_repo/.claude/worktrees/stale" \
+  "$cleanup_repo/.hermes/stale" \
+  "$cleanup_repo/adversary/stale" \
+  "$cleanup_repo/vm/exports/stale" \
+  "$cleanup_repo/scratchpad/stale" \
+  "$cleanup_repo/vm/pins/junk-dir"
+printf 'cache\n' >"$cleanup_repo/target/cache/keep"
+printf 'archive\n' >"$cleanup_repo/vm/pins/anubis-bbbbbbbbbbbb"
+printf 'old-meta\n' >"$cleanup_repo/vm/pins/anubis-bbbbbbbbbbbb.meta"
+printf 'malformed\n' >"$cleanup_repo/vm/pins/anubis-not-a-pin"
+printf 'junk\n' >"$cleanup_repo/vm/pins/junk-dir/payload"
+ln -s "$cleanup_repo/target" "$cleanup_repo/vm/pins/anubis-cccccccccccc"
+printf 'old-current\n' >"$cleanup_repo/vm/pins/CURRENT"
+set +e
+PATH="$TMP/sync-fakebin:$PATH" ANUBIS_FAKE_RSYNC_LOG="$TMP/fake-rsync.log" \
+  ANUBIS_FAKE_SSH_LOG="$TMP/fake-ssh.log" ANUBIS_FAKE_SSH_EXEC_LOCAL=1 \
+  ANUBIS_FAKE_SSH_HOME="$cleanup_home" \
+  anubis_guard_sync_tree "ssh -i fake-key" "$TMP/source/" \
+    "admin@guest:anubis-lang/" >/dev/null 2>&1
+cleanup_rc=$?
+set -e
+shopt -s nullglob
+cleanup_quarantines=("$cleanup_home"/.anubis-sync-quarantine.*)
+shopt -u nullglob
+cleanup_ok=1
+[[ "$cleanup_rc" -eq 0 ]] || cleanup_ok=0
+[[ -f "$cleanup_repo/target/cache/keep" ]] || cleanup_ok=0
+[[ -f "$cleanup_repo/vm/pins/anubis-bbbbbbbbbbbb" ]] || cleanup_ok=0
+for removed in \
+  .git/worktrees/stale out/stale implementer/a_plus_audit_run/stale .claude/worktrees/stale \
+  .hermes/stale adversary/stale vm/exports/stale scratchpad/stale \
+  vm/pins/anubis-bbbbbbbbbbbb.meta vm/pins/anubis-not-a-pin \
+  vm/pins/anubis-cccccccccccc vm/pins/junk-dir vm/pins/CURRENT; do
+  [[ ! -e "$cleanup_repo/$removed" ]] || cleanup_ok=0
+done
+[[ "${#cleanup_quarantines[@]}" -eq 1 ]] || cleanup_ok=0
+if [[ "${#cleanup_quarantines[@]}" -eq 1 ]]; then
+  [[ -d "${cleanup_quarantines[0]}/out" ]] || cleanup_ok=0
+  [[ -d "${cleanup_quarantines[0]}/.git__worktrees" ]] || cleanup_ok=0
+  [[ -f "${cleanup_quarantines[0]}/pin__anubis-not-a-pin" ]] || cleanup_ok=0
+  [[ -d "${cleanup_quarantines[0]}/pin__junk-dir" ]] || cleanup_ok=0
+  [[ -L "${cleanup_quarantines[0]}/pin__anubis-cccccccccccc" ]] || cleanup_ok=0
+fi
+record vm_sync_cleanup_preserves_only_guest_cache "$cleanup_ok" \
+  "rc=$cleanup_rc host-only trees quarantined"
+
+set +e
+(
+  anubis_guard_tart_stop() { return 2; }
+  anubis_guard_tart_delete() { return 0; }
+  anubis_guard_guest_absent() { return 0; }
+  anubis_guard_teardown_guest anubis-run-1 >/dev/null
+)
+already_stopped_rc=$?
+(
+  anubis_guard_tart_stop() { return 0; }
+  anubis_guard_tart_delete() { return 0; }
+  anubis_guard_guest_absent() { return 1; }
+  anubis_guard_teardown_guest anubis-run-1 >/dev/null 2>&1
+)
+survived_rc=$?
+set -e
+[[ "$already_stopped_rc" -eq 0 ]] && ok=1 || ok=0
+record teardown_accepts_pre_stopped_absent "$ok" "rc=$already_stopped_rc"
+[[ "$survived_rc" -ne 0 ]] && ok=1 || ok=0
+record teardown_rejects_surviving_guest "$ok" "rc=$survived_rc"
+
+set +e
+anubis_guard_require_torn_down torn_down >/dev/null 2>&1
+torn_down_rc=$?
+anubis_guard_require_torn_down teardown_failed >/dev/null 2>&1
+teardown_failed_rc=$?
+set -e
+[[ "$torn_down_rc" -eq 0 && "$teardown_failed_rc" -ne 0 ]] && ok=1 || ok=0
+record teardown_status_is_exact "$ok" \
+  "torn_down_rc=$torn_down_rc teardown_failed_rc=$teardown_failed_rc"
 
 for name in anubis-run-123 anubis-offensive-gate-456 anubis-poc-kit-gate-789 anubis-vz-ephemeral-42; do
   pid="$(anubis_guard_generated_owner_pid "$name" 2>/dev/null || true)"

@@ -45,8 +45,9 @@ anubis_guard_validate_vm_limits() {
 }
 
 # Copy the live repository into a disposable guest without traversing host-local
-# artifact forests. These paths are not build/gate inputs: they are shared build
-# outputs, agent worktrees, archived binary pins/exports, or scratch evidence.
+# artifact forests. The selected immutable pin is copied; archived pins stay untouched. The guest
+# target cache is deliberately preserved, while agent worktrees, exports, and scratch evidence are
+# removed explicitly before sync.
 # Keeping this seam here makes the full slice and offensive gate use one policy;
 # a new launcher cannot silently reintroduce the measured 36-GiB cache blowout.
 anubis_guard_sync_tree() {
@@ -55,7 +56,8 @@ anubis_guard_sync_tree() {
     return 2
   fi
   local rsh="$1" source="$2" destination="$3" source_root remote_host remote_path remote_rel
-  local -a rsh_argv pin_manifests
+  local current_pin_ref current_pin_name current_pin_path current_meta manifest
+  local -a rsh_argv
   source_root="${source%/}"
   if [[ "$source_root" != /* ]]; then source_root="$PWD/$source_root"; fi
   local source_component="$source_root"
@@ -71,13 +73,21 @@ anubis_guard_sync_tree() {
     echo "ANUBIS_HOST_GUARD_SYNC_SOURCE: source must be a real directory: $source" >&2
     return 2
   fi
-  shopt -s nullglob
-  pin_manifests=("$source_root"/vm/pins/CURRENT "$source_root"/vm/pins/*.meta)
-  shopt -u nullglob
-  local manifest
-  for manifest in "${pin_manifests[@]}"; do
-    if [[ -L "$manifest" ]]; then
-      echo "ANUBIS_HOST_GUARD_SYNC_SYMLINK: refusing pin manifest symlink: $manifest" >&2
+  if [[ ! -f "$source_root/vm/pins/CURRENT" || -L "$source_root/vm/pins/CURRENT" ]]; then
+    echo "ANUBIS_HOST_GUARD_SYNC_PIN: CURRENT is missing, non-regular, or symlinked" >&2
+    return 2
+  fi
+  IFS= read -r current_pin_ref <"$source_root/vm/pins/CURRENT" || return 2
+  if [[ ! "$current_pin_ref" =~ ^(vm/pins/)?anubis-[0-9a-f]{12}$ ]]; then
+    echo "ANUBIS_HOST_GUARD_SYNC_PIN: invalid CURRENT value" >&2
+    return 2
+  fi
+  current_pin_name="${current_pin_ref##*/}"
+  current_pin_path="$source_root/vm/pins/$current_pin_name"
+  current_meta="$current_pin_path.meta"
+  for manifest in "$current_pin_path" "$current_meta"; do
+    if [[ ! -f "$manifest" || -L "$manifest" ]]; then
+      echo "ANUBIS_HOST_GUARD_SYNC_PIN: selected pin component missing/non-regular/symlinked: $manifest" >&2
       return 2
     fi
   done
@@ -109,18 +119,31 @@ anubis_guard_sync_tree() {
     echo "ANUBIS_HOST_GUARD_SYNC_DESTINATION: remote tree is missing or symlinked" >&2
     return 2
   fi
-  RSYNC_RSH="$rsh" rsync -aH --delete --delete-excluded --no-devices --no-specials \
-    --exclude=target/ \
-    --exclude=out/ \
-    --exclude=implementer/a_plus_audit_run/ \
-    --exclude=.claude/worktrees/ \
-    --include=vm/pins/ \
-    --include='vm/pins/*.meta' \
-    --include=vm/pins/CURRENT \
-    --exclude='vm/pins/*' \
-    --exclude=vm/exports/ \
-    --exclude=scratchpad/ \
-    --exclude=.DS_Store \
+  # Preserve target/ as the sole excluded guest cache. Atomically quarantine every host-only
+  # evidence/worktree tree outside the repository so the synced tree cannot see stale copies.
+  # Do not recursively delete excluded forests here: scanning a 48-GiB base cache exhausted host
+  # headroom. The disposable clone's final deletion reclaims the quarantine.
+  if ! "${rsh_argv[@]}" "$remote_host" \
+    "set -u; root=\"\$HOME/$remote_rel\"; q=\$(mktemp -d \"\$HOME/.anubis-sync-quarantine.XXXXXX\") || exit 42; for spec in .git/worktrees=.git__worktrees out=out implementer/a_plus_audit_run=implementer__a_plus_audit_run .claude/worktrees=.claude__worktrees .hermes=.hermes adversary=adversary vm/exports=vm__exports scratchpad=scratchpad; do rel=\${spec%%=*}; name=\${spec#*=}; src=\"\$root/\$rel\"; if test -e \"\$src\" || test -L \"\$src\"; then mv \"\$src\" \"\$q/\$name\" || exit 42; fi; done; mkdir -p \"\$root/vm/pins\" || exit 42; for p in \"\$root/vm/pins/\"*; do if ! test -e \"\$p\" && ! test -L \"\$p\"; then continue; fi; base=\${p##*/}; case \"\$base\" in anubis-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) if test -f \"\$p\" && test ! -L \"\$p\"; then continue; fi ;; esac; mv \"\$p\" \"\$q/pin__\$base\" || exit 42; done; rm -f -- \"\$root/.DS_Store\" || exit 42"; then
+    echo "ANUBIS_HOST_GUARD_SYNC_CLEANUP: could not quarantine host-only guest artifacts" >&2
+    return 2
+  fi
+  RSYNC_RSH="$rsh" rsync -aH --checksum --no-times --delete --no-devices --no-specials \
+    --exclude=/target/ \
+    --exclude=/out/ \
+    --exclude=/implementer/a_plus_audit_run/ \
+    --exclude=/.claude/worktrees/ \
+    --exclude='/.git/worktrees/***' \
+    --exclude=/.hermes/ \
+    --exclude=/adversary/ \
+    --include=/vm/pins/ \
+    --include=/vm/pins/CURRENT \
+    --include="/vm/pins/$current_pin_name" \
+    --include="/vm/pins/$current_pin_name.meta" \
+    --exclude='/vm/pins/*' \
+    --exclude=/vm/exports/ \
+    --exclude=/scratchpad/ \
+    --exclude=/.DS_Store \
     -- "$source" "$destination"
 }
 
@@ -241,6 +264,34 @@ anubis_guard_guest_absent() {
       return 1
     fi
   done <<<"$rows"
+}
+
+# Stop/delete a generated guest and grade the final observable state, not the stop command's
+# intermediate status. The runtime breaker may have already stopped the VM; that is safe when
+# deletion succeeds and the inventory proves the guest absent.
+anubis_guard_teardown_guest() {
+  if [[ $# -ne 1 || -z "$1" ]]; then
+    echo "ANUBIS_HOST_GUARD_INVALID: teardown_guest requires a guest name" >&2
+    return 2
+  fi
+  local guest="$1" stop_rc=0 delete_rc=0
+  anubis_guard_tart_stop "$guest" || stop_rc=$?
+  anubis_guard_tart_delete "$guest" || delete_rc=$?
+  if anubis_guard_guest_absent "$guest"; then
+    printf 'ANUBIS_HOST_GUARD_TEARDOWN: PASS guest=%s stop_rc=%s delete_rc=%s\n' \
+      "$guest" "$stop_rc" "$delete_rc"
+    return 0
+  fi
+  echo "ANUBIS_HOST_GUARD_TEARDOWN: FAIL guest=$guest stop_rc=$stop_rc delete_rc=$delete_rc" >&2
+  return 1
+}
+
+anubis_guard_require_torn_down() {
+  if [[ "${1:-}" == "torn_down" ]]; then
+    return 0
+  fi
+  echo "ANUBIS_HOST_GUARD_TEARDOWN: final status is not torn_down: ${1:-missing}" >&2
+  return 1
 }
 
 anubis_guard_start_caffeinate() {

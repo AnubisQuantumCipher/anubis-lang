@@ -54,6 +54,13 @@ It does **not** commit. On PASS it prints the `git` command; you commit on the h
 deliberately (a commit is a human-authored act, and `git commit` is not a heavy
 build, so it is safe on the host).
 
+Guest sync preserves the golden image's warm `target/` cache, then overwrites the selected CLI and
+rebuilds against checksum-compared source; transferred files get current mtimes so Cargo cannot
+mistake changed source for an older cached output. It explicitly removes host-only `out/`, agent-worktree,
+adversary, export, and scratch trees instead of using recursive `--delete-excluded` over the
+48-GiB cache. `vm/pins/` copies only `CURRENT`, that selected immutable binary, and its metadata;
+archived guest pin binaries remain untouched and cannot become current.
+
 Every host-side gate also runs `caffeinate -dimsu -w <gate-pid>` so macOS cannot
 enter idle sleep/standby while the disposable guest is active. The persistent
 guard is installed as `~/Library/LaunchAgents/com.anubis.host-resource-guard.plist`

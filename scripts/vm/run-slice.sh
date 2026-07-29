@@ -54,11 +54,8 @@ cleanup() {
   fi
   anubis_guard_clear_kept "$RUN"
   echo "[cleanup] stop + delete $RUN"
-  local stop_rc=0 del_rc=0
-  tart stop "$RUN" --timeout 5 >/dev/null 2>&1 || stop_rc=$?
-  tart delete "$RUN" >/dev/null 2>&1 || del_rc=$?
-  if [[ $stop_rc -ne 0 || $del_rc -ne 0 ]] || ! anubis_guard_guest_absent "$RUN"; then
-    echo "FATAL: teardown failed for $RUN (stop_rc=$stop_rc delete_rc=$del_rc)" >&2
+  if ! anubis_guard_teardown_guest "$RUN"; then
+    echo "FATAL: teardown failed for $RUN" >&2
     return 1
   fi
   echo "[cleanup] verified absent: $RUN"
