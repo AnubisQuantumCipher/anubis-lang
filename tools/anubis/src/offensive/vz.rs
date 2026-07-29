@@ -118,6 +118,29 @@ pub struct VzExecResult {
     pub backend: String,
 }
 
+/// Receipt-safe summary of a guest execution result.
+///
+/// Raw commands and guest stdout/stderr can include tokens, PSKs, private-key paths,
+/// or target material. Receipts need to bind the execution outcome without duplicating
+/// that sensitive material into the engagement evidence chain.
+pub fn vz_execution_receipt_payload(result: &VzExecResult) -> serde_json::Value {
+    let digest = |value: &str| hex::encode(Sha256::digest(value.as_bytes()));
+    serde_json::json!({
+        "schema": "anubis-vz-execution-receipt-v1",
+        "guest": result.guest,
+        "exit_code": result.exit_code,
+        "duration_ms": result.duration_ms,
+        "network": result.network,
+        "backend": result.backend,
+        "evidence_hash": result.evidence_hash,
+        "command_sha256": digest(&result.command),
+        "stdout_sha256": digest(&result.stdout),
+        "stderr_sha256": digest(&result.stderr),
+        "stdout_bytes": result.stdout.len(),
+        "stderr_bytes": result.stderr.len(),
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VzLabConfig {
     pub guest_name: String,
@@ -1596,6 +1619,48 @@ mod tests {
     #[test]
     fn newly_launched_tart_and_stress_report_nat() {
         assert_eq!(tart_controlled_reported_network(), ReportedVzNetwork::Nat);
+    }
+
+    #[test]
+    fn execution_receipt_payload_binds_digests_without_raw_guest_output() {
+        let result = VzExecResult {
+            guest: "unit-guest".into(),
+            command: "run --token operator-token-secret".into(),
+            exit_code: 7,
+            stdout: "psk_hex=private-output".into(),
+            stderr: "client.key.pem=private-error".into(),
+            duration_ms: 42,
+            network: ReportedVzNetwork::Nat,
+            evidence_hash: "already-a-hash".into(),
+            backend: "tart".into(),
+        };
+
+        let payload = vz_execution_receipt_payload(&result);
+        assert_eq!(payload["schema"], "anubis-vz-execution-receipt-v1");
+        assert_eq!(payload["guest"], "unit-guest");
+        assert_eq!(payload["exit_code"], 7);
+        assert_eq!(payload["duration_ms"], 42);
+        assert_eq!(
+            payload["command_sha256"],
+            hex::encode(Sha256::digest(result.command.as_bytes()))
+        );
+        assert_eq!(
+            payload["stdout_sha256"],
+            hex::encode(Sha256::digest(result.stdout.as_bytes()))
+        );
+        assert_eq!(
+            payload["stderr_sha256"],
+            hex::encode(Sha256::digest(result.stderr.as_bytes()))
+        );
+        assert_eq!(payload["stdout_bytes"], result.stdout.len());
+        assert_eq!(payload["stderr_bytes"], result.stderr.len());
+        assert!(payload.get("command").is_none());
+        assert!(payload.get("stdout").is_none());
+        assert!(payload.get("stderr").is_none());
+        let serialized = serde_json::to_string(&payload).unwrap();
+        assert!(!serialized.contains("operator-token-secret"));
+        assert!(!serialized.contains("psk_hex=private-output"));
+        assert!(!serialized.contains("client.key.pem=private-error"));
     }
 
     #[test]

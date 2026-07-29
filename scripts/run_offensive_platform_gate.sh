@@ -311,6 +311,43 @@ run_local_gate() {
     printf '%-28s %s  (%s)\n' "$name" "$status" "$detail"
   }
 
+  sanitize_guest_artifacts() {
+    python3 - "$out" "$eng" <<'PY'
+import json
+import os
+import sys
+
+out, eng = sys.argv[1:3]
+
+def redact_json(path, keys):
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        return
+    touched = False
+    for key in keys:
+        if key in data:
+            data[key] = "[REDACTED]"
+            touched = True
+    if touched:
+        redacted = set(data.get("redacted_fields", []))
+        redacted.update(keys)
+        data["redacted_fields"] = sorted(redacted)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+
+redact_json(os.path.join(out, "tok.json"), ["token"])
+redact_json(os.path.join(eng, "engagement.json"), ["psk_hex"])
+redact_json(os.path.join(out, "eng_doh", "engagement.json"), ["psk_hex"])
+PY
+
+    rm -f       "$eng/evidence/receipts/mac_key.hex"       "$eng/certs/ca.key.pem"       "$eng/certs/server.key.pem"       "$eng/certs/client.key.pem"       "$out/eng_doh/evidence/receipts/mac_key.hex"       "$out/eng_doh/certs/ca.key.pem"       "$out/eng_doh/certs/server.key.pem"       "$out/eng_doh/certs/client.key.pem"
+  }
+
   "$bin" engage-init --dir "$eng" --name gate --authorization gate-charter >"$out/init.log" 2>&1
   if [[ -f "$eng/engagement.json" && -f "$eng/certs/server.crt.pem" ]]; then
     record "t1_engage_certs" "PASS" "psk+mtls material"
@@ -739,6 +776,11 @@ PY
   else
     record "t9_doctor_surfaces" "FAIL" "missing T9 surfaces"
   fi
+
+  # Do not sync cleartext operator tokens, PSKs, receipt MAC keys, or private mTLS keys
+  # back to the host as part of the guest evidence bundle. The outer host receipt
+  # chain remains the authority for the gate; nested guest secrets are scrubbed.
+  sanitize_guest_artifacts
 
   local isolation="tart-disposable-guest"
   if [[ "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" != "1" ]]; then

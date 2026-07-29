@@ -7,43 +7,46 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::BufRead;
 use std::path::Path;
 
 pub fn purple_report(eng: &Engagement, engage_dir: &Path, out_dir: &Path) -> Result<Value> {
     eng.validate_live()?;
     fs::create_dir_all(out_dir)?;
 
-    // Collect action kinds from receipt chain + evidence jsonl
+    // Collect action kinds from a verified receipt chain only. Raw actions.jsonl remains
+    // useful operator context, but it is not receipt-bound evidence and must not create
+    // ATT&CK coverage claims by itself.
     let mut actions: BTreeSet<String> = BTreeSet::new();
-    if let Ok(chain) = receipts::verify_chain(engage_dir) {
-        if let Some(arr) = chain.get("actions").and_then(|a| a.as_array()) {
-            for a in arr {
-                if let Some(s) = a.as_str() {
-                    actions.insert(s.to_string());
-                }
-            }
-        }
-        // tip format may only have count — also parse chain file
-    }
+    let receipts_status = receipts::verify_chain(engage_dir)
+        .map_err(|e| anyhow!("ANUBIS_PURPLE_RECEIPTS_INVALID: {e}"))?;
     let chain_path = engage_dir.join("evidence/receipts/chain.jsonl");
     if chain_path.exists() {
-        if let Ok(raw) = fs::read_to_string(&chain_path) {
-            for line in raw.lines() {
-                if let Ok(v) = serde_json::from_str::<Value>(line) {
-                    if let Some(a) = v.get("action").and_then(|x| x.as_str()) {
-                        actions.insert(a.to_string());
-                    }
-                }
+        let file = fs::File::open(&chain_path)?;
+        let reader = std::io::BufReader::new(file);
+        for (line_no, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
             }
+            let receipt: receipts::ActionReceipt = serde_json::from_str(&line).map_err(|e| {
+                anyhow!("ANUBIS_PURPLE_RECEIPT_PARSE: line {}: {e}", line_no + 1)
+            })?;
+            actions.insert(receipt.action);
         }
     }
+    let verified_actions: Vec<String> = actions.iter().cloned().collect();
+
     let actions_path = engage_dir.join("evidence/actions.jsonl");
+    let mut unverified_actions_ignored: BTreeSet<String> = BTreeSet::new();
     if actions_path.exists() {
         if let Ok(raw) = fs::read_to_string(&actions_path) {
             for line in raw.lines() {
                 if let Ok(v) = serde_json::from_str::<Value>(line) {
                     if let Some(k) = v.get("kind").and_then(|x| x.as_str()) {
-                        actions.insert(k.to_string());
+                        if !actions.contains(k) {
+                            unverified_actions_ignored.insert(k.to_string());
+                        }
                     }
                 }
             }
@@ -102,11 +105,17 @@ pub fn purple_report(eng: &Engagement, engage_dir: &Path, out_dir: &Path) -> Res
         "schema": "aop-purple-v1",
         "engagement_id": eng.engagement_id,
         "authorization": eng.authorization,
-        "actions_observed": actions.iter().cloned().collect::<Vec<_>>(),
+        "actions_observed": verified_actions,
         "action_to_attck": action_map,
         "techniques_covered": covered.iter().cloned().collect::<Vec<_>>(),
         "covered_detail": covered_rows,
         "detection_gaps": gaps,
+        "receipts": receipts_status,
+        "coverage_policy": {
+            "verified_receipts_only": true,
+            "unverified_actions_ignored": unverified_actions_ignored.iter().cloned().collect::<Vec<_>>(),
+            "note": "ATT&CK coverage is derived only from receipt-verified actions. Raw actions.jsonl observations do not create coverage claims."
+        },
         "elite_debrief": [
             "Walk each covered technique with blue: which control should have fired?",
             "PLAN_ONLY surfaces are not detection tests until dual-auth live path is used under ROE.",
@@ -155,6 +164,28 @@ fn render_md(report: &Value) -> String {
         report["engagement_id"].as_str().unwrap_or(""),
         report["authorization"].as_str().unwrap_or("")
     ));
+    if let Some(note) = report["coverage_policy"]["note"].as_str() {
+        s.push_str(&format!("> {}\n\n", note));
+    }
+    let receipt_count = report["receipts"]["count"].as_u64().unwrap_or(0);
+    let receipt_ok = report["receipts"]["ok"].as_bool().unwrap_or(false);
+    s.push_str(&format!(
+        "Receipt verification: ok=`{}` count=`{}`\n\n",
+        receipt_ok, receipt_count
+    ));
+    if let Some(arr) = report["coverage_policy"]["unverified_actions_ignored"].as_array() {
+        if !arr.is_empty() {
+            let ignored = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            s.push_str(&format!(
+                "Ignored unverified observations (not counted toward coverage): {}\n\n",
+                ignored
+            ));
+        }
+    }
     s.push_str("## Covered techniques\n\n");
     if let Some(arr) = report["covered_detail"].as_array() {
         for t in arr {
@@ -197,6 +228,7 @@ fn _ensure_out(out: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::offensive::engagement::Engagement;
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn test_dirs(suffix: &str) -> (PathBuf, PathBuf) {
@@ -231,12 +263,15 @@ mod tests {
     #[test]
     fn exploit_action_maps_to_t1203_only() {
         let (engage, out) = test_dirs("exploit");
-        fs::write(
-            engage.join("evidence/receipts/chain.jsonl"),
-            r#"{"seq":1,"action":"vz_exploit_run","payload":{}}"#,
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        receipts::seal_action(
+            &engage,
+            &eng.engagement_id,
+            "vz_exploit_run",
+            "operator",
+            json!({}),
         )
         .unwrap();
-        let eng = Engagement::default_lab("purple-test", "lab-auth");
         let report = purple_report(&eng, &engage, &out).unwrap();
         let covered: Vec<&str> = report["techniques_covered"]
             .as_array()
@@ -260,12 +295,15 @@ mod tests {
     #[test]
     fn c2_cycle_action_maps_to_c2_and_exfil_only() {
         let (engage, out) = test_dirs("c2cycle");
-        fs::write(
-            engage.join("evidence/receipts/chain.jsonl"),
-            r#"{"seq":1,"action":"vz_c2_cycle","payload":{}}"#,
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        receipts::seal_action(
+            &engage,
+            &eng.engagement_id,
+            "vz_c2_cycle",
+            "operator",
+            json!({}),
         )
         .unwrap();
-        let eng = Engagement::default_lab("purple-test", "lab-auth");
         let report = purple_report(&eng, &engage, &out).unwrap();
         let covered: Vec<&str> = report["techniques_covered"]
             .as_array()
@@ -329,43 +367,39 @@ mod tests {
     }
 
     #[test]
-    fn tampered_chain_still_produces_coverage_without_warning() {
+    fn tampered_chain_fails_closed() {
         let (engage, out) = test_dirs("tampered");
-        fs::write(
-            engage.join("evidence/receipts/chain.jsonl"),
-            // Invalid chain (no prev_hash/receipt_hash/mac) but purple_report still reads it
-            r#"{"seq":1,"action":"vz_exploit_run","payload":{}}
-{"seq":2,"action":"lateral ssh","payload":{}}"#,
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        receipts::seal_action(
+            &engage,
+            &eng.engagement_id,
+            "vz_exploit_run",
+            "operator",
+            json!({"step": 1}),
         )
         .unwrap();
-        let eng = Engagement::default_lab("purple-test", "lab-auth");
-        let report = purple_report(&eng, &engage, &out).unwrap();
-        let covered: Vec<&str> = report["techniques_covered"]
-            .as_array()
+        let chain = engage.join("evidence/receipts/chain.jsonl");
+        let mut rows: Vec<Value> = fs::read_to_string(&chain)
             .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect();
-        // This test documents the FINDING: purple_report produces coverage claims
-        // from an unverified chain. An operator who adds fake entries to chain.jsonl
-        // gets false coverage in the purple report without any warning.
-        // If this test fails because verify_chain validation was added, GOOD — remove
-        // this test and replace with a test that verify_chain failure causes purple_report
-        // to either fail or annotate the report.
+        rows[0]["action"] = json!("lateral ssh");
+        let tampered = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&chain, tampered + "\n").unwrap();
+        let err = purple_report(&eng, &engage, &out).unwrap_err().to_string();
         assert!(
-            covered.contains(&"T1203"),
-            "purple reads unverified chain actions: {:?}",
-            covered
-        );
-        assert!(
-            covered.contains(&"T1021.004"),
-            "purple reads unverified chain actions: {:?}",
-            covered
+            err.contains("ANUBIS_PURPLE_RECEIPTS_INVALID"),
+            "expected fail-closed invalid-receipts error, got {err}"
         );
     }
 
     #[test]
-    fn actions_jsonl_contributes_to_coverage() {
+    fn actions_jsonl_is_ignored_without_receipt_proof() {
         let (engage, out) = test_dirs("actionsjsonl");
         fs::write(
             engage.join("evidence/actions.jsonl"),
@@ -380,10 +414,21 @@ mod tests {
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
+        let ignored: Vec<&str> = report["coverage_policy"]["unverified_actions_ignored"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
         assert!(
-            covered.contains(&"T1595"),
-            "actions.jsonl recon must map to T1595: {:?}",
+            covered.is_empty(),
+            "actions.jsonl alone must not create ATT&CK coverage: {:?}",
             covered
+        );
+        assert!(
+            ignored.contains(&"recon scan"),
+            "expected raw observation to be preserved as ignored context: {:?}",
+            ignored
         );
     }
 
@@ -396,5 +441,6 @@ mod tests {
         assert!(out.join("purple_report.md").exists());
         let md = fs::read_to_string(out.join("purple_report.md")).unwrap();
         assert!(md.contains("Purple Team Report"));
+        assert!(md.contains("verified_receipts_only") || md.contains("Receipt verification:"));
     }
 }

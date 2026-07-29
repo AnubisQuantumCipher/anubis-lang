@@ -247,6 +247,322 @@ pub fn catalog() -> Vec<ModuleInfo> {
             risk: "critical",
             description: "Full offensive stress battery inside VZ (T8)",
         },
+        // ── Credential Access (T10) ──
+        ModuleInfo {
+            name: "credential_hash_test",
+            side: "operator",
+            risk: "medium",
+            description: "Offline hash cracking against wordlist (T1110.002)",
+        },
+        ModuleInfo {
+            name: "credential_ssh_key_audit",
+            side: "operator",
+            risk: "low",
+            description: "Audit SSH keys for weak permissions (T1552.004)",
+        },
+        ModuleInfo {
+            name: "credential_spray_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Credential spray planning — PLAN_ONLY (T1110.003)",
+        },
+        ModuleInfo {
+            name: "credential_env_scan",
+            side: "operator",
+            risk: "low",
+            description: "Scan env vars for credential patterns (T1552.001)",
+        },
+        ModuleInfo {
+            name: "credential_keychain_plan",
+            side: "operator",
+            risk: "medium",
+            description: "macOS keychain enumeration — PLAN_ONLY (T1555.001)",
+        },
+        // ── Privilege Escalation (T10) ──
+        ModuleInfo {
+            name: "privesc_suid_enum",
+            side: "operator",
+            risk: "low",
+            description: "Find SUID/SGID binaries (T1548.001)",
+        },
+        ModuleInfo {
+            name: "privesc_sudo_audit",
+            side: "operator",
+            risk: "low",
+            description: "Audit sudo configuration (T1548.003)",
+        },
+        ModuleInfo {
+            name: "privesc_writable_path",
+            side: "operator",
+            risk: "low",
+            description: "Find writable PATH directories (T1574.007)",
+        },
+        ModuleInfo {
+            name: "privesc_cron_enum",
+            side: "operator",
+            risk: "low",
+            description: "Enumerate cron jobs + LaunchDaemons (T1053.003)",
+        },
+        ModuleInfo {
+            name: "privesc_kernel_plan",
+            side: "operator",
+            risk: "high",
+            description: "Kernel exploit planning — PLAN_ONLY (T1068)",
+        },
+        ModuleInfo {
+            name: "privesc_enum",
+            side: "operator",
+            risk: "medium",
+            description: "Full privilege escalation enumeration (TA0004)",
+        },
+        // ── Discovery (T10) ──
+        ModuleInfo {
+            name: "discovery_system_enum",
+            side: "operator",
+            risk: "low",
+            description: "System info: uname, users, processes (T1082/T1033)",
+        },
+        ModuleInfo {
+            name: "discovery_network_enum",
+            side: "operator",
+            risk: "low",
+            description: "Network interfaces, routing, ARP, DNS (T1016/T1049)",
+        },
+        ModuleInfo {
+            name: "discovery_process_enum",
+            side: "operator",
+            risk: "low",
+            description: "Running processes with security-relevant matches (T1057)",
+        },
+        ModuleInfo {
+            name: "discovery_file_discovery",
+            side: "operator",
+            risk: "medium",
+            description: "Find sensitive files: keys, configs, databases (T1083/T1005)",
+        },
+        ModuleInfo {
+            name: "discovery_service_banner",
+            side: "operator",
+            risk: "medium",
+            description: "Service banner grabbing on in-scope hosts (T1046)",
+        },
+        ModuleInfo {
+            name: "discovery_cloud_metadata_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Cloud metadata probe — PLAN_ONLY (T1552.005)",
+        },
+        ModuleInfo {
+            name: "discovery_ad_enum_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Active Directory enumeration — PLAN_ONLY (T1087.002)",
+        },
+        // ── Collection (T10) ──
+        ModuleInfo {
+            name: "collection_clipboard",
+            side: "operator",
+            risk: "medium",
+            description: "Clipboard capture via pbpaste/xclip (T1115)",
+        },
+        ModuleInfo {
+            name: "collection_stage_files",
+            side: "operator",
+            risk: "medium",
+            description: "Stage files to engagement loot (T1074.001)",
+        },
+        ModuleInfo {
+            name: "collection_screen_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Screen capture — PLAN_ONLY (T1113)",
+        },
+        ModuleInfo {
+            name: "collection_keylog_plan",
+            side: "operator",
+            risk: "high",
+            description: "Keylogging — PLAN_ONLY (T1056.001)",
+        },
+        ModuleInfo {
+            name: "collection_archive_loot",
+            side: "operator",
+            risk: "low",
+            description: "Archive engagement loot as evidence bundle (T1560.001)",
+        },
+        // ── Defense Evasion (T10) ──
+        ModuleInfo {
+            name: "evasion_security_enum",
+            side: "operator",
+            risk: "low",
+            description: "Detect installed AV/EDR products (T1518.001)",
+        },
+        ModuleInfo {
+            name: "evasion_timestomp_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Timestamp manipulation — PLAN_ONLY (T1070.006)",
+        },
+        ModuleInfo {
+            name: "evasion_log_clear_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Log clearing — PLAN_ONLY (T1070.001)",
+        },
+        ModuleInfo {
+            name: "evasion_amsi_plan",
+            side: "operator",
+            risk: "high",
+            description: "AMSI/ETW bypass — PLAN_ONLY (T1562.001)",
+        },
+        ModuleInfo {
+            name: "evasion_hollowing_plan",
+            side: "operator",
+            risk: "critical",
+            description: "Process hollowing/injection — PLAN_ONLY (T1055.012)",
+        },
+        ModuleInfo {
+            name: "evasion_codesign_check",
+            side: "operator",
+            risk: "low",
+            description: "Binary code signature check (T1553.002)",
+        },
+        ModuleInfo {
+            name: "evasion_assessment",
+            side: "operator",
+            risk: "medium",
+            description: "Full defense evasion assessment (TA0005)",
+        },
+        // ── Exfiltration (T10) ──
+        ModuleInfo {
+            name: "exfil_dns_encode",
+            side: "operator",
+            risk: "medium",
+            description: "DNS exfiltration encoding — no queries sent (T1048.003)",
+        },
+        ModuleInfo {
+            name: "exfil_http_stage",
+            side: "operator",
+            risk: "medium",
+            description: "HTTP exfiltration staging — no data transmitted (T1048.002)",
+        },
+        ModuleInfo {
+            name: "exfil_stego_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Steganography — PLAN_ONLY (T1027.003)",
+        },
+        ModuleInfo {
+            name: "exfil_tunnel_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Protocol tunneling — PLAN_ONLY (T1572)",
+        },
+        // ── Infrastructure ──
+        ModuleInfo {
+            name: "infra_c2_check",
+            side: "operator",
+            risk: "low",
+            description: "C2 listener port availability check (T1071.001)",
+        },
+        ModuleInfo {
+            name: "infra_c2_guide",
+            side: "operator",
+            risk: "low",
+            description: "C2 framework comparison guide (T1219)",
+        },
+        ModuleInfo {
+            name: "infra_redirector_plan",
+            side: "operator",
+            risk: "low",
+            description: "Redirector architecture — PLAN_ONLY (T1090.002)",
+        },
+        ModuleInfo {
+            name: "infra_domain_fronting_plan",
+            side: "operator",
+            risk: "low",
+            description: "Domain fronting analysis — PLAN_ONLY (T1090.004)",
+        },
+        ModuleInfo {
+            name: "infra_health",
+            side: "operator",
+            risk: "low",
+            description: "Infrastructure health check (ports, connectivity)",
+        },
+        // ── Post-Exploitation ──
+        ModuleInfo {
+            name: "postex_persistence_enum",
+            side: "operator",
+            risk: "medium",
+            description: "Persistence vector enumeration (TA0003)",
+        },
+        ModuleInfo {
+            name: "postex_persistence_plan",
+            side: "operator",
+            risk: "high",
+            description: "Persistence implant — PLAN_ONLY (T1546/T1543)",
+        },
+        ModuleInfo {
+            name: "postex_cleanup",
+            side: "operator",
+            risk: "low",
+            description: "Engagement cleanup checklist (T1070)",
+        },
+        // ── Payloads ──
+        ModuleInfo {
+            name: "payload_cyclic",
+            side: "operator",
+            risk: "low",
+            description: "Cyclic pattern for crash offset identification (T1203)",
+        },
+        ModuleInfo {
+            name: "payload_offset",
+            side: "operator",
+            risk: "low",
+            description: "Find offset in cyclic pattern (T1203)",
+        },
+        ModuleInfo {
+            name: "payload_encode",
+            side: "operator",
+            risk: "medium",
+            description: "Payload encoding for AV detection testing (T1027)",
+        },
+        ModuleInfo {
+            name: "payload_shellcode_plan",
+            side: "operator",
+            risk: "high",
+            description: "Shellcode generation — PLAN_ONLY (T1059.004)",
+        },
+        ModuleInfo {
+            name: "payload_delivery_plan",
+            side: "operator",
+            risk: "medium",
+            description: "Delivery method planning — PLAN_ONLY (T1566)",
+        },
+        // ── Reporting ──
+        ModuleInfo {
+            name: "report_executive",
+            side: "operator",
+            risk: "low",
+            description: "Executive summary report generation",
+        },
+        ModuleInfo {
+            name: "report_technical",
+            side: "operator",
+            risk: "low",
+            description: "Technical report with categorized findings",
+        },
+        ModuleInfo {
+            name: "report_attck_coverage",
+            side: "operator",
+            risk: "low",
+            description: "ATT&CK coverage matrix report",
+        },
+        ModuleInfo {
+            name: "report_markdown",
+            side: "operator",
+            risk: "low",
+            description: "Markdown report generation",
+        },
     ]
 }
 

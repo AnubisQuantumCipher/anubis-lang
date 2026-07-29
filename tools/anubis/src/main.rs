@@ -908,6 +908,8 @@ enum Commands {
 
     /// Execute a command inside a running Tart guest over SSH (crash-isolated).
     VzExec {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
         /// Guest name (default: anubis-xcode).
         #[arg(long, default_value = "anubis-xcode")]
         guest: String,
@@ -1019,6 +1021,8 @@ enum Commands {
 
     /// Run the Anubis test suite inside a VZ guest.
     VzTestSuite {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
         #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         /// Optional test filter pattern.
@@ -1034,6 +1038,360 @@ enum Commands {
         guest: String,
         #[arg(long)]
         label: String,
+    },
+
+    // ── T10: Expanded offensive modules ──
+
+    /// Credential access: offline hash cracking against wordlist.
+    CredentialHashTest {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        wordlist: PathBuf,
+    },
+
+    /// Credential access: audit SSH keys for weak permissions.
+    CredentialSshKeyAudit {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Credential access: credential spray planning (PLAN_ONLY).
+    CredentialSprayPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "ssh")]
+        protocol: String,
+        #[arg(long, value_delimiter = ',')]
+        targets: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        users: Vec<String>,
+        #[arg(long, default_value_t = 5)]
+        lockout_threshold: u32,
+    },
+
+    /// Credential access: scan environment variables for credential patterns.
+    CredentialEnvScan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Credential access: macOS keychain enumeration (PLAN_ONLY).
+    CredentialKeychainPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Credential access: full credential testing report.
+    CredentialReport {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: SUID/SGID binary enumeration.
+    PrivescSuidEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: sudo configuration audit.
+    PrivescSudoAudit {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: writable PATH directory audit.
+    PrivescWritablePath {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: cron/LaunchDaemon enumeration.
+    PrivescCronEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: kernel exploit planning (PLAN_ONLY).
+    PrivescKernelPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: full enumeration (all checks).
+    PrivescEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: system information enumeration.
+    DiscoverySystemEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: network interface/routing enumeration.
+    DiscoveryNetworkEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: running process enumeration.
+    DiscoveryProcessEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: sensitive file discovery.
+    DiscoveryFileDiscovery {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "/tmp")]
+        search_root: PathBuf,
+    },
+
+    /// Discovery: service banner grabbing on in-scope hosts.
+    DiscoveryServiceBanner {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        ports: String,
+    },
+
+    /// Discovery: cloud metadata probe (PLAN_ONLY).
+    DiscoveryCloudMetadata {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: Active Directory enumeration (PLAN_ONLY).
+    DiscoveryAdEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        domain: String,
+    },
+
+    /// Collection: clipboard capture.
+    CollectionClipboard {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Collection: stage files to engagement loot.
+    CollectionStageFiles {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long, default_value = "*.pem,*.key,*.env")]
+        patterns: String,
+        #[arg(long, default_value_t = 10485760)]
+        max_file_size: u64,
+    },
+
+    /// Collection: screen capture planning (PLAN_ONLY).
+    CollectionScreenPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Collection: keylogging planning (PLAN_ONLY).
+    CollectionKeylogPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Collection: archive engagement loot.
+    CollectionArchiveLoot {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(short, long, default_value = "out/engagements/lab/loot/archives")]
+        out: PathBuf,
+    },
+
+    /// Defense evasion: detect installed AV/EDR products.
+    EvasionSecurityEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Defense evasion: full evasion assessment.
+    EvasionAssessment {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Defense evasion: binary code signing check.
+    EvasionCodesignCheck {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        binary: PathBuf,
+    },
+
+    /// Exfiltration: DNS exfiltration encoding test.
+    ExfilDnsEncode {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        data: String,
+        #[arg(long, default_value = "test.lab.local")]
+        domain: String,
+    },
+
+    /// Exfiltration: HTTP staging manifest.
+    ExfilHttpStage {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        max_files: usize,
+    },
+
+    /// Exfiltration: full exfiltration assessment.
+    ExfilAssessment {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Infrastructure: C2 listener port check.
+    InfraC2Check {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value_t = 8443)]
+        port: u16,
+    },
+
+    /// Infrastructure: C2 framework comparison guide.
+    InfraC2Guide {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Infrastructure: health check.
+    InfraHealth {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "8443,4443,443")]
+        ports: String,
+    },
+
+    /// Infrastructure: redirector planning (PLAN_ONLY).
+    InfraRedirectorPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Infrastructure: domain fronting planning (PLAN_ONLY).
+    InfraDomainFrontingPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Post-exploitation: persistence vector enumeration.
+    PostexPersistenceEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Post-exploitation: persistence implant planning (PLAN_ONLY).
+    PostexPersistencePlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "launch_agent")]
+        mechanism: String,
+    },
+
+    /// Post-exploitation: engagement cleanup checklist.
+    PostexCleanup {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Post-exploitation: full assessment combining all checks.
+    PostexAssessment {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Payload: generate cyclic pattern for overflow testing.
+    PayloadCyclic {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value_t = 200)]
+        length: usize,
+    },
+
+    /// Payload: find offset in cyclic pattern.
+    PayloadOffset {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        value: String,
+    },
+
+    /// Payload: encode payload with multiple encoding stages.
+    PayloadEncode {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        data: String,
+        #[arg(long, default_value = "base64,hex")]
+        encodings: String,
+    },
+
+    /// Payload: shellcode generation planning (PLAN_ONLY).
+    PayloadShellcodePlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "x64")]
+        arch: String,
+        #[arg(long, default_value = "linux")]
+        os: String,
+    },
+
+    /// Payload: delivery method planning (PLAN_ONLY).
+    PayloadDeliveryPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: ATT&CK coverage matrix.
+    ReportAttckCoverage {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: executive summary for stakeholders.
+    ReportExecutiveSummary {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: technical findings report.
+    ReportTechnical {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: Markdown report output.
+    ReportMarkdown {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "Engagement Report")]
+        title: String,
+    },
+
+    /// Module catalog: list all offensive modules.
+    ModuleCatalog {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1763,6 +2121,39 @@ fn run_lsp() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn seal_vz_execution_receipt(
+    engage: &Path,
+    engagement_id: &str,
+    action: &str,
+    result: &offensive::vz::VzExecResult,
+) -> Result<String> {
+    let receipt = offensive::seal_action(
+        engage,
+        engagement_id,
+        action,
+        "operator",
+        offensive::vz::vz_execution_receipt_payload(result),
+    )
+    .map_err(|e| anyhow!("ANUBIS_VZ_RECEIPT_SEAL: {action}: {e}"))?;
+    let verified = offensive::verify_chain(engage)
+        .map_err(|e| anyhow!("ANUBIS_VZ_RECEIPT_VERIFY: {action}: {e}"))?;
+    if verified.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(anyhow!(
+            "ANUBIS_VZ_RECEIPT_VERIFY: {action}: verify_chain returned ok=false"
+        ));
+    }
+    let tip = verified
+        .get("tip")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("ANUBIS_VZ_RECEIPT_VERIFY: {action}: missing tip"))?;
+    if tip != receipt.receipt_hash {
+        return Err(anyhow!(
+            "ANUBIS_VZ_RECEIPT_TIP: {action}: tip mismatch after sealing"
+        ));
+    }
+    Ok(receipt.receipt_hash)
 }
 
 fn main() -> Result<()> {
@@ -3296,13 +3687,16 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::VzExec {
+            engage,
             guest,
             cmd,
             cwd,
             timeout,
             json,
         } => {
+            let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_exec(&guest, &cmd, cwd.as_deref(), timeout)?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_exec", &result)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3326,13 +3720,12 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_exploit_run(&eng, &engage, &guest, &module, &out)?;
-            let _ = offensive::seal_action(
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_exploit_run",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
             if result.exit_code != 0 {
                 return Err(anyhow!("ANUBIS_VZ_EXPLOIT: exit {}", result.exit_code));
@@ -3349,13 +3742,12 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_fuzz(&eng, &engage, &guest, &target, runs, seed, &out)?;
-            let _ = offensive::seal_action(
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_fuzz",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
             if result.exit_code != 0 {
                 return Err(anyhow!("ANUBIS_VZ_FUZZ: exit {}", result.exit_code));
@@ -3371,13 +3763,12 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_agent_test(&eng, &engage, &guest, &name, sleep_ms)?;
-            let _ = offensive::seal_action(
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_agent_test",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3408,13 +3799,12 @@ fn main() -> Result<()> {
             ];
             let result =
                 offensive::vz::vz_c2_cycle(&eng, &engage, &guest, &agent_name, &tasks, timeout)?;
-            let _ = offensive::seal_action(
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_c2_cycle",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3435,13 +3825,12 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_stress_battery(&eng, &guest, &engage)?;
-            let _ = offensive::seal_action(
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_stress_battery",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3479,11 +3868,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::VzTestSuite {
+            engage,
             guest,
             filter,
             json,
         } => {
+            let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_test_suite(&guest, filter.as_deref())?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_test_suite", &result)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3503,6 +3895,356 @@ fn main() -> Result<()> {
         Commands::VzSnapshot { guest, label } => {
             offensive::vz::vz_snapshot(&guest, &label)?;
             println!("snapshot `{label}` created for guest `{guest}`");
+            Ok(())
+        }
+
+        // ── T10: Expanded offensive module handlers ──
+
+        Commands::CredentialHashTest { engage, hash, wordlist } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::hash_test(&eng, &hash, &wordlist)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_hash_test", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialSshKeyAudit { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::ssh_key_audit(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_ssh_key_audit", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialSprayPlan { engage, protocol, targets, users, lockout_threshold } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::spray_plan(&eng, &protocol, &targets, &users, lockout_threshold)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_spray_plan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialEnvScan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::env_credential_scan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_env_scan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialKeychainPlan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::keychain_enum_plan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_keychain_plan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialReport { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::credential_report(&eng, &engage)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_report", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::PrivescSuidEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::suid_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_suid_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescSudoAudit { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::sudo_audit(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_sudo_audit", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescWritablePath { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::writable_path_audit(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_writable_path", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescCronEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::cron_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_cron_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescKernelPlan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::kernel_exploit_plan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_kernel_plan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::privesc_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::DiscoverySystemEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::system_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_system_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryNetworkEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::network_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_network_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryProcessEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::process_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_process_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryFileDiscovery { engage, search_root } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::file_discovery(&eng, &search_root)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_file_discovery", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryServiceBanner { engage, host, ports } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let r = offensive::discovery::service_banner(&eng, &host, &port_list)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_service_banner", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryCloudMetadata { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::cloud_metadata_plan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_cloud_metadata", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryAdEnum { engage, domain } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::ad_enum_plan(&eng, &domain)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_ad_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::CollectionClipboard { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::clipboard_capture(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_clipboard", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionStageFiles { engage, source, patterns, max_file_size } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let pat_list: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
+            let r = offensive::collection::stage_files(&eng, &engage, &source, &pat_list, max_file_size)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_stage_files", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionScreenPlan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::screen_capture_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionKeylogPlan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::keylog_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionArchiveLoot { engage, out } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::archive_loot(&eng, &engage, &out)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_archive_loot", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::EvasionSecurityEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::evasion::security_product_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_security_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::EvasionAssessment { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::evasion::evasion_assessment(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_assessment", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::EvasionCodesignCheck { engage, binary } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::evasion::codesign_check(&eng, &binary)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_codesign_check", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::ExfilDnsEncode { engage, data, domain } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::exfil::dns_encode(&eng, data.as_bytes(), &domain)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_dns_encode", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ExfilHttpStage { engage, source, max_files } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::exfil::http_stage(&eng, &source, max_files)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_http_stage", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ExfilAssessment { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::exfil::exfil_assessment(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_assessment", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::InfraC2Check { engage, port } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::c2_listener_check(&eng, port)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "infra_c2_check", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::InfraC2Guide { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::c2_framework_guide(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::InfraHealth { engage, ports } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let r = offensive::infrastructure::infra_health(&eng, &port_list)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "infra_health", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::InfraRedirectorPlan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::redirector_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::InfraDomainFrontingPlan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::domain_fronting_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::PostexPersistenceEnum { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::persistence_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_persistence_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PostexPersistencePlan { engage, mechanism } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::persistence_implant_plan(&eng, &mechanism)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PostexCleanup { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::cleanup_checklist(&eng, &engage)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PostexAssessment { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::postex_assessment(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_assessment", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::PayloadCyclic { engage, length } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::cyclic_pattern(&eng, length)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadOffset { engage, value } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::pattern_offset(&eng, &value)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadEncode { engage, data, encodings } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let enc_list: Vec<String> = encodings.split(',').map(|s| s.trim().to_string()).collect();
+            let r = offensive::payloads::encode_payload(&eng, data.as_bytes(), &enc_list)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "payload_encode", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadShellcodePlan { engage, arch, os } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::shellcode_plan(&eng, &arch, &os)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadDeliveryPlan { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::delivery_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::ReportAttckCoverage { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::attck_coverage_report(&eng, &[])?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReportExecutiveSummary { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::executive_summary(&eng, &engage, &[])?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_executive_summary", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReportTechnical { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::technical_report(&eng, &engage, &[])?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_technical", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReportMarkdown { engage, title } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::markdown_report(&eng, &engage, &title, &[])?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_markdown", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::ModuleCatalog { json } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&offensive::modules::list_json())?);
+            } else {
+                offensive::modules::print_catalog()?;
+            }
             Ok(())
         }
 
@@ -6891,6 +7633,96 @@ mod tests {
     }
 
     #[test]
+    fn vz_execution_receipt_sealing_fails_closed_when_chain_cannot_be_written() {
+        let bad_engage = std::env::temp_dir().join(format!(
+            "anubis-vz-receipt-bad-engage-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&bad_engage);
+        let _ = std::fs::remove_dir_all(&bad_engage);
+        std::fs::write(&bad_engage, b"not a directory").unwrap();
+
+        let result = offensive::vz::VzExecResult {
+            guest: "unit-guest".into(),
+            command: "guest command".into(),
+            exit_code: 0,
+            stdout: "ok".into(),
+            stderr: String::new(),
+            duration_ms: 1,
+            network: offensive::vz::ReportedVzNetwork::Unknown,
+            evidence_hash: "hash".into(),
+            backend: "tart".into(),
+        };
+
+        let err = seal_vz_execution_receipt(&bad_engage, "eng-unit", "vz_exec", &result)
+            .expect_err("VZ execution receipts must fail closed when the chain cannot be written")
+            .to_string();
+        assert!(
+            err.contains("ANUBIS_VZ_RECEIPT_SEAL"),
+            "expected stable fail-closed receipt error, got {err}"
+        );
+        let _ = std::fs::remove_file(&bad_engage);
+    }
+
+    #[test]
+    fn vz_execution_receipt_sealing_returns_verified_tip() {
+        let engage = std::env::temp_dir().join(format!(
+            "anubis-vz-receipt-good-engage-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&engage);
+        std::fs::create_dir_all(&engage).unwrap();
+
+        let result = offensive::vz::VzExecResult {
+            guest: "unit-guest".into(),
+            command: "guest command".into(),
+            exit_code: 9,
+            stdout: "failed but must still be receipted".into(),
+            stderr: "stderr".into(),
+            duration_ms: 5,
+            network: offensive::vz::ReportedVzNetwork::Unknown,
+            evidence_hash: "hash".into(),
+            backend: "tart".into(),
+        };
+
+        let tip = seal_vz_execution_receipt(&engage, "eng-unit", "vz_exec", &result)
+            .expect("receipt should seal and verify");
+        let verified = offensive::verify_chain(&engage).expect("receipt chain should verify");
+        assert_eq!(verified["count"], 1);
+        assert_eq!(verified["tip"].as_str().unwrap(), tip);
+        assert_eq!(verified["mac_bound"], true);
+        let _ = std::fs::remove_dir_all(&engage);
+    }
+
+    #[test]
+    fn vz_exec_and_test_suite_default_to_engagement_for_receipts() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let exec = Cli::try_parse_from(["anubis", "vz-exec", "--cmd", "uname -a"])
+                    .expect("vz-exec parse");
+                match exec.command {
+                    Commands::VzExec { engage, .. } => {
+                        assert_eq!(engage, PathBuf::from("out/engagements/lab"));
+                    }
+                    other => panic!("expected VzExec, got {other:?}"),
+                }
+
+                let suite = Cli::try_parse_from(["anubis", "vz-test-suite"])
+                    .expect("vz-test-suite parse");
+                match suite.command {
+                    Commands::VzTestSuite { engage, .. } => {
+                        assert_eq!(engage, PathBuf::from("out/engagements/lab"));
+                    }
+                    other => panic!("expected VzTestSuite, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack VZ engagement parse test")
+            .join()
+            .expect("large-stack VZ engagement parse test panicked");
+    }
+
+    #[test]
     fn program_mode_aggregates_all_functions_independent_of_source_order() {
         let safe_then_research = parse_source(
             r#"
@@ -7063,230 +7895,272 @@ module nested {
 
     #[test]
     fn doctor_accepts_strict_metal_reference_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "doctor",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--require-risc0",
-            "--require-metal",
-            "--evidence",
-            "--out",
-            "out/doctor-test",
-            "--json",
-        ])
-        .expect("strict doctor flags should parse");
-        match cli.command {
-            Commands::Doctor {
-                metal_reference,
-                require_risc0,
-                require_metal,
-                evidence,
-                ..
-            } => {
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert!(require_risc0);
-                assert!(require_metal);
-                assert!(evidence);
-            }
-            other => panic!("unexpected command: {:?}", other),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "doctor",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--require-risc0",
+                    "--require-metal",
+                    "--evidence",
+                    "--out",
+                    "out/doctor-test",
+                    "--json",
+                ])
+                .expect("strict doctor flags should parse");
+                match cli.command {
+                    Commands::Doctor {
+                        metal_reference,
+                        require_risc0,
+                        require_metal,
+                        evidence,
+                        ..
+                    } => {
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert!(require_risc0);
+                        assert!(require_metal);
+                        assert!(evidence);
+                    }
+                    other => panic!("unexpected command: {:?}", other),
+                }
+            })
+            .expect("spawn large-stack doctor parse test")
+            .join()
+            .expect("large-stack doctor parse test panicked");
     }
 
     #[test]
     fn prove_accepts_metal_reference_flag() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "prove",
-            "examples/risc0_receipt.anb",
-            "--backend",
-            "risc0",
-            "--lane",
-            "metal-hybrid",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-        ])
-        .expect("prove should accept --metal-reference");
-        match cli.command {
-            Commands::Prove {
-                metal_reference,
-                lane,
-                ..
-            } => {
-                assert_eq!(lane, "metal-hybrid");
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-            }
-            other => panic!("unexpected command: {:?}", other),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "prove",
+                    "examples/risc0_receipt.anb",
+                    "--backend",
+                    "risc0",
+                    "--lane",
+                    "metal-hybrid",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                ])
+                .expect("prove should accept --metal-reference");
+                match cli.command {
+                    Commands::Prove {
+                        metal_reference,
+                        lane,
+                        ..
+                    } => {
+                        assert_eq!(lane, "metal-hybrid");
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                    }
+                    other => panic!("unexpected command: {:?}", other),
+                }
+            })
+            .expect("spawn large-stack prove parse test")
+            .join()
+            .expect("large-stack prove parse test panicked");
     }
 
     #[test]
     fn capabilities_accepts_apple_native_json_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "capabilities",
-            "--apple-native",
-            "--json",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--evidence",
-            "--out",
-            "out/capabilities-test",
-        ])
-        .expect("apple-native capabilities flags should parse");
-        match cli.command {
-            Commands::Capabilities {
-                json,
-                apple_native,
-                metal_reference,
-                evidence,
-                out,
-            } => {
-                assert!(json);
-                assert!(apple_native);
-                assert!(evidence);
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert_eq!(out, PathBuf::from("out/capabilities-test"));
-            }
-            other => panic!("expected capabilities command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "capabilities",
+                    "--apple-native",
+                    "--json",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--evidence",
+                    "--out",
+                    "out/capabilities-test",
+                ])
+                .expect("apple-native capabilities flags should parse");
+                match cli.command {
+                    Commands::Capabilities {
+                        json,
+                        apple_native,
+                        metal_reference,
+                        evidence,
+                        out,
+                    } => {
+                        assert!(json);
+                        assert!(apple_native);
+                        assert!(evidence);
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert_eq!(out, PathBuf::from("out/capabilities-test"));
+                    }
+                    other => panic!("expected capabilities command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack capabilities parse test")
+            .join()
+            .expect("large-stack capabilities parse test panicked");
     }
 
     #[test]
     fn runtime_plan_accepts_umpg_apple_native_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "runtime-plan",
-            "examples/risc0_receipt.anb",
-            "--backend",
-            "risc0",
-            "--lane",
-            "metal-hybrid",
-            "--apple-native",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--json",
-            "--evidence",
-            "--out",
-            "out/runtime-plan-test",
-        ])
-        .expect("runtime-plan should accept UMPG and Apple-native planning flags");
-        match cli.command {
-            Commands::RuntimePlan {
-                input,
-                backend,
-                lane,
-                apple_native,
-                metal_reference,
-                json,
-                evidence,
-                out,
-            } => {
-                assert_eq!(input, PathBuf::from("examples/risc0_receipt.anb"));
-                assert_eq!(backend, "risc0");
-                assert_eq!(lane, "metal-hybrid");
-                assert!(apple_native);
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert!(json);
-                assert!(evidence);
-                assert_eq!(out, PathBuf::from("out/runtime-plan-test"));
-            }
-            other => panic!("expected runtime-plan command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "runtime-plan",
+                    "examples/risc0_receipt.anb",
+                    "--backend",
+                    "risc0",
+                    "--lane",
+                    "metal-hybrid",
+                    "--apple-native",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--json",
+                    "--evidence",
+                    "--out",
+                    "out/runtime-plan-test",
+                ])
+                .expect("runtime-plan should accept UMPG and Apple-native planning flags");
+                match cli.command {
+                    Commands::RuntimePlan {
+                        input,
+                        backend,
+                        lane,
+                        apple_native,
+                        metal_reference,
+                        json,
+                        evidence,
+                        out,
+                    } => {
+                        assert_eq!(input, PathBuf::from("examples/risc0_receipt.anb"));
+                        assert_eq!(backend, "risc0");
+                        assert_eq!(lane, "metal-hybrid");
+                        assert!(apple_native);
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert!(json);
+                        assert!(evidence);
+                        assert_eq!(out, PathBuf::from("out/runtime-plan-test"));
+                    }
+                    other => panic!("expected runtime-plan command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack runtime-plan parse test")
+            .join()
+            .expect("large-stack runtime-plan parse test panicked");
     }
 
     #[test]
     fn runtime_probe_accepts_strict_reference_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "runtime-probe",
-            "--json",
-            "--evidence",
-            "--out",
-            "out/runtime-probe-test",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--require-risc0",
-            "--require-metal",
-        ])
-        .expect("runtime-probe flags should parse");
-        match cli.command {
-            Commands::RuntimeProbe {
-                json,
-                evidence,
-                out,
-                metal_reference,
-                require_risc0,
-                require_metal,
-            } => {
-                assert!(json);
-                assert!(evidence);
-                assert_eq!(out, PathBuf::from("out/runtime-probe-test"));
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert!(require_risc0);
-                assert!(require_metal);
-            }
-            other => panic!("expected runtime-probe command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "runtime-probe",
+                    "--json",
+                    "--evidence",
+                    "--out",
+                    "out/runtime-probe-test",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--require-risc0",
+                    "--require-metal",
+                ])
+                .expect("runtime-probe flags should parse");
+                match cli.command {
+                    Commands::RuntimeProbe {
+                        json,
+                        evidence,
+                        out,
+                        metal_reference,
+                        require_risc0,
+                        require_metal,
+                    } => {
+                        assert!(json);
+                        assert!(evidence);
+                        assert_eq!(out, PathBuf::from("out/runtime-probe-test"));
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert!(require_risc0);
+                        assert!(require_metal);
+                    }
+                    other => panic!("expected runtime-probe command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack runtime-probe parse test")
+            .join()
+            .expect("large-stack runtime-probe parse test panicked");
     }
 
     #[test]
     fn run_accepts_safe_core_flags_and_args() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "run",
-            "examples/hello_normal.anb",
-            "--json",
-            "--evidence",
-            "--out",
-            "out/run-test",
-            "--",
-            "alice",
-        ])
-        .expect("run flags should parse");
-        match cli.command {
-            Commands::Run {
-                input,
-                out,
-                evidence,
-                json,
-                allow_research,
-                verified,
-                no_verify,
-                sign,
-                input_json,
-                input_file,
-                args,
-            } => {
-                assert!(input_json.is_none());
-                assert!(input_file.is_none());
-                assert_eq!(input, PathBuf::from("examples/hello_normal.anb"));
-                assert_eq!(out, PathBuf::from("out/run-test"));
-                assert!(evidence);
-                assert!(!verified);
-                assert!(!no_verify);
-                assert!(!sign);
-                assert!(json);
-                assert!(!allow_research);
-                assert_eq!(args, vec!["alice".to_string()]);
-            }
-            other => panic!("expected run command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "run",
+                    "examples/hello_normal.anb",
+                    "--json",
+                    "--evidence",
+                    "--out",
+                    "out/run-test",
+                    "--",
+                    "alice",
+                ])
+                .expect("run flags should parse");
+                match cli.command {
+                    Commands::Run {
+                        input,
+                        out,
+                        evidence,
+                        json,
+                        allow_research,
+                        verified,
+                        no_verify,
+                        sign,
+                        input_json,
+                        input_file,
+                        args,
+                    } => {
+                        assert!(input_json.is_none());
+                        assert!(input_file.is_none());
+                        assert_eq!(input, PathBuf::from("examples/hello_normal.anb"));
+                        assert_eq!(out, PathBuf::from("out/run-test"));
+                        assert!(evidence);
+                        assert!(!verified);
+                        assert!(!no_verify);
+                        assert!(!sign);
+                        assert!(json);
+                        assert!(!allow_research);
+                        assert_eq!(args, vec!["alice".to_string()]);
+                    }
+                    other => panic!("expected run command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack run parse test")
+            .join()
+            .expect("large-stack run parse test panicked");
     }
 
     #[test]

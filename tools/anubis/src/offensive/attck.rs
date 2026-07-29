@@ -258,6 +258,326 @@ pub fn catalog() -> Vec<Technique> {
             "not_claimed",
             "Credential dumping is NOT auto-executed (policy)",
         ),
+        // ── Credential Access (TA0006) ──
+        t(
+            "T1110.002",
+            "Password Cracking",
+            Tactic::CredentialAccess,
+            "credential-hash-test",
+            "live_scoped",
+            "Offline hash cracking against wordlist",
+        ),
+        t(
+            "T1110.003",
+            "Password Spraying",
+            Tactic::CredentialAccess,
+            "credential-spray-plan",
+            "plan_only",
+            "Credential spray planning — never auto-executes",
+        ),
+        t(
+            "T1552.004",
+            "Private Keys",
+            Tactic::CredentialAccess,
+            "credential-ssh-key-audit",
+            "live_scoped",
+            "Audit SSH keys for weak permissions and missing passphrases",
+        ),
+        t(
+            "T1552.001",
+            "Credentials In Files",
+            Tactic::CredentialAccess,
+            "credential-env-scan",
+            "live_scoped",
+            "Scan environment variables for credential patterns",
+        ),
+        t(
+            "T1555.001",
+            "Keychain",
+            Tactic::CredentialAccess,
+            "credential-keychain-plan",
+            "plan_only",
+            "macOS keychain enumeration planning",
+        ),
+        // ── Privilege Escalation (TA0004) ──
+        t(
+            "T1548.001",
+            "Setuid and Setgid",
+            Tactic::PrivilegeEscalation,
+            "privesc-suid-enum",
+            "live_scoped",
+            "Find SUID/SGID binaries, cross-reference GTFOBins",
+        ),
+        t(
+            "T1548.003",
+            "Sudo and Sudo Caching",
+            Tactic::PrivilegeEscalation,
+            "privesc-sudo-audit",
+            "live_scoped",
+            "Parse sudo -l for NOPASSWD and wildcard rules",
+        ),
+        t(
+            "T1574.007",
+            "Path Interception by PATH",
+            Tactic::PrivilegeEscalation,
+            "privesc-writable-path",
+            "live_scoped",
+            "Find writable directories in PATH",
+        ),
+        t(
+            "T1053.003",
+            "Cron",
+            Tactic::PrivilegeEscalation,
+            "privesc-cron-enum",
+            "live_scoped",
+            "Enumerate cron jobs and writable cron entries",
+        ),
+        t(
+            "T1068",
+            "Exploitation for Privilege Escalation",
+            Tactic::PrivilegeEscalation,
+            "privesc-kernel-plan",
+            "plan_only",
+            "Kernel exploit planning — VZ guest only",
+        ),
+        // ── Discovery (TA0007) ──
+        t(
+            "T1033",
+            "System Owner/User Discovery",
+            Tactic::Discovery,
+            "discovery-system-enum",
+            "live_scoped",
+            "whoami, id, groups, uname",
+        ),
+        t(
+            "T1016",
+            "System Network Configuration Discovery",
+            Tactic::Discovery,
+            "discovery-network-enum",
+            "live_scoped",
+            "ifconfig, routing, ARP, DNS",
+        ),
+        t(
+            "T1049",
+            "System Network Connections Discovery",
+            Tactic::Discovery,
+            "discovery-network-enum",
+            "live_scoped",
+            "netstat listening ports",
+        ),
+        t(
+            "T1057",
+            "Process Discovery",
+            Tactic::Discovery,
+            "discovery-process-enum",
+            "live_scoped",
+            "Running processes with user context",
+        ),
+        t(
+            "T1005",
+            "Data from Local System",
+            Tactic::Discovery,
+            "discovery-file-discovery",
+            "live_scoped",
+            "Find sensitive files (keys, configs, databases)",
+        ),
+        t(
+            "T1046",
+            "Network Service Discovery",
+            Tactic::Discovery,
+            "discovery-service-banner",
+            "live_scoped",
+            "Service banner grabbing on in-scope hosts",
+        ),
+        t(
+            "T1552.005",
+            "Cloud Instance Metadata API",
+            Tactic::Discovery,
+            "discovery-cloud-metadata-plan",
+            "plan_only",
+            "Cloud metadata service probe planning",
+        ),
+        t(
+            "T1087.002",
+            "Domain Account",
+            Tactic::Discovery,
+            "discovery-ad-enum-plan",
+            "plan_only",
+            "Active Directory enumeration planning",
+        ),
+        // ── Collection (TA0009) ──
+        t(
+            "T1115",
+            "Clipboard Data",
+            Tactic::Collection,
+            "collection-clipboard",
+            "live_scoped",
+            "Clipboard capture via pbpaste/xclip",
+        ),
+        t(
+            "T1074.001",
+            "Local Data Staging",
+            Tactic::Collection,
+            "collection-stage-files",
+            "live_scoped",
+            "Stage files to engagement loot directory",
+        ),
+        t(
+            "T1113",
+            "Screen Capture",
+            Tactic::Collection,
+            "collection-screen-plan",
+            "plan_only",
+            "Screen capture planning — VZ guest only",
+        ),
+        t(
+            "T1056.001",
+            "Keylogging",
+            Tactic::Collection,
+            "collection-keylog-plan",
+            "plan_only",
+            "Keylogging technique planning — never auto-executes",
+        ),
+        t(
+            "T1560.001",
+            "Archive via Utility",
+            Tactic::Collection,
+            "collection-archive-loot",
+            "live_scoped",
+            "Archive engagement loot as evidence bundle",
+        ),
+        // ── Defense Evasion (TA0005) ──
+        t(
+            "T1518.001",
+            "Security Software Discovery",
+            Tactic::DefenseEvasion,
+            "evasion-security-product-enum",
+            "live_scoped",
+            "Detect installed AV/EDR products",
+        ),
+        t(
+            "T1070.006",
+            "Timestomp",
+            Tactic::DefenseEvasion,
+            "evasion-timestomp-plan",
+            "plan_only",
+            "Timestamp manipulation planning",
+        ),
+        t(
+            "T1070.001",
+            "Clear Windows Event Logs",
+            Tactic::DefenseEvasion,
+            "evasion-log-clear-plan",
+            "plan_only",
+            "Log clearing detection test planning",
+        ),
+        t(
+            "T1562.001",
+            "Disable or Modify Tools",
+            Tactic::DefenseEvasion,
+            "evasion-amsi-bypass-plan",
+            "plan_only",
+            "AMSI/ETW bypass planning — Windows only",
+        ),
+        t(
+            "T1055.012",
+            "Process Hollowing",
+            Tactic::DefenseEvasion,
+            "evasion-process-hollowing-plan",
+            "plan_only",
+            "Process hollowing technique planning",
+        ),
+        t(
+            "T1553.002",
+            "Code Signing",
+            Tactic::DefenseEvasion,
+            "evasion-codesign-check",
+            "live_scoped",
+            "Binary code signature verification check",
+        ),
+        // ── Exfiltration (TA0010) ──
+        t(
+            "T1048.003",
+            "Exfiltration Over Unencrypted Non-C2 Protocol",
+            Tactic::Exfiltration,
+            "exfil-dns-encode",
+            "live_scoped",
+            "DNS exfiltration encoding — no queries sent",
+        ),
+        t(
+            "T1048.002",
+            "Exfiltration Over Asymmetric Encrypted Non-C2 Protocol",
+            Tactic::Exfiltration,
+            "exfil-http-stage",
+            "live_scoped",
+            "HTTP exfiltration staging manifest — no data transmitted",
+        ),
+        t(
+            "T1572",
+            "Protocol Tunneling",
+            Tactic::Exfiltration,
+            "exfil-tunnel-plan",
+            "plan_only",
+            "DNS/ICMP/SSH/WebSocket tunneling planning",
+        ),
+        t(
+            "T1027.003",
+            "Steganography",
+            Tactic::DefenseEvasion,
+            "exfil-stego-plan",
+            "plan_only",
+            "Steganography exfiltration planning",
+        ),
+        // ── Persistence (TA0003) ──
+        t(
+            "T1546.004",
+            "Unix Shell Configuration Modification",
+            Tactic::Persistence,
+            "postex-persistence-enum",
+            "live_scoped",
+            "Shell profile persistence vector enumeration",
+        ),
+        t(
+            "T1543.004",
+            "Launch Daemon",
+            Tactic::Persistence,
+            "postex-persistence-enum",
+            "live_scoped",
+            "macOS Launch Daemon/Agent persistence enumeration",
+        ),
+        t(
+            "T1543.002",
+            "Systemd Service",
+            Tactic::Persistence,
+            "postex-persistence-enum",
+            "live_scoped",
+            "Linux systemd service persistence enumeration",
+        ),
+        // ── Infrastructure / C2 ──
+        t(
+            "T1219",
+            "Remote Access Software",
+            Tactic::CommandAndControl,
+            "infra-c2-framework-guide",
+            "safe",
+            "C2 framework comparison and selection guide",
+        ),
+        t(
+            "T1090.002",
+            "External Proxy",
+            Tactic::CommandAndControl,
+            "infra-redirector-plan",
+            "plan_only",
+            "Redirector architecture planning",
+        ),
+        t(
+            "T1090.004",
+            "Domain Fronting",
+            Tactic::CommandAndControl,
+            "infra-domain-fronting-plan",
+            "plan_only",
+            "Domain fronting analysis and planning",
+        ),
     ]
 }
 
@@ -380,6 +700,122 @@ pub fn map_action(action: &str) -> Vec<&'static str> {
     if word_match(&a, "ls") || word_match(&a, "pwd") || word_match(&a, "cat") {
         out.push("T1083");
     }
+    // Credential access
+    if a.contains("credential") || a.contains("hash") || a.contains("crack") {
+        out.push("T1110.002");
+    }
+    if a.contains("spray") {
+        out.push("T1110.003");
+    }
+    if a.contains("ssh") && a.contains("key") || a.contains("ssh-key-audit") {
+        out.push("T1552.004");
+    }
+    if a.contains("env") && a.contains("scan") || a.contains("credential-env") {
+        out.push("T1552.001");
+    }
+    if a.contains("keychain") {
+        out.push("T1555.001");
+    }
+    // Privilege escalation
+    if a.contains("suid") || a.contains("sgid") {
+        out.push("T1548.001");
+    }
+    if a.contains("sudo") {
+        out.push("T1548.003");
+    }
+    if a.contains("writable") && a.contains("path") {
+        out.push("T1574.007");
+    }
+    if a.contains("cron") && !a.contains("micro") {
+        out.push("T1053.003");
+    }
+    if a.contains("kernel") && a.contains("exploit") || a.contains("privesc-kernel") {
+        out.push("T1068");
+    }
+    // Discovery
+    if a.contains("discovery") && (a.contains("system") || a.contains("enum")) {
+        out.extend(["T1033", "T1016", "T1049", "T1057"]);
+    }
+    if a.contains("file-discovery") || a.contains("sensitive") && a.contains("file") {
+        out.push("T1005");
+    }
+    if a.contains("banner") || a.contains("service") && a.contains("discovery") {
+        out.push("T1046");
+    }
+    if a.contains("cloud") && a.contains("metadata") {
+        out.push("T1552.005");
+    }
+    if a.contains("ad-enum") || a.contains("active-directory") {
+        out.push("T1087.002");
+    }
+    // Collection
+    if a.contains("clipboard") {
+        out.push("T1115");
+    }
+    if a.contains("stage") && a.contains("file") || a.contains("stage-files") {
+        out.push("T1074.001");
+    }
+    if a.contains("screen") && (a.contains("capture") || a.contains("plan")) {
+        out.push("T1113");
+    }
+    if a.contains("keylog") {
+        out.push("T1056.001");
+    }
+    if a.contains("archive") && a.contains("loot") {
+        out.push("T1560.001");
+    }
+    // Defense evasion (new)
+    if a.contains("security") && a.contains("product") || a.contains("edr") && a.contains("enum") {
+        out.push("T1518.001");
+    }
+    if a.contains("timestomp") {
+        out.push("T1070.006");
+    }
+    if a.contains("log") && a.contains("clear") {
+        out.extend(["T1070.001"]);
+    }
+    if a.contains("amsi") || a.contains("etw") {
+        out.push("T1562.001");
+    }
+    if a.contains("hollowing") || a.contains("dll") && a.contains("inject") {
+        out.push("T1055.012");
+    }
+    if a.contains("codesign") || a.contains("code-signing") {
+        out.push("T1553.002");
+    }
+    // Exfiltration
+    if a.contains("dns") && a.contains("exfil") || a.contains("dns-encode") {
+        out.push("T1048.003");
+    }
+    if a.contains("http") && a.contains("stage") || a.contains("http-stage") {
+        out.push("T1048.002");
+    }
+    if a.contains("stego") {
+        out.push("T1027.003");
+    }
+    if a.contains("tunnel") {
+        out.push("T1572");
+    }
+    // Persistence (post-ex)
+    if a.contains("persistence") && a.contains("enum") {
+        out.extend(["T1546.004", "T1543.004", "T1543.002"]);
+    }
+    if a.contains("launch") && a.contains("agent") || a.contains("launchagent") {
+        out.push("T1543.004");
+    }
+    if a.contains("systemd") {
+        out.push("T1543.002");
+    }
+    // Infrastructure
+    if a.contains("redirector") {
+        out.push("T1090.002");
+    }
+    if a.contains("domain") && a.contains("fronting") {
+        out.push("T1090.004");
+    }
+    if a.contains("c2") && a.contains("framework") || a.contains("c2-framework") {
+        out.push("T1219");
+    }
     out.sort_unstable();
     out.dedup();
     out
@@ -451,9 +887,9 @@ mod tests {
     }
 
     #[test]
-    fn catalog_has_20_techniques_all_with_required_fields() {
+    fn catalog_has_minimum_techniques_all_with_required_fields() {
         let cat = catalog();
-        assert_eq!(cat.len(), 20, "catalog should have 20 techniques");
+        assert!(cat.len() >= 50, "catalog should have >= 50 techniques, got {}", cat.len());
         for tech in &cat {
             assert!(!tech.id.is_empty(), "empty id");
             assert!(!tech.name.is_empty(), "empty name");
