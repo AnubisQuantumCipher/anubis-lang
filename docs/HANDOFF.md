@@ -222,7 +222,44 @@ correction · `482a173` item 14 partial · `fde5a5c` items 16+17
 |---|---|---|
 | **grok** | 15 | Attack the monotone place-assign rule; sweep for every OTHER site that WRITES `Unknown` (destroying evidence vs defaulting); judge whether item 14's class is converging |
 | **codex** | 11 + 2 addenda | Six matrix rows; the c05 `let b = m["k"]` projection hop; the `_w0` prefix defect (below) |
-| **FORGE** | 10 | Score its own name-keyed-dispatch prediction against `attck.rs`, `persistence.rs`, `malleable.rs` |
+| **FORGE** | 10 | CLAIMS-19 closeout: three of four instances CLOSED; parity tests executed **7/7 PASS** in `9155bab3` (below) |
+
+### FORGE round 10, CLAIMS-19 parity tests — EXECUTED, 7/7 PASS (`9155bab3`, 2026-07-28)
+
+Six tests added to `tools/anubis/src/offensive/agent.rs::tests` binding the module catalog to what
+the beacon can actually dispatch — two parity assertions, three poison tests carrying the
+RED-before-green evidence, one stale-exemption guard.
+
+```sh
+cargo test -p anubis --bin anubis offensive::agent::tests -- --nocapture
+# test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 254 filtered out
+```
+
+The invocation is `--bin anubis`, not `--lib` — the `anubis` package has a single `[[bin]]` target
+and no library. An earlier draft of this note said `--lib`; that returns
+`error: no library targets found in package "anubis"` and runs zero tests.
+
+**Caveat on the tree at the time of the run.** `main.rs`, `vz.rs`, `purple.rs` and
+`scripts/run_offensive_platform_gate.sh` carried another agent's uncommitted in-flight edits when
+this commit landed. A failure in those files is **not** from this change — `agent.rs` is the only
+source file this work touched, and its diff is 217 insertions / 0 deletions, all inside `mod tests`.
+
+Failure-reading guide, kept because these tests are the only instrument bindings this parity has:
+
+- `every_catalog_agent_module_is_dispatchable_by_the_beacon` fails ⇒ a **real defect**: `modules.rs`
+  publishes an agent module the beacon template cannot run. The listener accepts the task (it
+  validates against that same catalog) and the beacon answers `unknown module`.
+- `every_beacon_dispatch_arm_is_published_or_recorded` fails ⇒ an undocumented beacon capability.
+- `unpublished_alias_list_has_no_stale_entries` fails ⇒ the exemption list outlived its arm.
+- `dispatched_modules` panics with *"parsed zero dispatch arms"* or *"no longer defines run_module"*
+  ⇒ **the instrument broke, not the code** — the template was refactored and the extractor needs
+  updating. Do not read that as a defect.
+- any `poison_*` test fails ⇒ **the parity predicate itself is wrong**, and the two real tests above
+  are meaningless whatever they report. Read these first.
+
+`run_module` is inside the `r###"…"###` beacon template, so it is text, not compiled code — the test
+parses the same rendered string that gets compiled into the agent. That is why this is a parity test
+and not a shared enum: the compiler was never able to see this consumer.
 
 ### The `_w0` defect — handed to codex, UNVERIFIED
 

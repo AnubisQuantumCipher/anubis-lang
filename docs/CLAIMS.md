@@ -64,12 +64,12 @@ Absence of a red row is **not** evidence of absence.
 | Surface | Observation | Repro / boundary |
 |---|---|---|
 | **Security fixtures** | Lead gate **317/317 PASS**. Live disk inventory **317** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
-| **Language core** | **247/247 PASS** — but see the float-lane residual below; measured 243/244 twice on 2026-07-28 | pin `ANUBIS_BIN` (§6) |
+| **Language core** | **252/252 PASS** — re-measured 2026-07-28 after the trust-spine commits added 5 fixtures (`total 252 passed 252 failed 0`, 252 unique names in `fixture_report.json`); see the float-lane residual below. The "243/244" reading recorded earlier the same day was against the then-244 corpus on an unpinned instrument | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 901 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 906 files, 0 mismatches** (re-measured 2026-07-28: `mismatches=0 disagreements=0`; ratchet raised 901 → 906) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -211,7 +211,7 @@ expected      : 46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60
 PASS — all gates green, fixpoint unchanged.
 ```
 
-**All 20 gates `EXIT=0`** — cargo-test, tool-test, clippy, build-rel, language 247/247, turing,
+**All 20 gates `EXIT=0`** — cargo-test, tool-test, clippy, build-rel, language 252/252, turing,
 security 317/317, stdlib 10/10 (guest lane), shadow, seal (stage2 == stage3), dogfood,
 effect/capset/type/taint self-host (0 disagreements each), stdlib-fc 104/104, native-auth,
 docs-drift, walker, **formal**.
@@ -745,9 +745,44 @@ never terminates is a check/run divergence of a different kind, and is being cha
     could only ever type-error. Being resolved; recorded here because burying an instrument
     disagreement cost this fleet a full round once already.
 
-19. **The purple report makes FALSE ATT&CK coverage claims — OPEN, operator-facing (2026-07-28).**
+19. **The purple report makes FALSE ATT&CK coverage claims — THREE OF FOUR CLOSED, residual named
+    (2026-07-28).**
 
-    `attck.rs` holds a catalog of 20 techniques, each carrying an `aop_surface` string
+    **Status by instance, re-measured 2026-07-28.** The headline defect and two of the three
+    look-alikes are closed in tree; one look-alike is closed by this entry's own change; the
+    `malleable.rs` finding is a different disease and stays open under its own name.
+
+    | instance | state | evidence |
+    |---|---|---|
+    | `map_action` false pos / false neg | **CLOSED** | `attck.rs` `word_match()` replaces bare `contains` for `ls`/`pwd`/`cat`; the dead loop is gone; `catalog_round_trips_through_map_action` asserts every non-`not_claimed` technique is reachable from its own `aop_surface`, and named regression tests pin the three witnesses below |
+    | `listener.rs` unvalidated module names | **CLOSED** | `is_valid_agent_module()` filters `modules::catalog()` to `side == "agent"`; three tests, incl. over-rejection and operator-only rejection |
+    | `modules.rs` catalog ↔ `agent.rs:run_module` | **CLOSED** (this entry) | three parity tests in `agent.rs`, both directions plus a stale-exemption guard — see below |
+    | evidence `kind` underscores vs `aop_surface` hyphens | **CLOSED** | `map_action` keys on delimiter-free substrings (`engage`, `recon`, `exploit`, …), so both spellings reach the same IDs; `map_action_engage_init_maps_to_t1583` pins `engage-init` **and** `engage_init`. Verified across the catalog's underscore names: `recon_scan`, `exploit_run`, `persist_launchagent`, `lateral_ssh`, `lateral_smb`, `string_scramble`, `xor_pack`, `malleable_profile`, `phish_plan`, `lolbas_catalog`, `inject_plan`, `vz_exploit`, `vz_fuzz` all map |
+    | `malleable.rs` `transform` validated-but-never-read | **OPEN** | still only written, defaulted and asserted in a test; the listener hard-codes its headers independently |
+
+    **The catalog↔dispatch instance was worse than first recorded, and the record was wrong about
+    why.** It was filed as "independent enumerations, agree today, no validation either way". The
+    first half is right; the second understates it. `run_module` does not live in this crate — it
+    sits inside the `r###"…"###` beacon-source template in `agent.rs`, so it is *text* until the
+    generated agent is compiled. No amount of type-checking could ever have bound it to the catalog.
+    And the listener's fix made the asymmetry sharper rather than safer: the listener validates a
+    task name against the catalog, so a published-but-undispatchable module is ACCEPTED by the
+    operator-side check and then answered `unknown module` by the beacon. The gap is a false
+    *capability* claim rather than a false *coverage* claim, and it points the same way — the
+    operator is told something works that does not.
+
+    Closed by three tests that read the same rendered template that gets compiled into the beacon,
+    so they cannot drift from what ships: every `side == "agent"` catalog entry has a dispatch arm;
+    every dispatch arm is either published or carries a written reason in
+    `UNPUBLISHED_DISPATCH_ALIASES` (one entry today — `exit`, an alias for `die`); and the exemption
+    list itself is guarded against going stale. Executed 2026-07-28 on commit `9155bab3` via
+    `cargo test -p anubis --bin anubis offensive::agent::tests -- --nocapture` — **7 passed, 0
+    failed**, plus three companion poison tests carrying the RED evidence on the parity predicates
+    and the arm extractor.
+
+    ---
+
+    **The original finding, retained.** `attck.rs` holds a catalog of 20 techniques, each carrying an `aop_surface` string
     (the PRODUCER), and `map_action()` maps an observed action to technique IDs (the CONSUMER). They
     enumerate independently. Between them sits a **dead loop** that computes the catalog lookup and
     discards it (`let _ = tech.id;`), with a comment recording that the dynamic lookup was abandoned
@@ -775,6 +810,11 @@ never terminates is a check/run divergence of a different kind, and is being cha
     catalog technique is reachable through `map_action` fails today for T1583 and T1059 and would
     catch future catalog additions. Substring collisions need word-boundary matching rather than
     bare `contains`.
+
+    *The prescription above was followed exactly, and it held for all three closed instances —
+    including the one it was not written for. Where the producer and consumer are two enumerations
+    of strings, the parity test is the binding; the shared enum was never available, because one of
+    the four consumers is a string template and another is a JSON file on disk.*
 
     Found by an agent scoring its own pre-registered prediction **1 of 3** and reporting both
     refutations plainly: `persistence.rs` has no dispatch surface at all, and `malleable.rs` is a
@@ -1665,7 +1705,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Evidence bundle + tamper detection | package gate path `scripts/run_package_gate.sh` (seal history); unit evidence/tamper tests | Re-run package gate for live CI claims |
 | RISC0 receipt path (in-process) | prove/verify path + A15 gate history; shape + `Receipt::verify` API | Hosted Metal proving **not claimed** |
 | Metal parity (local Apple Silicon) | local Tier-2 parity history in A15 / doctor | Not hosted GPU prove |
-| Language core (fixtures + repro) | **247/247** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
+| Language core (fixtures + repro) | **252/252** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures; vault contacts `run` EXIT=0 post-PTAH | Research/exploit needs `--allow-research` + VZ where required; **proof/shell constructs are non-run by design** (CLAIMS open §2 (B)); (R) preflight false-rejects **closed**; *check ≠ run for proof/shell* is a named product residual, not a checker gap |
 | Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical narrative in `docs/language/ROADMAP.md` | **Named residual:** published reds empty ≠ Class D / D1–D6 closed; green board is not COMPLETE |

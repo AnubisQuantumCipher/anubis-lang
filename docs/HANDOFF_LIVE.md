@@ -104,9 +104,29 @@ Briefs sent: `scratchpad/r38/codex11.txt`, `codex_interrupt.txt`, `codex_addendu
 When it reports: **build, run the full board, run
 `bash scratchpad/fleet_20260726/score_r12.sh`, publish a pin, THEN commit.**
 
-### 2d. FORGE owes the ATT&CK parity test (CLAIMS item 19)
+### 2d. FORGE owes the ATT&CK parity test (CLAIMS item 19) — DELIVERED and EXECUTED, 7/7 PASS (`9155bab3`, 2026-07-28)
 
-It must show the test **RED before green** — it should fail today for T1583 and T1059.
+**The ATT&CK half was already in tree** and did not need building: `attck.rs` carries `word_match()`
+(replacing bare `contains` for `ls`/`pwd`/`cat`), the dead loop is gone, and
+`catalog_round_trips_through_map_action` plus three named regression tests pin the T1583 / `mtls` /
+`attck_catalog` witnesses. Landed under `0e2344ed`. Re-measuring item 19 found three of its four
+instances closed — `listener.rs` too, via `is_valid_agent_module`.
+
+**The one that was still open was catalog ↔ dispatch**, and the record of it was wrong about why.
+`run_module` is not code in this crate — it lives inside the `r###"…"###` beacon-source template, so
+it is *text* until the generated agent compiles. No shared enum was ever possible. Worse, the
+listener fix made the asymmetry sharper: the listener validates a task name against the catalog, so a
+published-but-undispatchable module is ACCEPTED operator-side and then answered `unknown module` by
+the beacon.
+
+**On RED-before-green.** These tests pass on today's tree, so planting a fake arm in the shipped
+template would be the only way to redden them — and that mutates the artifact under test. Instead the
+parity logic is factored into two pure predicates and **poison-tested in-process**: a synthetic
+catalog with an undispatchable `screenshot`, a synthetic dispatch with an unpublished `keylog`, and a
+synthetic template proving the extractor reads alternates and stops at the catch-all. Those three
+carry the RED evidence; the two real tests are thin wrappers over the same predicates. This also
+guards the vacuous-pass failure mode — an extractor silently returning `[]` would make both real
+tests pass while checking nothing, which is the "244/244 PASS with zero fixtures run" shape.
 
 ---
 
@@ -142,7 +162,7 @@ fresh one after the next build and SAY SO to the agents.
 | 16 | 91% of dual-use surface unprobed | OPEN, stated |
 | 17 | `build`/`run` research-consent gap | OPEN, low |
 | 18 | **the defect FACTORY — still widening** | OPEN — three shapes, falsifiable convergence test |
-| 19 | purple report claims false ATT&CK coverage | OPEN — FORGE fixing now |
+| 19 | purple report claims false ATT&CK coverage | **3 of 4 CLOSED** — `map_action` + `listener.rs` were already in tree; catalog↔dispatch closed by FORGE (`9155bab3`, 7/7 pass, poison-tested). Residual: `malleable.rs` `transform` validated-but-never-read |
 
 **Item 18 is the frame for everything in the tag lane.** Three shapes: *Unknown by destruction*,
 *synthetic key invisible to the reader*, *composite projection root-only*. Convergence = zero

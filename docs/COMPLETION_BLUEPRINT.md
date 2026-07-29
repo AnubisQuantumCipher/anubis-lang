@@ -74,7 +74,7 @@ sound. Its *soundness* claim was not. Keep the first, discard the second.
 | Gate | Now |
 |---|---:|
 | unified audit (`audit_unified.sh --profile full`) | **24/24 PASS**, 0 failed / 0 skipped / 0 external |
-| language fixtures | **247/247** |
+| language fixtures | **252/252** (re-measured after the trust-spine commits added 5) |
 | security fixtures | **317/317** |
 | stdlib fail-closed | **104/104** |
 | stdlib integration gate | **10 pass / 1 fail** (was 7/4) |
