@@ -8454,6 +8454,23 @@ fn field_place_path(e: &Expr) -> Option<(String, Vec<String>)> {
     }
 }
 
+/// Look up a field on an exact place type, falling back to the bare generic head (`Box<T>` →
+/// `Box`). Both the enforcing field lookup and recursive place-type resolver use this helper so a
+/// nested generic hop cannot silently lose the declaration while a direct hop keeps it.
+fn struct_field_type_for_place(
+    base_ty: &str,
+    field: &str,
+    struct_fields: &PlaceTypes<'_>,
+) -> Option<String> {
+    let nominal_head = ty::nominal_place_type_head(base_ty)?;
+    struct_fields
+        .fields
+        .get(base_ty)
+        .or_else(|| struct_fields.fields.get(nominal_head))?
+        .get(field)
+        .cloned()
+}
+
 /// The DECLARED type of a field-access place, walking `scope[root].ty` through `struct_fields`: for
 /// `p.a.b` it returns b's type (`struct_fields[struct_fields[type_of(p)][a]][b]`). Generalizes the
 /// single-level `scope[p].ty → struct_fields[..][field]` lookup so a nested field write can pick its
@@ -8472,16 +8489,7 @@ fn declared_field_type(
     struct_fields: &PlaceTypes<'_>,
 ) -> Option<String> {
     let base_ty = place_struct_type(base, scope, struct_fields)?;
-    struct_fields
-        .fields
-        .get(&base_ty)
-        .or_else(|| {
-            struct_fields
-                .fields
-                .get(base_ty.split('<').next().unwrap_or(&base_ty).trim())
-        })?
-        .get(field)
-        .cloned()
+    struct_field_type_for_place(&base_ty, field, struct_fields)
 }
 
 /// The declaration lookups a PLACE's type resolution needs, bundled so the existing
@@ -8520,7 +8528,7 @@ fn place_struct_type(
         Expr::Var(v) => scope.get(v).and_then(|b| b.info.ty.clone()),
         Expr::FieldAccess { base, field, .. } => {
             let base_ty = place_struct_type(base, scope, struct_fields)?;
-            struct_fields.fields.get(&base_ty)?.get(field).cloned()
+            struct_field_type_for_place(&base_ty, field, struct_fields)
         }
         // D1/D3: a field read off a free-function CALL RESULT — `get().k`, and `let g = get; g().k`
         // through the binding's `fn_alias`, reusing the alias resolution the summary lookups already
@@ -8549,6 +8557,19 @@ fn place_struct_type(
                 .cloned(),
             _ => None,
         },
+        // The INDEX carrier — `xs[0].k`, `m["a"].k`, `xs[0].inner.k`, `mk()[0].k`. This arm did not
+        // exist: `Expr::Index` fell to `_ => None` below, the enclosing `FieldAccess`'s `?`
+        // short-circuited, and a declared `secret<T>`/`tainted<T>` STRUCT FIELD read off a container
+        // element was never looked up. Runtime-proven: it printed the value on a green check
+        // (`docs/CLAIMS.md` item 21, root cause 8; §3.3 witnesses).
+        //
+        // `container_element_type` returns None for any spelling it does not recognise, so this
+        // resolver never guesses an element identity. Unknown bases retain the callers' existing
+        // behavior; this arm recovers exact place types but does not itself make unknowns fail closed.
+        Expr::Index { base, .. } => {
+            let base_ty = place_struct_type(base, scope, struct_fields)?;
+            ty::container_element_type(&base_ty)
+        }
         _ => None,
     }
 }
@@ -25319,42 +25340,39 @@ fn body_returns_taint(
     false
 }
 
-/// Seed a return-summary scope with a function's `tainted<T>` / `secret<T>` PARAMS. A qualifier-declared
-/// param is UNCONDITIONALLY tainted/secret (declared, not arg-derived), so a function that RETURNS such a
-/// param — or a value derived from it — is taint-/secret-returning regardless of the call argument. A
-/// PLAIN param is left clean here: its label is arg-flow, resolved at each call site via
-/// `param_return_taint`. This closes the interprocedural propagation gap the former empty-scope summary
-/// left open (`fn get(x: secret<u64>){ return x; }` was not secret-returning, so `send(get(5))` slipped
-/// through). Seeds BOTH labels so the one helper serves both the taint and secret summaries.
+/// Seed a return-summary scope with every typed parameter. A qualifier-declared param is
+/// UNCONDITIONALLY tainted/secret; a plain param remains label-clean here because its label is
+/// argument flow, resolved at each call site via `param_return_taint`. The plain param's declared
+/// TYPE still has to be present: `xs: list<S>` is the only source of nominal identity for
+/// `return xs[0].k`, and dropping it makes a declared qualifier on `S.k` disappear from the summary.
+/// Seeds BOTH labels so the one helper serves both the taint and secret summaries.
 fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<String, ScopeBinding>) {
     for (name, ty) in params {
         let tainted = is_tainted_type(Some(ty));
         let secret = is_secret_type(Some(ty));
-        if tainted || secret {
-            scope.insert(
-                name.clone(),
-                ScopeBinding {
-                    info: BindingInfo {
-                        name: name.clone(),
-                        ty: Some(ty.clone()),
-                        mode: String::new(),
-                        tainted,
-                        taint_source: tainted.then(|| name.clone()),
-                        declassified: false,
-                        span: None,
-                    },
-                    closure_arity: None,
-                    closure_lambda: None,
-                    field_closures: BTreeMap::new(),
-                    fn_alias: None,
-                    fn_identities: FnIdentitySet::Unknown,
-                    field_fn_identities: BTreeMap::new(),
-                    builtin_gate_tags: BuiltinGateTags::Unknown,
-                    field_builtin_gate_tags: BTreeMap::new(),
-                    secret,
+        scope.insert(
+            name.clone(),
+            ScopeBinding {
+                info: BindingInfo {
+                    name: name.clone(),
+                    ty: Some(ty.clone()),
+                    mode: String::new(),
+                    tainted,
+                    taint_source: tainted.then(|| name.clone()),
+                    declassified: false,
+                    span: None,
                 },
-            );
-        }
+                closure_arity: None,
+                closure_lambda: None,
+                field_closures: BTreeMap::new(),
+                fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
+                secret,
+            },
+        );
     }
 }
 

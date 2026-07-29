@@ -183,6 +183,136 @@ pub(crate) fn strip_flow_qualifier(ty: &str) -> &str {
     inner
 }
 
+/// Strip every whole-value `tainted<T>` / `secret<T>` wrapper, but only when each wrapper is a
+/// balanced, single-argument generic. Unlike [`strip_flow_qualifier`], this helper is for nominal
+/// security lookups and therefore returns `None` rather than guessing through malformed syntax.
+pub(crate) fn strip_flow_qualifiers_exact(mut ty: &str) -> Option<&str> {
+    loop {
+        let current = ty.trim();
+        if current.is_empty() {
+            return None;
+        }
+        let lower = current.to_ascii_lowercase();
+        let prefix_len = if lower.starts_with("tainted<") {
+            "tainted<".len()
+        } else if lower.starts_with("secret<") {
+            "secret<".len()
+        } else {
+            return Some(current);
+        };
+        let inner = current[prefix_len..].strip_suffix('>')?.trim();
+        if inner.is_empty() || !top_level_generic_commas(inner)?.is_empty() {
+            return None;
+        }
+        ty = inner;
+    }
+}
+
+/// Exact nominal registry key for a place type. Flow qualifiers are labels and are peeled; generic
+/// struct arguments are retained only long enough to validate balanced syntax before returning the
+/// bare declaration key (`secret<Box<i64>>` -> `Box`).
+pub(crate) fn nominal_place_type_head(ty: &str) -> Option<&str> {
+    let unqualified = strip_flow_qualifiers_exact(ty)?;
+    if !generic_type_spelling_is_well_formed(unqualified) {
+        return None;
+    }
+    let Some(open) = unqualified.find('<') else {
+        return (!unqualified.contains('>')).then_some(unqualified);
+    };
+    let head = unqualified[..open].trim();
+    let body = unqualified[open + 1..].strip_suffix('>')?.trim();
+    if head.is_empty() || body.is_empty() {
+        return None;
+    }
+    top_level_generic_commas(body)?;
+    Some(head)
+}
+
+/// The ELEMENT type an index expression yields: `list<T>` → `T`, `map<K,V>` → `V` (indexing a map
+/// yields its VALUE). Anything else → `None`, which is the conservative no-guess answer: an unknown
+/// spelling preserves the caller's existing unknown-type behavior. That boundary avoids inventing
+/// a nominal qualifier; it does not make an otherwise fail-open unknown place fail closed.
+///
+/// Added for `place_struct_type`'s `Expr::Index` arm. Without it, `Expr::Index` fell to `_ => None`
+/// and the enclosing `FieldAccess`'s `?` short-circuited, so a declared `secret<T>`/`tainted<T>`
+/// STRUCT FIELD read off a container element (`xs[0].k`, `m["a"].k`, `xs[0].inner.k`) was never
+/// looked up and the qualifier went uncharged — runtime-proven, it printed the value.
+/// See `docs/CLAIMS.md` item 21 root cause 8.
+///
+/// Nested generics are handled by tracking `<`/`>` depth so `map<string, list<S>>` yields
+/// `list<S>` rather than splitting on the wrong comma.
+pub(crate) fn container_element_type(ty: &str) -> Option<String> {
+    let t = strip_flow_qualifiers_exact(ty)?;
+    if !generic_type_spelling_is_well_formed(t) {
+        return None;
+    }
+    if let Some(rest) = t.strip_prefix("list<").and_then(|r| r.strip_suffix('>')) {
+        let inner = rest.trim();
+        let commas = top_level_generic_commas(inner)?;
+        return (!inner.is_empty() && commas.is_empty()).then(|| inner.to_string());
+    }
+    if let Some(rest) = t.strip_prefix("map<").and_then(|r| r.strip_suffix('>')) {
+        let commas = top_level_generic_commas(rest)?;
+        let [comma] = commas.as_slice() else {
+            return None;
+        };
+        let key = rest[..*comma].trim();
+        let value = rest[*comma + 1..].trim();
+        return (!key.is_empty() && !value.is_empty()).then(|| value.to_string());
+    }
+    None
+}
+
+/// Return every comma at generic depth zero, or `None` for unbalanced angle delimiters. Keeping
+/// malformed and multi-argument spellings out of `container_element_type` is security-relevant: a
+/// partial parse must not invent the nominal type used to charge a declared field qualifier.
+fn top_level_generic_commas(body: &str) -> Option<Vec<usize>> {
+    let mut depth = 0usize;
+    let mut commas = Vec::new();
+    for (i, c) in body.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.checked_sub(1)?;
+            }
+            ',' if depth == 0 => commas.push(i),
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(commas)
+}
+
+/// Validate generic delimiter structure and require every argument slot at every nesting depth to
+/// contain a well-formed type spelling. This is intentionally syntax-only: arity and declaration
+/// existence are checked elsewhere, but an empty/doubled slot must never recover a nominal key.
+fn generic_type_spelling_is_well_formed(ty: &str) -> bool {
+    let ty = ty.trim();
+    if ty.is_empty() {
+        return false;
+    }
+    let Some(open) = ty.find('<') else {
+        return !ty.chars().any(|c| matches!(c, '<' | '>' | ','));
+    };
+    let head = ty[..open].trim();
+    let Some(body) = ty[open + 1..].strip_suffix('>') else {
+        return false;
+    };
+    if head.is_empty() || head.chars().any(|c| matches!(c, '<' | '>' | ',')) {
+        return false;
+    }
+    let Some(commas) = top_level_generic_commas(body) else {
+        return false;
+    };
+    let mut start = 0usize;
+    for end in commas.into_iter().chain(std::iter::once(body.len())) {
+        if !generic_type_spelling_is_well_formed(&body[start..end]) {
+            return false;
+        }
+        start = end + 1;
+    }
+    true
+}
+
 /// An INTEGER type the solver may soundly model as a 64-bit bit-vector (matching the i64 runtime).
 /// Floats are deliberately excluded. `tainted<T>`/`secret<T>` are qualifiers — unwrap them first.
 pub(crate) fn is_integer(ty: &str) -> bool {
@@ -1697,5 +1827,112 @@ mod tests {
                 );
             }
         }
+    }
+    /// `container_element_type` backs `place_struct_type`'s `Expr::Index` arm (CLAIMS 21 root
+    /// cause 8). Every `None` here is load-bearing: it restores the pre-fix behaviour rather than
+    /// guessing an element type, so an unrecognised spelling can never invent a qualifier.
+    #[test]
+    fn container_element_type_resolves_list_and_map_value() {
+        assert_eq!(container_element_type("list<S>").as_deref(), Some("S"));
+        assert_eq!(container_element_type("list< S >").as_deref(), Some("S"));
+        assert_eq!(
+            container_element_type("map<string,S>").as_deref(),
+            Some("S")
+        );
+        assert_eq!(
+            container_element_type("map<string, S>").as_deref(),
+            Some("S")
+        );
+    }
+
+    #[test]
+    fn container_element_type_tracks_generic_depth() {
+        // The nested comma is deliberately in the MAP KEY, before the outer delimiter. A naive
+        // first-comma split would return `i64>, S` rather than `S`.
+        assert_eq!(
+            container_element_type("map<map<string, i64>, S>").as_deref(),
+            Some("S")
+        );
+        // Nested values must be returned intact as the indexed element type.
+        assert_eq!(
+            container_element_type("map<string, list<S>>").as_deref(),
+            Some("list<S>")
+        );
+        assert_eq!(
+            container_element_type("list<map<string,S>>").as_deref(),
+            Some("map<string,S>")
+        );
+    }
+
+    #[test]
+    fn container_element_type_rejects_malformed_or_ambiguous_arguments() {
+        assert_eq!(container_element_type("map<,S>"), None);
+        assert_eq!(container_element_type("map<string,>"), None);
+        assert_eq!(container_element_type("map<string,S,T>"), None);
+        assert_eq!(container_element_type("map<map<string,i64>,S>>"), None);
+        assert_eq!(container_element_type("map<map<string,i64,S>"), None);
+        assert_eq!(container_element_type("secret<list<S>>>"), None);
+        assert_eq!(container_element_type("secret<list<S>"), None);
+        assert_eq!(container_element_type("list<Box<,>>"), None);
+        assert_eq!(container_element_type("list<Box<T,>>"), None);
+        assert_eq!(container_element_type("map<string,Box<,T>>"), None);
+        assert_eq!(container_element_type("map<string,Box<T,,U>>"), None);
+        assert_eq!(container_element_type("list<Box<Result<,>>>"), None);
+    }
+
+    #[test]
+    fn container_element_type_sees_through_a_flow_qualifier() {
+        assert_eq!(
+            container_element_type("secret<list<S>>").as_deref(),
+            Some("S")
+        );
+        assert_eq!(
+            container_element_type("tainted<list<S>>").as_deref(),
+            Some("S")
+        );
+    }
+
+    #[test]
+    fn nominal_place_type_head_peels_exact_flow_labels_and_validates_generics() {
+        assert_eq!(nominal_place_type_head("S"), Some("S"));
+        assert_eq!(nominal_place_type_head("Box<i64>"), Some("Box"));
+        assert_eq!(nominal_place_type_head("secret<S>"), Some("S"));
+        assert_eq!(
+            nominal_place_type_head("tainted<secret<Box<i64>>>",),
+            Some("Box")
+        );
+        for malformed in [
+            "secret<>",
+            "secret<S",
+            "secret<S>>",
+            "secret<S,T>",
+            "Box<>",
+            "Box<i64",
+            "Box<i64>>",
+            "Box<,>",
+            "Box<T,>",
+            "Box<,T>",
+            "Box<T,,U>",
+            "Box<Result<,>>",
+        ] {
+            assert_eq!(
+                nominal_place_type_head(malformed),
+                None,
+                "malformed nominal type must not produce a registry key: {malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn container_element_type_is_none_for_anything_unrecognised() {
+        // A bare `list` (what an UNANNOTATED array literal infers) carries no element parameter —
+        // it must stay None, which is why the unannotated form remains an open residual.
+        assert_eq!(container_element_type("list"), None);
+        assert_eq!(container_element_type("map"), None);
+        assert_eq!(container_element_type("S"), None);
+        assert_eq!(container_element_type("i64"), None);
+        assert_eq!(container_element_type(""), None);
+        assert_eq!(container_element_type("list<>"), None);
+        assert_eq!(container_element_type("map<string>"), None);
     }
 }

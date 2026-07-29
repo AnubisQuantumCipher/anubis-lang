@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// W1 return-summary precision guard: preserving a plain annotated container parameter's nominal
+// element type must not mark a public declared field as secret.
+struct P { k: i64 }
+
+fn peel(xs: list<P>) {
+    return xs[0].k;
+}
+
+fn main() {
+    let xs: list<P> = [P { k: 7 }];
+    print(peel(xs));
+}

@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Precision guard for the annotated map-index carrier: a public declared field remains printable.
+struct P { k: i64 }
+
+fn main() {
+    let m: map<string, P> = { "a": P { k: 7 } };
+    print(m["a"].k);
+}
