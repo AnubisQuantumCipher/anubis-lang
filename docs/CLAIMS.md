@@ -67,13 +67,13 @@ immutable pin and the required seal are recorded.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **317/317 PASS**. Live disk inventory **317** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **327/327 PASS**. Live disk inventory **327** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **252/252 PASS** — re-measured 2026-07-28 after the trust-spine commits added 5 fixtures (`total 252 passed 252 failed 0`, 252 unique names in `fixture_report.json`); see the float-lane residual below. The "243/244" reading recorded earlier the same day was against the then-244 corpus on an unpinned instrument | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 906 files, 0 mismatches** (re-measured 2026-07-28: `mismatches=0 disagreements=0`; ratchet raised 901 → 906) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 916 files, 0 mismatches** (re-measured 2026-07-29: `mismatches=0 disagreements=0`; ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -234,7 +234,8 @@ PASS — all gates green, fixpoint unchanged.
 ```
 
 **All 20 gates `EXIT=0`** — cargo-test, tool-test, clippy, build-rel, language 252/252, turing,
-security 317/317, stdlib 10/10 (guest lane), shadow, seal (stage2 == stage3), dogfood,
+security 317/317 (**historical stamp, 2026-07-28**), stdlib 10/10 (guest lane), shadow,
+seal (stage2 == stage3), dogfood,
 effect/capset/type/taint self-host (0 disagreements each), stdlib-fc 104/104, native-auth,
 docs-drift, walker, **formal**.
 
@@ -1077,8 +1078,9 @@ never terminates is a check/run divergence of a different kind, and is being cha
     struct field then applied, index at the root of a nested path, push-then-read-back,
     `while` with a variable index — plus taint-lane duals reaching `fs.write` and `net.send`.
 
-    **What this means for the completeness question.** The engineering board is green — language
-    252/252, security 317/317, stdlib 104/104, native-authoritative 906/0, formal PASS, VM seal
+    **What this meant for the completeness question.** The engineering board was green — language
+    252/252, security 317/317 (**historical stamp, 2026-07-29**), stdlib 104/104,
+    native-authoritative 906/0, formal PASS, VM seal
     22/22 fixpoint unchanged. **None of that is the language promise.** Against
     *`anubis check` PASS ⇒ the program cannot violate its stated contracts, effects, capabilities or
     information-flow policy at runtime*, the answer is **NO**, and it is not close: 30 programs pass
@@ -1180,6 +1182,22 @@ never terminates is a check/run divergence of a different kind, and is being cha
     `subagents/workflows/wf_849c0fb2-478/` (journal.jsonl + per-agent jsonl). 73 agents, 0 errors,
     ~58 min. Findings are recorded here as MEASURED and root-caused; **no fix is claimed and none
     has been attempted** — every site above is in `compiler/src/middle/**`.
+
+    **Bounded W1 receipt (2026-07-29, commit `03210603`).** This closes only the annotated
+    container-place / typed-parameter subset; item 21 remains open for the named unannotated and
+    function-value classes. The source-matched pin is `vm/pins/anubis-58ba4abc0a63`, SHA-256
+    `58ba4abc0a636d909aa72e4f8df06d6e2adcad3ae378396a4c62a63f106a25bf`.
+
+    | Gate | Exact observation |
+    |---|---|
+    | compiler library | **766/766 PASS** |
+    | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
+    | security | **327/327 PASS** |
+    | language | **252/252 PASS** |
+    | stdlib fail-closed | **104/104 PASS** |
+    | native-authoritative | **916 files, 0 mismatches** |
+    | formal inventory | **162 theorems / 15 modules**, gate PASS |
+    | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
 
     *Instrument note against myself:* the workflow's own post-processing returned empty
     `raw_falsify`/`falsify_summary` arrays because I wrote a self-contradictory filter
@@ -1747,7 +1765,8 @@ enforced. It now refuses and names the path that does enforce it.
 ### HISTORICAL, SUPERSEDED BY ITEM 21 — carrier class measured 40 of 41 closed (2026-07-28)
 
 At this dated snapshot, the 41 published-open carrier routes stood at **40 CLOSED, 1 open**, with
-25 must-stay-ACCEPT pure guards passing and zero over-rejection, security 317/317. The
+25 must-stay-ACCEPT pure guards passing and zero over-rejection, security 317/317 (**historical
+stamp, 2026-07-28**). The
 element-materialization ladder was 25/25. Item 21 later falsified this as a current class-level
 closure with place-assignment, control-flow, container, and call-site true accepts.
 
@@ -1784,7 +1803,8 @@ This section records the discovery census that preceded the then-current 40-clos
 above. Both snapshots are superseded by item 21; neither is a present-tense count.
 
 Ten carrier shapes were closed on 2026-07-28, each with a rejecting discriminator AND a guard that
-rejects poison. Red inventory zero, both held fixtures rejecting, security 317/317. On that
+rejects poison. Red inventory zero, both held fixtures rejecting, security 317/317 (**historical
+stamp, 2026-07-28**). On that
 evidence Phase 1 looked finished.
 
 It is not. The blueprint's last criterion is *"a fresh adversarial hunt over the carrier surface
@@ -2088,7 +2108,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **317/317** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **327/327** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 882 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |

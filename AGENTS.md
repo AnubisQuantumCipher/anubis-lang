@@ -114,13 +114,19 @@ tart guest** cloned from `anubis-xcode` (`./target/release/anubis vz status` fir
 guest name. Crash isolation is not air-gap; no zero-NIC claim without native-preflight. **If tart is
 red: STOP and say so. Do not fall through to the host.**
 
-## Current state (2026-07-27)
+## Current state (2026-07-29 — W1 bounded receipt)
 
-Green under a pinned binary, 12-gate `SEAL_PASS`, `known_fail=0`:
-security **317/317** · language **252/252** · stdlib fail-closed **104/104** · runtime 4/4 ·
-selfhost 9/9 · taint/type/effect/capset self-host **0 disagreements** · formal gate PASS with every
-theorem machine-checked and no `sorry`/`admit`/`axiom` · native-authoritative **906 files, 0
-mismatches**.
+Commit `03210603` has a source-matched immutable candidate
+`vm/pins/anubis-58ba4abc0a63`, SHA-256
+`58ba4abc0a636d909aa72e4f8df06d6e2adcad3ae378396a4c62a63f106a25bf`.
+Against that pin, compiler library **766/766**, security **327/327**, language **252/252**,
+stdlib fail-closed **104/104**, native-authoritative **916 files, 0 mismatches**, and the formal gate
+PASS. The bounded W1 place-resolution slice is green.
+
+The branch also contains the subsequent `889d9a7c` offensive isolation/evidence slice; its
+source-stable tool run passed **357/357** unit tests plus every integration-test binary. A combined
+release pin and whole-tree host/VZ seal are still pending. Do not report a whole-tree `SEAL_PASS`
+from the bounded W1 receipt.
 
 Reproduce all of it with one command: **`bash scripts/run_seal_checklist.sh`**. It rebuilds once,
 pins that binary for every gate, scores only each gate's declared verdict line (never the log body —
