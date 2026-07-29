@@ -247,8 +247,19 @@ else
   ok "security corpus floor initialised PASS=$PASS_N FAIL=$FAIL_N"
 fi
 
+# --- 12. Pure proof-correspondence gate must be explicitly exempt from pin invocation. ---
+proof_block="$(awk '
+  /^run_gate proof_correspondence[[:space:]]*\\/ { in_block=1 }
+  in_block { print }
+  in_block && /run_proof_correspondence_gate[.]sh/ { exit }
+' scripts/run_seal_checklist.sh)"
+if [[ "$proof_block" == *"--no-pin-use"* && "$proof_block" == *"run_proof_correspondence_gate.sh"* ]]; then
+  ok "proof_correspondence is explicitly source-only (--no-pin-use)"
+else
+  bad "proof_correspondence lacks its explicit source-only --no-pin-use contract"
+fi
 
-# --- 12. Suite freshness (seal end-to-end must not go stale) ---
+# --- 13. Suite freshness (seal end-to-end must not go stale) ---
 # Consumed by seal via `run_gate instrument_hygiene` and `run_gate gate_run_freshness`.
 if [[ -x scripts/gate_run_freshness.sh ]]; then
   if bash scripts/gate_run_freshness.sh >/tmp/ih_fresh.out 2>&1; then
