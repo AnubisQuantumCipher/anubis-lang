@@ -968,8 +968,42 @@ never terminates is a check/run divergence of a different kind, and is being cha
     refusal anywhere are exactly these. A module that never tests a denial is a module whose guard
     surface nobody has looked at; here nobody had, because there was no guard.
 
-    Status: fix WIP in the working tree, **unsealed and uncommitted** — the VM battery is blocked
-    on admission headroom, and this repo does not commit code that has not passed its verify step.
+    **Fix — WIP in the working tree, host-verified, NOT sealed (2026-07-29).** All 48 handlers now
+    call `require_vz_offensive` before `load_engagement`, using the action label the handler already
+    seals into the receipt chain, so the guard and the receipt name the same thing. 59 guard call
+    sites total (48 new + 11 legacy). Three parity tests in `main.rs` bind it going forward:
+
+    - `every_offensive_handler_requires_a_vz_guest` — reads its own source via `include_str!`, so it
+      cannot drift from what ships. **Proven RED before green**: deleting the single
+      `discovery_system_enum` guard fails it with `CLAIMS-20: 1 offensive handler(s) … ["DiscoverySystemEnum"]`.
+    - `exemptions_name_real_handlers_and_carry_a_reason` — the exemption list is **empty**; the AOP
+      surface is guest-only as a class, and any future exemption must be named with a reason.
+    - `legacy_offensive_commands_remain_gated` — pins the 11 pre-existing guards so a refactor
+      cannot quietly drop the older half.
+
+    **The instrument caught itself, which is why it is trustworthy.** The first extractor matched
+    only lines ending `=> {` and saw **86 of 128** arms — the 42 single-expression arms
+    (`=> run_x(a),`) would have been skipped silently, so a future offensive command written in that
+    form would have passed unchecked. A hardcoded `arms.len() > 100` sanity assert caught it; the
+    check is now self-calibrating (parsed arms must equal `Commands::` header count).
+
+    Demonstrated before/after on the real binary — the exact command from the witness above:
+
+    ```
+    before: { "executed": true, "hostname": "<real>", "id": "uid=501(...)", "df": "<host disks>" }
+    after:  Error: ANUBIS_OFFENSIVE_HOST_FORBIDDEN: `discovery_system_enum` … never on the host.
+    ```
+
+    Also verified refusing: `privesc-sudo-audit`, `collection-clipboard`, `evasion-security-enum`,
+    `postex-persistence-enum`, `credential-env-scan`, `infra-c2-check`, `infra-redirector-plan`,
+    `payload-cyclic`, `report-attck-coverage`. Host suite 345/345, `main.rs` clippy-clean.
+
+    **Not yet verified, and the reason this stays OPEN:** no VM seal, and — more specifically — it
+    is unconfirmed that these commands still *succeed inside a guest*. The host probes prove the
+    guard refuses; only `run_offensive_platform_gate.sh` in a guest proves the fix did not simply
+    break the surface it was protecting. The battery is blocked on admission headroom
+    (`free ≈ 11.2 GiB` vs the guard's `20480 MiB`), and this repo does not commit code that has not
+    passed its verify step.
 
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
