@@ -505,6 +505,7 @@ fn run_cmd(cmd: &str, args: &[String]) -> (bool, String) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::modules;
     use super::*;
 
     #[test]
@@ -533,5 +534,221 @@ mod tests {
         assert!(!src.contains("__C2__"), "unsubstituted __C2__");
         assert!(!src.contains("__PSK__"), "unsubstituted __PSK__");
         assert!(!src.contains("__OS__"), "unsubstituted __OS__");
+    }
+
+    /// Dispatch arms the beacon accepts but the operator catalog does not publish.
+    /// Every entry needs a reason. Recorded rather than deleted: an undocumented
+    /// dispatch arm is a capability the operator cannot see in `anubis aop modules`.
+    const UNPUBLISHED_DISPATCH_ALIASES: &[(&str, &str)] =
+        &[("exit", "benign alias for the published `die` module")];
+
+    /// Extract the module names `run_module` matches on, from the rendered beacon
+    /// source. `run_module` lives inside a raw-string template, so the compiler
+    /// cannot check it against the catalog — this reads the same text that is
+    /// compiled into the beacon, so it cannot drift from what actually ships.
+    fn dispatched_modules(src: &str) -> Vec<String> {
+        let start = src
+            .find("fn run_module(")
+            .expect("beacon template no longer defines run_module");
+        // The catch-all arm terminates the match; it is the only place this
+        // string appears and it bounds the arm list exactly.
+        let end = src[start..]
+            .find("unknown module:")
+            .map(|i| start + i)
+            .expect("run_module lost its catch-all arm — dispatch is no longer total");
+
+        let mut names = Vec::new();
+        for line in src[start..end].lines() {
+            let line = line.trim();
+            let Some(arrow) = line.find("=>") else {
+                continue;
+            };
+            let pattern = &line[..arrow];
+            if !pattern.trim_start().starts_with('"') {
+                continue; // binding arm (`other =>`) or not an arm at all
+            }
+            for alt in pattern.split('|') {
+                let alt = alt.trim();
+                if let Some(name) = alt.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        assert!(
+            !names.is_empty(),
+            "parsed zero dispatch arms — the extractor broke, not the code under test"
+        );
+        names
+    }
+
+    /// The parity predicate itself, pulled out so it can be poison-tested against a
+    /// synthetic pair. A test that has never been red has not been shown to test
+    /// anything; the real tests below pass on today's tree, so the evidence that
+    /// they *would* catch a break comes from `poison_*` rather than from planting a
+    /// fake arm in the shipped template.
+    fn catalog_entries_without_dispatch<'a>(
+        catalog_agent_names: &[&'a str],
+        dispatched: &[String],
+    ) -> Vec<&'a str> {
+        catalog_agent_names
+            .iter()
+            .copied()
+            .filter(|n| !dispatched.iter().any(|d| d == n))
+            .collect()
+    }
+
+    fn dispatch_arms_not_published(published: &[&str], dispatched: &[String]) -> Vec<String> {
+        dispatched
+            .iter()
+            .filter(|d| {
+                !published.iter().any(|p| p == &d.as_str())
+                    && !UNPUBLISHED_DISPATCH_ALIASES
+                        .iter()
+                        .any(|(alias, _)| alias == &d.as_str())
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn poison_catalog_entry_without_dispatch_is_detected() {
+        let dispatched = vec!["whoami".to_string(), "ls".to_string()];
+        let missing = catalog_entries_without_dispatch(&["whoami", "ls", "screenshot"], &dispatched);
+        assert_eq!(
+            missing,
+            vec!["screenshot"],
+            "the parity predicate must flag a published module with no dispatch arm"
+        );
+        // and must not cry wolf when they agree
+        assert!(
+            catalog_entries_without_dispatch(&["whoami", "ls"], &dispatched).is_empty(),
+            "over-rejection: agreeing lists must produce no finding"
+        );
+    }
+
+    #[test]
+    fn poison_unpublished_dispatch_arm_is_detected() {
+        let dispatched = vec!["whoami".to_string(), "keylog".to_string()];
+        assert_eq!(
+            dispatch_arms_not_published(&["whoami"], &dispatched),
+            vec!["keylog".to_string()],
+            "the parity predicate must flag a dispatch arm the catalog does not publish"
+        );
+        // `exit` is excused by UNPUBLISHED_DISPATCH_ALIASES and must NOT be flagged
+        assert!(
+            dispatch_arms_not_published(&["whoami"], &["exit".to_string()]).is_empty(),
+            "a recorded alias must not be reported as undocumented"
+        );
+    }
+
+    /// The extractor is the instrument. If it silently returned an empty or partial
+    /// list, both parity tests would pass vacuously — the failure mode that made
+    /// "244/244 PASS" mean zero fixtures actually ran.
+    #[test]
+    fn poison_extractor_reads_arms_it_is_given() {
+        let synthetic = r#"
+            fn run_module(module: &str, args: &[String]) -> (bool, String) {
+                match module {
+                    "alpha" => run_cmd("alpha", &[]),
+                    "beta" | "gamma" => run_cmd("beta", &[]),
+                    other => (false, format!("unknown module: {}", other)),
+                }
+            }
+        "#;
+        assert_eq!(
+            dispatched_modules(synthetic),
+            vec![
+                "alpha".to_string(),
+                "beta".to_string(),
+                "gamma".to_string()
+            ],
+            "extractor must read every arm including alternates, and stop at the catch-all"
+        );
+    }
+
+    fn rendered_beacon_source() -> String {
+        render_agent_source(&AgentRenderParams {
+            agent_id: "agt-parity",
+            engagement_id: "eng-parity",
+            c2_bind: "127.0.0.1:9999",
+            sleep_ms: 500,
+            jitter_pct: 10,
+            os: "darwin",
+            psk_hex: "aabbccdd",
+            key_id: "kid-01",
+            encrypt: true,
+            uds_path: "/tmp/parity.sock",
+        })
+    }
+
+    /// CLAIMS-19: the module catalog (producer) and the beacon's `run_module`
+    /// (consumer) enumerate independently. The listener validates a task name
+    /// against the catalog, so an unpublished name is refused — but nothing
+    /// proved the beacon can actually RUN what the catalog publishes. A catalog
+    /// entry with no dispatch arm is a false capability claim: the operator sees
+    /// the module listed, tasks it, and the beacon answers "unknown module".
+    #[test]
+    fn every_catalog_agent_module_is_dispatchable_by_the_beacon() {
+        let src = rendered_beacon_source();
+        let dispatched = dispatched_modules(&src);
+        let catalog = modules::catalog();
+        let agent_names: Vec<&str> = catalog
+            .iter()
+            .filter(|m| m.side == "agent")
+            .map(|m| m.name)
+            .collect();
+        let missing = catalog_entries_without_dispatch(&agent_names, &dispatched);
+        assert!(
+            missing.is_empty(),
+            "CLAIMS-19: catalog publishes agent module(s) {:?} but the beacon's \
+             run_module has no arm for them. The listener will ACCEPT the task \
+             (it validates against this same catalog) and the beacon will answer \
+             \"unknown module\". Either add the dispatch arm or drop the catalog \
+             entry. Dispatched arms: {:?}",
+            missing,
+            dispatched,
+        );
+    }
+
+    /// The other direction. An arm the catalog does not publish is a capability
+    /// the operator cannot discover, and one `map_action` will not classify — so
+    /// it would land in a purple report as an unmapped action.
+    #[test]
+    fn every_beacon_dispatch_arm_is_published_or_recorded() {
+        let src = rendered_beacon_source();
+        let dispatched = dispatched_modules(&src);
+        let catalog = modules::catalog();
+        let agent_names: Vec<&str> = catalog
+            .iter()
+            .filter(|m| m.side == "agent")
+            .map(|m| m.name)
+            .collect();
+        let undocumented = dispatch_arms_not_published(&agent_names, &dispatched);
+        assert!(
+            undocumented.is_empty(),
+            "CLAIMS-19: beacon dispatches {:?} but the catalog does not publish \
+             them and they are not in UNPUBLISHED_DISPATCH_ALIASES. Undocumented \
+             dispatch is an invisible capability. Publish it in modules.rs, or add \
+             it to the alias list with a reason.",
+            undocumented,
+        );
+    }
+
+    /// Guards the allow-list itself: a stale alias must not sit there forever
+    /// pretending to excuse an arm that no longer exists.
+    #[test]
+    fn unpublished_alias_list_has_no_stale_entries() {
+        let src = rendered_beacon_source();
+        let dispatched = dispatched_modules(&src);
+        for (alias, reason) in UNPUBLISHED_DISPATCH_ALIASES {
+            assert!(
+                dispatched.iter().any(|d| d == alias),
+                "stale exemption: `{}` ({}) is excused in \
+                 UNPUBLISHED_DISPATCH_ALIASES but the beacon no longer dispatches \
+                 it — remove the entry",
+                alias,
+                reason,
+            );
+        }
     }
 }
