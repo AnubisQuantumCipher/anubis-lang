@@ -59,7 +59,10 @@ def stale_uncommitted_matches(text: str) -> List[Tuple[int, str]]:
 
     matches: List[Tuple[int, str]] = []
     for line_number, line in enumerate(text.splitlines(), 1):
-        if "historical" in line.lower():
+        # Only an explicit record marker receives the historical exemption. Merely appending the
+        # word "historical" to a present-tense landing claim must not bypass this invariant.
+        normalized = line.strip().lower()
+        if normalized.startswith(("historical note:", "[historical]")):
             continue
         if any(pattern.search(line) for pattern in STALE_PRESENT_TENSE):
             matches.append((line_number, line.strip()))

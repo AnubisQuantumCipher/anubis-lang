@@ -17,9 +17,10 @@ class RecordVerifierTests(unittest.TestCase):
 Row A is fixed in the current working tree.
 The change is still uncommitted and this entry does not claim it as landed.
 Another repair is not yet committed.
+This change is still uncommitted despite a historical-sounding suffix.
 """
         matches = record.stale_uncommitted_matches(text)
-        self.assertEqual([line for line, _ in matches], [2, 3, 4])
+        self.assertEqual([line for line, _ in matches], [2, 3, 4, 5])
 
     def test_landed_and_explicitly_historical_wording_is_accepted(self) -> None:
         text = """
