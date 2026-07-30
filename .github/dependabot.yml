@@ -1,0 +1,41 @@
+# Dependabot keeps the dependency surface patched.
+#
+# A language whose thesis is "the checker proves your program cannot violate its
+# policy" cannot ship on unpatched dependencies. Grouped updates keep the PR
+# volume reviewable; the vendored tree is excluded because it is a pinned fork
+# proven equal to upstream-plus-a-reviewable-diff, and Dependabot would break
+# that proof.
+
+version: 2
+
+updates:
+  # ── Rust workspace ────────────────────────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      patch-and-minor:
+        update-types:
+          - patch
+          - minor
+    ignore:
+      # Vendored + patched crates are pinned deliberately. See the vendored-fork
+      # discipline: pristine upstream PLUS a small reviewable diff, enforced in CI.
+      - dependency-name: "risc0-*"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  # Actions are executable code running with repository credentials. Pin them
+  # and update them on purpose.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"

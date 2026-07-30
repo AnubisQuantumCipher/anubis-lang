@@ -1,0 +1,39 @@
+# Code owners for anubis-lang.
+#
+# GitHub requests review from the owner automatically. Combined with branch
+# protection on the default branch, this is what stops a Tier-0 change landing
+# without the person who understands the soundness argument seeing it.
+#
+# Ordering matters: the LAST matching pattern wins.
+
+# Default owner for everything.
+*                                   @AnubisQuantumCipher
+
+# ── Tier 0: the soundness surface ───────────────────────────────────────────
+# Every false-accept root cause the 2026-07-29 audit found lives under here.
+# Changes are ENFORCING: they need a 0-flip verdict-diff plus a VM seal before
+# they land. Never rubber-stamp a diff in this tree.
+/compiler/src/middle/               @AnubisQuantumCipher
+/compiler/src/frontend/             @AnubisQuantumCipher
+/compiler/src/backends/             @AnubisQuantumCipher
+
+# ── Trust surfaces ──────────────────────────────────────────────────────────
+# The evidence generator signs claims that third parties rely on. A change here
+# is a change to what the project asserts, not just to how it computes.
+/compiler/src/evidence/             @AnubisQuantumCipher
+/formal/                            @AnubisQuantumCipher
+/solver/                            @AnubisQuantumCipher
+
+# ── Isolation and the offensive lane ────────────────────────────────────────
+/tools/anubis/src/offensive/        @AnubisQuantumCipher
+/tools/host_exec_guard.py           @AnubisQuantumCipher
+
+# ── Gates and seals: the instruments that decide whether anything is true ───
+/scripts/                           @AnubisQuantumCipher
+/vm/                                @AnubisQuantumCipher
+/.github/workflows/                 @AnubisQuantumCipher
+
+# ── Published claims ────────────────────────────────────────────────────────
+# A claim stronger than docs/CLAIMS.md is a bug in the claim.
+/docs/CLAIMS.md                     @AnubisQuantumCipher
+/AGENTS.md                          @AnubisQuantumCipher
