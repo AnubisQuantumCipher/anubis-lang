@@ -33,6 +33,13 @@ jobs:
       # python3, jq, shasum, and clang already are.
       - name: Install ripgrep
         run: brew install ripgrep
+      # GNU coreutils supplies `timeout`, which macOS (BSD userland) does not ship. Five gate
+      # scripts hard-exit without it — run_native_authoritative_gate.sh:50 among them — and that
+      # exit was being reported as `native/reference mismatch`, i.e. a missing brew package
+      # surfaced to the world as a soundness verdict on the flagship gate. A toolchain that is
+      # ABSENT is not a check that FAILED.
+      - name: Install coreutils (GNU timeout, required by the gate scripts)
+        run: brew install coreutils
       # z3 is the checker's default authoritative solver + the native cross-check. Pin
       # the SAME version the author develops + seals against (4.15.4): the QF_FP float
       # lane depends on z3's version-specific float reasoning (e.g. proving x*x < x for
