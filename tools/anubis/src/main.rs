@@ -102,6 +102,11 @@ enum Commands {
         #[arg(long)]
         no_verify: bool,
 
+        /// Permit an authorized research/exploit program to reach native lowering. Supplying this
+        /// capability is explicit consent and requires a disposable Anubis VZ guest, matching `run`.
+        #[arg(long)]
+        allow_research: bool,
+
         /// Output directory for artifacts / bundles
         #[arg(short, long, default_value = "out")]
         out: PathBuf,
@@ -525,6 +530,11 @@ enum Commands {
         /// Parameterized proof inputs from a JSON file
         #[arg(long)]
         input_file: Option<PathBuf>,
+
+        /// Permit an authorized Research/Exploit proof program to reach native/guest lowering.
+        /// Explicit consent remains disposable-VZ-only, matching `build` and `run`.
+        #[arg(long)]
+        allow_research: bool,
 
         /// Emit full tamper-evident evidence bundle with sidecars
         #[arg(long)]
@@ -1045,7 +1055,6 @@ enum Commands {
     },
 
     // ── T10: Expanded offensive modules ──
-
     /// Credential access: offline hash cracking against wordlist.
     CredentialHashTest {
         #[arg(short, long, default_value = "out/engagements/lab")]
@@ -1554,7 +1563,6 @@ define_command_vz_policy! {
             Commands::Report { .. } => None,
 }
 
-
 /// Security research domain pack actions (host control plane).
 #[derive(Subcommand, Debug)]
 enum ResearchPackCmd {
@@ -1774,6 +1782,45 @@ fn load_program_items(
     // combine_from_entry_opts re-resolves; pass same opts for lock/proof policy.
     ast.items = combine_from_entry_opts(input, &opts).map_err(|e| anyhow!("{}", e))?;
     Ok((ast, ws))
+}
+
+/// Bind command evidence to the program the command actually checked. A manifest-less entry is one
+/// source leaf even when unrelated `.anb` files or old evidence bundles share its directory. Imported
+/// programs seal the deterministic resolved AST plus the exact entry bytes, matching `check` evidence.
+fn evidence_program_files(
+    input: &Path,
+    source: &str,
+    ast: &anubis_compiler::frontend::AST,
+    resolved_program: bool,
+) -> Vec<(String, Vec<u8>)> {
+    if resolved_program {
+        vec![
+            (
+                "source.anubis".to_string(),
+                anubis_compiler::fmt::format_ast(&ast.items).into_bytes(),
+            ),
+            (
+                format!(
+                    "entry/{}",
+                    input.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                source.as_bytes().to_vec(),
+            ),
+        ]
+    } else {
+        vec![("source.anubis".to_string(), source.as_bytes().to_vec())]
+    }
+}
+
+fn require_passing_build_evidence(verdict: &str) -> Result<()> {
+    if verdict == "PASS" {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "ANUBIS_EVIDENCE_VERDICT_FAILED: build produced verdict={} and therefore cannot exit successfully",
+            verdict
+        ))
+    }
 }
 
 fn dep_closure_json(ws: &ResolvedWorkspace) -> serde_json::Value {
@@ -2005,14 +2052,9 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
     use anubis_compiler::middle::{typecheck, SymbolicEngine};
     use std::io::{self, BufRead, Write};
 
-    let mode = if allow_research {
-        Mode::Research
-    } else {
-        Mode::Safe
-    };
-
     let check_src = |src: &str| -> Result<AST> {
         let ast = parse_source(src).map_err(|e| anyhow!("parse: {e}"))?;
+        let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
         let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("check: {e}"))?;
         let obs = SymbolicEngine::check_obligations(&typed);
         let fails: Vec<_> = obs.into_iter().filter(|c| c.status == "FAIL").collect();
@@ -2027,12 +2069,14 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
 
     let run_snippet = |src: &str, session: &mut Interp| -> Result<()> {
         let ast = check_src(src)?;
+        let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+        require_program_research_boundary(ProgramArtifactAction::Repl, mode, allow_research)?;
+        let research_lowering = research_lowering_allowed(mode, allow_research);
         if exact {
-            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
             let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{e}"))?;
             let rust = lower_program_to_rust_with_mono(
                 &ast.items,
-                allow_research,
+                research_lowering,
                 &typed.mono_specializations,
                 &typed.mono_call_sites,
             )
@@ -2411,6 +2455,7 @@ fn main() -> Result<()> {
             bounty,
             full_hybrid,
             no_verify,
+            allow_research,
             out,
         } => {
             let do_evidence = evidence || bounty;
@@ -2446,6 +2491,24 @@ fn main() -> Result<()> {
             // Classify the complete program. A later/nested Research or Exploit function must not
             // hide behind an earlier Safe function at the build/evidence boundary.
             let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+            if let Err(error) = require_program_research_boundary(
+                ProgramArtifactAction::Build,
+                mode,
+                allow_research,
+            ) {
+                if do_evidence {
+                    emit_rejected_command_evidence(
+                        "build",
+                        &input,
+                        &src,
+                        mode,
+                        &out,
+                        &error.to_string(),
+                    )?;
+                }
+                return Err(error);
+            }
+            let research_lowering = research_lowering_allowed(mode, allow_research);
 
             let typed = match typecheck(ast.clone(), mode) {
                 Ok(typed) => typed,
@@ -2482,18 +2545,24 @@ fn main() -> Result<()> {
             let artifact = if do_evidence || true {
                 // Emit the native artifact via the faithful whole-program lowering (same path as
                 // `anubis run`); full_hybrid enables the in-lower cargo build for hybrid programs.
-                let art =
-                    match lower_to_native(tainted, &ast.items, &out, "anubis_out", full_hybrid) {
-                        Ok(artifact) => artifact,
-                        Err(error) => {
-                            if do_evidence {
-                                emit_rejected_command_evidence(
-                                    "build", &input, &src, mode, &out, &error,
-                                )?;
-                            }
-                            return Err(anyhow!("{}", error));
+                let art = match lower_to_native(
+                    tainted,
+                    &ast.items,
+                    &out,
+                    "anubis_out",
+                    research_lowering,
+                    full_hybrid,
+                ) {
+                    Ok(artifact) => artifact,
+                    Err(error) => {
+                        if do_evidence {
+                            emit_rejected_command_evidence(
+                                "build", &input, &src, mode, &out, &error,
+                            )?;
                         }
-                    };
+                        return Err(anyhow!("{}", error));
+                    }
+                };
                 println!("native artifact: {}", art);
                 Some(art)
             } else {
@@ -2526,59 +2595,24 @@ fn main() -> Result<()> {
                 };
                 let mode_s = mode_name(mode);
                 let closure = ws.as_ref().map(dep_closure_json);
-                // Multi-file merkle when project has more than the entry body.
-                let bundle = if let Ok(layout) = ProjectLayout::discover(&input) {
-                    // A package's evidence SOURCE tree is its Anubis source files — never build
-                    // artifacts. `collect_tree_files` walks `src_root` and (aside from out/target/.git)
-                    // grabs anything present, so a native artifact emitted under `src_root` (e.g.
-                    // `anubis build prog.anb --evidence --out prog_build/`, a dir name `collect_walk`
-                    // does not skip) would enter the merkle as a leaf. With no leaf literally named
-                    // `source.anubis`, `build_evidence_bundle_tree` then CONCATENATES every leaf into
-                    // the `source.anubis` snapshot — appending the Mach-O bytes and inflating a ~500 B
-                    // source to hundreds of KB, so `anubis report` reports thousands of parse errors and
-                    // the verdict flips to FAIL even though `check` passed. Filtering to `.anb`/`.anubis`
-                    // leaves keeps the source snapshot (and the source_hash) faithful to the real source.
-                    let tree: Vec<(String, Vec<u8>)> =
-                        anubis_compiler::package::merkle::collect_tree_files(&layout.src_root)
-                            .unwrap_or_else(|_| {
-                                vec![("source.anubis".into(), src.as_bytes().to_vec())]
-                            })
-                            .into_iter()
-                            .filter(|(p, _)| {
-                                let lp = p.to_ascii_lowercase();
-                                lp.ends_with(".anb") || lp.ends_with(".anubis")
-                            })
-                            .collect();
-                    let files = if tree.is_empty() {
-                        vec![("source.anubis".into(), src.as_bytes().to_vec())]
-                    } else if tree.len() == 1 {
-                        // Single-file identity: keep golden source_hash stable.
-                        vec![("source.anubis".into(), tree[0].1.clone())]
-                    } else {
-                        tree
-                    };
-                    build_evidence_bundle_tree(
-                        &files,
-                        mode_s,
-                        artifact.as_deref(),
-                        logs,
-                        &out,
-                        lane,
-                        None,
-                        closure.as_ref(),
-                    )
-                } else {
-                    build_evidence_bundle_tree(
-                        &[("source.anubis".into(), src.as_bytes().to_vec())],
-                        mode_s,
-                        artifact.as_deref(),
-                        logs,
-                        &out,
-                        lane,
-                        None,
-                        closure.as_ref(),
-                    )
-                }
+                let resolved_program = ws.is_some()
+                    || parse_source(&src).ok().is_some_and(|source_ast| {
+                        source_ast
+                            .items
+                            .iter()
+                            .any(|item| matches!(item, Item::Import { .. }))
+                    });
+                let files = evidence_program_files(&input, &src, &ast, resolved_program);
+                let bundle = build_evidence_bundle_tree(
+                    &files,
+                    mode_s,
+                    artifact.as_deref(),
+                    logs,
+                    &out,
+                    lane,
+                    None,
+                    closure.as_ref(),
+                )
                 .map_err(|e| anyhow!("{}", e))?;
                 println!("evidence bundle: {}", bundle.dir.display());
                 println!("verdict: {}", bundle.manifest.verdict);
@@ -2603,13 +2637,7 @@ fn main() -> Result<()> {
                     out.join("bounty-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
-                if bundle.manifest.verdict != "PASS" {
-                    return Err(anyhow!(
-                        "ANUBIS_EVIDENCE_VERDICT_FAILED: build produced verdict={} and therefore \
-                         cannot exit successfully",
-                        bundle.manifest.verdict
-                    ));
-                }
+                require_passing_build_evidence(&bundle.manifest.verdict)?;
             }
 
             if no_verify {
@@ -2819,19 +2847,7 @@ fn main() -> Result<()> {
                 // line and contradicting a successful command verdict.
                 let resolved_files = if resolved_program {
                     ast.as_ref().map(|resolved| {
-                        vec![
-                            (
-                                "source.anubis".to_string(),
-                                anubis_compiler::fmt::format_ast(&resolved.items).into_bytes(),
-                            ),
-                            (
-                                format!(
-                                    "entry/{}",
-                                    input.file_name().unwrap_or_default().to_string_lossy()
-                                ),
-                                src.as_bytes().to_vec(),
-                            ),
-                        ]
+                        evidence_program_files(&input, &src, resolved, resolved_program)
                     })
                 } else {
                     None
@@ -3884,12 +3900,7 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_exploit_run(&eng, &engage, &guest, &module, &out)?;
-            seal_vz_execution_receipt(
-                &engage,
-                &eng.engagement_id,
-                "vz_exploit_run",
-                &result,
-            )?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_exploit_run", &result)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
             if result.exit_code != 0 {
                 return Err(anyhow!("ANUBIS_VZ_EXPLOIT: exit {}", result.exit_code));
@@ -3906,12 +3917,7 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_fuzz(&eng, &engage, &guest, &target, runs, seed, &out)?;
-            seal_vz_execution_receipt(
-                &engage,
-                &eng.engagement_id,
-                "vz_fuzz",
-                &result,
-            )?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_fuzz", &result)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
             if result.exit_code != 0 {
                 return Err(anyhow!("ANUBIS_VZ_FUZZ: exit {}", result.exit_code));
@@ -3927,12 +3933,7 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_agent_test(&eng, &engage, &guest, &name, sleep_ms)?;
-            seal_vz_execution_receipt(
-                &engage,
-                &eng.engagement_id,
-                "vz_agent_test",
-                &result,
-            )?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_agent_test", &result)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3963,12 +3964,7 @@ fn main() -> Result<()> {
             ];
             let result =
                 offensive::vz::vz_c2_cycle(&eng, &engage, &guest, &agent_name, &tasks, timeout)?;
-            seal_vz_execution_receipt(
-                &engage,
-                &eng.engagement_id,
-                "vz_c2_cycle",
-                &result,
-            )?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_c2_cycle", &result)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3989,12 +3985,7 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_stress_battery(&eng, &guest, &engage)?;
-            seal_vz_execution_receipt(
-                &engage,
-                &eng.engagement_id,
-                "vz_stress_battery",
-                &result,
-            )?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_stress_battery", &result)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -4063,12 +4054,21 @@ fn main() -> Result<()> {
         }
 
         // ── T10: Expanded offensive module handlers ──
-
-        Commands::CredentialHashTest { engage, hash, wordlist } => {
+        Commands::CredentialHashTest {
+            engage,
+            hash,
+            wordlist,
+        } => {
             offensive::require_vz_offensive("credential_hash_test")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::hash_test(&eng, &hash, &wordlist)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_hash_test", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "credential_hash_test",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4076,15 +4076,39 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("credential_ssh_key_audit")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::ssh_key_audit(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_ssh_key_audit", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "credential_ssh_key_audit",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Commands::CredentialSprayPlan { engage, protocol, targets, users, lockout_threshold } => {
+        Commands::CredentialSprayPlan {
+            engage,
+            protocol,
+            targets,
+            users,
+            lockout_threshold,
+        } => {
             offensive::require_vz_offensive("credential_spray_plan")?;
             let eng = offensive::load_engagement(&engage)?;
-            let r = offensive::credential::spray_plan(&eng, &protocol, &targets, &users, lockout_threshold)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_spray_plan", "operator", r.clone());
+            let r = offensive::credential::spray_plan(
+                &eng,
+                &protocol,
+                &targets,
+                &users,
+                lockout_threshold,
+            )?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "credential_spray_plan",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4092,7 +4116,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("credential_env_scan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::env_credential_scan(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_env_scan", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "credential_env_scan",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4100,7 +4130,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("credential_keychain_plan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::keychain_enum_plan(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_keychain_plan", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "credential_keychain_plan",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4108,7 +4144,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("credential_report")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::credential_report(&eng, &engage)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_report", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "credential_report",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4117,7 +4159,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("privesc_suid_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::suid_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_suid_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "privesc_suid_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4125,7 +4173,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("privesc_sudo_audit")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::sudo_audit(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_sudo_audit", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "privesc_sudo_audit",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4133,7 +4187,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("privesc_writable_path")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::writable_path_audit(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_writable_path", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "privesc_writable_path",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4141,7 +4201,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("privesc_cron_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::cron_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_cron_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "privesc_cron_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4149,7 +4215,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("privesc_kernel_plan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::kernel_exploit_plan(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_kernel_plan", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "privesc_kernel_plan",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4157,7 +4229,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("privesc_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::privesc_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "privesc_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4166,7 +4244,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("discovery_system_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::system_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_system_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "discovery_system_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4174,7 +4258,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("discovery_network_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::network_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_network_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "discovery_network_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4182,24 +4272,52 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("discovery_process_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::process_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_process_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "discovery_process_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Commands::DiscoveryFileDiscovery { engage, search_root } => {
+        Commands::DiscoveryFileDiscovery {
+            engage,
+            search_root,
+        } => {
             offensive::require_vz_offensive("discovery_file_discovery")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::file_discovery(&eng, &search_root)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_file_discovery", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "discovery_file_discovery",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Commands::DiscoveryServiceBanner { engage, host, ports } => {
+        Commands::DiscoveryServiceBanner {
+            engage,
+            host,
+            ports,
+        } => {
             offensive::require_vz_offensive("discovery_service_banner")?;
             let eng = offensive::load_engagement(&engage)?;
-            let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let port_list: Vec<u16> = ports
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
             let r = offensive::discovery::service_banner(&eng, &host, &port_list)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_service_banner", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "discovery_service_banner",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4207,7 +4325,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("discovery_cloud_metadata")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::cloud_metadata_plan(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_cloud_metadata", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "discovery_cloud_metadata",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4215,7 +4339,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("discovery_ad_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::ad_enum_plan(&eng, &domain)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_ad_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "discovery_ad_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4224,16 +4354,39 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("collection_clipboard")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::collection::clipboard_capture(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_clipboard", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "collection_clipboard",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Commands::CollectionStageFiles { engage, source, patterns, max_file_size } => {
+        Commands::CollectionStageFiles {
+            engage,
+            source,
+            patterns,
+            max_file_size,
+        } => {
             offensive::require_vz_offensive("collection_stage_files")?;
             let eng = offensive::load_engagement(&engage)?;
             let pat_list: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
-            let r = offensive::collection::stage_files(&eng, &engage, &source, &pat_list, max_file_size)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_stage_files", "operator", r.clone());
+            let r = offensive::collection::stage_files(
+                &eng,
+                &engage,
+                &source,
+                &pat_list,
+                max_file_size,
+            )?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "collection_stage_files",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4255,7 +4408,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("collection_archive_loot")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::collection::archive_loot(&eng, &engage, &out)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_archive_loot", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "collection_archive_loot",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4264,7 +4423,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("evasion_security_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::evasion::security_product_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_security_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "evasion_security_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4272,7 +4437,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("evasion_assessment")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::evasion::evasion_assessment(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_assessment", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "evasion_assessment",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4280,24 +4451,50 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("evasion_codesign_check")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::evasion::codesign_check(&eng, &binary)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_codesign_check", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "evasion_codesign_check",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
 
-        Commands::ExfilDnsEncode { engage, data, domain } => {
+        Commands::ExfilDnsEncode {
+            engage,
+            data,
+            domain,
+        } => {
             offensive::require_vz_offensive("exfil_dns_encode")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::exfil::dns_encode(&eng, data.as_bytes(), &domain)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_dns_encode", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "exfil_dns_encode",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Commands::ExfilHttpStage { engage, source, max_files } => {
+        Commands::ExfilHttpStage {
+            engage,
+            source,
+            max_files,
+        } => {
             offensive::require_vz_offensive("exfil_http_stage")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::exfil::http_stage(&eng, &source, max_files)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_http_stage", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "exfil_http_stage",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4305,7 +4502,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("exfil_assessment")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::exfil::exfil_assessment(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_assessment", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "exfil_assessment",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4314,7 +4517,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("infra_c2_check")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::infrastructure::c2_listener_check(&eng, port)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "infra_c2_check", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "infra_c2_check",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4328,9 +4537,18 @@ fn main() -> Result<()> {
         Commands::InfraHealth { engage, ports } => {
             offensive::require_vz_offensive("infra_health")?;
             let eng = offensive::load_engagement(&engage)?;
-            let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let port_list: Vec<u16> = ports
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
             let r = offensive::infrastructure::infra_health(&eng, &port_list)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "infra_health", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "infra_health",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4354,7 +4572,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("postex_persistence_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::postex::persistence_enum(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_persistence_enum", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "postex_persistence_enum",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4376,7 +4600,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("postex_assessment")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::postex::postex_assessment(&eng)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_assessment", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "postex_assessment",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4395,12 +4625,23 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Commands::PayloadEncode { engage, data, encodings } => {
+        Commands::PayloadEncode {
+            engage,
+            data,
+            encodings,
+        } => {
             offensive::require_vz_offensive("payload_encode")?;
             let eng = offensive::load_engagement(&engage)?;
-            let enc_list: Vec<String> = encodings.split(',').map(|s| s.trim().to_string()).collect();
+            let enc_list: Vec<String> =
+                encodings.split(',').map(|s| s.trim().to_string()).collect();
             let r = offensive::payloads::encode_payload(&eng, data.as_bytes(), &enc_list)?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "payload_encode", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "payload_encode",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4430,7 +4671,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("report_executive_summary")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::reporting::executive_summary(&eng, &engage, &[])?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_executive_summary", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "report_executive_summary",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4438,7 +4685,13 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("report_technical")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::reporting::technical_report(&eng, &engage, &[])?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_technical", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "report_technical",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -4446,14 +4699,23 @@ fn main() -> Result<()> {
             offensive::require_vz_offensive("report_markdown")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::reporting::markdown_report(&eng, &engage, &title, &[])?;
-            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_markdown", "operator", r.clone());
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "report_markdown",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
 
         Commands::ModuleCatalog { json } => {
             if json {
-                println!("{}", serde_json::to_string_pretty(&offensive::modules::list_json())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&offensive::modules::list_json())?
+                );
             } else {
                 offensive::modules::print_catalog()?;
             }
@@ -4467,6 +4729,7 @@ fn main() -> Result<()> {
             metal_reference,
             input_json,
             input_file,
+            allow_research,
             evidence,
             out,
         } => {
@@ -4479,6 +4742,7 @@ fn main() -> Result<()> {
                     &metal_reference,
                     &input_json,
                     &input_file,
+                    &allow_research,
                     &evidence,
                     &out,
                 );
@@ -4507,6 +4771,13 @@ fn main() -> Result<()> {
                 let (ast, _ws) = load_program_items(&input, &src)?;
                 let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
                 let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+                require_program_research_boundary(
+                    ProgramArtifactAction::Prove,
+                    mode,
+                    allow_research,
+                )?;
+                let proof_allows_research_lowering =
+                    research_lowering_allowed(mode, allow_research);
                 let tainted = TaintPass::apply(typed.clone());
                 std::fs::create_dir_all(&out)?;
 
@@ -4539,9 +4810,15 @@ fn main() -> Result<()> {
                 let force_metal = lane_normalized == "metal-hybrid" || lane_normalized == "metal";
                 let metal_ref = resolve_metal_reference(metal_reference.as_deref());
 
-                let artifact =
-                    lower_to_native(tainted, &ast.items, &out, "risc0_receipt", full_hybrid)
-                        .map_err(|e| anyhow!("{}", e))?;
+                let artifact = lower_to_native(
+                    tainted,
+                    &ast.items,
+                    &out,
+                    "risc0_receipt",
+                    proof_allows_research_lowering,
+                    full_hybrid,
+                )
+                .map_err(|e| anyhow!("{}", e))?;
                 println!("lowered artifact: {}", artifact);
 
                 // PCA honesty invariant: `prove` fails closed. It returns Err unless a FRESH receipt was
@@ -5406,12 +5683,12 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             input_file,
             args,
         } => {
-            if allow_research {
-                // PoC kit path: packing + gold target_run (docs/language/POC_KIT.md).
-                // Full capability is preserved, but execution is mandatory VZ-only.
-                offensive::isolation::require_research_run_allowed("run --allow-research")?;
-            }
             let src = std::fs::read_to_string(&input)?;
+            // Classify the resolved program once. The consent/isolation boundary is applied after
+            // the ordinary check so policy rejections retain the same diagnostic as `check`, but
+            // still before signing, lowering, artifact emission, or execution.
+            let (boundary_ast, _boundary_ws) = load_program_items(&input, &src)?;
+            let boundary_mode = program_mode(&boundary_ast.items).unwrap_or(Mode::Safe);
             // Contract verification is the default execution boundary. `--verified` additionally
             // enforces capability `uses(...)`; it no longer controls whether contracts run.
             if no_verify {
@@ -5422,6 +5699,15 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             } else {
                 verify_before_native_execution(&input, &src, verified)?;
             }
+            // Build and run share this complete-program predicate. Authorization/type errors above
+            // win over a secondary consent diagnostic; an authorized Research/Exploit program must
+            // still present explicit consent and a disposable-VZ boundary before lowering.
+            require_program_research_boundary(
+                ProgramArtifactAction::Run,
+                boundary_mode,
+                allow_research,
+            )?;
+            let research_lowering = research_lowering_allowed(boundary_mode, allow_research);
             // Auto-sign on macOS when program uses non-exportable caps (Keychain bind path).
             let want_sign = sign
                 || (cfg!(target_os = "macos")
@@ -5443,7 +5729,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     &input,
                     &src,
                     &out,
-                    allow_research,
+                    research_lowering,
                     &args,
                     proof_env.as_deref(),
                 )?
@@ -5452,7 +5738,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     &input,
                     &src,
                     &out,
-                    allow_research,
+                    research_lowering,
                     &args,
                     proof_env.as_deref(),
                 )?
@@ -6414,6 +6700,69 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResearchBoundaryRequirement {
+    OrdinarySafe,
+    MissingConsent,
+    DisposableVz,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProgramArtifactAction {
+    Build,
+    Prove,
+    Repl,
+    Run,
+}
+
+fn research_boundary_requirement(mode: Mode, allow_research: bool) -> ResearchBoundaryRequirement {
+    if matches!(mode, Mode::Safe) {
+        ResearchBoundaryRequirement::OrdinarySafe
+    } else if allow_research {
+        ResearchBoundaryRequirement::DisposableVz
+    } else {
+        ResearchBoundaryRequirement::MissingConsent
+    }
+}
+
+fn research_lowering_allowed(mode: Mode, allow_research: bool) -> bool {
+    !matches!(mode, Mode::Safe) && allow_research
+}
+
+/// Shared fail-closed boundary for every command that can lower or execute a whole program.
+/// Program mode decides whether consent and VZ are mandatory. A redundant flag on a Safe program
+/// never enables research lowering by itself.
+fn require_program_research_boundary(
+    action: ProgramArtifactAction,
+    mode: Mode,
+    allow_research: bool,
+) -> Result<()> {
+    match research_boundary_requirement(mode, allow_research) {
+        ResearchBoundaryRequirement::OrdinarySafe => Ok(()),
+        ResearchBoundaryRequirement::MissingConsent => {
+            let (code, command) = match action {
+                ProgramArtifactAction::Build => ("ANUBIS_BUILD_RESEARCH_REQUIRES_ALLOW", "build"),
+                ProgramArtifactAction::Prove => ("ANUBIS_PROVE_RESEARCH_REQUIRES_ALLOW", "prove"),
+                ProgramArtifactAction::Repl => ("ANUBIS_REPL_RESEARCH_REQUIRES_ALLOW", "repl"),
+                ProgramArtifactAction::Run => ("ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW", "run"),
+            };
+            Err(anyhow!(
+                "{code}: {command} defaults to safe-mode programs; pass --allow-research for \
+                 authorized research/exploit sources"
+            ))
+        }
+        ResearchBoundaryRequirement::DisposableVz => {
+            let label = match action {
+                ProgramArtifactAction::Build => "build --allow-research",
+                ProgramArtifactAction::Prove => "prove --allow-research",
+                ProgramArtifactAction::Repl => "repl --allow-research",
+                ProgramArtifactAction::Run => "run --allow-research",
+            };
+            offensive::isolation::require_research_run_allowed(label)
+        }
+    }
+}
+
 fn emit_rejected_command_evidence(
     command: &str,
     input: &Path,
@@ -6720,11 +7069,7 @@ fn run_anubis_source_signed(
 ) -> Result<RunOutcome> {
     let (ast, _ws) = load_program_items(input, source)?;
     let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
-    if !matches!(mode, Mode::Safe) && !allow_research {
-        return Err(anyhow!(
-            "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
-        ));
-    }
+    require_program_research_boundary(ProgramArtifactAction::Run, mode, allow_research)?;
     let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
     std::fs::create_dir_all(out)?;
     let rs_path = out.join("anubis_run.rs");
@@ -6794,11 +7139,7 @@ fn run_anubis_source(
     // Multi-file + Phase-6 deps: resolve/lock/proof-check then combine into one program.
     let (ast, _ws) = load_program_items(input, source)?;
     let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
-    if !matches!(mode, Mode::Safe) && !allow_research {
-        return Err(anyhow!(
-            "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
-        ));
-    }
+    require_program_research_boundary(ProgramArtifactAction::Run, mode, allow_research)?;
     // Typecheck first for safe-mode enforcement (taint / effect / raw-pointer). Then lower the
     // WHOLE program — every function, not just `main` — so user-defined calls and recursion
     // execute on the Rust call stack. This is what makes Anubis Turing-complete at runtime.
@@ -7778,6 +8119,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn build_exit_remains_fail_closed_over_nonpass_evidence_verdicts() {
+        require_passing_build_evidence("PASS").expect("PASS evidence may complete the build");
+        for verdict in ["FAIL", "UNVERIFIED", ""] {
+            let error = require_passing_build_evidence(verdict)
+                .expect_err("every non-PASS evidence verdict must reject the build");
+            assert!(
+                error.to_string().contains("ANUBIS_EVIDENCE_VERDICT_FAILED"),
+                "got: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn vz_start_rejects_unknown_network_mode_at_argument_parse() {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
@@ -7928,8 +8282,8 @@ mod tests {
                     other => panic!("expected VzExec, got {other:?}"),
                 }
 
-                let suite = Cli::try_parse_from(["anubis", "vz-test-suite"])
-                    .expect("vz-test-suite parse");
+                let suite =
+                    Cli::try_parse_from(["anubis", "vz-test-suite"]).expect("vz-test-suite parse");
                 match suite.command {
                     Commands::VzTestSuite { engage, .. } => {
                         assert_eq!(engage, PathBuf::from("out/engagements/lab"));
@@ -8010,6 +8364,32 @@ module nested {
 
         let itemless = parse_source("struct Empty {}").expect("item-only source must parse");
         assert_eq!(program_mode(&itemless.items), None);
+    }
+
+    #[test]
+    fn whole_program_callers_share_the_same_mode_derived_research_boundary() {
+        assert_eq!(
+            research_boundary_requirement(Mode::Safe, false),
+            ResearchBoundaryRequirement::OrdinarySafe
+        );
+        assert_eq!(
+            research_boundary_requirement(Mode::Safe, true),
+            ResearchBoundaryRequirement::OrdinarySafe,
+            "a redundant flag must not turn a Safe program into research lowering"
+        );
+        assert!(!research_lowering_allowed(Mode::Safe, true));
+        for mode in [Mode::Research, Mode::Exploit] {
+            assert_eq!(
+                research_boundary_requirement(mode, false),
+                ResearchBoundaryRequirement::MissingConsent
+            );
+            assert_eq!(
+                research_boundary_requirement(mode, true),
+                ResearchBoundaryRequirement::DisposableVz,
+                "non-Safe lowering with consent must remain VZ-only"
+            );
+            assert!(research_lowering_allowed(mode, true));
+        }
     }
 
     #[cfg(feature = "prove")]
@@ -8381,6 +8761,28 @@ module nested {
             .expect("spawn large-stack run parse test")
             .join()
             .expect("large-stack run parse test panicked");
+    }
+
+    #[test]
+    fn build_accepts_explicit_research_consent_flag() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "build",
+                    "examples/hello_normal.anb",
+                    "--allow-research",
+                ])
+                .expect("build research-consent flag should parse");
+                match cli.command {
+                    Commands::Build { allow_research, .. } => assert!(allow_research),
+                    other => panic!("expected build command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack build parse test")
+            .join()
+            .expect("large-stack build parse test panicked");
     }
 
     #[test]
@@ -8783,7 +9185,7 @@ fn main() {
     }
 
     #[test]
-    fn release_candidate_script_does_not_force_pass() {
+    fn legacy_release_diagnostic_is_non_publishable_and_fails_nonzero() {
         let script = std::fs::read_to_string(format!(
             "{}/../../scripts/build_release_candidate.sh",
             env!("CARGO_MANIFEST_DIR")
@@ -8791,6 +9193,18 @@ fn main() {
         .expect("read release candidate script");
         assert!(!script.contains("forcing PASS"));
         assert!(!script.contains("PARTIAL_SMOKE"));
+        for marker in [
+            "LOCAL DIAGNOSTIC ONLY — NOT A RELEASE CANDIDATE AND NOT PUBLISHABLE",
+            "publishable: false",
+            "authority: \"local-diagnostic-only\"",
+            "if [[ \"$OVERALL\" != \"PASS\" ]]",
+            "exit 1",
+        ] {
+            assert!(
+                script.contains(marker),
+                "legacy diagnostic lost fail-closed/non-publishable marker {marker:?}"
+            );
+        }
     }
 
     #[test]

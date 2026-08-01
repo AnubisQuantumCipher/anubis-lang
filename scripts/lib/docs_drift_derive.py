@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
+from native_corpus_inventory import inventory
+
 
 def _run(root: Path, cmd: str) -> str:
     return subprocess.check_output(
@@ -48,13 +50,11 @@ def derive_stdlib_modules(root: Path) -> Tuple[int, str]:
 
 
 def derive_native_corpus(root: Path) -> Tuple[int, str]:
-    # TRACKED files, not the working tree. A published number has to be reproducible by someone who
-    # clones this repo, and `find` counts whatever happens to be sitting in the directory — so an
-    # untracked scratch program under examples/ silently moved the claim (898 -> 900 -> 901 in one
-    # afternoon), and every one of those moves demanded a docs edit for a file no third party would
-    # ever receive. `git ls-files` counts exactly what a clone gets.
-    cmd = "git ls-files 'examples/*.anb' 'examples/**/*.anb' 'tests/fixtures/*.anb' 'tests/fixtures/**/*.anb' | wc -l"
-    return int(_run(root, cmd).split()[-1]), cmd
+    # The shared inventory derives directly from the stable, pin-bound source manifest. This keeps
+    # host, linked-worktree, and disposable-guest counts independent of stale Git metadata while the
+    # release pin's exact-commit check still supplies commit provenance.
+    cmd = "python3 scripts/lib/native_corpus_inventory.py --count"
+    return len(inventory(root)), cmd
 
 
 def _fn_body(src: str, fn_name: str) -> str:

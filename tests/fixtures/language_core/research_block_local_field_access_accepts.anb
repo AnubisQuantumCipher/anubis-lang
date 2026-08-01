@@ -1,0 +1,14 @@
+// EXPECT: PASS
+//
+// Phase-1 false-reject guard: a local record bound inside an authorized research block must be
+// visible to native lowering's value-name inventory. Before the fix, `check` accepted this program
+// but lowering failed with ANUBIS_UNSUPPORTED_NATIVE_LOWERING: unknown name `local` used as a value.
+struct Record { value: u32 }
+
+@research(authorization: "phase-1-lowering-regression")
+fn main() {
+    research {
+        let local = Record { value: 7 };
+        print(local.value);
+    }
+}

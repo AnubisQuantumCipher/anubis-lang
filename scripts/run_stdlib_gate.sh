@@ -34,10 +34,16 @@ else
   note "unit_phase5: FAIL (see $OUT/unit.log)"
 fi
 
-# 3) Functional smoke: pure modules
-BIN=./target/release/anubis
-# Always rebuild so the release binary matches the embedded stdlib under test.
-cargo build -q --release -p anubis
+# 3) Functional smoke: pure modules. A seal or VM lane may bind an immutable compiler via
+# ANUBIS_BIN; in that case never replace the named instrument with a mutable rebuild. Standalone
+# invocations retain the historical build-first behavior.
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "STDLIB_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  cargo build -q --release -p anubis
+fi
 
 # Prefer pure stdout lines (ignore "anubis run: compiling…" banners).
 stdout_lines() { grep -E '^(true|false|-?[0-9]+)$' "$1" 2>/dev/null || true; }

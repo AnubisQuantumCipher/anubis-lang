@@ -9,7 +9,7 @@
 #   bash scripts/audit_unified.sh [--out DIR]
 #   bash scripts/audit_unified.sh --profile hosted [--out DIR]
 #
-# The default `full` profile executes all 23 gates and passes only when EVERY named gate in
+# The default `full` profile executes all 29 gates and passes only when EVERY named gate in
 # EXPECTED_GATES reported, with zero failures, skips, or external gates. The `hosted` profile exists for
 # stock GitHub macOS runners, which cannot provide nested Apple virtualization
 # or a Tart golden image. It runs every host-verifiable gate, marks G9
@@ -43,6 +43,9 @@
 #   G24 Promise coherence (the headline promise inherits the open-issues framing)
 #   G25 Formal kernel (the demo verifies under DEFAULT Safe settings, no wrap bypass)
 #   G26 Proof correspondence (the AST->…->runtime evidence map and TCB list stay true)
+#   G27 Phase-metrics ledger faults (race/path/mode/truthfulness/self-contamination controls)
+#   G28 Corpus/pin inventory binding (tracked inventory and immutable-pin poison controls)
+#   G29 Host-resource contract (VZ admission, runtime guard, teardown and sync controls)
 #
 # G16-G22 publish numbers the board cites and were, for most of their life, never run by CI.
 # They are listed here so the gap between "a gate exists" and "a gate runs" stays visible.
@@ -53,6 +56,8 @@
 # set -e: a bare cargo/tool crash must not fall through to a green Overall (Seshat R8).
 # Child gates are already wrapped in `if bash …`; unguarded failures abort before verdict.
 set -euo pipefail
+AUDIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$AUDIT_ROOT"
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="out/unified_gate/${STAMP}"
@@ -85,7 +90,16 @@ if [[ "$PROFILE" != "full" && "$PROFILE" != "hosted" ]]; then
   echo "ANUBIS_AUDIT_ARGUMENT: unsupported profile '$PROFILE' (expected full or hosted)" >&2
   exit 2
 fi
+source "$AUDIT_ROOT/scripts/lib/gate_common.sh"
+gate_configure_audit_profile_environment "$PROFILE" "$AUDIT_ROOT"
 mkdir -p "$OUT"
+{
+  printf 'profile=%s\n' "$PROFILE"
+  printf 'risc0_skip_build_kernels=%s\n' "${RISC0_SKIP_BUILD_KERNELS:-unset}"
+  printf 'anubis_skip_risc0_metal=%s\n' "${ANUBIS_SKIP_RISC0_METAL:-unset}"
+  printf 'r0_disable_metal=%s\n' "${R0_DISABLE_METAL:-unset}"
+  printf 'anubis_risc0_metal_reference=%s\n' "${ANUBIS_RISC0_METAL_REFERENCE:-unset}"
+} >"$OUT/profile_environment.txt"
 
 # An audit of a DIRTY TREE grades a state that never existed as a commit.
 #
@@ -95,7 +109,7 @@ mkdir -p "$OUT"
 # from `target/release/anubis` when G4 rebuilds it, so a VZ gate run alongside an audit fails with
 # a missing-entitlement error that has nothing to do with the gate.
 #
-# Nothing in a 22-gate suite is worth reporting if the thing under test changed while it ran. This
+# Nothing in a 29-gate suite is worth reporting if the thing under test changed while it ran. This
 # refuses rather than producing a verdict about a moving target. Override is explicit and is
 # RECORDED IN THE REPORT, so a dirty run can never be mistaken later for a clean one.
 # `|| true` is LOAD-BEARING: a clean tree makes `grep -v` match nothing and exit 1, and under
@@ -242,9 +256,9 @@ if [[ "$PROFILE" == "hosted" ]]; then
     echo "ANUBIS_POC_KIT_EXTERNAL_VZ_REQUIRED"
     echo "Stock hosted macOS runners cannot supply nested Apple virtualization,"
     echo "the canonical anubis-xcode Tart image, or the operator SSH key."
-    echo "Run the default full profile on the dedicated Tart/VZ runner."
+    echo "Run the default full profile in the approved operator-run disposable Tart/VZ lane."
   } >"$OUT/g9_poc_kit.log"
-  gate "G9_poc_kit" "EXTERNAL" "requires dedicated Tart/VZ runner; not executed by hosted profile"
+  gate "G9_poc_kit" "EXTERNAL" "requires the approved operator-run disposable Tart/VZ lane; not executed by hosted profile"
 else
   if bash scripts/run_poc_kit_gate.sh --out "$OUT/g9_poc_kit" >"$OUT/g9_poc_kit.log" 2>&1; then
     PK_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$OUT/g9_poc_kit.log" || echo "")
@@ -433,11 +447,14 @@ fi
 # promise, restated in other docs, did not inherit it: a reader who meets the promise in HANDOFF.md
 # and never reaches CLAIMS.md leaves with a stronger claim than this repo can discharge. Registering
 # it here is the point — it caught a real drift in HANDOFF.md the first time it ran, and an
-# unregistered gate only catches things while someone remembers to run it.
-if bash scripts/run_promise_coherence_gate.sh >"$OUT/g24_promise.log" 2>&1; then
-  gate "G24_promise_coherence" "PASS" "every promise restatement carries scope + CLAIMS.md pointer"
+# unregistered gate only catches things while someone remembers to run it. The RED guard is part of
+# G24, not a one-time development transcript: a neutered detector must fail the audit even when its
+# live scan can still print PASS over the narrowed surface.
+if bash scripts/run_promise_coherence_gate.sh --self-test >"$OUT/g24_promise_selftest.log" 2>&1 \
+  && bash scripts/run_promise_coherence_gate.sh >"$OUT/g24_promise.log" 2>&1; then
+  gate "G24_promise_coherence" "PASS" "RED guard passed; live restatements scoped; exclusions disclosed"
 else
-  gate "G24_promise_coherence" "FAIL" "promise drifted from the open-issues framing (see g24_promise.log)"
+  gate "G24_promise_coherence" "FAIL" "self-test or live scan failed (see g24_promise_selftest.log and g24_promise.log)"
 fi
 
 # G25 — the formal-kernel demo, under DEFAULT Safe verification.
@@ -463,10 +480,60 @@ fi
 # reads as an assurance while describing a repo that no longer exists. This checks every cited Lean
 # theorem and every cited path still resolves, and that the TCB section is non-empty — "nothing is
 # trusted" must never be reachable by deleting a list.
-if bash scripts/run_proof_correspondence_gate.sh >"$OUT/g26_correspondence.log" 2>&1; then
+if bash scripts/run_proof_correspondence_gate.sh --self-test >"$OUT/g26_proof_correspondence_selftest.log" 2>&1 \
+  && bash scripts/run_proof_correspondence_gate.sh >"$OUT/g26_correspondence.log" 2>&1; then
   gate "G26_proof_correspondence" "PASS" "every cited theorem/path resolves; TCB enumerated"
 else
-  gate "G26_proof_correspondence" "FAIL" "correspondence map cites something that no longer exists (see g26_correspondence.log)"
+  gate "G26_proof_correspondence" "FAIL" "proof/TCB correspondence drift or falsification control failure (see g26_proof_correspondence*.log)"
+fi
+
+# G27: phase-metrics ledger fault suite. Exit zero alone is insufficient: require exactly one
+# nonzero-work terminal summary. A valid line plus a second contradictory/malformed summary is FAIL,
+# not a parseable subset from which the contradiction can be discarded.
+g27_rc=0
+bash scripts/test_phase_metrics_ledger.sh >"$OUT/g27_phase_metrics_ledger.log" 2>&1 \
+  || g27_rc=$?
+g27_summary_count="$(grep -Ec '^PHASE_METRICS_LEDGER_TESTS:' \
+  "$OUT/g27_phase_metrics_ledger.log" || true)"
+g27_valid_summary_count="$(grep -Ec \
+  '^PHASE_METRICS_LEDGER_TESTS: [1-9][0-9]* passed, 0 failed$' \
+  "$OUT/g27_phase_metrics_ledger.log" || true)"
+if [[ "$g27_rc" -eq 0 && "$g27_summary_count" -eq 1 && "$g27_valid_summary_count" -eq 1 ]]; then
+  gate "G27_phase_metrics_ledger" "PASS" "fault suite reported nonzero tests and zero failures"
+else
+  gate "G27_phase_metrics_ledger" "FAIL" "fault suite failed or emitted missing/duplicate/malformed summary (see g27_phase_metrics_ledger.log)"
+fi
+
+# G28: native-corpus inventory and source-pin binding poison suite. This catches the split where
+# native-authoritative grades untracked/on-disk examples that docs and the source pin do not bind.
+g28_rc=0
+bash scripts/test_corpus_inventory_binding.sh >"$OUT/g28_corpus_inventory_binding.log" 2>&1 \
+  || g28_rc=$?
+g28_summary_count="$(grep -Ec '^CORPUS_INVENTORY_BINDING:' \
+  "$OUT/g28_corpus_inventory_binding.log" || true)"
+g28_valid_summary_count="$(grep -Ec \
+  '^CORPUS_INVENTORY_BINDING: [1-9][0-9]* passed, 0 failed$' \
+  "$OUT/g28_corpus_inventory_binding.log" || true)"
+if [[ "$g28_rc" -eq 0 && "$g28_summary_count" -eq 1 && "$g28_valid_summary_count" -eq 1 ]]; then
+  gate "G28_corpus_inventory_binding" "PASS" "corpus and vendored divergences are source-manifest/pin bound"
+else
+  gate "G28_corpus_inventory_binding" "FAIL" "fault suite failed or emitted missing/duplicate/malformed summary (see g28_corpus_inventory_binding.log)"
+fi
+
+# G29: VM admission, teardown, battery-completeness, and nested build-cap contract. Require one
+# nonzero-work summary so an empty/neutered shell test cannot certify this trust surface.
+g29_rc=0
+bash scripts/test_host_resource_guard.sh >"$OUT/g29_host_resource_contract.log" 2>&1 \
+  || g29_rc=$?
+g29_summary_count="$(grep -Ec '^HOST_RESOURCE_GUARD_SELFTEST:' \
+  "$OUT/g29_host_resource_contract.log" || true)"
+g29_valid_summary_count="$(grep -Ec \
+  '^HOST_RESOURCE_GUARD_SELFTEST: PASS \(pass=[1-9][0-9]* fail=0\)$' \
+  "$OUT/g29_host_resource_contract.log" || true)"
+if [[ "$g29_rc" -eq 0 && "$g29_summary_count" -eq 1 && "$g29_valid_summary_count" -eq 1 ]]; then
+  gate "G29_host_resource_contract" "PASS" "guard, teardown, gate inventory, and job-cap poison suite passed"
+else
+  gate "G29_host_resource_contract" "FAIL" "fault suite failed or emitted missing/duplicate/malformed summary (see g29_host_resource_contract.log)"
 fi
 
 # ── Report ──
@@ -480,11 +547,28 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel G26_proof_correspondence"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel G26_proof_correspondence G27_phase_metrics_ledger G28_corpus_inventory_binding G29_host_resource_contract"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do
   case " ${GATE_NAMES[*]} " in *" $g "*) ;; *) MISSING_GATES="$MISSING_GATES $g" ;; esac
+done
+set -- $EXPECTED_GATES
+EXPECTED_GATE_COUNT=$#
+DUPLICATE_GATES=""
+EXTRA_GATES=""
+for i in "${!GATE_NAMES[@]}"; do
+  g="${GATE_NAMES[$i]}"
+  case " $EXPECTED_GATES " in
+    *" $g "*) ;;
+    *) EXTRA_GATES="$EXTRA_GATES $g" ;;
+  esac
+  for j in "${!GATE_NAMES[@]}"; do
+    if [[ "$j" -lt "$i" && "${GATE_NAMES[$j]}" == "$g" ]]; then
+      DUPLICATE_GATES="$DUPLICATE_GATES $g"
+      break
+    fi
+  done
 done
 
 # Which gates are ALLOWED to be EXTERNAL, per profile — by NAME.
@@ -508,6 +592,7 @@ case "$PROFILE" in
   *)      ALLOWED_EXTERNAL="" ;;
 esac
 UNEXPECTED_EXTERNAL=""
+MISSING_EXPECTED_EXTERNAL=""
 for i in "${!GATE_NAMES[@]}"; do
   case "${GATE_RESULTS[$i]}" in
     *'"status":"EXTERNAL"'*)
@@ -519,17 +604,36 @@ for i in "${!GATE_NAMES[@]}"; do
       ;;
   esac
 done
+for g in $ALLOWED_EXTERNAL; do
+  found_expected_external=0
+  for i in "${!GATE_NAMES[@]}"; do
+    if [[ "${GATE_NAMES[$i]}" == "$g" \
+       && "${GATE_RESULTS[$i]}" == *'"status":"EXTERNAL"'* ]]; then
+      found_expected_external=1
+    fi
+  done
+  if [[ "$found_expected_external" != "1" ]]; then
+    MISSING_EXPECTED_EXTERNAL="$MISSING_EXPECTED_EXTERNAL $g"
+  fi
+done
+set -- $ALLOWED_EXTERNAL
+EXPECTED_EXTERNAL_COUNT=$#
+EXPECTED_PASS_COUNT=$((EXPECTED_GATE_COUNT - EXPECTED_EXTERNAL_COUNT))
 
 VERDICT="FAIL"
 if [[ -n "$MISSING_GATES" ]]; then
   echo "ANUBIS_AUDIT_INCOMPLETE: gate(s) produced no result:$MISSING_GATES" | tee -a "$LOG"
+elif [[ -n "$DUPLICATE_GATES" || -n "$EXTRA_GATES" || "$total" -ne "$EXPECTED_GATE_COUNT" ]]; then
+  echo "ANUBIS_AUDIT_ROSTER_INVALID: duplicate=[$DUPLICATE_GATES ] extra=[$EXTRA_GATES ] observed=$total expected=$EXPECTED_GATE_COUNT" | tee -a "$LOG"
 elif [[ -n "$UNEXPECTED_EXTERNAL" ]]; then
   echo "ANUBIS_AUDIT_EXTERNAL_NOT_ALLOWED: gate(s) went EXTERNAL outside the $PROFILE profile's allowance:$UNEXPECTED_EXTERNAL" | tee -a "$LOG"
+elif [[ -n "$MISSING_EXPECTED_EXTERNAL" || "$external" -ne "$EXPECTED_EXTERNAL_COUNT" ]]; then
+  echo "ANUBIS_AUDIT_EXTERNAL_REQUIRED: expected exact EXTERNAL gate(s) [$ALLOWED_EXTERNAL] missing=[$MISSING_EXPECTED_EXTERNAL ] observed=$external expected=$EXPECTED_EXTERNAL_COUNT" | tee -a "$LOG"
 elif [[ $fail -eq 0 && $skip -eq 0 ]]; then
   # `external` is declared, counted and printed — never folded into PASS silently.
-  if [[ "$PROFILE" == "full" && $external -eq 0 ]]; then
+  if [[ "$PROFILE" == "full" && $external -eq 0 && $pass -eq $EXPECTED_PASS_COUNT ]]; then
     VERDICT="PASS"
-  elif [[ "$PROFILE" == "hosted" ]]; then
+  elif [[ "$PROFILE" == "hosted" && $pass -eq $EXPECTED_PASS_COUNT ]]; then
     VERDICT="HOSTED_PASS"
   fi
 fi

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Gate 12/13/14 — Portable Release-Candidate Toolchain builder
-# Produces out/release_candidate/<STAMP>/ with full evidence + verdicts.
+# LOCAL DIAGNOSTIC ONLY — NOT A RELEASE CANDIDATE AND NOT PUBLISHABLE.
+#
+# This legacy harness exercises a useful subset on one host, but it is neither
+# commit-bound nor the authoritative 29-gate/VZ/Metal release transaction. A
+# publishable candidate must use publish_pin.sh's release mode, the source-current
+# VM/offensive/diff refresh, and run_seal_checklist.sh as documented in the Phase-1
+# completion receipt. This script emits an explicitly bounded diagnostic only.
 #
 # Usage:
 #   bash scripts/build_release_candidate.sh \
@@ -37,7 +42,8 @@ MANIFEST="$OUT_DIR/MANIFEST.sha256"
 
 exec > >(tee -a "$LOG") 2>&1
 
-echo "=== Anubis Release Candidate Build ==="
+echo "=== Anubis Local Release Diagnostic (NOT PUBLISHABLE) ==="
+echo "authority: local-diagnostic-only"
 echo "stamp: $STAMP"
 echo "metal_reference: $METAL_REF"
 echo "require_metal: $REQUIRE_METAL"
@@ -104,8 +110,8 @@ step "7. Gate 4 regression (taint)"
 cargo run --release -p anubis -- check examples/taint_reject.anb --evidence --out "$OUT_DIR/regress_gate4" || true
 grep -R "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY\|tainted flow" "$OUT_DIR/regress_gate4" || fail "Gate 4 taint still enforced"
 
-step "8. Gate 5 regression (declassify)"
-# (placeholder — extend when exact declassify fixture is stable)
+step "8. Gate 5 regression (declassify) — NOT SCORED"
+echo "SKIPPED_NOT_SCORED: no stable declassify fixture is wired into this legacy diagnostic"
 
 step "9. Gate 7 regression (solver)"
 cargo run --release -p anubis -- check examples/symbolic_assert_pass.anb --evidence --out "$OUT_DIR/regress_gate7" || fail "Gate 7 symbolic"
@@ -155,22 +161,18 @@ fi
 step "12. release binary"
 cargo build --release -p anubis
 RELEASE_BIN="target/release/anubis"
-cp "$RELEASE_BIN" "$OUT_DIR/anubis-release" || true
-"$OUT_DIR/anubis-release" --version || fail "version"
-
-step "13. collect + manifest"
-find "$OUT_DIR" -type f ! -name 'MANIFEST.sha256' -print0 | sort -z | xargs -0 sha256sum > "$MANIFEST"
-sha256sum "$MANIFEST" >> "$MANIFEST"
-
-step "14. final verdict"
-if [[ "$OVERALL" == "PASS" ]]; then
-  echo "Final Verdict: PASS"
+if cp "$RELEASE_BIN" "$OUT_DIR/anubis-release"; then
+  "$OUT_DIR/anubis-release" --version || fail "version"
 else
-  echo "Final Verdict: $OVERALL"
+  fail "release binary copy"
 fi
 
-cat > "$REPORT" <<EOF
-# Anubis Release Candidate Report — $STAMP
+write_summaries() {
+  cat > "$REPORT" <<EOF
+# Anubis Local Release Diagnostic — $STAMP
+
+publishable: false
+authority: local-diagnostic-only
 
 metal_reference: $METAL_REF
 require_metal: $REQUIRE_METAL
@@ -184,21 +186,51 @@ See:
 - MANIFEST.sha256
 EOF
 
-jq -n \
-  --arg stamp "$STAMP" \
-  --arg ref "$METAL_REF" \
-  --arg overall "$OVERALL" \
-  '{
-    schema_version: "1.0",
-    stamp: $stamp,
-    metal_reference: $ref,
-    overall_verdict: $overall,
-    artifacts: {
-      report: "RELEASE_CANDIDATE_REPORT.md",
-      manifest: "MANIFEST.sha256",
-      binary: "anubis-release"
-    }
-  }' > "$JSON"
+  jq -n \
+    --arg stamp "$STAMP" \
+    --arg ref "$METAL_REF" \
+    --arg overall "$OVERALL" \
+    '{
+      schema: "anubis.local-release-diagnostic.v1",
+      stamp: $stamp,
+      metal_reference: $ref,
+      overall_verdict: $overall,
+      publishable: false,
+      authority: "local-diagnostic-only",
+      artifacts: {
+        report: "RELEASE_CANDIDATE_REPORT.md",
+        manifest: "MANIFEST.sha256",
+        binary: "anubis-release"
+      }
+    }' > "$JSON"
+}
 
-echo "Release candidate written to $OUT_DIR"
+write_manifest() {
+  (
+    cd "$OUT_DIR"
+    find . -type f ! -name 'MANIFEST.sha256' ! -name 'build_release_candidate.log' -print0 \
+      | sort -z \
+      | xargs -0 shasum -a 256 > MANIFEST.sha256
+    shasum -c MANIFEST.sha256
+  )
+}
+
+step "13. finalize bounded diagnostic summaries"
+write_summaries
+
+step "14. collect + verify bounded manifest"
+echo "The live build log is excluded because this process continues writing it after hashing."
+if ! write_manifest; then
+  fail "bounded diagnostic manifest"
+  write_summaries
+  write_manifest || {
+    echo "FAIL: bounded diagnostic manifest could not be regenerated" >&2
+    exit 1
+  }
+fi
+
+echo "Local diagnostic written to $OUT_DIR (NOT PUBLISHABLE)"
 echo "overall_verdict=$OVERALL"
+if [[ "$OVERALL" != "PASS" ]]; then
+  exit 1
+fi

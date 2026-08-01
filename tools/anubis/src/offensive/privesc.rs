@@ -64,15 +64,17 @@ pub fn suid_enum(eng: &Engagement) -> Result<Value> {
     }
 
     let gtfobins_interesting = [
-        "nmap", "vim", "find", "bash", "less", "more", "nano", "cp",
-        "mv", "python", "python3", "perl", "ruby", "node", "php",
-        "awk", "env", "strace", "ltrace", "gdb", "docker", "pkexec",
+        "nmap", "vim", "find", "bash", "less", "more", "nano", "cp", "mv", "python", "python3",
+        "perl", "ruby", "node", "php", "awk", "env", "strace", "ltrace", "gdb", "docker", "pkexec",
     ];
     let exploitable: Vec<&Value> = suid_bins
         .iter()
         .filter(|b| {
             let p = b["path"].as_str().unwrap_or("");
-            let name = Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let name = Path::new(p)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
             gtfobins_interesting.contains(&name)
         })
         .collect();
@@ -99,9 +101,7 @@ pub fn suid_enum(eng: &Engagement) -> Result<Value> {
 /// and env_keep escalation paths.
 pub fn sudo_audit(eng: &Engagement) -> Result<Value> {
     eng.validate_live()?;
-    let output = Command::new("sudo")
-        .args(["-l", "-n"])
-        .output();
+    let output = Command::new("sudo").args(["-l", "-n"]).output();
 
     match output {
         Ok(o) => {
@@ -266,14 +266,14 @@ pub fn cron_enum(eng: &Engagement) -> Result<Value> {
     }
 
     // macOS LaunchDaemons/LaunchAgents
-    let launch_dirs = [
-        "/Library/LaunchDaemons",
-        "/Library/LaunchAgents",
-    ];
+    let launch_dirs = ["/Library/LaunchDaemons", "/Library/LaunchAgents"];
     let home = std::env::var("HOME").unwrap_or_default();
     let user_agents = format!("{home}/Library/LaunchAgents");
 
-    for dir in launch_dirs.iter().chain(std::iter::once(&user_agents.as_str())) {
+    for dir in launch_dirs
+        .iter()
+        .chain(std::iter::once(&user_agents.as_str()))
+    {
         let p = Path::new(dir);
         if !p.is_dir() {
             continue;
@@ -361,7 +361,8 @@ pub fn privesc_enum(eng: &Engagement) -> Result<Value> {
         }
     }
     total_findings += paths["writable_count"].as_u64().unwrap_or(0) as u32;
-    total_findings += suid.get("gtfobins_matches")
+    total_findings += suid
+        .get("gtfobins_matches")
         .and_then(|v| v.as_array())
         .map(|a| a.len() as u32)
         .unwrap_or(0);

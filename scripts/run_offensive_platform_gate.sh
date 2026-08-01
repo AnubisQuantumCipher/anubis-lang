@@ -61,6 +61,35 @@ resolve_anubis_bin() {
   fi
 }
 
+finalize_guest_export_manifest() {
+  local out="$1"
+  python3 - "$out" <<'PY'
+import hashlib, json, os, pathlib, sys
+
+out = pathlib.Path(sys.argv[1])
+allowed = ("report.json",)
+manifest = {"schema": "anubis-offensive-gate-export-v1", "secret_scan": "PASS", "files": []}
+for name in allowed:
+    path = out / name
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"ANUBIS_OFFENSIVE_EXPORT_MISSING_FINAL: {path}")
+    payload = path.read_bytes()
+    manifest["files"].append({
+        "path": name,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    })
+for path in sorted(out.iterdir()):
+    if path.name in {"report.json", "isolation.json", "guest_stdout.log", "teardown_status.txt", "export_manifest.json", "offensive_verdict.json"}:
+        continue
+    if path.is_symlink():
+        raise SystemExit(f"ANUBIS_OFFENSIVE_EXPORT_SYMLINK: {path}")
+with open(out / "export_manifest.json", "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
+}
+
 run_in_guest() {
   local out="$1"
   local base="${ANUBIS_VM_BASE:-anubis-xcode}"
@@ -74,8 +103,8 @@ run_in_guest() {
   local keep="${ANUBIS_OFFENSIVE_GATE_KEEP_GUEST:-0}"
   local guest="anubis-offensive-gate-$$"
   local guest_out="out/offensive_gate_guest_export"
-  local build_jobs="${ANUBIS_OFFENSIVE_GATE_BUILD_JOBS:-6}"
-  local rayon_threads="${ANUBIS_OFFENSIVE_GATE_RAYON_THREADS:-6}"
+  local build_jobs="${ANUBIS_OFFENSIVE_GATE_BUILD_JOBS:-${ANUBIS_VM_BUILD_JOBS:-${CARGO_BUILD_JOBS:-6}}}"
+  local rayon_threads="${ANUBIS_OFFENSIVE_GATE_RAYON_THREADS:-${ANUBIS_VM_BUILD_JOBS:-${RAYON_NUM_THREADS:-$build_jobs}}}"
   local host_bin=""
   local binary_sha=""
   local guest_sha_line=""
@@ -94,6 +123,16 @@ run_in_guest() {
   )
 
   mkdir -p "$out"
+  # Fail closed on reused output directories: a prerequisite failure must not
+  # leave an old PASS receipt consumable by a later human or harness.
+  rm -f \
+    "$out/report.json" \
+    "$out/offensive_verdict.json" \
+    "$out/export_manifest.json" \
+    "$out/guest_stdout.log" \
+    "$out/isolation.json" \
+    "$out/offensive_validator_exit_code.txt" \
+    2>/dev/null || true
   local teardown_file="$out/teardown_status.txt"
   echo "not_started" >"$teardown_file"
   [[ "$build_jobs" =~ ^[1-8]$ && "$rayon_threads" =~ ^[1-8]$ ]] || {
@@ -287,9 +326,9 @@ REMOTE
   set -e
 
   # isolation.json written now; teardown_status finalized after explicit cleanup below.
-  python3 - "$iso_path" "$base" "$guest" "$ip" "$cpu" "$mem" "$log_path" "$guest_out" "$binary_sha" "$ROOT" <<'PY'
+  python3 - "$iso_path" "$base" "$guest" "$ip" "$cpu" "$mem" "$log_path" "$guest_out" "$binary_sha" "$build_jobs" "$rayon_threads" "$ROOT" <<'PY'
 import json, sys, subprocess, os
-iso_path, base, guest, ip, cpu, mem, log_path, guest_out, binary_sha, root = sys.argv[1:11]
+iso_path, base, guest, ip, cpu, mem, log_path, guest_out, binary_sha, build_jobs, rayon_threads, root = sys.argv[1:13]
 
 def git(*args):
     try:
@@ -305,6 +344,8 @@ data = {
     "ip": ip,
     "cpu": int(cpu),
     "memory_mib": int(mem),
+    "cargo_build_jobs": int(build_jobs),
+    "rayon_threads": int(rayon_threads),
     "guest_log": os.path.basename(log_path),
     "guest_out": guest_out,
     "binary_transport": "host-built-arm64-hash-verified",
@@ -345,9 +386,19 @@ PY
   if [[ -f "$out/report.json" ]]; then
     gate_augment_report_json "$out/report.json" "$host_bin" "$teardown_final" "tart-disposable-guest" >/dev/null
   fi
+  finalize_guest_export_manifest "$out"
   # Guest battery must prove 34/34 tart-disposable-guest in pulled report.
   if [[ $rc -eq 0 ]]; then
-    if ! gate_validate_offensive_report "$out/report.json" "tart-disposable-guest" "$OFFENSIVE_EXPECTED_GUEST_TOTAL"; then
+    set +e
+    python3 "$ROOT/scripts/lib/offensive_evidence_validate.py" \
+      --evidence "$out" \
+      --out "$out/offensive_verdict.json" \
+      --expected-binary-sha256 "$binary_sha" \
+      --expected-memory-mib "$mem" \
+      --expected-jobs "$build_jobs"
+    OFFENSIVE_VALIDATOR_RC=$?
+    set -e
+    if [[ $OFFENSIVE_VALIDATOR_RC -ne 0 ]]; then
       return 1
     fi
   fi
@@ -375,6 +426,8 @@ run_local_gate() {
   local pass=0
   local fail=0
   local total=0
+  local cases_tsv="$out/cases.tsv"
+  : > "$cases_tsv"
 
   record() {
     local name="$1" status="$2" detail="$3"
@@ -384,6 +437,7 @@ run_local_gate() {
     else
       fail=$((fail + 1))
     fi
+    printf '%s\t%s\t%s\n' "$name" "$status" "$detail" >> "$cases_tsv"
     printf '%-28s %s  (%s)\n' "$name" "$status" "$detail"
   }
 
@@ -718,16 +772,23 @@ PY
     record "t6_string_scramble" "FAIL" "missing scramble json"
   fi
 
-  bash poc_kit/build_vuln.sh >"$out/vuln.log" 2>&1 || true
-  "$bin" exploit-new --out "$eng/modules/lab.json" --target "poc_kit/bin/vuln_local" >/dev/null
   set +e
-  "$bin" exploit-run --engage "$eng" --module "$eng/modules/lab.json" --out "$out/ex" >"$out/ex.log" 2>&1
-  local erc=$?
+  bash poc_kit/build_vuln.sh >"$out/vuln.log" 2>&1
+  local vuln_build_rc=$?
   set -e
-  if [[ $erc -eq 0 ]] && grep -q '"success": true' "$out/ex/exploit_report.json" 2>/dev/null; then
-    record "exploit_run" "PASS" "lab crash"
+  if [[ $vuln_build_rc -ne 0 || ! -x poc_kit/bin/vuln_local ]]; then
+    record "exploit_run" "FAIL" "vulnerable target build rc=$vuln_build_rc"
   else
-    record "exploit_run" "FAIL" "rc=$erc"
+    "$bin" exploit-new --out "$eng/modules/lab.json" --target "poc_kit/bin/vuln_local" >/dev/null
+    set +e
+    "$bin" exploit-run --engage "$eng" --module "$eng/modules/lab.json" --out "$out/ex" >"$out/ex.log" 2>&1
+    local erc=$?
+    set -e
+    if [[ $erc -eq 0 ]] && grep -q '"success": true' "$out/ex/exploit_report.json" 2>/dev/null; then
+      record "exploit_run" "PASS" "lab crash"
+    else
+      record "exploit_run" "FAIL" "rc=$erc"
+    fi
   fi
 
   "$bin" offensive-doctor --json >"$out/doctor.json"
@@ -870,8 +931,10 @@ PY
     && $total -eq $OFFENSIVE_EXPECTED_GUEST_TOTAL ]]; then
     verdict="PASS"
   fi
-  python3 - <<PY
+  python3 - "$cases_tsv" <<PY
 import json, subprocess, os, hashlib
+import sys
+cases_tsv = sys.argv[1]
 out = r"""$out"""
 bin_path = r"""$bin"""
 root = r"""$ROOT"""
@@ -892,11 +955,18 @@ def sha256(path):
     except Exception:
         return ""
 
+cases = []
+with open(cases_tsv, encoding="utf-8") as f:
+    for line in f:
+        name, status, detail = line.rstrip("\n").split("\t", 2)
+        cases.append({"name": name, "status": status, "detail": detail})
+
 report = {
   "total": $total,
   "passed": $pass,
   "failed": $fail,
   "overall_verdict": "$verdict",
+  "cases": cases,
   "binary": bin_path,
   "binary_sha256": sha256(bin_path) if bin_path else "",
   "isolation": "$isolation",
@@ -1120,8 +1190,23 @@ with open(iso_path, "w") as f:
 PY
   fi
   if [[ $guest_rc -eq 0 ]]; then
-    # Double-check 34/34 tart-disposable-guest before claiming green.
-    gate_validate_offensive_report "$OUT/report.json" "tart-disposable-guest" "$OFFENSIVE_EXPECTED_GUEST_TOTAL"
+    # Double-check the complete final exported receipt before claiming green.
+    _offensive_bin="$(resolve_anubis_bin)"
+    _offensive_sha="$(gate_sha256_file "$_offensive_bin")"
+    _offensive_mem="${ANUBIS_OFFENSIVE_GATE_VM_MEM:-8192}"
+    _offensive_jobs="${ANUBIS_OFFENSIVE_GATE_BUILD_JOBS:-${ANUBIS_VM_BUILD_JOBS:-${CARGO_BUILD_JOBS:-6}}}"
+    set +e
+    python3 "$ROOT/scripts/lib/offensive_evidence_validate.py" \
+      --evidence "$OUT" \
+      --out "$OUT/offensive_verdict.json" \
+      --expected-binary-sha256 "$_offensive_sha" \
+      --expected-memory-mib "$_offensive_mem" \
+      --expected-jobs "$_offensive_jobs"
+    OFFENSIVE_VALIDATOR_RC=$?
+    set -e
+    printf 'OFFENSIVE_VALIDATOR_RC=%s\n' "$OFFENSIVE_VALIDATOR_RC"
+    printf '%s\n' "$OFFENSIVE_VALIDATOR_RC" > "$OUT/offensive_validator_exit_code.txt"
+    [[ $OFFENSIVE_VALIDATOR_RC -eq 0 ]]
     exit 0
   elif [[ $guest_rc -eq 2 ]]; then
     echo "FAIL: tart guest prereqs missing — full G14 requires disposable guest battery (${OFFENSIVE_EXPECTED_GUEST_TOTAL}/${OFFENSIVE_EXPECTED_GUEST_TOTAL}); host witness is hosted-only (set ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1)" >&2

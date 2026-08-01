@@ -63,7 +63,7 @@
       "not_settled_by": [
         "stdlib 45/45",
         "vault run clean",
-        "PCA taint_clean agree"
+        "retired PCA-v1 taint_clean agreement"
       ],
       "closed_on": "2026-07-28",
       "closing_evidence": [

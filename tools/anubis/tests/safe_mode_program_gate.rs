@@ -261,3 +261,88 @@ fn imported_program_evidence_analyzes_the_resolved_program() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn research_build_requires_explicit_consent_and_vz_before_lowering() {
+    let root = workspace_tmp("research-build-boundary");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("research.anb");
+    std::fs::write(
+        &source,
+        r#"
+@research(authorization: "authorized-static-regression")
+fn main() {
+    print("must not execute or lower on the host");
+}
+"#,
+    )
+    .unwrap();
+
+    let no_consent_out = root.join("without-consent");
+    let no_consent = run(&[
+        "build",
+        path_text(&source),
+        "--out",
+        path_text(&no_consent_out),
+    ]);
+    assert!(
+        !no_consent.status.success(),
+        "research build without explicit consent must fail: {}",
+        combined(&no_consent)
+    );
+    assert!(
+        combined(&no_consent).contains("ANUBIS_BUILD_RESEARCH_REQUIRES_ALLOW"),
+        "unexpected missing-consent diagnostic: {}",
+        combined(&no_consent)
+    );
+    assert!(
+        !no_consent_out.join("anubis_out").exists(),
+        "missing consent must reject before artifact emission"
+    );
+
+    let host_out = root.join("host-with-consent");
+    let host = run(&[
+        "build",
+        path_text(&source),
+        "--allow-research",
+        "--out",
+        path_text(&host_out),
+    ]);
+    assert!(
+        !host.status.success(),
+        "research build must remain VZ-only even with explicit consent: {}",
+        combined(&host)
+    );
+    assert!(
+        combined(&host).contains("ANUBIS_RESEARCH_HOST_FORBIDDEN"),
+        "unexpected host-isolation diagnostic: {}",
+        combined(&host)
+    );
+    assert!(
+        !host_out.join("anubis_out").exists(),
+        "host isolation must reject before artifact emission"
+    );
+
+    let safe_source = root.join("safe.anb");
+    std::fs::write(&safe_source, "fn main() { print(\"safe\"); }\n").unwrap();
+    let safe_out = root.join("safe-redundant-flag");
+    let safe = run(&[
+        "build",
+        path_text(&safe_source),
+        "--allow-research",
+        "--out",
+        path_text(&safe_out),
+    ]);
+    assert!(
+        safe.status.success(),
+        "a redundant flag must not turn a Safe build into research lowering: {}",
+        combined(&safe)
+    );
+    assert!(
+        safe_out.join("anubis_out").exists(),
+        "ordinary Safe build must still emit its artifact"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

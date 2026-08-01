@@ -110,7 +110,12 @@ if [[ -n "$DERIVED_OVERRIDE" ]]; then
   fi
   cp "$DERIVED_OVERRIDE" "$OUT_DIR/derived.json"
 else
-  python3 "$DERIVE_PY" "$ROOT" >"$OUT_DIR/derived.json"
+  if ! python3 "$DERIVE_PY" "$ROOT" >"$OUT_DIR/derived.json" 2>"$OUT_DIR/derive.err"; then
+    cat "$OUT_DIR/derive.err" >&2
+    echo "DOCS_DRIFT_GATE: FAIL"
+    echo "docs drift derivation failed closed" >&2
+    exit 1
+  fi
 fi
 
 eval "$(python3 -c '
@@ -137,7 +142,7 @@ print("M_LEAN_MOD=%d" % d["lean"]["modules"])
   echo "stdlib_failclosed=$M_STDLIB  # ls tests/fixtures/stdlib/*should_fail_closed.anb | wc -l"
   echo "stdlib_doc_ok=$M_DOC_OK  # ls tests/fixtures/stdlib/doc_ok/*.anb | wc -l"
   echo "stdlib_modules=$M_MODULES  # ls compiler/stdlib/std/ | wc -l"
-  echo "native_corpus=$M_NATIVE  # git ls-files examples/**/*.anb tests/fixtures/**/*.anb | wc -l"
+  echo "native_corpus=$M_NATIVE  # python3 scripts/lib/native_corpus_inventory.py --count"
   echo "builtins=$M_BUILTINS  # LIVE five-function union in run.rs (no cache file)"
   echo "lean_theorems=$M_LEAN_TH  # comment-stripped ^\\\\s*theorem "
   echo "lean_modules=$M_LEAN_MOD  # modules with ≥1 theorem"

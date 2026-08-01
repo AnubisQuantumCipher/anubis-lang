@@ -15,26 +15,27 @@ use std::path::Path;
 ///
 /// High-level findings for non-technical stakeholders.
 /// Risk ratings, business impact, and remediation priorities.
-pub fn executive_summary(
-    eng: &Engagement,
-    engage_dir: &Path,
-    findings: &[Value],
-) -> Result<Value> {
+pub fn executive_summary(eng: &Engagement, engage_dir: &Path, findings: &[Value]) -> Result<Value> {
     eng.validate_live()?;
 
-    let critical = findings.iter()
+    let critical = findings
+        .iter()
         .filter(|f| f["severity"].as_str() == Some("critical"))
         .count();
-    let high = findings.iter()
+    let high = findings
+        .iter()
         .filter(|f| f["severity"].as_str() == Some("high"))
         .count();
-    let medium = findings.iter()
+    let medium = findings
+        .iter()
         .filter(|f| f["severity"].as_str() == Some("medium"))
         .count();
-    let low = findings.iter()
+    let low = findings
+        .iter()
         .filter(|f| f["severity"].as_str() == Some("low"))
         .count();
-    let info = findings.iter()
+    let info = findings
+        .iter()
         .filter(|f| f["severity"].as_str() == Some("info"))
         .count();
 
@@ -99,11 +100,7 @@ pub fn executive_summary(
 }
 
 /// Generate a technical report with full finding details.
-pub fn technical_report(
-    eng: &Engagement,
-    engage_dir: &Path,
-    findings: &[Value],
-) -> Result<Value> {
+pub fn technical_report(eng: &Engagement, engage_dir: &Path, findings: &[Value]) -> Result<Value> {
     eng.validate_live()?;
 
     let receipt_integrity = receipts::verify_chain(engage_dir);
@@ -115,7 +112,10 @@ pub fn technical_report(
     let mut categorized: std::collections::BTreeMap<String, Vec<&Value>> =
         std::collections::BTreeMap::new();
     for f in findings {
-        let cat = f["category"].as_str().unwrap_or("uncategorized").to_string();
+        let cat = f["category"]
+            .as_str()
+            .unwrap_or("uncategorized")
+            .to_string();
         categorized.entry(cat).or_default().push(f);
     }
 
@@ -152,10 +152,7 @@ pub fn technical_report(
 }
 
 /// Generate ATT&CK coverage matrix report.
-pub fn attck_coverage_report(
-    eng: &Engagement,
-    findings: &[Value],
-) -> Result<Value> {
+pub fn attck_coverage_report(eng: &Engagement, findings: &[Value]) -> Result<Value> {
     eng.validate_live()?;
 
     let tactics = [
@@ -176,24 +173,53 @@ pub fn attck_coverage_report(
     ];
 
     let technique_to_tactic = [
-        ("T1595", "TA0043"), ("T1592", "TA0043"),
-        ("T1583", "TA0042"), ("T1587", "TA0042"),
-        ("T1566", "TA0001"), ("T1189", "TA0001"), ("T1195", "TA0001"),
-        ("T1059", "TA0002"), ("T1203", "TA0002"),
-        ("T1543", "TA0003"), ("T1546", "TA0003"), ("T1547", "TA0003"), ("T1053", "TA0003"),
-        ("T1548", "TA0004"), ("T1068", "TA0004"), ("T1574", "TA0004"),
-        ("T1055", "TA0005"), ("T1070", "TA0005"), ("T1518", "TA0005"),
-        ("T1553", "TA0005"), ("T1562", "TA0005"), ("T1027", "TA0005"),
-        ("T1110", "TA0006"), ("T1552", "TA0006"), ("T1555", "TA0006"),
-        ("T1082", "TA0007"), ("T1083", "TA0007"), ("T1046", "TA0007"),
-        ("T1016", "TA0007"), ("T1049", "TA0007"), ("T1057", "TA0007"),
-        ("T1033", "TA0007"), ("T1018", "TA0007"), ("T1087", "TA0007"),
-        ("T1069", "TA0007"), ("T1005", "TA0007"),
+        ("T1595", "TA0043"),
+        ("T1592", "TA0043"),
+        ("T1583", "TA0042"),
+        ("T1587", "TA0042"),
+        ("T1566", "TA0001"),
+        ("T1189", "TA0001"),
+        ("T1195", "TA0001"),
+        ("T1059", "TA0002"),
+        ("T1203", "TA0002"),
+        ("T1543", "TA0003"),
+        ("T1546", "TA0003"),
+        ("T1547", "TA0003"),
+        ("T1053", "TA0003"),
+        ("T1548", "TA0004"),
+        ("T1068", "TA0004"),
+        ("T1574", "TA0004"),
+        ("T1055", "TA0005"),
+        ("T1070", "TA0005"),
+        ("T1518", "TA0005"),
+        ("T1553", "TA0005"),
+        ("T1562", "TA0005"),
+        ("T1027", "TA0005"),
+        ("T1110", "TA0006"),
+        ("T1552", "TA0006"),
+        ("T1555", "TA0006"),
+        ("T1082", "TA0007"),
+        ("T1083", "TA0007"),
+        ("T1046", "TA0007"),
+        ("T1016", "TA0007"),
+        ("T1049", "TA0007"),
+        ("T1057", "TA0007"),
+        ("T1033", "TA0007"),
+        ("T1018", "TA0007"),
+        ("T1087", "TA0007"),
+        ("T1069", "TA0007"),
+        ("T1005", "TA0007"),
         ("T1021", "TA0008"),
-        ("T1115", "TA0009"), ("T1074", "TA0009"), ("T1113", "TA0009"),
-        ("T1056", "TA0009"), ("T1560", "TA0009"),
-        ("T1048", "TA0010"), ("T1572", "TA0010"),
-        ("T1071", "TA0011"), ("T1090", "TA0011"), ("T1219", "TA0011"),
+        ("T1115", "TA0009"),
+        ("T1074", "TA0009"),
+        ("T1113", "TA0009"),
+        ("T1056", "TA0009"),
+        ("T1560", "TA0009"),
+        ("T1048", "TA0010"),
+        ("T1572", "TA0010"),
+        ("T1071", "TA0011"),
+        ("T1090", "TA0011"),
+        ("T1219", "TA0011"),
     ];
 
     let observed_ids = collect_attck_ids(findings);
@@ -223,10 +249,12 @@ pub fn attck_coverage_report(
         }));
     }
 
-    let total_possible: usize = tactic_coverage.iter()
+    let total_possible: usize = tactic_coverage
+        .iter()
         .map(|t| t["techniques_possible"].as_u64().unwrap_or(0) as usize)
         .sum();
-    let total_covered: usize = tactic_coverage.iter()
+    let total_covered: usize = tactic_coverage
+        .iter()
         .map(|t| t["techniques_tested"].as_u64().unwrap_or(0) as usize)
         .sum();
 
@@ -258,13 +286,25 @@ pub fn markdown_report(
     md.push_str(&format!("# {title}\n\n"));
     md.push_str(&format!("**Engagement:** {}\n\n", eng.engagement_id));
 
-    let critical = findings.iter().filter(|f| f["severity"].as_str() == Some("critical")).count();
-    let high = findings.iter().filter(|f| f["severity"].as_str() == Some("high")).count();
-    let medium = findings.iter().filter(|f| f["severity"].as_str() == Some("medium")).count();
-    let low = findings.iter().filter(|f| f["severity"].as_str() == Some("low")).count();
+    let critical = findings
+        .iter()
+        .filter(|f| f["severity"].as_str() == Some("critical"))
+        .count();
+    let high = findings
+        .iter()
+        .filter(|f| f["severity"].as_str() == Some("high"))
+        .count();
+    let medium = findings
+        .iter()
+        .filter(|f| f["severity"].as_str() == Some("medium"))
+        .count();
+    let low = findings
+        .iter()
+        .filter(|f| f["severity"].as_str() == Some("low"))
+        .count();
 
     md.push_str("## Summary\n\n");
-    md.push_str(&format!("| Severity | Count |\n|---|---|\n"));
+    md.push_str("| Severity | Count |\n|---|---|\n");
     md.push_str(&format!("| Critical | {critical} |\n"));
     md.push_str(&format!("| High | {high} |\n"));
     md.push_str(&format!("| Medium | {medium} |\n"));
@@ -275,7 +315,12 @@ pub fn markdown_report(
         let title = f["title"].as_str().unwrap_or("Untitled");
         let severity = f["severity"].as_str().unwrap_or("info");
         let description = f["description"].as_str().unwrap_or("");
-        md.push_str(&format!("### {}.  [{}] {}\n\n", i + 1, severity.to_uppercase(), title));
+        md.push_str(&format!(
+            "### {}.  [{}] {}\n\n",
+            i + 1,
+            severity.to_uppercase(),
+            title
+        ));
         if !description.is_empty() {
             md.push_str(&format!("{description}\n\n"));
         }
@@ -402,7 +447,10 @@ mod tests {
         let dir = std::env::temp_dir().join("aop-report-test-md");
         let _ = fs::create_dir_all(&dir);
         let result = markdown_report(&eng, &dir, "Test Report", &sample_findings()).unwrap();
-        assert!(result["report_path"].as_str().unwrap().contains("report.md"));
+        assert!(result["report_path"]
+            .as_str()
+            .unwrap()
+            .contains("report.md"));
         assert!(result["size_bytes"].as_u64().unwrap() > 0);
         let _ = fs::remove_dir_all(&dir);
     }

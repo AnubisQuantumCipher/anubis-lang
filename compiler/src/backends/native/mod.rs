@@ -166,23 +166,23 @@ fn lower_hybrid(
 /// Keystone: `build`/`prove` artifacts now share the faithful whole-program lowering used by
 /// `anubis run`, so the artifact runs the real program. `hybrid { … }` blocks route to the
 /// dedicated RISC0 + Metal emitter; anything the executable core cannot run falls back to an
-/// honest analysis-only marker (never a fabricated result).
+/// honest analysis-only marker (never a fabricated result). Research lowering is enabled only by
+/// the explicit `allow_research` capability supplied by a policy-enforcing caller.
 pub fn lower_to_native(
     ir: crate::middle::TypedIR,
     items: &[Item],
     out_dir: &Path,
     name: &str,
+    allow_research: bool,
     full_hybrid: bool,
 ) -> Result<String, String> {
     if has_hybrid_block(&ir.body) {
         return lower_hybrid(&ir, out_dir, name, full_hybrid);
     }
 
-    // Research mode enables the PoC-kit surface / research-block bodies inside the lowering,
-    // matching `anubis run --allow-research`. Safe-mode violations (raw pointers, tainted sinks)
-    // are already rejected upstream by `typecheck`, so we never reach here for those.
-    let allow_research =
-        ir.has_research || (ir.mode != crate::BuildMode::Safe && !ir.taint_labels.is_empty());
+    // Research lowering is an explicit caller capability, never inferred from the IR. Inference here
+    // previously let `build` auto-enable research bodies without the consent/VZ boundary required by
+    // `run --allow-research`. Command handlers now make that policy decision before calling us.
 
     match crate::backends::run::lower_program_to_rust_with_mono(
         items,

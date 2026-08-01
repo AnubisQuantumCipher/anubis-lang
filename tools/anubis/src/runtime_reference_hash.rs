@@ -127,7 +127,7 @@ fn hash_tree_once(root: &Path) -> String {
     hasher.update(b"anubis-tree-v2\0");
     hasher.update((files.len() as u64).to_be_bytes());
     for (relative_path, path) in files {
-        hasher.update([b'F']);
+        hasher.update(b"F");
         hasher.update((relative_path.len() as u64).to_be_bytes());
         hasher.update(&relative_path);
         let Ok(bytes) = std::fs::read(&path) else {

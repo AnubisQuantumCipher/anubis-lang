@@ -1,0 +1,434 @@
+// EXPECT: PASS
+// ============================================================================
+// SESHAT — Dependency-Aware Release Planning Engine
+// ----------------------------------------------------------------------------
+// A deterministic planner for a multi-service release. It validates a task DAG,
+// schedules dependency-safe execution waves under CPU/memory budgets, computes
+// the graph's critical path, and emits a SHA-256 commitment over the plan.
+//
+// This is an ordinary Safe-mode application: no research blocks, no network,
+// no filesystem, and no nondeterminism. Runtime assertions below are executable
+// self-tests for the standard release scenario.
+// ============================================================================
+
+struct Task {
+    id: string,
+    label: string,
+    deps: list,
+    duration: i64,
+    cpu: i64,
+    memory: i64,
+    risk: i64,
+}
+
+struct Wave {
+    number: i64,
+    task_ids: list,
+    cpu: i64,
+    memory: i64,
+    duration: i64,
+}
+
+enum Plan {
+    Ready {
+        waves: list,
+        completed: list,
+        total_duration: i64,
+        critical_path: i64,
+        commitment: string,
+    },
+    Blocked {
+        reason: string,
+        completed: list,
+    },
+    Invalid(string),
+}
+
+fn task(id, label, deps, duration, cpu, memory, risk) {
+    return Task {
+        id: id,
+        label: label,
+        deps: deps,
+        duration: duration,
+        cpu: cpu,
+        memory: memory,
+        risk: risk,
+    };
+}
+
+fn sample_release() {
+    return [
+        task("ingest", "Freeze source inputs", [], 4, 2, 2, 20),
+        task("policy", "Verify policy graph", ["ingest"], 3, 2, 2, 45),
+        task("api", "Build API service", ["policy"], 7, 4, 6, 35),
+        task("ui", "Build operator console", ["policy"], 5, 3, 4, 25),
+        task("scan", "Run security scan", ["api", "ui"], 4, 2, 4, 75),
+        task("canary", "Observe canary", ["scan"], 3, 2, 3, 55),
+        task("deploy", "Promote release", ["canary"], 2, 1, 2, 60),
+        task("attest", "Seal deployment receipt", ["deploy"], 2, 1, 1, 15),
+    ];
+}
+
+fn task_by_id(tasks, id) {
+    let matches = filter(tasks, |t| t.id == id);
+    if len(matches) == 0 {
+        return None;
+    }
+    return Some(matches[0]);
+}
+
+fn duplicate_id(tasks) {
+    for candidate in tasks {
+        let copies = count(tasks, |t| t.id == candidate.id);
+        if copies > 1 {
+            return Some(candidate.id);
+        }
+    }
+    return None;
+}
+
+fn missing_dependency(tasks) {
+    for candidate in tasks {
+        for dep in candidate.deps {
+            match task_by_id(tasks, dep) {
+                Some(_) => 0,
+                None => return Some("${candidate.id} -> ${dep}"),
+            }
+        }
+    }
+    return None;
+}
+
+fn oversized_task(tasks, cpu_cap, memory_cap) {
+    for candidate in tasks {
+        if candidate.cpu > cpu_cap || candidate.memory > memory_cap {
+            return Some(candidate.id);
+        }
+    }
+    return None;
+}
+
+fn validate_release(tasks, cpu_cap, memory_cap) {
+    if len(tasks) == 0 {
+        return Err("release graph is empty");
+    }
+    if cpu_cap <= 0 || memory_cap <= 0 {
+        return Err("resource budgets must be positive");
+    }
+    match duplicate_id(tasks) {
+        Some(id) => return Err("duplicate task id: ${id}"),
+        None => 0,
+    }
+    match missing_dependency(tasks) {
+        Some(edge) => return Err("unknown dependency: ${edge}"),
+        None => 0,
+    }
+    match oversized_task(tasks, cpu_cap, memory_cap) {
+        Some(id) => return Err("task exceeds resource budget: ${id}"),
+        None => 0,
+    }
+    return Ok(true);
+}
+
+fn dependencies_satisfied(candidate, completed) {
+    return all(candidate.deps, |dep| contains(completed, dep));
+}
+
+fn max_task_duration(tasks, ids) {
+    let longest = 0;
+    for id in ids {
+        match task_by_id(tasks, id) {
+            Some(candidate) => {
+                if candidate.duration > longest {
+                    longest = candidate.duration;
+                }
+            },
+            None => 0,
+        }
+    }
+    return longest;
+}
+
+fn plan_text(waves) {
+    let text = "seshat-plan-v1";
+    for wave in waves {
+        text = text + "|w=" + str(wave.number);
+        text = text + ":cpu=" + str(wave.cpu);
+        text = text + ":mem=" + str(wave.memory);
+        text = text + ":dur=" + str(wave.duration);
+        text = text + ":tasks=" + join(wave.task_ids, ",");
+    }
+    return text;
+}
+
+fn finish_time(id, tasks, trail) {
+    if contains(trail, id) {
+        return -1;
+    }
+    match task_by_id(tasks, id) {
+        None => return -1,
+        Some(candidate) => {
+            let next_trail = trail;
+            push(next_trail, id);
+            let predecessor = 0;
+            for dep in candidate.deps {
+                let finish = finish_time(dep, tasks, next_trail);
+                if finish < 0 {
+                    return -1;
+                }
+                if finish > predecessor {
+                    predecessor = finish;
+                }
+            }
+            return predecessor + candidate.duration;
+        },
+    }
+}
+
+fn critical_path_duration(tasks) {
+    let longest = 0;
+    for candidate in tasks {
+        let finish = finish_time(candidate.id, tasks, []);
+        if finish < 0 {
+            return -1;
+        }
+        if finish > longest {
+            longest = finish;
+        }
+    }
+    return longest;
+}
+
+fn plan_release(tasks, cpu_cap, memory_cap) {
+    match validate_release(tasks, cpu_cap, memory_cap) {
+        Err(reason) => return Plan::Invalid(reason),
+        Ok(_) => 0,
+    }
+
+    let waves = [];
+    let completed = [];
+    let wave_no = 1;
+    let total_duration = 0;
+
+    while len(completed) < len(tasks) {
+        let selected = [];
+        let used_cpu = 0;
+        let used_memory = 0;
+
+        for candidate in tasks {
+            let pending = !contains(completed, candidate.id);
+            let ready = dependencies_satisfied(candidate, completed);
+            let fits = used_cpu + candidate.cpu <= cpu_cap && used_memory + candidate.memory <= memory_cap;
+            if pending && ready && fits {
+                push(selected, candidate.id);
+                used_cpu = used_cpu + candidate.cpu;
+                used_memory = used_memory + candidate.memory;
+            }
+        }
+
+        if len(selected) == 0 {
+            return Plan::Blocked {
+                reason: "cycle or unsatisfied dependency frontier",
+                completed: completed,
+            };
+        }
+
+        let duration = max_task_duration(tasks, selected);
+        push(waves, Wave {
+            number: wave_no,
+            task_ids: selected,
+            cpu: used_cpu,
+            memory: used_memory,
+            duration: duration,
+        });
+        for id in selected {
+            push(completed, id);
+        }
+        total_duration = total_duration + duration;
+        wave_no = wave_no + 1;
+    }
+
+    let critical = critical_path_duration(tasks);
+    let commitment = hash_sha256(plan_text(waves));
+    return Plan::Ready {
+        waves: waves,
+        completed: completed,
+        total_duration: total_duration,
+        critical_path: critical,
+        commitment: commitment,
+    };
+}
+
+fn proven_parallel_savings(serial: i64, scheduled: i64) -> i64
+    requires(serial >= 0)
+    requires(serial < 1000000)
+    requires(scheduled >= 0)
+    requires(scheduled <= serial)
+    ensures(result >= 0)
+    ensures(result + scheduled == serial)
+{
+    return serial - scheduled;
+}
+
+fn risk_band(risk) {
+    if risk >= 70 { return "HIGH"; }
+    if risk >= 40 { return "MEDIUM"; }
+    return "LOW";
+}
+
+fn task_label(tasks, id) {
+    match task_by_id(tasks, id) {
+        Some(candidate) => return candidate.label,
+        None => return "unknown",
+    }
+}
+
+fn task_risk(tasks, id) {
+    match task_by_id(tasks, id) {
+        Some(candidate) => return candidate.risk,
+        None => return 0,
+    }
+}
+
+fn assert_ready(plan, expected_waves, expected_total, expected_critical) {
+    match plan {
+        Plan::Ready {
+            waves: waves,
+            completed: completed,
+            total_duration: total,
+            critical_path: critical,
+            commitment: commitment,
+        } => {
+            assert(len(waves) == expected_waves);
+            assert(len(completed) == 8);
+            assert(total == expected_total);
+            assert(critical == expected_critical);
+            assert(len(commitment) == 64);
+        },
+        Plan::Blocked { reason: _, completed: _ } => panic("expected ready plan, got blocked"),
+        Plan::Invalid(_) => panic("expected ready plan, got invalid"),
+    }
+}
+
+fn print_plan(name, plan, cpu_cap, memory_cap) uses(io.print) {
+    let tasks = sample_release();
+    print("============================================================");
+    print("SESHAT RELEASE PLAN :: ${name}");
+    print("budget cpu=${cpu_cap} memory=${memory_cap}");
+    print("============================================================");
+    match plan {
+        Plan::Invalid(reason) => print("INVALID: ${reason}"),
+        Plan::Blocked { reason: reason, completed: completed } => {
+            print("BLOCKED: ${reason}");
+            print("completed=${join(completed, ",")}");
+        },
+        Plan::Ready {
+            waves: waves,
+            completed: completed,
+            total_duration: total,
+            critical_path: critical,
+            commitment: commitment,
+        } => {
+            for wave in waves {
+                print("WAVE ${wave.number}  cpu=${wave.cpu}/${cpu_cap} mem=${wave.memory}/${memory_cap} duration=${wave.duration}");
+                for id in wave.task_ids {
+                    let risk = task_risk(tasks, id);
+                    print("  - ${pad_end(id, 8)} ${pad_end(task_label(tasks, id), 28)} risk=${risk_band(risk)}(${risk})");
+                }
+            }
+            print("------------------------------------------------------------");
+            print("tasks=${len(completed)} waves=${len(waves)} total=${total} critical=${critical}");
+            print("parallelism_saved=${proven_parallel_savings(30, total)}");
+            print("commitment.sha256=${commitment}");
+        },
+    }
+}
+
+fn assert_blocked(plan, expected_completed) {
+    match plan {
+        Plan::Blocked { reason: reason, completed: completed } => {
+            assert(len(reason) > 0);
+            assert(len(completed) == expected_completed);
+        },
+        Plan::Ready {
+            waves: _,
+            completed: _,
+            total_duration: _,
+            critical_path: _,
+            commitment: _,
+        } => panic("expected blocked plan, got ready"),
+        Plan::Invalid(_) => panic("expected blocked plan, got invalid"),
+    }
+}
+
+fn assert_invalid(plan, expected_fragment) {
+    match plan {
+        Plan::Invalid(reason) => assert(contains(reason, expected_fragment)),
+        Plan::Ready {
+            waves: _,
+            completed: _,
+            total_duration: _,
+            critical_path: _,
+            commitment: _,
+        } => panic("expected invalid plan, got ready"),
+        Plan::Blocked { reason: _, completed: _ } => panic("expected invalid plan, got blocked"),
+    }
+}
+
+fn cyclic_release() {
+    return [
+        task("a", "Cycle A", ["b"], 1, 1, 1, 10),
+        task("b", "Cycle B", ["a"], 1, 1, 1, 10),
+    ];
+}
+
+fn missing_edge_release() {
+    return [
+        task("a", "Missing edge", ["ghost"], 1, 1, 1, 10),
+    ];
+}
+
+fn duplicate_release() {
+    return [
+        task("same", "First", [], 1, 1, 1, 10),
+        task("same", "Second", [], 1, 1, 1, 10),
+    ];
+}
+
+fn oversized_release() {
+    return [
+        task("large", "Too large", [], 1, 9, 13, 10),
+    ];
+}
+
+fn run_self_tests() {
+    assert_ready(plan_release(sample_release(), 8, 12), 7, 25, 25);
+    assert_ready(plan_release(sample_release(), 4, 6), 8, 30, 25);
+    assert_blocked(plan_release(cyclic_release(), 4, 4), 0);
+    assert_invalid(plan_release(missing_edge_release(), 4, 4), "unknown dependency");
+    assert_invalid(plan_release(duplicate_release(), 4, 4), "duplicate task id");
+    assert_invalid(plan_release(oversized_release(), 4, 4), "exceeds resource budget");
+}
+
+fn selected_mode(argv) {
+    if contains(argv, "--constrained") {
+        return "CONSTRAINED";
+    }
+    return "STANDARD";
+}
+
+fn run_selected(argv) uses(io.print) {
+    let mode = selected_mode(argv);
+    if mode == "CONSTRAINED" {
+        let plan = plan_release(sample_release(), 4, 6);
+        print_plan(mode, plan, 4, 6);
+    } else {
+        let plan = plan_release(sample_release(), 8, 12);
+        print_plan(mode, plan, 8, 12);
+    }
+}
+
+fn main() uses(io.print) {
+    run_self_tests();
+    run_selected(args());
+}

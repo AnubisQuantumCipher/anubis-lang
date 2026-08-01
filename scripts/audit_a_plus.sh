@@ -4,8 +4,8 @@
 #
 # This is a thin, honest alias: it runs the repo safety check, then delegates to
 # scripts/audit_unified.sh — the canonical runner that executes every gate
-# (G1-G15: fmt, clippy, tests, build, language/turing/PCA/security/poc-kit/
-# prove/enum/for-in/lang-trio/offensive fixtures, dogfood) and emits an honest
+# (G1-G29: compiler/tests/fixtures, proof/formal correspondence, docs/promise
+# coherence, inventory/freshness, and host-resource controls) and emits an honest
 # PASS/FAIL/SKIP verdict + JSON report, exiting non-zero if any gate fails.
 #
 # History: this script used to be a 4-gate skeleton that ended in a bare

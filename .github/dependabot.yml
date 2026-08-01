@@ -1,7 +1,7 @@
 # Dependabot keeps the dependency surface patched.
 #
-# A language whose thesis is "the checker proves your program cannot violate its
-# policy" cannot ship on unpatched dependencies. Grouped updates keep the PR
+# A language whose thesis is "the checker found no known path around the stated
+# policy, and refused undecidable obligations" cannot ignore dependency risk. Grouped updates keep the PR
 # volume reviewable; the vendored tree is excluded because it is a pinned fork
 # proven equal to upstream-plus-a-reviewable-diff, and Dependabot would break
 # that proof.
@@ -24,9 +24,10 @@ updates:
           - patch
           - minor
     ignore:
-      # Vendored + patched crates are pinned deliberately. See the vendored-fork
-      # discipline: pristine upstream PLUS a small reviewable diff, enforced in CI.
-      - dependency-name: "risc0-*"
+      # Only the two workspace-patched crates are excluded. A wildcard also hid
+      # unvendored risc0-zkvm updates, which are part of the ordinary dependency surface.
+      - dependency-name: "risc0-circuit-rv32im"
+      - dependency-name: "risc0-sys"
 
   # ── GitHub Actions ────────────────────────────────────────────────────────
   # Actions are executable code running with repository credentials. Pin them
@@ -39,3 +40,22 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "ci"
+
+  # ── Editor JavaScript lockfiles ──────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: "/editors/tree-sitter-anubis"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(editor)"
+
+  - package-ecosystem: npm
+    directory: "/editors/vscode-anubis"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(editor)"

@@ -22,11 +22,7 @@ use std::path::Path;
 /// This is the "offline hash attack" pattern: the operator has a hash from
 /// engagement evidence and tests candidates locally. No network, no target
 /// system access. Runs on host or guest.
-pub fn hash_test(
-    eng: &Engagement,
-    target_hash: &str,
-    wordlist_path: &Path,
-) -> Result<Value> {
+pub fn hash_test(eng: &Engagement, target_hash: &str, wordlist_path: &Path) -> Result<Value> {
     eng.validate_live()?;
     if !wordlist_path.is_file() {
         return Err(anyhow!(
@@ -97,8 +93,12 @@ pub fn ssh_key_audit(eng: &Engagement) -> Result<Value> {
     }
 
     let key_names = [
-        "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-        "id_rsa_anubis", "tart_anubis",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "id_rsa_anubis",
+        "tart_anubis",
     ];
 
     for name in &key_names {
@@ -154,7 +154,10 @@ pub fn ssh_key_audit(eng: &Engagement) -> Result<Value> {
     let auth_keys = ssh_dir.join("authorized_keys");
     if auth_keys.is_file() {
         let content = fs::read_to_string(&auth_keys).unwrap_or_default();
-        let count = content.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count();
+        let count = content
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .count();
         if count > 10 {
             findings.push(json!({
                 "severity": "info",
@@ -242,10 +245,23 @@ pub fn spray_plan(
 pub fn env_credential_scan(eng: &Engagement) -> Result<Value> {
     eng.validate_live()?;
     let patterns = [
-        "TOKEN", "API_KEY", "SECRET", "PASSWORD", "CREDENTIAL",
-        "AWS_ACCESS", "AWS_SECRET", "GITHUB_TOKEN", "GITLAB_TOKEN",
-        "SLACK_TOKEN", "DISCORD_TOKEN", "DATABASE_URL", "MONGO_URI",
-        "REDIS_URL", "PSK", "PRIVATE_KEY", "AUTH",
+        "TOKEN",
+        "API_KEY",
+        "SECRET",
+        "PASSWORD",
+        "CREDENTIAL",
+        "AWS_ACCESS",
+        "AWS_SECRET",
+        "GITHUB_TOKEN",
+        "GITLAB_TOKEN",
+        "SLACK_TOKEN",
+        "DISCORD_TOKEN",
+        "DATABASE_URL",
+        "MONGO_URI",
+        "REDIS_URL",
+        "PSK",
+        "PRIVATE_KEY",
+        "AUTH",
     ];
     let mut hits: Vec<Value> = Vec::new();
     let mut scanned = 0u32;
@@ -382,12 +398,9 @@ mod tests {
     #[test]
     fn spray_plan_is_plan_only_and_scope_gated() {
         let eng = Engagement::default_lab("cred-test", "lab-auth");
-        let err = spray_plan(
-            &eng, "ssh",
-            &["10.99.99.99".into()],
-            &["admin".into()],
-            5,
-        ).unwrap_err().to_string();
+        let err = spray_plan(&eng, "ssh", &["10.99.99.99".into()], &["admin".into()], 5)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("SCOPE") || err.contains("DENIED"),
             "out-of-scope target must be denied: {err}"
@@ -397,12 +410,9 @@ mod tests {
     #[test]
     fn spray_plan_rejects_unsupported_protocol() {
         let eng = Engagement::default_lab("cred-test", "lab-auth");
-        let err = spray_plan(
-            &eng, "telnet",
-            &["127.0.0.1".into()],
-            &["admin".into()],
-            5,
-        ).unwrap_err().to_string();
+        let err = spray_plan(&eng, "telnet", &["127.0.0.1".into()], &["admin".into()], 5)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("ANUBIS_CRED_SPRAY_PROTOCOL"), "{err}");
     }
 
@@ -410,12 +420,7 @@ mod tests {
     fn spray_plan_computes_safe_attempts() {
         let mut eng = Engagement::default_lab("cred-test", "lab-auth");
         eng.allowed_hosts.push("10.0.0.1".into());
-        let result = spray_plan(
-            &eng, "ssh",
-            &["10.0.0.1".into()],
-            &["admin".into()],
-            10,
-        ).unwrap();
+        let result = spray_plan(&eng, "ssh", &["10.0.0.1".into()], &["admin".into()], 10).unwrap();
         assert_eq!(result["status"], "PLAN_ONLY");
         assert_eq!(result["executed"], false);
         assert_eq!(result["safe_attempts_per_user"], 5);
@@ -429,7 +434,10 @@ mod tests {
         assert_eq!(result["executed"], true);
         assert!(result["variables_scanned"].as_u64().unwrap() > 0);
         let serialized = serde_json::to_string(&result).unwrap();
-        assert!(!serialized.contains("secret-value-12345"), "value must be redacted");
+        assert!(
+            !serialized.contains("secret-value-12345"),
+            "value must be redacted"
+        );
         std::env::remove_var("ANUBIS_TEST_API_KEY");
     }
 
@@ -446,6 +454,10 @@ mod tests {
     fn ssh_key_audit_runs_without_panic() {
         let eng = Engagement::default_lab("cred-test", "lab-auth");
         let result = ssh_key_audit(&eng);
-        assert!(result.is_ok(), "ssh_key_audit should not panic: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "ssh_key_audit should not panic: {:?}",
+            result.err()
+        );
     }
 }

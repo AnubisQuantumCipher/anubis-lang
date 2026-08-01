@@ -613,7 +613,8 @@ mod tests {
     #[test]
     fn poison_catalog_entry_without_dispatch_is_detected() {
         let dispatched = vec!["whoami".to_string(), "ls".to_string()];
-        let missing = catalog_entries_without_dispatch(&["whoami", "ls", "screenshot"], &dispatched);
+        let missing =
+            catalog_entries_without_dispatch(&["whoami", "ls", "screenshot"], &dispatched);
         assert_eq!(
             missing,
             vec!["screenshot"],
@@ -657,11 +658,7 @@ mod tests {
         "#;
         assert_eq!(
             dispatched_modules(synthetic),
-            vec![
-                "alpha".to_string(),
-                "beta".to_string(),
-                "gamma".to_string()
-            ],
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
             "extractor must read every arm including alternates, and stop at the catch-all"
         );
     }

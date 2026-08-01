@@ -44,9 +44,29 @@ set -euo pipefail
 if [[ -n "${ANUBIS_SEAL_ROOT:-}" && -d "${ANUBIS_SEAL_ROOT}/scripts" ]]; then
   ROOT="$ANUBIS_SEAL_ROOT"
 else
-  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  script_path="${BASH_SOURCE[0]}"
+  case "$script_path" in
+    */*) script_dir="${script_path%/*}" ;;
+    *) script_dir=. ;;
+  esac
+  ROOT="$(cd "$script_dir/.." && pwd -P)"
 fi
 cd "$ROOT"
+
+# This seal is rooted at ROOT, never at a caller-selected Git directory or
+# worktree. Clear repository-redirection variables once for every child gate
+# and keep system Git/Python ahead of caller PATH for source-pin verification.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+unset GIT_REPLACE_REF_BASE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+unset GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_EXEC_PATH
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_ATTR_NOSYSTEM=1
+export GIT_NO_REPLACE_OBJECTS=1
+export GIT_OPTIONAL_LOCKS=0
+PIN_VERIFY_PATH="/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"
 
 # Bash re-reads the script file from disk between commands. Concurrent agents editing
 # this file mid-seal produce garbage next lines (`--: command not found`, `le: command
@@ -61,7 +81,7 @@ if [[ "${ANUBIS_SEAL_REEXEC:-}" != "1" ]]; then
   export ANUBIS_SEAL_REEXEC=1
   export ANUBIS_SEAL_ROOT="$ROOT"
   export ANUBIS_SEAL_SCRIPT_SNAP="$_seal_snap_dir/run_seal_checklist.sh"
-  exec bash "$_seal_snap_dir/run_seal_checklist.sh" "$@"
+  exec /bin/bash "$_seal_snap_dir/run_seal_checklist.sh" "$@"
 fi
 
 # Any unexpected command failure must not leave a partial tree looking green.
@@ -105,11 +125,24 @@ fi
 if [[ "$SEAL_OUT" != /* ]]; then
   SEAL_OUT="$ROOT/$SEAL_OUT"
 fi
+if [[ -e "$SEAL_OUT" ]]; then
+  echo "SEAL_REFUSED: output root already exists: $SEAL_OUT" >&2
+  exit 2
+fi
+mkdir -p "$SEAL_OUT"
 mkdir -p "$SEAL_OUT/gates" "$SEAL_OUT/logs"
 SUMMARY="$SEAL_OUT/seal_summary.txt"
 VERDICT_JSON="$SEAL_OUT/seal_verdict.json"
 INSTRUMENT="$SEAL_OUT/instrument.txt"
 KNOWN_FAILING_MD="$SEAL_OUT/known_failing.md"
+GATE_RUN_LEDGER_WORKING="$SEAL_OUT/gate_run_ledger.working"
+GATE_RUN_LEDGER_VALIDATED="$SEAL_OUT/gate_run_ledger.validated"
+GATE_RUN_LEDGER_BINDING_SHA=""
+GATE_RUN_LEDGER_BINDING_ROWS=""
+GATE_RUN_LEDGER_BINDING_COMMIT=""
+export ANUBIS_GATE_RUN_LEDGER="$GATE_RUN_LEDGER_WORKING"
+export ANUBIS_GATE_RUN_PROFILE="$PROFILE"
+export ANUBIS_SEAL_OUT="$SEAL_OUT"
 : >"$SUMMARY"
 
 log() { echo "$*" | tee -a "$SUMMARY"; }
@@ -123,9 +156,11 @@ log() { echo "$*" | tee -a "$SUMMARY"; }
 
 write_verdict() {
   local status="$1" detail="$2"
-  if ! python3 - "$VERDICT_JSON" "$status" "$detail" "$SEAL_OUT" "$PROFILE" <<'PY'
+  if ! python3 - "$VERDICT_JSON" "$status" "$detail" "$SEAL_OUT" "$PROFILE" \
+    "$GATE_RUN_LEDGER_BINDING_SHA" "$GATE_RUN_LEDGER_BINDING_ROWS" \
+    "$GATE_RUN_LEDGER_BINDING_COMMIT" <<'PY'
 import json, sys, pathlib
-path, status, detail, seal_out, profile = sys.argv[1:6]
+path, status, detail, seal_out, profile, ledger_sha, ledger_rows, ledger_commit = sys.argv[1:9]
 inst = {}
 ip = pathlib.Path(seal_out) / "instrument.txt"
 if ip.is_file():
@@ -156,6 +191,14 @@ m = {
     "scoring_rule": "declared_verdict_line_only_never_body_grep_FAIL",
     "known_failing_manifest": kf.read_text() if kf.is_file() else None,
 }
+if ledger_sha:
+    m["gate_run_ledger"] = {
+        "schema": "anubis.gate-run-ledger-binding.v1",
+        "sha256": ledger_sha,
+        "rows": int(ledger_rows),
+        "commit": ledger_commit,
+        "promoted_name": "gate_run_ledger.validated",
+    }
 pathlib.Path(path).write_text(json.dumps(m, indent=2) + "\n")
 PY
   then
@@ -197,6 +240,9 @@ REQUIRED_GATE_SCRIPTS=(
   scripts/run_selfhost_gate.sh
   scripts/run_taint_selfhost_gate.sh
   scripts/run_capset_selfhost_gate.sh
+  scripts/gate_run_freshness.sh
+  scripts/lib/seal_verdict_validate.py
+  scripts/lib/gate_run_ledger_promote.py
 )
 for required_script in "${REQUIRED_GATE_SCRIPTS[@]}"; do
   [[ -f "$required_script" ]] || refuse "required gate script missing: $required_script"
@@ -226,7 +272,7 @@ elif [[ -n "${SEAL_BIN:-}" ]]; then
 else
   [[ -x scripts/publish_pin.sh ]] || refuse "scripts/publish_pin.sh missing or not executable"
   set +e
-  SOURCE_PIN="$(scripts/publish_pin.sh --current 2>"$SEAL_OUT/logs/publish_pin_current.err")"
+  SOURCE_PIN="$(PATH="$PIN_VERIFY_PATH" scripts/publish_pin.sh --current 2>"$SEAL_OUT/logs/publish_pin_current.err")"
   pin_rc=$?
   set -e
   [[ $pin_rc -eq 0 ]] || refuse "could not resolve published pin (rc=$pin_rc; see logs/publish_pin_current.err)"
@@ -241,11 +287,13 @@ chmod a-w "$SNAP" 2>/dev/null || refuse "could not make snapshot read-only: $SNA
 # A binary hash alone proves identity, not provenance. The seal is available only for the current
 # published pin whose metadata binds it to this exact source/gate/fixture tree.
 set +e
-CURRENT_PIN="$(scripts/publish_pin.sh --current 2>"$SEAL_OUT/logs/publish_pin_verify.err")"
+CURRENT_PIN="$(PATH="$PIN_VERIFY_PATH" scripts/publish_pin.sh --current 2>"$SEAL_OUT/logs/publish_pin_verify.err")"
 current_rc=$?
+INITIAL_PIN_VERIFY_OUTPUT=""
 if [[ $current_rc -eq 0 ]]; then
-  scripts/publish_pin.sh --verify >>"$SEAL_OUT/logs/publish_pin_verify.log" 2>&1
+  INITIAL_PIN_VERIFY_OUTPUT="$(PATH="$PIN_VERIFY_PATH" scripts/publish_pin.sh --verify 2>&1)"
   verify_rc=$?
+  printf '%s\n' "$INITIAL_PIN_VERIFY_OUTPUT" >"$SEAL_OUT/logs/publish_pin_verify.log"
 else
   verify_rc=$current_rc
 fi
@@ -253,8 +301,36 @@ set -e
 [[ $current_rc -eq 0 ]] || refuse "could not resolve current pin for source binding (rc=$current_rc)"
 [[ "$(cd "$(dirname "$SOURCE_PIN")" && pwd)/$(basename "$SOURCE_PIN")" == "$(cd "$(dirname "$CURRENT_PIN")" && pwd)/$(basename "$CURRENT_PIN")" ]] \
   || refuse "selected binary is not the current source-bound pin: selected=$SOURCE_PIN current=$CURRENT_PIN"
-[[ $verify_rc -eq 0 ]] || refuse "current pin does not match the live tree (rc=$verify_rc; see logs/publish_pin_verify.log)"
+[[ $verify_rc -eq 0 && "$INITIAL_PIN_VERIFY_OUTPUT" == "pin matches tree: $CURRENT_PIN" ]] \
+  || refuse "current pin does not match the live tree or exact selected identity (rc=$verify_rc; see logs/publish_pin_verify.log)"
 log "source_binding=verified_current_pin"
+
+verify_selected_source_pin() {
+  local phase="$1"
+  local opening_pin="" closing_pin="" verify_output=""
+  local opening_rc verify_selected_rc closing_rc
+  opening_rc=0
+  opening_pin="$(PATH="$PIN_VERIFY_PATH" scripts/publish_pin.sh --current \
+    2>"$SEAL_OUT/logs/publish_pin_current_${phase}_opening.err")" || opening_rc=$?
+  if [[ $opening_rc -eq 0 && "$opening_pin" == "$CURRENT_PIN" ]]; then
+    verify_selected_rc=0
+    verify_output="$(PATH="$PIN_VERIFY_PATH" scripts/publish_pin.sh --verify \
+      2>"$SEAL_OUT/logs/publish_pin_verify_${phase}.err")" || verify_selected_rc=$?
+    printf '%s\n' "$verify_output" >"$SEAL_OUT/logs/publish_pin_verify_${phase}.log"
+  else
+    verify_selected_rc=2
+  fi
+  closing_rc=0
+  closing_pin="$(PATH="$PIN_VERIFY_PATH" scripts/publish_pin.sh --current \
+    2>"$SEAL_OUT/logs/publish_pin_current_${phase}_closing.err")" || closing_rc=$?
+  if [[ $opening_rc -ne 0 || $verify_selected_rc -ne 0 || $closing_rc -ne 0 \
+     || "$opening_pin" != "$CURRENT_PIN" || "$closing_pin" != "$CURRENT_PIN" \
+     || "$verify_output" != "pin matches tree: $CURRENT_PIN" ]]; then
+    log "SEAL_REFUSED: selected source pin drift during $phase (opening_rc=$opening_rc verify_rc=$verify_selected_rc closing_rc=$closing_rc opening=$opening_pin expected=$CURRENT_PIN verified=$verify_output closing=$closing_pin)"
+    return 1
+  fi
+  return 0
+}
 
 BIN_MTIME="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' "$SNAP" 2>/dev/null || stat -c '%y' "$SNAP" 2>/dev/null || echo unknown)"
 BIN_SIZE="$(stat -f '%z' "$SNAP" 2>/dev/null || stat -c '%s' "$SNAP" 2>/dev/null || echo 0)"
@@ -334,48 +410,55 @@ extract_declared() {
   grep -E "$re" "$logf" 2>/dev/null | tail -1 || true
 }
 
-# classify_verdict LOG PASS_RE FAIL_RE → globals: _v_status _v_line _v_reason
+# classify_verdict LOG PASS_RE FAIL_RE SCORE_JSON → globals:
+# _v_status _v_line _v_reason _v_marker_count
 classify_verdict() {
-  local logf="$1" pass_re="$2" fail_re="$3"
+  local logf="$1" pass_re="$2" fail_re="$3" score_json="$4"
   _v_status=""
   _v_line=""
   _v_reason=""
+  _v_marker_count="unknown"
 
-  local pass_line fail_line
-  pass_line="$(extract_declared "$logf" "$pass_re")"
-  fail_line="$(extract_declared "$logf" "$fail_re")"
-
-  local pass_ln=0 fail_ln=0
-  if [[ -n "$pass_line" ]]; then
-    pass_ln="$(grep -nE "$pass_re" "$logf" 2>/dev/null | tail -1 | cut -d: -f1 || echo 0)"
-  fi
-  if [[ -n "$fail_line" ]]; then
-    fail_ln="$(grep -nE "$fail_re" "$logf" 2>/dev/null | tail -1 | cut -d: -f1 || echo 0)"
-  fi
-  pass_ln="${pass_ln:-0}"
-  fail_ln="${fail_ln:-0}"
-
-  if [[ -n "$fail_line" && "$fail_ln" -ge "$pass_ln" ]]; then
-    _v_status="FAIL"
-    _v_line="$fail_line"
-    _v_reason="declared_FAIL_line"
-    return 0
-  fi
-  if [[ -n "$pass_line" ]]; then
-    _v_status="PASS"
-    _v_line="$pass_line"
-    _v_reason="declared_PASS_line"
-    return 0
-  fi
-  if [[ -n "$fail_line" ]]; then
-    _v_status="FAIL"
-    _v_line="$fail_line"
-    _v_reason="declared_FAIL_line"
-    return 0
-  fi
-  _v_status="FAIL"
-  _v_line=""
-  _v_reason="no_declared_verdict_line"
+  python3 "$ROOT/scripts/lib/seal_log_score.py" \
+    --log "$logf" \
+    --pass-re "$pass_re" \
+    --fail-re "$fail_re" \
+    --out "$score_json" \
+    >"${score_json}.stdout" \
+    2>"${score_json}.stderr" || {
+      _v_status="FAIL"
+      _v_line=""
+      _v_reason="declared_marker_count_score_tool_error"
+      _v_marker_count="unknown"
+      return 0
+    }
+  # macOS ships Bash 3.2, which has indexed arrays but not Bash 4's `mapfile`.
+  # Read the four machine fields explicitly so the canonical host seal is portable.
+  local _score_status="FAIL"
+  local _score_line=""
+  local _score_reason="missing_score_reason"
+  local _score_count="unknown"
+  {
+    IFS= read -r _score_status || _score_status="FAIL"
+    IFS= read -r _score_line || _score_line=""
+    IFS= read -r _score_reason || _score_reason="missing_score_reason"
+    IFS= read -r _score_count || _score_count="unknown"
+  } < <(python3 - "$score_json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
+print(d.get("status", "FAIL"))
+print(d.get("declared_verdict_line", ""))
+print(d.get("reason", "missing_score_reason"))
+print(d.get("declared_marker_count", ""))
+PY
+)
+  _v_status="${_score_status:-FAIL}"
+  _v_line="${_score_line:-}"
+  # Policy branches compare the base reason exactly.  Keep the marker count separate for
+  # diagnostics so recording it cannot make no-marker/KNOWN_FAIL branches unreachable.
+  _v_reason="${_score_reason:-missing_score_reason}"
+  _v_marker_count="${_score_count:-unknown}"
 }
 
 _instrument_guards() {
@@ -398,6 +481,48 @@ _instrument_guards() {
   if [[ "$now_sha" != "$BIN_SHA" ]]; then
     refuse "snapshot sha256 changed mid-seal (was $BIN_SHA now $now_sha)"
   fi
+}
+
+sha256_file() {
+  local path="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+  else
+    sha256sum "$path" | awk '{print $1}'
+  fi
+}
+
+capture_gate_run_ledger_binding() {
+  local phase="$1"
+  local validation_log="$SEAL_OUT/logs/gate_run_ledger_${phase}.log"
+  local validation_rc rows commit unique_commits digest
+  set +e
+  bash "$ROOT/scripts/gate_run_freshness.sh" >"$validation_log" 2>&1
+  validation_rc=$?
+  set -e
+  if [[ $validation_rc -ne 0 ]]; then
+    log "SEAL_REFUSED: gate-run ledger $phase validation failed (rc=$validation_rc)"
+    sed 's/^/  | /' "$validation_log" | tee -a "$SUMMARY" || true
+    return 1
+  fi
+  if [[ ! -f "$GATE_RUN_LEDGER_WORKING" || -L "$GATE_RUN_LEDGER_WORKING" ]]; then
+    log "SEAL_REFUSED: gate-run working ledger is missing or unsafe during $phase"
+    return 1
+  fi
+  digest="$(sha256_file "$GATE_RUN_LEDGER_WORKING")" || return 1
+  rows="$(wc -l < "$GATE_RUN_LEDGER_WORKING" | tr -d '[:space:]')"
+  unique_commits="$(awk '{print $2}' "$GATE_RUN_LEDGER_WORKING" | LC_ALL=C sort -u)"
+  commit="$(printf '%s\n' "$unique_commits" | sed '/^$/d' | head -1)"
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ || ! "$rows" =~ ^[1-9][0-9]*$ \
+     || ! "$commit" =~ ^[0-9a-f]{40}$ \
+     || "$(printf '%s\n' "$unique_commits" | sed '/^$/d' | wc -l | tr -d '[:space:]')" != "1" ]]; then
+    log "SEAL_REFUSED: gate-run ledger $phase binding fields are malformed"
+    return 1
+  fi
+  GATE_RUN_LEDGER_BINDING_SHA="$digest"
+  GATE_RUN_LEDGER_BINDING_ROWS="$rows"
+  GATE_RUN_LEDGER_BINDING_COMMIT="$commit"
+  return 0
 }
 
 # run_gate NAME PASS_RE FAIL_RE [--] command...
@@ -429,7 +554,7 @@ run_gate() {
 
   _instrument_guards
 
-  local pin_before pin_after
+  local pin_before pin_after stamp_rc
   pin_before="$(grep -c -F "${name}|" "$PIN_TRACE" 2>/dev/null || true)"
 
   set +e
@@ -441,9 +566,10 @@ run_gate() {
   _instrument_guards
   pin_after="$(grep -c -F "${name}|" "$PIN_TRACE" 2>/dev/null || true)"
 
-  classify_verdict "$glog" "$pass_re" "$fail_re"
+  classify_verdict "$glog" "$pass_re" "$fail_re" "$SEAL_OUT/gates/${name}.score.json"
   printf '%s\n' "${_v_line:-}" >"$SEAL_OUT/gates/${name}.verdict_line"
-  printf '%s\n' "$_v_reason" >"$SEAL_OUT/gates/${name}.score_reason"
+  printf '%s;declared_marker_count=%s\n' "$_v_reason" "$_v_marker_count" \
+    >"$SEAL_OUT/gates/${name}.score_reason"
 
   local final="$_v_status"
   if [[ "$_v_reason" == "no_declared_verdict_line" ]]; then
@@ -485,10 +611,18 @@ run_gate() {
   if [[ "$final" == "PASS" ]]; then
     gate_pass=$((gate_pass + 1))
     GATE_ROWS+=("$name|PASS|$_v_reason|rc=$rc")
-    # Suite-freshness ledger: stamp each green gate at HEAD so gate_run_freshness
-    # can fail closed if the suite is not run end-to-end for >N commits.
-    if [[ -x "$ROOT/scripts/gate_run_freshness.sh" ]]; then
-      bash "$ROOT/scripts/gate_run_freshness.sh" --stamp "$name" >/dev/null 2>&1 || true
+    # Run-local freshness receipt. Never write into the repository, never swallow a
+    # stamp failure, and do not stamp the gate that validates the complete ledger.
+    if [[ "$name" != "gate_run_freshness" ]]; then
+      [[ -x "$ROOT/scripts/gate_run_freshness.sh" ]] \
+        || refuse "gate freshness stamper missing after gate $name"
+      set +e
+      bash "$ROOT/scripts/gate_run_freshness.sh" --stamp "$name" \
+        >>"$SEAL_OUT/logs/gate_run_ledger.log" 2>&1
+      stamp_rc=$?
+      set -e
+      [[ $stamp_rc -eq 0 ]] \
+        || refuse "gate freshness stamp failed for $name (rc=$stamp_rc)"
     fi
   else
     gate_fail=$((gate_fail + 1))
@@ -614,9 +748,10 @@ run_known_failing() {
   set -e
   _instrument_guards
 
-  classify_verdict "$glog" "$pass_re" "$fail_re"
+  classify_verdict "$glog" "$pass_re" "$fail_re" "$SEAL_OUT/gates/${name}.score.json"
   printf '%s\n' "${_v_line:-}" >"$SEAL_OUT/gates/${name}.verdict_line"
-  printf '%s\n' "$_v_reason" >"$SEAL_OUT/gates/${name}.score_reason"
+  printf '%s;declared_marker_count=%s\n' "$_v_reason" "$_v_marker_count" \
+    >"$SEAL_OUT/gates/${name}.score_reason"
 
   if [[ "$_v_status" == "FAIL" && "$_v_reason" == "declared_FAIL_line" ]]; then
     # Expected: still red for the documented reason
@@ -767,6 +902,21 @@ run_gate docs_drift \
     --out "$SEAL_OUT/gates/docs_drift" \
     --self-test
 
+# Corpus inventory binding: poison an isolated tree with an untracked `.anb` and require both the
+# shared inventory and the source-pin verifier to fail closed. This prevents docs/native/pin scope
+# from splitting while each local gate still prints PASS.
+run_gate corpus_inventory_binding \
+  '^CORPUS_INVENTORY_BINDING: [1-9][0-9]* passed, 0 failed$' \
+  '^CORPUS_INVENTORY_BINDING: [0-9]+ passed, [1-9][0-9]* failed$' \
+  --no-pin-use -- bash scripts/test_corpus_inventory_binding.sh
+
+# VM/host resource contract: includes fail-closed preflight, independent runtime watch, verified
+# teardown, exact run-vs-EXPECTED_GATES parity, and nested Cargo/Rayon job-cap propagation.
+run_gate host_resource_contract \
+  '^HOST_RESOURCE_GUARD_SELFTEST: PASS \(pass=[1-9][0-9]* fail=0\)$' \
+  '^HOST_RESOURCE_GUARD_SELFTEST: FAIL\b|^FAIL ' \
+  --no-pin-use -- bash scripts/test_host_resource_guard.sh
+
 
 # NOTE (R47): instrument_hygiene + gate_run_freshness run AFTER all required
 # content gates (see below, before final instrument re-check). Placing them
@@ -908,6 +1058,18 @@ if [[ "$end_sha" != "$BIN_SHA" ]]; then
   refuse "snapshot sha256 mutated during seal (was $BIN_SHA now $end_sha)"
 fi
 
+# Gates may create only policy-excluded build/output material. Re-run the source
+# binding after the final gate so SEAL_PASS cannot survive source, policy, mode,
+# or manifest-membership drift during a long checklist.
+if verify_selected_source_pin "final"; then
+  FINAL_PIN_VERIFY_RC=0
+else
+  FINAL_PIN_VERIFY_RC=$?
+fi
+printf 'FINAL_PIN_VERIFY_RC=%s\n' "$FINAL_PIN_VERIFY_RC" | tee -a "$SUMMARY"
+[[ $FINAL_PIN_VERIFY_RC -eq 0 ]] \
+  || refuse "selected current pin stopped matching the source tree during the seal (rc=$FINAL_PIN_VERIFY_RC)"
+
 # ── Verdict ──────────────────────────────────────────────────────────────────
 log ""
 log "==== SEAL SUMMARY ===="
@@ -932,8 +1094,131 @@ if [[ "$gate_fail" -gt 0 || "$gate_known_unexpected_pass" -gt 0 ]]; then
   exit 1
 fi
 
+# Revalidate the exact run-local ledger after every gate and the final source-pin
+# verification have completed, then bind its content and commit epoch into the
+# machine verdict. The exact-roster validator below checks that binding.
+capture_gate_run_ledger_binding "pre_verdict" \
+  || refuse "gate-run ledger could not be bound before final verdict validation"
+
 log "SEAL_PASS: required gates green under pin; corpus completeness OK; known-failing empty or still red as documented"
 write_verdict "SEAL_PASS" "pass=$gate_pass skip=$gate_skip known_fail=$gate_known_fail pinned=$SNAP sha256=$BIN_SHA"
+set +e
+python3 "$ROOT/scripts/lib/seal_verdict_validate.py" \
+  --verdict "$VERDICT_JSON" \
+  --ledger "$GATE_RUN_LEDGER_WORKING" \
+  --repo-root "$ROOT" \
+  --profile "$PROFILE" \
+  > "$SEAL_OUT/seal_verdict_validator.log" \
+  2>&1
+SEAL_VERDICT_VALIDATOR_RC=$?
+set -e
+printf 'SEAL_VERDICT_VALIDATOR_RC=%s\n' "$SEAL_VERDICT_VALIDATOR_RC" | tee -a "$SUMMARY"
+if [[ $SEAL_VERDICT_VALIDATOR_RC -ne 0 ]]; then
+  log "SEAL_REFUSED: final seal verdict failed exact-roster validation"
+  sed 's/^/  | /' "$SEAL_OUT/seal_verdict_validator.log" | tee -a "$SUMMARY" || true
+  write_verdict "SEAL_REFUSED" "final_verdict_validator_rc=$SEAL_VERDICT_VALIDATOR_RC"
+  exit 2
+fi
+
+# The validator may take long enough for a concurrent writer to race the private
+# output. Revalidate the ledger at exact HEAD again after the validator, require
+# every binding field to remain identical, and publish a no-follow snapshot with
+# a same-directory atomic no-replace link. Never rename the checked pathname: an
+# attacker could swap that pathname to a symlink after validation.
+PREVALIDATOR_BOUND_SHA="$GATE_RUN_LEDGER_BINDING_SHA"
+PREVALIDATOR_BOUND_ROWS="$GATE_RUN_LEDGER_BINDING_ROWS"
+PREVALIDATOR_BOUND_COMMIT="$GATE_RUN_LEDGER_BINDING_COMMIT"
+capture_gate_run_ledger_binding "pre_promotion" \
+  || refuse "gate-run ledger failed immediate pre-promotion revalidation"
+[[ "$GATE_RUN_LEDGER_BINDING_SHA" == "$PREVALIDATOR_BOUND_SHA" ]] \
+  || refuse "gate-run ledger changed after final verdict validation"
+[[ "$GATE_RUN_LEDGER_BINDING_ROWS" == "$PREVALIDATOR_BOUND_ROWS" ]] \
+  || refuse "gate-run ledger row count changed after final verdict validation"
+[[ "$GATE_RUN_LEDGER_BINDING_COMMIT" == "$PREVALIDATOR_BOUND_COMMIT" ]] \
+  || refuse "gate-run ledger commit changed after final verdict validation"
+
+set +e
+python3 "$ROOT/scripts/lib/gate_run_ledger_promote.py" \
+  --source "$GATE_RUN_LEDGER_WORKING" \
+  --destination "$GATE_RUN_LEDGER_VALIDATED" \
+  --expected-sha256 "$GATE_RUN_LEDGER_BINDING_SHA" \
+  --expected-commit "$GATE_RUN_LEDGER_BINDING_COMMIT" \
+  >"$SEAL_OUT/gate_run_ledger_promotion.json" \
+  2>"$SEAL_OUT/logs/gate_run_ledger_promotion.err"
+GATE_RUN_LEDGER_PROMOTION_RC=$?
+set -e
+printf 'GATE_RUN_LEDGER_PROMOTION_RC=%s\n' "$GATE_RUN_LEDGER_PROMOTION_RC" | tee -a "$SUMMARY"
+if [[ $GATE_RUN_LEDGER_PROMOTION_RC -ne 0 ]]; then
+  sed 's/^/  | /' "$SEAL_OUT/logs/gate_run_ledger_promotion.err" | tee -a "$SUMMARY" || true
+  refuse "atomic no-replace gate-run ledger promotion failed (rc=$GATE_RUN_LEDGER_PROMOTION_RC)"
+fi
+chmod 0444 "$SEAL_OUT/gate_run_ledger_promotion.json"
+export ANUBIS_GATE_RUN_LEDGER="$GATE_RUN_LEDGER_VALIDATED"
+
+# Validate the promoted inode and its exact HEAD binding, verify the source pin,
+# then repeat the combined ledger/verdict/HEAD validation. This is an optimistic
+# read-only transaction: any ordinary HEAD drift during finalization is observed
+# on one side of the source verification and forces SEAL_REFUSED.
+set +e
+python3 "$ROOT/scripts/lib/seal_verdict_validate.py" \
+  --verdict "$VERDICT_JSON" \
+  --ledger "$GATE_RUN_LEDGER_VALIDATED" \
+  --repo-root "$ROOT" \
+  --profile "$PROFILE" \
+  >"$SEAL_OUT/seal_verdict_validator_post_promotion.log" \
+  2>&1
+POST_PROMOTION_VALIDATOR_RC=$?
+set -e
+printf 'POST_PROMOTION_VALIDATOR_RC=%s\n' "$POST_PROMOTION_VALIDATOR_RC" | tee -a "$SUMMARY"
+if [[ $POST_PROMOTION_VALIDATOR_RC -ne 0 ]]; then
+  sed 's/^/  | /' "$SEAL_OUT/seal_verdict_validator_post_promotion.log" | tee -a "$SUMMARY" || true
+  refuse "promoted gate-run ledger failed verdict and exact-HEAD validation"
+fi
+
+if verify_selected_source_pin "post_promotion"; then
+  POST_PROMOTION_PIN_VERIFY_RC=0
+else
+  POST_PROMOTION_PIN_VERIFY_RC=$?
+fi
+printf 'POST_PROMOTION_PIN_VERIFY_RC=%s\n' "$POST_PROMOTION_PIN_VERIFY_RC" | tee -a "$SUMMARY"
+[[ $POST_PROMOTION_PIN_VERIFY_RC -eq 0 ]] \
+  || refuse "current pin/source binding drifted across ledger promotion (rc=$POST_PROMOTION_PIN_VERIFY_RC)"
+
+set +e
+python3 "$ROOT/scripts/lib/seal_verdict_validate.py" \
+  --verdict "$VERDICT_JSON" \
+  --ledger "$GATE_RUN_LEDGER_VALIDATED" \
+  --repo-root "$ROOT" \
+  --profile "$PROFILE" \
+  >"$SEAL_OUT/seal_verdict_validator_closing.log" \
+  2>&1
+CLOSING_SEAL_VALIDATOR_RC=$?
+set -e
+printf 'CLOSING_SEAL_VALIDATOR_RC=%s\n' "$CLOSING_SEAL_VALIDATOR_RC" | tee -a "$SUMMARY"
+if [[ $CLOSING_SEAL_VALIDATOR_RC -ne 0 ]]; then
+  sed 's/^/  | /' "$SEAL_OUT/seal_verdict_validator_closing.log" | tee -a "$SUMMARY" || true
+  refuse "final promoted-ledger/source/HEAD binding validation failed"
+fi
+
+SIDECAR_TMP="$(mktemp "$SEAL_OUT/.gate-run-ledger-sha.XXXXXX")" \
+  || refuse "could not allocate private ledger digest sidecar"
+printf '%s  %s\n' "$GATE_RUN_LEDGER_BINDING_SHA" "gate_run_ledger.validated" >"$SIDECAR_TMP"
+chmod 0444 "$SIDECAR_TMP"
+set +e
+python3 - "$SIDECAR_TMP" "$SEAL_OUT/gate_run_ledger.validated.sha256" <<'PY'
+import os
+import sys
+
+source, destination = sys.argv[1:]
+os.link(source, destination, follow_symlinks=False)
+os.unlink(source)
+PY
+LEDGER_SIDECAR_RC=$?
+set -e
+if [[ $LEDGER_SIDECAR_RC -ne 0 ]]; then
+  rm -f -- "$SIDECAR_TMP"
+  refuse "atomic no-replace ledger digest sidecar publication failed (rc=$LEDGER_SIDECAR_RC)"
+fi
 echo ""
 echo "SEAL_PASS"
 echo "report: $VERDICT_JSON"

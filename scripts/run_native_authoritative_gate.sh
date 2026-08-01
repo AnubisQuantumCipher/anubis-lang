@@ -25,7 +25,7 @@ if [[ -n "${ANUBIS_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "NATIVE_AUTHORITATIVE_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
 else
   BIN=./target/release/anubis
-  CARGO_BUILD_JOBS=6 cargo build -q --release -p anubis
+  CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" cargo build -q --release -p anubis
   [[ -x "$BIN" ]] || { echo "NATIVE_AUTHORITATIVE_GATE: FAIL (no binary at $BIN)"; exit 127; }
 fi
 
@@ -49,7 +49,14 @@ echo "NATIVE_AUTHORITATIVE: Unsat requires verified RUP cert (lrat::check_proof)
 command -v z3 >/dev/null || { echo "FATAL: z3 not on PATH — the equivalence half needs it"; exit 1; }
 command -v timeout >/dev/null || { echo "FATAL: coreutils timeout missing"; exit 1; }
 
-files=$(find examples tests/fixtures -name '*.anb' | sort)
+INVENTORY_ERR="$(mktemp)"
+if ! files="$(python3 scripts/lib/native_corpus_inventory.py 2>"$INVENTORY_ERR")"; then
+  cat "$INVENTORY_ERR"
+  rm -f "$INVENTORY_ERR"
+  echo "NATIVE_AUTHORITATIVE_GATE: FAIL (native corpus is not a stable source-manifest-bound set)"
+  exit 1
+fi
+rm -f "$INVENTORY_ERR"
 n=0; mismatches=0; disagreements=0
 DISAGREE_LOG="$(mktemp)"
 

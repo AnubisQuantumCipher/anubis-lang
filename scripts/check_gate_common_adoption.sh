@@ -13,7 +13,8 @@ exception_reason() {
     scripts/check_capset_registry_parity.sh) echo "source-registry comparison; no fixture verdicts" ;;
     scripts/check_metal_parity.sh) echo "hardware proof matrix finalized by gate11-metal-parity" ;;
     scripts/gate10_a15_reproduce.sh) echo "historical A15 reproduction driver" ;;
-    scripts/publish_pin.sh) echo "publishes a content-addressed binary pin; its stale-source guard globs *.anb and says 'fail', which trips the candidate heuristic — it scores no fixtures" ;;
+    scripts/publish_pin.sh) echo "publishes a policy-manifest-bound immutable binary pin; its stale-source refusal text trips the candidate heuristic, but it scores no fixtures" ;;
+    scripts/test_corpus_inventory_binding.sh) echo "synthetic corpus/pin-binding poison self-test; creates temporary fixtures to test the inventory and publication tools, not language expectations" ;;
     # The three META-tools. They are not gates and have no corpus: each takes ONE fixture pair and
     # returns a classification (0 YES_OPEN / 2 CLOSED / 3 MALFORMED), which gates and agents then
     # consume. `gate_common` exists to stop a CORPUS scorer reporting PASS over nothing; applied

@@ -43,10 +43,11 @@ fn false_contract_is_rejected_by_check_run_test_and_build() {
     .unwrap();
 
     let source = path_text(&source);
+    let check_out = root.join("check");
     let run_out = root.join("run");
     let build_out = root.join("build");
     let cases = [
-        vec!["check", source],
+        vec!["check", source, "--out", path_text(&check_out)],
         vec!["run", source, "--out", path_text(&run_out)],
         vec!["test", source],
         vec!["build", source, "--out", path_text(&build_out)],
@@ -82,10 +83,11 @@ fn valid_contract_passes_check_run_test_and_build() {
     .unwrap();
 
     let source = path_text(&source);
+    let check_out = root.join("check");
     let run_out = root.join("run");
     let build_out = root.join("build");
     let cases = [
-        vec!["check", source],
+        vec!["check", source, "--out", path_text(&check_out)],
         vec!["run", source, "--out", path_text(&run_out)],
         vec!["test", source],
         vec!["build", source, "--out", path_text(&build_out)],
@@ -156,14 +158,14 @@ fn explicit_bypass_is_integrity_valid_but_unverified() {
 }
 
 #[test]
-fn build_cannot_exit_zero_when_emitted_evidence_is_fail() {
+fn build_evidence_excludes_unselected_manifestless_siblings() {
     let root = workspace_tmp("evidence-verdict-failclosed");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let entry = root.join("main.anb");
     std::fs::write(&entry, "fn main(){ print(1); }\n").unwrap();
-    // A sibling source is intentionally absorbed by the project evidence tree. Even though the
-    // selected entry is valid, the emitted bundle is not, so the command must not report success.
+    // A manifest-less invocation is a synthetic single-file project. An unrelated sibling must not
+    // alter the checked program, the evidence verdict, or the sealed source snapshot.
     std::fs::write(
         root.join("hostile_sibling.anb"),
         "fn helper(){ let x=taint_source(\"operator\"); sink(x); }\n",
@@ -177,11 +179,26 @@ fn build_cannot_exit_zero_when_emitted_evidence_is_fail() {
         path_text(&root.join("out")),
     ]);
     assert!(
-        !output.status.success(),
-        "FAIL evidence must force a nonzero build exit: {}",
+        output.status.success(),
+        "unselected sibling must not poison entry evidence: {}",
         combined(&output)
     );
-    assert!(combined(&output).contains("ANUBIS_EVIDENCE_VERDICT_FAILED"));
+    assert!(combined(&output).contains("verdict: PASS"));
+    let bundle = std::fs::read_dir(root.join("out"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("evidence-"))
+        })
+        .expect("evidence bundle");
+    assert_eq!(
+        std::fs::read_to_string(bundle.join("source.anubis")).unwrap(),
+        "fn main(){ print(1); }\n"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

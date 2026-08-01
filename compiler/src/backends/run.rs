@@ -179,13 +179,28 @@ fn collect_bound_in_stmts(stmts: &[Stmt], out: &mut std::collections::BTreeSet<S
                     collect_bound_in_stmts(e, out);
                 }
             }
-            Stmt::While { cond, body, .. } => {
+            Stmt::While {
+                cond,
+                body,
+                invariant,
+            } => {
                 collect_bound_in_expr(cond, out);
+                for expr in invariant {
+                    collect_bound_in_expr(expr, out);
+                }
                 collect_bound_in_stmts(body, out);
             }
-            Stmt::Loop { body, .. } => collect_bound_in_stmts(body, out),
+            Stmt::Loop { body, invariant } => {
+                for expr in invariant {
+                    collect_bound_in_expr(expr, out);
+                }
+                collect_bound_in_stmts(body, out);
+            }
             Stmt::For {
-                var, source, body, ..
+                var,
+                source,
+                body,
+                invariant,
             } => {
                 out.insert(var.clone());
                 match source {
@@ -194,6 +209,9 @@ fn collect_bound_in_stmts(stmts: &[Stmt], out: &mut std::collections::BTreeSet<S
                         collect_bound_in_expr(end, out);
                     }
                     ForSource::Collection { expr } => collect_bound_in_expr(expr, out),
+                }
+                for expr in invariant {
+                    collect_bound_in_expr(expr, out);
                 }
                 collect_bound_in_stmts(body, out);
             }
@@ -208,7 +226,15 @@ fn collect_bound_in_stmts(stmts: &[Stmt], out: &mut std::collections::BTreeSet<S
                 collect_bound_in_expr(expr, out);
                 collect_bound_in_stmts(body, out);
             }
-            _ => {}
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                collect_bound_in_stmts(body, out)
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for lane in [gpu, cpu, prove].into_iter().flatten() {
+                    collect_bound_in_stmts(lane, out);
+                }
+            }
+            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
         }
     }
 }
@@ -266,9 +292,13 @@ fn collect_bound_in_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>)
             collect_bound_in_expr(lhs, out);
             collect_bound_in_expr(rhs, out);
         }
-        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
-            collect_bound_in_expr(expr, out)
-        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Try(expr) => collect_bound_in_expr(expr, out),
+        Expr::Declassify { inner, .. } => collect_bound_in_expr(inner, out),
         Expr::Call { args, .. } => {
             for a in args {
                 collect_bound_in_expr(a, out);
@@ -306,7 +336,14 @@ fn collect_bound_in_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>)
                 collect_bound_in_expr(f, out);
             }
         }
-        _ => {}
+        Expr::Var(_)
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => {}
     }
 }
 
@@ -5741,16 +5778,16 @@ pub fn run_child_capped(
     })
 }
 
-/// Transpile an Anubis source to Rust, compile it with cargo (audited crypto deps), and execute.
-/// Returns the raw process `Output`. Fails closed if lowering or build fails.
-pub fn compile_and_run_source(
+/// Test-only transpile/execute seam. Some runtime tests intentionally exercise generated runtime
+/// checks with sources the static checker rejects, so this helper preserves the historical empty-
+/// mono fallback. It is deliberately absent from the production compiler API.
+#[cfg(test)]
+pub(crate) fn compile_and_run_source(
     source: &str,
     allow_research: bool,
     args: &[String],
 ) -> Result<std::process::Output> {
     let ast = crate::frontend::parse_source(source).map_err(|e| anyhow!("parse: {}", e))?;
-    // Prefer mono inventory when typecheck succeeds; fall back to empty mono on check errors
-    // so runtime tests can still exercise fail-closed paths that only lower.
     let (mono, sites) = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
         .map(|ir| (ir.mono_specializations, ir.mono_call_sites))
         .unwrap_or_default();
@@ -6012,8 +6049,46 @@ pub fn signed_run_keychain_entitlements_xml() -> String {
     .to_string()
 }
 
+fn require_explicit_vz_guest_for_research_execution(allow_research: bool) -> Result<()> {
+    if !allow_research {
+        return Ok(());
+    }
+    let truthy = |key: &str| {
+        std::env::var(key)
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    };
+    let isolation_marker = std::env::var("ANUBIS_ISOLATION")
+        .map(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("tart") || value.contains("vz") || value.contains("virtualization")
+        })
+        .unwrap_or(false);
+    let home_marker = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|home| home.join(".anubis-vz-guest").exists())
+        .unwrap_or(false);
+    if truthy("ANUBIS_VZ_GUEST")
+        || truthy("ANUBIS_OFFENSIVE_GATE_IN_GUEST")
+        || isolation_marker
+        || std::path::Path::new("/etc/anubis-vz-guest").exists()
+        || home_marker
+    {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "ANUBIS_RESEARCH_HOST_FORBIDDEN: compiler execution API requires an explicit Anubis \
+         disposable-VZ marker when research lowering is enabled"
+    ))
+}
+
 /// Compile Anubis source → native binary → codesign with NE Keychain/SE entitlements → run.
-/// On non-macOS, falls back to unsigned `compile_and_run_source`.
+/// On non-macOS, uses the same strict typechecked lowering without the codesign step.
 ///
 /// Evidence for the signed Keychain bind path (partial SE when hardware + identity allow).
 pub fn compile_sign_and_run_source(
@@ -6021,16 +6096,22 @@ pub fn compile_sign_and_run_source(
     allow_research: bool,
     args: &[String],
 ) -> Result<std::process::Output> {
+    require_explicit_vz_guest_for_research_execution(allow_research)?;
+    let ast = crate::frontend::parse_source(src).map_err(|e| anyhow!("parse failed: {e}"))?;
+    let requested_mode = if allow_research {
+        crate::frontend::Mode::Research
+    } else {
+        crate::frontend::Mode::Safe
+    };
+    let typed = crate::middle::typecheck(ast.clone(), requested_mode)
+        .map_err(|e| anyhow!("check failed: {e}"))?;
+    let (mono, sites) = (typed.mono_specializations, typed.mono_call_sites);
     #[cfg(not(target_os = "macos"))]
     {
-        return compile_and_run_source(src, allow_research, args);
+        return compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono, &sites);
     }
     #[cfg(target_os = "macos")]
     {
-        let ast = crate::frontend::parse_source(src).map_err(|e| anyhow!("parse failed: {e}"))?;
-        let (mono, sites) = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
-            .map(|ir| (ir.mono_specializations, ir.mono_call_sites))
-            .unwrap_or_default();
         let rust_source =
             lower_program_to_rust_with_mono(&ast.items, allow_research, &mono, &sites)?;
         let dir =
@@ -6173,7 +6254,8 @@ pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) 
 ///
 /// Native path builds a temporary Cargo project so the runtime can link **audited** crypto crates
 /// (argon2, chacha20poly1305, hmac/sha2, hkdf, getrandom, subtle). RISC0 guests keep pure crypto.
-pub fn compile_and_run_items(
+#[cfg(test)]
+pub(crate) fn compile_and_run_items(
     items: &[Item],
     allow_research: bool,
     args: &[String],
@@ -6181,7 +6263,8 @@ pub fn compile_and_run_items(
     compile_and_run_items_with_mono(items, allow_research, args, &[], &[])
 }
 
-pub fn compile_and_run_items_with_mono(
+#[cfg(any(test, not(target_os = "macos")))]
+fn compile_and_run_items_with_mono(
     items: &[Item],
     allow_research: bool,
     args: &[String],
@@ -6285,6 +6368,36 @@ mod run_tests {
             elapsed < Duration::from_secs(5),
             "watchdog must not hang; killed after {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn research_block_local_field_access_and_ordinary_twin_both_lower() {
+        let research = include_str!(
+            "../../../tests/fixtures/language_core/research_block_local_field_access_accepts.anb"
+        );
+        let ast = crate::frontend::parse_source(research).expect("research source parses");
+        crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Research)
+            .expect("authorized research local field access must pass check");
+        let lowered = lower_program_to_rust(&ast.items, true)
+            .expect("a local bound inside an authorized research block must lower");
+        assert!(
+            lowered.contains("local.field_get(\"value\")"),
+            "research-block local field read must use the same local-value path"
+        );
+
+        let ordinary = r#"
+struct Record { value: u32 }
+fn main() {
+    let local = Record { value: 9 };
+    print(local.value);
+}
+"#;
+        let ast = crate::frontend::parse_source(ordinary).expect("ordinary source parses");
+        crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
+            .expect("ordinary local field access must pass check");
+        let lowered = lower_program_to_rust(&ast.items, false)
+            .expect("ordinary local field access must remain accepted");
+        assert!(lowered.contains("local.field_get(\"value\")"));
     }
 
     /// Compile+run an Anubis program and return trimmed stdout, asserting success.
@@ -8750,7 +8863,7 @@ mod run_tests {
                 let p = keychain_se_probe();
                 print(p);
                 let s = cap_acquire_nonexportable("fs.write");
-                print(s);
+                print(cap_export(s, "test-only Keychain binding witness"));
                 let c = cap_acquire("fs.read");
                 print(c);
             }"#,
@@ -8789,7 +8902,7 @@ mod run_tests {
                 let p = keychain_se_probe();
                 print(p);
                 let s = cap_acquire_nonexportable("fs.write");
-                print(s);
+                print(cap_export(s, "test-only signed Keychain binding witness"));
             }"#,
             false,
             &[],

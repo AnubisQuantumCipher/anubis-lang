@@ -35,6 +35,7 @@ pub mod payloads;
 pub mod persistence;
 pub mod phish;
 pub mod postex;
+pub mod privesc;
 pub mod protocol;
 pub mod purple;
 pub mod receipts;
@@ -43,7 +44,6 @@ pub mod reporting;
 pub mod rop;
 pub mod run_capability;
 pub mod scope;
-pub mod privesc;
 pub mod vz;
 
 pub use engagement::{

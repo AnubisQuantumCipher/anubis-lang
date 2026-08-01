@@ -1,0 +1,6 @@
+// CHECK_EXPECT: FAIL
+// CHECK_ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Checker-only control: verified mode requires explicit filesystem authority.
+fn main() {
+    write_file("/tmp/seshat-must-not-exist.txt", "should never run");
+}

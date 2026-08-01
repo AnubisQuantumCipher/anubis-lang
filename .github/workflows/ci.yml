@@ -1,19 +1,21 @@
 name: anubis-ci
 
-# The default full seal remains `scripts/audit_a_plus.sh`: 15/15, no failures,
-# skips, or external gates. A stock GitHub macOS runner cannot provide nested
-# Apple virtualization, the canonical anubis-xcode Tart image, or the operator
-# SSH key, so it must not pretend to certify G9.
+# The default full seal remains an operator-run Tart/VZ receipt. A stock GitHub
+# macOS runner cannot provide nested Apple virtualization, the canonical
+# anubis-xcode Tart image, or the operator SSH key, so it must not pretend to
+# certify G9 or the sealed guest battery.
 #
-# Push/PR CI runs the explicit `hosted` profile: 14 host-verifiable gates plus
-# G9=EXTERNAL, with G14 limited to its non-executing host isolation witness,
-# verdict HOSTED_PASS. A manually dispatched job on a dedicated Tart/VZ runner
-# executes the unchanged full front door and is the only job in this workflow
-# allowed to claim the full G9/G14 execution seal.
+# Push/PR CI runs the explicit `hosted` profile over the named 29-gate roster:
+# every host-verifiable gate must pass, G9 is exactly EXTERNAL, and G14 is limited
+# to its non-executing host-isolation witness. The only successful hosted verdict
+# is HOSTED_PASS. See docs/CI_TRUST_BOUNDARY.md for the out-of-CI VZ/Metal lane.
 on:
   push:
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   hosted-gate-witness:
@@ -21,11 +23,13 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # Pin the SAME nightly the compiler + VM seal + self-host fixpoint are built
       # with (rust-toolchain.toml). Using `stable` here made rustfmt/clippy diverge
       # from the author's toolchain and failed G1/G2 on version skew alone.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, resolved 2026-08-01
         with:
           toolchain: nightly-2026-05-10
           components: rustfmt, clippy
@@ -50,69 +54,157 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download z3-4.15.4 --repo Z3Prover/z3 --pattern '*arm64-osx*.zip' --output z3.zip \
-            || gh release download z3-4.15.4 --repo Z3Prover/z3 --pattern '*x64-osx*.zip' --output z3.zip
-          unzip -q z3.zip
-          Z3DIR="$(find . -maxdepth 1 -type d -name 'z3-4.15.4*' | head -1)"
-          echo "$PWD/$Z3DIR/bin" >> "$GITHUB_PATH"
-          "$PWD/$Z3DIR/bin/z3" --version
-      # Lean is a RELEASE DEPENDENCY, not a separate historical check. Without it installed,
-      # `audit_unified.sh` degrades G21_formal to EXTERNAL and the board still reads green — so CI
-      # was certifying a tree whose 162 theorems it had never checked. The toolchain version is read
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) Z3_ASSET=z3-4.15.4-arm64-osx-13.7.6.zip; Z3_SHA=8bb3439772cafd75240d61abf255e89122850bab93563d1283b048359ab4e88f ;;
+            x86_64) Z3_ASSET=z3-4.15.4-x64-osx-13.7.6.zip; Z3_SHA=2e36c8128781f3222099ef629a7aeb694dcc9b49531d4195128f610bd2d135c9 ;;
+            *) echo "unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          Z3_TMP="$(mktemp -d "$RUNNER_TEMP/anubis-z3.XXXXXX")"
+          gh release download z3-4.15.4 --repo Z3Prover/z3 --pattern "$Z3_ASSET" --output "$Z3_TMP/z3.zip"
+          printf '%s  %s\n' "$Z3_SHA" "$Z3_TMP/z3.zip" | shasum -a 256 -c -
+          unzip -q "$Z3_TMP/z3.zip" -d "$Z3_TMP"
+          Z3DIR="$(find "$Z3_TMP" -mindepth 1 -maxdepth 1 -type d -name 'z3-4.15.4*' -print -quit)"
+          test -n "$Z3DIR" && test -x "$Z3DIR/bin/z3"
+          echo "$Z3DIR/bin" >> "$GITHUB_PATH"
+          "$Z3DIR/bin/z3" --version
+      # Lean is a RELEASE DEPENDENCY, not a separate historical check. The old audit used to degrade
+      # G21_formal to EXTERNAL while the board stayed green; the current exact hosted roster refuses
+      # that state. The toolchain version is read
       # from `formal/lean-toolchain` rather than hardcoded, so the pin cannot drift away from the
       # proofs it is meant to build.
       - name: Cache elan / Lean toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.elan
             formal/.lake
-          key: elan-${{ runner.os }}-${{ hashFiles('formal/lean-toolchain', 'formal/lakefile.toml') }}
+          key: elan-v4.2.3-${{ runner.os }}-${{ hashFiles('formal/lean-toolchain', 'formal/lakefile.toml') }}
       - name: Install elan + pinned Lean (version from formal/lean-toolchain)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TOOLCHAIN="$(tr -d '[:space:]' < formal/lean-toolchain)"
-          if [ ! -x "$HOME/.elan/bin/lake" ]; then
-            curl -sSf https://elan.lean-lang.org/elan-init.sh \
-              | sh -s -- -y --default-toolchain "$TOOLCHAIN"
-          fi
+          case "$(uname -m)" in
+            arm64) ELAN_ASSET=elan-aarch64-apple-darwin.tar.gz; ELAN_SHA=7cae4c03b2f0de4053fb04a91359d5804551e6e37a6ddd1b2e0097dc561ae4a9 ;;
+            x86_64) ELAN_ASSET=elan-x86_64-apple-darwin.tar.gz; ELAN_SHA=10d037a69731c0593723e018130c5f54afde175796b4af8ba1317e561e55598c ;;
+            *) echo "unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          ELAN_TMP="$(mktemp -d "$RUNNER_TEMP/anubis-elan.XXXXXX")"
+          gh release download v4.2.3 --repo leanprover/elan --pattern "$ELAN_ASSET" --output "$ELAN_TMP/elan.tar.gz"
+          printf '%s  %s\n' "$ELAN_SHA" "$ELAN_TMP/elan.tar.gz" | shasum -a 256 -c -
+          mkdir "$ELAN_TMP/bootstrap"
+          tar -xzf "$ELAN_TMP/elan.tar.gz" -C "$ELAN_TMP/bootstrap"
+          ELAN_INIT="$(find "$ELAN_TMP/bootstrap" -type f -name elan-init -print -quit)"
+          test -n "$ELAN_INIT" && test -x "$ELAN_INIT"
+          "$ELAN_INIT" -y --no-modify-path --default-toolchain "$TOOLCHAIN"
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-          "$HOME/.elan/bin/elan" toolchain install "$TOOLCHAIN" || true
+          test "$("$HOME/.elan/bin/elan" --version | awk '{print $2}')" = 4.2.3
+          "$HOME/.elan/bin/elan" toolchain install "$TOOLCHAIN"
           "$HOME/.elan/bin/lake" --version
       # Declared separately from the aggregate so a red formal lane is legible in the job list
-      # instead of being one line inside a 24-gate summary.
+      # instead of being one line inside the 29-gate summary.
       - name: Lean formal gate (162 theorems machine-checked)
         run: bash scripts/run_formal_gate.sh
       - name: Run host-verifiable gates with an explicit external VZ boundary
         run: bash scripts/audit_unified.sh --profile hosted --out out/ci_gate
-      - name: Upload hosted gate report
+      - name: Prepare minimized hosted report
         if: always()
-        uses: actions/upload-artifact@v4
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf out/ci_public
+          mkdir -p out/ci_public out/ci_gate
+          HEAD_SHA="$(git rev-parse --verify 'HEAD^{commit}')"
+          HEAD_TREE="$(git rev-parse --verify 'HEAD^{tree}')"
+          test "$HEAD_SHA" = "$GITHUB_SHA"
+          {
+            printf 'schema=anubis.hosted-ci-attestation.v1\n'
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'workflow=%s\n' "$GITHUB_WORKFLOW"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'ref=%s\n' "$GITHUB_REF"
+            printf 'github_sha=%s\n' "$GITHUB_SHA"
+            printf 'git_head=%s\n' "$HEAD_SHA"
+            printf 'git_tree=%s\n' "$HEAD_TREE"
+            rustc --version
+            cargo --version
+            z3 --version
+            "$HOME/.elan/bin/elan" --version
+            "$HOME/.elan/bin/lake" --version
+          } > out/ci_gate/attestation_identity.txt
+          required=(gate_report.json gate_log.txt profile_environment.txt attestation_identity.txt)
+          for name in "${required[@]}"; do
+            source="out/ci_gate/$name"
+            [[ -s "$source" && ! -L "$source" ]] \
+              || { echo "missing/empty/non-regular required hosted artifact: $source" >&2; exit 1; }
+          done
+          python3 - out/ci_gate/gate_report.json <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              report = json.load(handle)
+          expected = {
+              "profile": "hosted",
+              "verdict": "HOSTED_PASS",
+              "pass": 28,
+              "fail": 0,
+              "skip": 0,
+              "external": 1,
+              "total": 29,
+          }
+          for key, value in expected.items():
+              if report.get(key) != value:
+                  raise SystemExit(
+                      f"hosted gate report mismatch for {key}: {report.get(key)!r} != {value!r}"
+                  )
+          gates = report.get("gates")
+          if not isinstance(gates, list) or len(gates) != 29:
+              raise SystemExit("hosted gate report must contain exactly 29 gate rows")
+          expected_names = [
+              "G1_fmt", "G2_clippy", "G3_test", "G4_build_release",
+              "G5_language_fixtures", "G6_turing_core", "G7_pca",
+              "G8_security_fixtures", "G9_poc_kit", "G10_prove", "G11_enum_match",
+              "G12_for_in", "G13_lang_trio", "G14_offensive", "G15_dogfood_feel",
+              "G16_docs_drift", "G17_stdlib_failclosed", "G18_native_authoritative",
+              "G19_walker_completeness", "G20_gate_common_adoption", "G21_formal",
+              "G22_fixture_preflight", "G23_carrier_totality", "G24_promise_coherence",
+              "G25_formal_kernel", "G26_proof_correspondence", "G27_phase_metrics_ledger",
+              "G28_corpus_inventory_binding", "G29_host_resource_contract",
+          ]
+          names = [row.get("gate") for row in gates if isinstance(row, dict)]
+          if names != expected_names:
+              raise SystemExit(f"hosted gate report gate roster mismatch: {names!r}")
+          external = [
+              row.get("gate")
+              for row in gates
+              if isinstance(row, dict) and row.get("status") == "EXTERNAL"
+          ]
+          if external != ["G9_poc_kit"]:
+              raise SystemExit(f"hosted gate report external roster mismatch: {external!r}")
+          if any(
+              row.get("status") != ("EXTERNAL" if row.get("gate") == "G9_poc_kit" else "PASS")
+              for row in gates
+              if isinstance(row, dict)
+          ):
+              raise SystemExit("hosted gate report contains an unexpected non-PASS status")
+          PY
+          for name in "${required[@]}"; do
+            cp "out/ci_gate/$name" "out/ci_public/$name"
+          done
+          (
+            cd out/ci_public
+            shasum -a 256 "${required[@]}" > MANIFEST.sha256
+            shasum -c MANIFEST.sha256
+          )
+      - name: Upload minimized hosted gate report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hosted-gate-report
-          path: out/ci_gate/
-
-  sealed-vz-gate-suite:
-    name: sealed-vz-gate-suite
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, macOS, ARM64, tart-vz]
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-05-10
-          components: rustfmt, clippy
-      - name: Require the canonical Tart/VZ environment
-        run: |
-          command -v tart
-          test -f "$HOME/.ssh/tart_anubis"
-          tart list
-      - name: Run the full 15-gate sealed front door
-        run: bash scripts/audit_a_plus.sh --out out/ci_sealed_vz
-      - name: Upload full sealed gate report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sealed-vz-gate-report
-          path: out/ci_sealed_vz/
+          path: out/ci_public/
+          if-no-files-found: error
+          retention-days: 14

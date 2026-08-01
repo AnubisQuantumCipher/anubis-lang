@@ -687,24 +687,26 @@ pub fn validate_bundle(dir: &Path) -> Result<bool, String> {
 
 /// The Proof-Carrying Artifact claim block: a deterministic, independently-checkable summary of what
 /// a program is claimed to be. Unlike the hash-based manifest, it records the *semantic* verdict
-/// (parse / typecheck / taint / solver), so `anubis verify` can RE-DERIVE it from the source and
+/// (parse / typecheck / bounded solver), so `anubis verify` can RE-DERIVE it from the source and
 /// confirm the recorded claim is honest — not merely untampered. It carries no timestamp: the same
 /// source + mode always yields the same block, which is what makes re-derivation a real cross-check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimBlock {
     pub pca_version: u32,
     pub source_sha256: String,
     pub mode: String,
-    /// Assurance tier actually reached. v0: `"checked"` — parse + typecheck + taint + solver ran.
+    /// Assurance tier actually reached. v2: `"checked"` — parse + typecheck + the bounded solver
+    /// obligation pass ran. This deliberately makes no separate total-flow/taint-clean claim.
     pub tier: String,
     /// Present only for a fail-closed command rejection. A rejected PCA is evidence of refusal,
     /// never a proof claim, and therefore carries an explicit reason alongside verdict `FAIL`.
     #[serde(default)]
     pub rejection: Option<String>,
     pub parse_ok: bool,
+    /// The compiler's current typecheck policy accepted the program. This is a bounded implementation
+    /// result, not a total-flow theorem; known-open carriers remain named in `docs/CLAIMS.md`.
     pub typecheck_ok: bool,
-    /// No tainted value reaches a sink without declassification.
-    pub taint_clean: bool,
     pub solver_obligations: usize,
     pub solver_all_discharged: bool,
     /// The SMT solver in the trusted computing base that discharged the obligations. Stated explicitly
@@ -753,23 +755,16 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     let parse_res = crate::frontend::parse_source(source);
     let parse_ok = parse_res.is_ok();
     let mut typecheck_ok = false;
-    let mut taint_clean = false;
     let mut solver_obligations = 0usize;
     let mut solver_all_discharged = true;
     if let Ok(ast) = parse_res {
         if let Ok(ir) = crate::middle::typecheck(ast, tc_mode) {
             typecheck_ok = true;
             let tainted = crate::middle::TaintPass::apply(ir);
-            // The evidence-lane TWIN of the `run` preflight bug (GROK-PTAH 2026-07-26): this
-            // re-derived taint policy from `taint_traces`, whose `sink` field is PROVENANCE (the
-            // local being assigned), not a policy sink. It made `pca.json` report
-            // `taint_clean: false` / `verdict: FAIL` on `vault_contacts.anb` while the printed
-            // check AND `manifest.json` both said PASS — a proof-carrying artifact contradicting
-            // its own program's verdict, which is worse than a plain false reject.
-            //
-            // `taint_clean` must mirror the enforcement `check` actually uses: `typecheck` returned
-            // Ok here, so its diagnostics are empty and no unenforced sink flow exists.
-            taint_clean = true;
+            // The earlier schema translated `typecheck` returning Ok into `taint_clean: true`.
+            // That was a stronger guarantee than this lane derived: item 21 in `docs/CLAIMS.md`
+            // contains accepted programs with runtime secret/taint witnesses. PCA v2 therefore
+            // records only the bounded typecheck result above and carries no independent taint field.
             let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
             solver_obligations = solver_checks.len();
             // Same alignment as the preflight: only FAIL blocks discharge. `all == "PASS"` rejected
@@ -777,20 +772,19 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
             solver_all_discharged = !solver_checks.iter().any(|c| c.status == "FAIL");
         }
     }
-    let verdict = if parse_ok && typecheck_ok && taint_clean && solver_all_discharged {
+    let verdict = if parse_ok && typecheck_ok && solver_all_discharged {
         "PASS"
     } else {
         "FAIL"
     };
     ClaimBlock {
-        pca_version: 1,
+        pca_version: 2,
         source_sha256,
         mode: mode.to_string(),
         tier: "checked".into(),
         rejection: None,
         parse_ok,
         typecheck_ok,
-        taint_clean,
         solver_obligations,
         solver_all_discharged,
         solver_backend: default_solver_backend(),
@@ -908,8 +902,10 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     let hashes_ok = validate_bundle(dir)?;
     let pca_path = dir.join("pca.json");
     if !pca_path.exists() {
-        // Legacy bundle without a claim block: hash validation is all that is available.
-        return Ok(hashes_ok);
+        // Semantic verification cannot degrade to hash-only success. Callers that intentionally
+        // need legacy integrity checking must name and use `validate_bundle` instead of presenting
+        // that weaker result as PCA verification.
+        return Ok(false);
     }
     let recorded: ClaimBlock =
         serde_json::from_str(&std::fs::read_to_string(&pca_path).map_err(|e| e.to_string())?)
@@ -1510,6 +1506,20 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
 mod pca_tests {
     use super::*;
 
+    fn known_place_assignment_leak() -> &'static str {
+        r#"
+struct Box { f: u64 }
+fn plain() -> i64 { return 7; }
+fn key() -> secret<i64> { return 42; }
+fn main() {
+    let b = Box { f: plain };
+    b.f = key;
+    let g = b.f;
+    print(g());
+}
+"#
+    }
+
     fn unique_dir(tag: &str) -> PathBuf {
         let mut d = std::env::temp_dir();
         d.push(format!("anubis-pca-{}-{}", tag, std::process::id()));
@@ -1529,6 +1539,119 @@ mod pca_tests {
     }
 
     #[test]
+    fn pca_v2_does_not_assert_unearned_taint_clean_for_a_known_leak() {
+        // `docs/CLAIMS.md` item 21 records this place-assignment carrier as a current true accept:
+        // check accepts it and the runtime prints the secret. Until the unified total-flow work can
+        // derive a separate taint theorem, the PCA must report the bounded typecheck result without
+        // translating `typecheck returned Ok` into the stronger `taint_clean: true` guarantee.
+        let claim = derive_claim_block(known_place_assignment_leak(), "safe");
+        assert!(
+            claim.typecheck_ok,
+            "the poison must remain a live known false accept, not become a vacuous rejected input"
+        );
+        let json = serde_json::to_value(&claim).unwrap();
+        assert_eq!(json["pca_version"], 2);
+        assert!(
+            json.get("taint_clean").is_none(),
+            "PCA v2 must not serialize the unearned taint-clean guarantee: {json}"
+        );
+    }
+
+    #[test]
+    fn verify_pca_rejects_legacy_v1_unearned_taint_clean_claim() {
+        let base = unique_dir("legacy-taint-claim");
+        let bundle = build_evidence_bundle(
+            known_place_assignment_leak(),
+            "safe",
+            None,
+            vec![],
+            &base,
+            None,
+            None,
+        )
+        .unwrap();
+        let pca_path = bundle.dir.join("pca.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&pca_path).unwrap()).unwrap();
+        legacy["pca_version"] = serde_json::json!(1);
+        legacy["taint_clean"] = serde_json::json!(true);
+        write_json(&pca_path, &legacy).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+
+        assert!(
+            validate_bundle(&bundle.dir).unwrap(),
+            "the poison must pass the hash-only layer before semantic verification"
+        );
+        assert!(
+            !matches!(verify_pca(&bundle.dir), Ok(true)),
+            "verify must fail closed on a schema-v1 bundle that asserts unearned taint cleanliness"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_pca_rejects_rehashed_v2_with_a_retired_taint_claim() {
+        let base = unique_dir("v2-retired-taint-claim");
+        let bundle = build_evidence_bundle(
+            known_place_assignment_leak(),
+            "safe",
+            None,
+            vec![],
+            &base,
+            None,
+            None,
+        )
+        .unwrap();
+        let pca_path = bundle.dir.join("pca.json");
+        let mut poisoned: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&pca_path).unwrap()).unwrap();
+        assert_eq!(poisoned["pca_version"], 2);
+        poisoned
+            .as_object_mut()
+            .unwrap()
+            .insert("taint_clean".into(), serde_json::Value::Bool(true));
+        write_json(&pca_path, &poisoned).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+
+        assert!(
+            validate_bundle(&bundle.dir).unwrap(),
+            "the poison must pass the hash layer before semantic verification"
+        );
+        assert!(
+            !matches!(verify_pca(&bundle.dir), Ok(true)),
+            "PCA v2 must reject, not silently discard, the retired taint-clean claim"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_pca_rejects_rehashed_bundle_with_no_semantic_claim() {
+        let base = unique_dir("missing-pca");
+        let bundle = build_evidence_bundle(
+            "fn main() { assert(true); }",
+            "safe",
+            None,
+            vec![],
+            &base,
+            None,
+            None,
+        )
+        .unwrap();
+        std::fs::remove_file(bundle.dir.join("pca.json")).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+
+        assert!(
+            validate_bundle(&bundle.dir).unwrap(),
+            "the no-PCA poison must pass the hash layer"
+        );
+        assert!(
+            !verify_pca(&bundle.dir).unwrap(),
+            "missing semantic evidence must not downgrade verify to integrity-only success"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn verify_pca_rederives_claim_and_catches_a_consistent_lie() {
         let base = unique_dir("rederive");
         let good = "fn main() { let x = 1; print(x); }";
@@ -1539,7 +1662,7 @@ mod pca_tests {
         // Forge the claim block so it disagrees with the source, then regenerate the manifest so
         // every hash is internally consistent — a hash-only check would now be satisfied.
         let mut lie = derive_claim_block(good, "safe");
-        lie.taint_clean = !lie.taint_clean;
+        lie.typecheck_ok = !lie.typecheck_ok;
         lie.solver_obligations += 1;
         write_json(&bundle.dir.join("pca.json"), &lie).unwrap();
         write_manifest_hashes(&bundle.dir).unwrap();
@@ -1632,15 +1755,24 @@ mod pca_tests {
     }
 
     #[test]
-    fn verify_pca_cold_verifies_the_committed_zk_receipt_fixture() {
-        // The committed real-receipt fixture was frozen by an earlier tool version ("anubis 0.2.0").
-        // Its claim re-derives and its manifest is intact, so it MUST cold-verify under the current
-        // tool — the regression guard for the version-coupling bug that made verify reject it.
+    fn verify_pca_cold_verifies_the_migrated_v2_real_receipt_fixture() {
+        // Only the deterministic claim wrapper and its manifest hash were migrated. The committed
+        // RISC0 receipt, ImageID, and journal are unchanged; cold semantic verification must still
+        // re-derive the v2 bounded claim and bind those genuine artifacts.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/zk_prove_bundle");
         assert!(
+            validate_bundle(&fixture).unwrap(),
+            "the migrated fixture's recorded hash layer must remain intact"
+        );
+        let claim: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture.join("pca.json")).unwrap())
+                .unwrap();
+        assert_eq!(claim["pca_version"], 2);
+        assert!(claim.get("taint_clean").is_none());
+        assert!(
             verify_pca(&fixture).unwrap(),
-            "committed ZK receipt fixture must cold-verify (only the provenance tool version differs)"
+            "PCA v2 verifier must cold-verify the migrated real-receipt fixture"
         );
     }
 

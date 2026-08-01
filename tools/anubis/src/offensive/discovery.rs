@@ -82,10 +82,26 @@ pub fn process_enum(eng: &Engagement) -> Result<Value> {
     let mut security_relevant: Vec<Value> = Vec::new();
 
     let interesting = [
-        "ssh", "sshd", "httpd", "nginx", "docker", "containerd",
-        "postgres", "mysql", "mongod", "redis", "elasticsearch",
-        "consul", "vault", "kubectl", "kubelet", "osqueryd",
-        "falcon", "crowdstrike", "sentinel", "defender",
+        "ssh",
+        "sshd",
+        "httpd",
+        "nginx",
+        "docker",
+        "containerd",
+        "postgres",
+        "mysql",
+        "mongod",
+        "redis",
+        "elasticsearch",
+        "consul",
+        "vault",
+        "kubectl",
+        "kubelet",
+        "osqueryd",
+        "falcon",
+        "crowdstrike",
+        "sentinel",
+        "defender",
     ];
 
     for line in ps.lines().skip(1) {
@@ -157,9 +173,12 @@ pub fn file_discovery(eng: &Engagement, search_root: &Path) -> Result<Value> {
         let output = Command::new("find")
             .args([
                 search_root.to_str().unwrap_or("."),
-                "-maxdepth", "4",
-                "-name", pattern,
-                "-type", "f",
+                "-maxdepth",
+                "4",
+                "-name",
+                pattern,
+                "-type",
+                "f",
             ])
             .output();
 
@@ -196,11 +215,7 @@ pub fn file_discovery(eng: &Engagement, search_root: &Path) -> Result<Value> {
 }
 
 /// Service banner grabbing on in-scope hosts.
-pub fn service_banner(
-    eng: &Engagement,
-    host: &str,
-    ports: &[u16],
-) -> Result<Value> {
+pub fn service_banner(eng: &Engagement, host: &str, ports: &[u16]) -> Result<Value> {
     eng.validate_live()?;
     eng.assert_host(host)?;
 
@@ -357,7 +372,9 @@ mod tests {
     #[test]
     fn service_banner_rejects_out_of_scope() {
         let eng = Engagement::default_lab("disc-test", "lab-auth");
-        let err = service_banner(&eng, "10.99.99.99", &[80]).unwrap_err().to_string();
+        let err = service_banner(&eng, "10.99.99.99", &[80])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("SCOPE") || err.contains("DENIED"), "{err}");
     }
 

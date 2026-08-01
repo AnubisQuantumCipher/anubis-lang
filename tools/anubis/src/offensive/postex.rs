@@ -73,7 +73,10 @@ pub fn persistence_enum(eng: &Engagement) -> Result<Value> {
 
     // Login items (macOS)
     let login_items = Command::new("osascript")
-        .args(["-e", "tell application \"System Events\" to get name of every login item"])
+        .args([
+            "-e",
+            "tell application \"System Events\" to get name of every login item",
+        ])
         .output();
     if let Ok(o) = login_items {
         if o.status.success() {

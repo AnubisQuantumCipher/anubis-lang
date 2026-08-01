@@ -77,8 +77,7 @@ pub fn pattern_offset(eng: &Engagement, value: &str) -> Result<Value> {
     }
 
     let pattern_str = String::from_utf8_lossy(&pattern).to_string();
-    let search_bytes = if value.starts_with("0x") {
-        let hex_str = &value[2..];
+    let search_bytes = if let Some(hex_str) = value.strip_prefix("0x") {
         hex::decode(hex_str).unwrap_or_else(|_| value.as_bytes().to_vec())
     } else {
         value.as_bytes().to_vec()
@@ -296,11 +295,8 @@ mod tests {
     #[test]
     fn encode_payload_applies_stages() {
         let eng = Engagement::default_lab("payload-test", "lab-auth");
-        let result = encode_payload(
-            &eng,
-            b"test payload",
-            &["base64".into(), "hex".into()],
-        ).unwrap();
+        let result =
+            encode_payload(&eng, b"test payload", &["base64".into(), "hex".into()]).unwrap();
         assert_eq!(result["stages"].as_array().unwrap().len(), 2);
         assert!(result["final_size"].as_u64().unwrap() > 0);
     }

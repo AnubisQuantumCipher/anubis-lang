@@ -54,11 +54,7 @@ pub fn dns_encode(eng: &Engagement, data: &[u8], domain: &str) -> Result<Value> 
 ///
 /// Creates a manifest of files to test against DLP/proxy controls.
 /// Does NOT transmit data. Maps to T1048.002.
-pub fn http_stage(
-    eng: &Engagement,
-    source_dir: &Path,
-    max_files: usize,
-) -> Result<Value> {
+pub fn http_stage(eng: &Engagement, source_dir: &Path, max_files: usize) -> Result<Value> {
     eng.validate_live()?;
     if !source_dir.is_dir() {
         return Err(anyhow!(
@@ -220,7 +216,9 @@ mod tests {
     #[test]
     fn dns_encode_rejects_empty() {
         let eng = Engagement::default_lab("exfil-test", "lab-auth");
-        let err = dns_encode(&eng, &[], "test.lab.local").unwrap_err().to_string();
+        let err = dns_encode(&eng, &[], "test.lab.local")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("ANUBIS_EXFIL_EMPTY"), "{err}");
     }
 
@@ -228,7 +226,8 @@ mod tests {
     fn http_stage_rejects_missing_dir() {
         let eng = Engagement::default_lab("exfil-test", "lab-auth");
         let err = http_stage(&eng, Path::new("/nonexistent/dir"), 10)
-            .unwrap_err().to_string();
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("ANUBIS_EXFIL_SOURCE_MISSING"), "{err}");
     }
 

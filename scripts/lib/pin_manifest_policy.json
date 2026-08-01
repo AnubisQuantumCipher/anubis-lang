@@ -1,0 +1,162 @@
+{
+  "schema": "anubis.pin-manifest-policy.v2",
+  "roots": [
+    ".cargo",
+    ".gate_floors",
+    ".github",
+    "backend",
+    "compiler",
+    "docs",
+    "editors",
+    "examples",
+    "formal",
+    "patches",
+    "poc_kit",
+    "schemas",
+    "scripts",
+    "selfhost",
+    "solver",
+    "tests",
+    "tools",
+    "vendor",
+    "vm"
+  ],
+  "files": [
+    ".gitattributes",
+    ".gitignore",
+    "AGENTS.md",
+    "ARCHITECTURE_MAP.md",
+    "A_PLUS_ACCEPTANCE_CRITERIA.md",
+    "Anubis.toml.example",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "LANGUAGE.md",
+    "LICENSE",
+    "MATURITY_CLAIM_MATRIX.md",
+    "README.md",
+    "SECURITY.md",
+    "rust-toolchain.toml"
+  ],
+  "excluded_top_level_entries": {
+    ".DS_Store": {
+      "kind": "file",
+      "reason": "macOS filesystem metadata, never release source"
+    },
+    ".ammit": {
+      "kind": "directory",
+      "reason": "local generated test evidence"
+    },
+    ".claude": {
+      "kind": "directory",
+      "reason": "local agent session state"
+    },
+    ".env": {
+      "kind": "file",
+      "reason": "local environment and secret material"
+    },
+    ".git": {
+      "kind": "file_or_directory",
+      "reason": "Git administrative metadata or linked-worktree pointer"
+    },
+    ".grok": {
+      "kind": "directory",
+      "reason": "local agent harness configuration"
+    },
+    ".hermes": {
+      "kind": "directory",
+      "reason": "local Hermes agent session state"
+    },
+    ".hunt2_findings": {
+      "kind": "directory",
+      "reason": "local generated security findings"
+    },
+    ".ruff_cache": {
+      "kind": "directory",
+      "reason": "generated Ruff analysis cache"
+    },
+    "AGENT_STUDY": {
+      "kind": "directory",
+      "reason": "generated agent study output"
+    },
+    "adversary": {
+      "kind": "directory",
+      "reason": "local adversarial review output"
+    },
+    "forensics": {
+      "kind": "directory",
+      "reason": "generated forensic run output"
+    },
+    "goal": {
+      "kind": "directory",
+      "reason": "local agent goal state"
+    },
+    "hello.txt": {
+      "kind": "file",
+      "reason": "documented local scratch file"
+    },
+    "implementer": {
+      "kind": "directory",
+      "reason": "historical receipts that are not current release authority"
+    },
+    "out": {
+      "kind": "directory",
+      "reason": "generated gate and evidence output"
+    },
+    "run313131.anb": {
+      "kind": "file",
+      "reason": "documented local scratch program"
+    },
+    "scratchpad": {
+      "kind": "directory",
+      "reason": "local operator scratch output"
+    },
+    "secret.txt": {
+      "kind": "file",
+      "reason": "documented local secret scratch file"
+    },
+    "secrets": {
+      "kind": "directory",
+      "reason": "local secret material"
+    },
+    "site": {
+      "kind": "directory",
+      "reason": "held-back landing-page source outside the release tree"
+    },
+    "target": {
+      "kind": "directory",
+      "reason": "Cargo build output"
+    },
+    "tmp": {
+      "kind": "directory",
+      "reason": "local temporary output"
+    },
+    "verify.log": {
+      "kind": "file",
+      "reason": "local verification transcript"
+    }
+  },
+  "excluded_exact_directories": [
+    "editors/tree-sitter-anubis/node_modules",
+    "editors/vscode-anubis/node_modules",
+    "examples/out",
+    "examples/programs/snake/bin",
+    "examples/security/out",
+    "examples/showcase/anubis_vault/app/out",
+    "examples/showcase/anubis_vault/data",
+    "examples/showcase/anubis_vault/fresh_evidence_app/out",
+    "examples/showcase/anubis_vault/keys",
+    "examples/showcase/anubis_vault/product",
+    "examples/showcase/anubis_vault/product_app/out",
+    "formal/.lake",
+    "poc_kit/bin",
+    "scripts/__pycache__",
+    "scripts/lib/__pycache__",
+    "vm/exports",
+    "vm/pins"
+  ],
+  "excluded_directory_names": [],
+  "excluded_directory_names_under": {}
+}

@@ -29,9 +29,8 @@ pub fn purple_report(eng: &Engagement, engage_dir: &Path, out_dir: &Path) -> Res
             if line.trim().is_empty() {
                 continue;
             }
-            let receipt: receipts::ActionReceipt = serde_json::from_str(&line).map_err(|e| {
-                anyhow!("ANUBIS_PURPLE_RECEIPT_PARSE: line {}: {e}", line_no + 1)
-            })?;
+            let receipt: receipts::ActionReceipt = serde_json::from_str(&line)
+                .map_err(|e| anyhow!("ANUBIS_PURPLE_RECEIPT_PARSE: line {}: {e}", line_no + 1))?;
             actions.insert(receipt.action);
         }
     }

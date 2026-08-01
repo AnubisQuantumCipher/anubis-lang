@@ -889,7 +889,11 @@ mod tests {
     #[test]
     fn catalog_has_minimum_techniques_all_with_required_fields() {
         let cat = catalog();
-        assert!(cat.len() >= 50, "catalog should have >= 50 techniques, got {}", cat.len());
+        assert!(
+            cat.len() >= 50,
+            "catalog should have >= 50 techniques, got {}",
+            cat.len()
+        );
         for tech in &cat {
             assert!(!tech.id.is_empty(), "empty id");
             assert!(!tech.name.is_empty(), "empty name");

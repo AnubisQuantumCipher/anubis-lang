@@ -1,0 +1,30 @@
+--- a/risc0-sys-1.5.0/build.rs
++++ b/risc0-sys-1.5.0/build.rs
+@@ -22,4 +22,5 @@
+ fn main() {
++    println!("cargo:rerun-if-env-changed=ANUBIS_SKIP_RISC0_METAL");
+     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+     let cxx_root = manifest_dir.join("cxx");
+     println!("cargo:cxx_root={}", cxx_root.to_string_lossy());
+@@ -37,6 +38,20 @@
+             "cargo:metal_root={}",
+             manifest_dir.join("kernels/zkp/metal").to_string_lossy()
+         );
+-        build_metal_kernels();
++        if env::var("ANUBIS_SKIP_RISC0_METAL").as_deref() == Ok("1") {
++            // risc0-build-kernel only exposes an all-kernel skip. Scope it to this build-script
++            // process and this Metal call, so separate CPU circuit build scripts still produce
++            // and link their native kernels on stock hosted runners.
++            let prior_skip = env::var_os("RISC0_SKIP_BUILD_KERNELS");
++            env::set_var("RISC0_SKIP_BUILD_KERNELS", "1");
++            build_metal_kernels();
++            if let Some(value) = prior_skip {
++                env::set_var("RISC0_SKIP_BUILD_KERNELS", value);
++            } else {
++                env::remove_var("RISC0_SKIP_BUILD_KERNELS");
++            }
++        } else {
++            build_metal_kernels();
++        }
+     }
+ }

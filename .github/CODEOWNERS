@@ -1,8 +1,8 @@
 # Code owners for anubis-lang.
 #
-# GitHub requests review from the owner automatically. Combined with branch
-# protection on the default branch, this is what stops a Tier-0 change landing
-# without the person who understands the soundness argument seeing it.
+# GitHub requests review from the owner automatically. This file routes review;
+# it does not itself enforce approval, and the bounded Phase-1.5 ruleset does not
+# claim code-owner enforcement while only one eligible owner exists.
 #
 # Ordering matters: the LAST matching pattern wins.
 

@@ -3,6 +3,27 @@
 # domain-specific execution and reporting; these functions only enforce the
 # invariants that must not vary between harnesses.
 
+gate_configure_audit_profile_environment() {
+  case "${1:-}" in
+    hosted)
+      # Stock GitHub macOS images do not ship the optional Metal Toolchain. Hosted CI is already
+      # bounded to HOSTED_PASS (Metal proving and nested VZ remain external). Skip only the
+      # vendored Metal library, keep CPU circuit kernels built and linked, and force CPU at runtime.
+      unset RISC0_SKIP_BUILD_KERNELS
+      export ANUBIS_SKIP_RISC0_METAL=1
+      export R0_DISABLE_METAL=1
+      ;;
+    full)
+      # Full/self-hosted evidence must not inherit any hosted or broad kernel bypass.
+      unset RISC0_SKIP_BUILD_KERNELS ANUBIS_SKIP_RISC0_METAL R0_DISABLE_METAL
+      ;;
+    *)
+      echo "ANUBIS_AUDIT_ARGUMENT: unsupported profile '${1:-}'" >&2
+      return 2
+      ;;
+  esac
+}
+
 # parse_expectation FILE BASENAME [NAME_POLICY]
 # Result variables: GATE_EXPECT, GATE_MALFORMED, GATE_EXPECT_COUNT.
 # NAME_POLICY "accept_reject" binds *_accepts/*_rejects to their headers.

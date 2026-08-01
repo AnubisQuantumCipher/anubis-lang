@@ -18,7 +18,10 @@ pub fn security_product_enum(eng: &Engagement) -> Result<Value> {
     eng.validate_live()?;
 
     let signatures = [
-        ("CrowdStrike Falcon", &["falcond", "falcon-sensor", "CSFalconService"][..]),
+        (
+            "CrowdStrike Falcon",
+            &["falcond", "falcon-sensor", "CSFalconService"][..],
+        ),
         ("SentinelOne", &["sentineld", "SentinelAgent"]),
         ("Carbon Black", &["cbagentd", "cbdaemon", "CbDefense"]),
         ("Microsoft Defender", &["MsMpEng", "mdatp", "wdavdaemon"]),
@@ -33,7 +36,10 @@ pub fn security_product_enum(eng: &Engagement) -> Result<Value> {
         ("macOS Gatekeeper", &["com.apple.security.assessment"]),
         ("Little Snitch", &["at.obdev.LittleSnitchDaemon"]),
         ("BlockBlock", &["BlockBlock"]),
-        ("Objective-See tools", &["LuLu", "RansomWhere", "KnockKnock"]),
+        (
+            "Objective-See tools",
+            &["LuLu", "RansomWhere", "KnockKnock"],
+        ),
     ];
 
     let ps_output = Command::new("ps")
@@ -49,7 +55,10 @@ pub fn security_product_enum(eng: &Engagement) -> Result<Value> {
     for (product, patterns) in &signatures {
         let found = patterns.iter().any(|p| ps_output.contains(p));
         if found {
-            let matched: Vec<&&str> = patterns.iter().filter(|p| ps_output.contains(**p)).collect();
+            let matched: Vec<&&str> = patterns
+                .iter()
+                .filter(|p| ps_output.contains(**p))
+                .collect();
             detected.push(json!({
                 "product": product,
                 "processes_matched": matched,
@@ -63,8 +72,10 @@ pub fn security_product_enum(eng: &Engagement) -> Result<Value> {
     // macOS-specific: check TCC database for accessibility/screen recording perms
     let tcc_accessible = Command::new("sqlite3")
         .args([
-            &format!("{}/Library/Application Support/com.apple.TCC/TCC.db",
-                std::env::var("HOME").unwrap_or_default()),
+            &format!(
+                "{}/Library/Application Support/com.apple.TCC/TCC.db",
+                std::env::var("HOME").unwrap_or_default()
+            ),
             "SELECT client FROM access WHERE service='kTCCServiceAccessibility' AND allowed=1;",
         ])
         .output()
@@ -261,7 +272,10 @@ pub fn codesign_check(eng: &Engagement, binary_path: &Path) -> Result<Value> {
                 String::from_utf8_lossy(&o.stdout),
                 String::from_utf8_lossy(&o.stderr)
             );
-            (o.status.success() || combined.contains("Authority="), combined)
+            (
+                o.status.success() || combined.contains("Authority="),
+                combined,
+            )
         }
         Err(e) => (false, e.to_string()),
     };

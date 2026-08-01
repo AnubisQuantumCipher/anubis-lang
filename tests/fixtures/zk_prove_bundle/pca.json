@@ -1,11 +1,10 @@
 {
-  "pca_version": 1,
+  "pca_version": 2,
   "source_sha256": "99f113aa5f6536809f16b22619696aae8a0dc0822f8168af9f3a7bb89e515de3",
   "mode": "safe",
   "tier": "checked",
   "parse_ok": true,
   "typecheck_ok": true,
-  "taint_clean": true,
   "solver_obligations": 1,
   "solver_all_discharged": true,
   "zk_present": true,

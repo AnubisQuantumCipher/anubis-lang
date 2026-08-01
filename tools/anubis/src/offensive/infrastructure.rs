@@ -189,7 +189,10 @@ pub fn infra_health(eng: &Engagement, c2_ports: &[u16]) -> Result<Value> {
         }));
     }
 
-    let ports_ready = port_status.iter().filter(|p| p["available"] == true).count();
+    let ports_ready = port_status
+        .iter()
+        .filter(|p| p["available"] == true)
+        .count();
 
     Ok(json!({
         "schema": "aop-infra-v1",

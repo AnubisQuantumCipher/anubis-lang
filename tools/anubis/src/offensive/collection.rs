@@ -91,9 +91,12 @@ pub fn stage_files(
         let output = Command::new("find")
             .args([
                 source_dir.to_str().unwrap_or("."),
-                "-maxdepth", "3",
-                "-name", pattern,
-                "-type", "f",
+                "-maxdepth",
+                "3",
+                "-name",
+                pattern,
+                "-type",
+                "f",
             ])
             .output();
 
@@ -124,9 +127,12 @@ pub fn stage_files(
                     Err(_) => continue,
                 };
                 let hash = hex::encode(Sha256::digest(&content));
-                let dest_name = format!("{hash}_{}", src.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown"));
+                let dest_name = format!(
+                    "{hash}_{}",
+                    src.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                );
                 let dest = staging.join(&dest_name);
                 fs::write(&dest, &content)?;
 
@@ -219,7 +225,10 @@ pub fn archive_loot(eng: &Engagement, engage_dir: &Path, out: &Path) -> Result<V
     eng.validate_live()?;
     let loot_dir = engage_dir.join("loot");
     if !loot_dir.is_dir() {
-        return Err(anyhow!("ANUBIS_COLLECT_NO_LOOT: {} not found", loot_dir.display()));
+        return Err(anyhow!(
+            "ANUBIS_COLLECT_NO_LOOT: {} not found",
+            loot_dir.display()
+        ));
     }
 
     fs::create_dir_all(out)?;
@@ -230,7 +239,8 @@ pub fn archive_loot(eng: &Engagement, engage_dir: &Path, out: &Path) -> Result<V
         .args([
             "czf",
             archive_path.to_str().unwrap_or("loot.tar.gz"),
-            "-C", engage_dir.to_str().unwrap_or("."),
+            "-C",
+            engage_dir.to_str().unwrap_or("."),
             "loot",
         ])
         .status();
@@ -300,7 +310,9 @@ mod tests {
             Path::new("/nonexistent/dir"),
             &["*.txt".into()],
             1024 * 1024,
-        ).unwrap_err().to_string();
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("ANUBIS_COLLECT_SOURCE_MISSING"), "{err}");
     }
 
@@ -327,7 +339,9 @@ mod tests {
             &eng,
             Path::new("/nonexistent/engage"),
             Path::new("/tmp/out"),
-        ).unwrap_err().to_string();
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("ANUBIS_COLLECT_NO_LOOT"), "{err}");
     }
 }

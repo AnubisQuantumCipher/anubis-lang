@@ -773,7 +773,7 @@ mod tests {
         std::fs::create_dir_all(&out_dir).unwrap();
 
         let exe_path =
-            lower_to_native(ir, &ast.items, &out_dir, "poc_lower", false).expect("lower");
+            lower_to_native(ir, &ast.items, &out_dir, "poc_lower", true, false).expect("lower");
         let emitted = std::fs::read_to_string(out_dir.join("poc_lower.rs")).expect("read emitted");
 
         assert!(
@@ -829,7 +829,7 @@ fn trigger() {
         let out_dir = unique_test_dir("assume-gate-retired");
         std::fs::create_dir_all(&out_dir).unwrap();
 
-        let exe_path = lower_to_native(ir, &ast.items, &out_dir, "no_assume", false)
+        let exe_path = lower_to_native(ir, &ast.items, &out_dir, "no_assume", true, false)
             .expect("faithful lowering emits an honest marker, not a brittle gate error");
         let emitted = std::fs::read_to_string(out_dir.join("no_assume.rs")).expect("read emitted");
         assert!(
@@ -901,7 +901,7 @@ fn trigger() {
         std::fs::create_dir_all(&out_dir).unwrap();
 
         let exe_path =
-            lower_to_native(ir, &ast.items, &out_dir, "taint_marker", false).expect("lower");
+            lower_to_native(ir, &ast.items, &out_dir, "taint_marker", true, false).expect("lower");
         let emitted =
             std::fs::read_to_string(out_dir.join("taint_marker.rs")).expect("read emitted");
         assert!(
@@ -939,7 +939,7 @@ fn trigger() {
         std::fs::create_dir_all(&out_dir).unwrap();
 
         let exe_path =
-            lower_to_native(ir, &ast.items, &out_dir, "real_prog", false).expect("lower");
+            lower_to_native(ir, &ast.items, &out_dir, "real_prog", false, false).expect("lower");
         let emitted = std::fs::read_to_string(out_dir.join("real_prog.rs")).expect("read emitted");
         assert!(
             !emitted.contains("safe_execution"),
@@ -980,7 +980,7 @@ fn trigger() {
         // strengthen: lower and check real keywords in .rs (no stubs)
         let out = unique_test_dir("hybrid-lower");
         std::fs::create_dir_all(&out).unwrap();
-        let _ = lower_to_native(ir, &ast.items, &out, "hybrid_test", false);
+        let _ = lower_to_native(ir, &ast.items, &out, "hybrid_test", true, false);
         let rs = std::fs::read_to_string(out.join("hybrid_test.rs")).unwrap_or_default();
         assert!(
             rs.contains("StorageModeShared") || rs.contains("metal"),
@@ -5118,19 +5118,24 @@ fn main() {
         std::fs::create_dir_all(&dir).unwrap();
         // Runtime: write/read without declassify (declassify is check/prove surface).
         let run_src = dir.join("run.anb");
-        std::fs::write(
-            &run_src,
+        let io_path_literal = serde_json::to_string(
+            dir.join("hello_phase5.txt")
+                .to_str()
+                .expect("temporary phase-5 path must be UTF-8"),
+        )
+        .expect("temporary phase-5 path must serialize as an Anubis string literal");
+        let run_program = format!(
             r#"
 import std.io;
-fn main() uses(fs.write, fs.read, io.print) {
-    let p = "hello_phase5.txt";
+fn main() uses(fs.write, fs.read, io.print) {{
+    let p = {io_path_literal};
     io::write_text(p, "x");
     let _ = io::read_text(p);
     print("phase5-io-ok");
-}
-"#,
-        )
-        .unwrap();
+}}
+"#
+        );
+        std::fs::write(&run_src, run_program).unwrap();
         let items = resolve::combine_from_entry(&run_src).expect("combine run");
         // Write-then-read of a constant we just wrote: the read is tainted by policy but is NOT sunk
         // (consumed by `let _`, since print() is now an egress sink — operator fix 2026-07-20). A
@@ -5546,7 +5551,7 @@ fn main() {
             ..Default::default()
         };
         let ir = typecheck(ast, Mode::Safe).expect("typecheck");
-        let art = lower_to_native(ir, &items, &dir, "crypto_build", false)
+        let art = lower_to_native(ir, &items, &dir, "crypto_build", false, false)
             .expect("build must succeed with audited crypto via cargo");
         assert!(
             std::path::Path::new(&art).is_file(),
@@ -6573,7 +6578,7 @@ fn main() {
 
     #[test]
     fn unified_gate_profiles_have_honest_exit_semantics() {
-        // The full profile may say PASS only at an exact 15/15 seal. The hosted profile has a
+        // The full profile may say PASS only at an exact 29/29 seal. The hosted profile has a
         // different, explicit verdict because it cannot execute G9 without Tart/VZ. Neither may
         // turn a red gate into a green claim.
         let script = std::fs::read_to_string(
@@ -6591,8 +6596,9 @@ fn main() {
         // What must NOT be lost is the boundary itself, so each marker below is the named form of
         // a property the counts used to enforce.
         for exact_full_marker in [
-            "EXPECTED_GATES=",         // the gate list is explicit
-            "ANUBIS_AUDIT_INCOMPLETE", // a vanished gate is named, not absorbed
+            "EXPECTED_GATES=",             // the gate list is explicit
+            "ANUBIS_AUDIT_INCOMPLETE",     // a vanished gate is named, not absorbed
+            "ANUBIS_AUDIT_ROSTER_INVALID", // duplicate/extra gates cannot hide in arithmetic
             "fail -eq 0",
             "skip -eq 0",
             "external -eq 0", // a full seal tolerates no EXTERNAL gate
@@ -6606,6 +6612,8 @@ fn main() {
             r#"VERDICT="HOSTED_PASS""#,
             "ALLOWED_EXTERNAL", // replaces `external -eq 1`: WHICH, not how many
             "ANUBIS_AUDIT_EXTERNAL_NOT_ALLOWED",
+            "ANUBIS_AUDIT_EXTERNAL_REQUIRED",
+            "EXPECTED_PASS_COUNT",
             r#"gate "G9_poc_kit" "EXTERNAL""#,
             "ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1",
             "full 34-check battery requires VZ",
@@ -6714,10 +6722,10 @@ fn main() {
     }
 
     #[test]
-    fn ci_workflow_separates_hosted_witness_from_full_vz_seal() {
+    fn ci_workflow_keeps_vz_and_metal_out_of_hosted_ci() {
         // A stock GitHub runner cannot execute the Tart/VZ gate. Push/PR CI must say
-        // HOSTED_PASS with G9 external, while the separately dispatched self-hosted job owns
-        // the unchanged full 15-gate front door.
+        // HOSTED_PASS with G9 external. The full VZ and require-Metal lanes are operator-run
+        // evidence outside public CI; the daily signed-in Mac is not a public-repository runner.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
             .expect(".github/workflows/ci.yml must exist");
@@ -6725,26 +6733,53 @@ fn main() {
             "hosted-gate-witness",
             "scripts/audit_unified.sh --profile hosted",
             "hosted-gate-report",
+            "attestation_identity.txt",
+            "GITHUB_RUN_ATTEMPT",
+            "test \"$HEAD_SHA\" = \"$GITHUB_SHA\"",
+            "shasum -c MANIFEST.sha256",
+            "$RUNNER_TEMP/anubis-z3.XXXXXX",
+            "$RUNNER_TEMP/anubis-elan.XXXXXX",
+            "required=(gate_report.json gate_log.txt profile_environment.txt attestation_identity.txt)",
+            "hosted gate report mismatch for",
+            "hosted gate report must contain exactly 29 gate rows",
+            "hosted gate report gate roster mismatch",
+            "external != [\"G9_poc_kit\"]",
+            "8bb3439772cafd75240d61abf255e89122850bab93563d1283b048359ab4e88f",
+            "7cae4c03b2f0de4053fb04a91359d5804551e6e37a6ddd1b2e0097dc561ae4a9",
         ] {
             assert!(
                 ci.contains(hosted_marker),
                 "CI lost explicit hosted-witness marker {hosted_marker:?}"
             );
         }
-        for full_marker in [
+        for forbidden_ci_marker in [
             "sealed-vz-gate-suite",
             "self-hosted, macOS, ARM64, tart-vz",
             "scripts/audit_a_plus.sh",
             "sealed-vz-gate-report",
+            "run_metal_prove_gate.sh",
         ] {
             assert!(
-                ci.contains(full_marker),
-                "CI lost dedicated full-seal marker {full_marker:?}"
+                !ci.contains(forbidden_ci_marker),
+                "hosted CI must not schedule a VZ/Metal seal marker {forbidden_ci_marker:?}"
+            );
+        }
+        let boundary = std::fs::read_to_string(root.join("docs/CI_TRUST_BOUNDARY.md"))
+            .expect("docs/CI_TRUST_BOUNDARY.md must exist");
+        for boundary_marker in [
+            "No persistent self-hosted runner",
+            "operator-run evidence",
+            "disposable guest cloned from `anubis-xcode`",
+            "there is no host\nfallback",
+        ] {
+            assert!(
+                boundary.contains(boundary_marker),
+                "CI trust boundary lost operator-run isolation marker {boundary_marker:?}"
             );
         }
         let runner = std::fs::read_to_string(root.join("scripts/audit_unified.sh"))
             .expect("scripts/audit_unified.sh must exist");
-        for g in 1..=15 {
+        for g in 1..=29 {
             let marker = format!("\"G{g}_");
             assert!(
                 runner.contains(&marker),
@@ -12308,8 +12343,8 @@ fn main() { sink(f(true)); }"#,
         std::fs::create_dir_all(&out).unwrap();
 
         // lower fast: emits full project (with real RISC0+metal source) + produces fast real metal dispatch dst
-        let dst =
-            lower_to_native(ir, &ast.items, &out, "hybrid_gate", false).expect("lower hybrid");
+        let dst = lower_to_native(ir, &ast.items, &out, "hybrid_gate", true, false)
+            .expect("lower hybrid");
 
         let proj = out.join("hybrid_gate-real-hybrid");
         assert!(

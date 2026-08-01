@@ -408,7 +408,7 @@ fn walk_expr(expr: &Expr, cx: &WalkCtx, scope: &mut Scope, row: &mut EffectRow) 
             }
             scope.pop();
         }
-        Expr::Lambda { .. } => {
+        Expr::Lambda { body: _body, .. } => {
             // A closure LITERAL performs nothing at its definition site — its body's effects belong
             // to the closure value, charged (as `open`) wherever it is actually called. Charging
             // them here would fire on effects this function never executes (over-reject); skipping

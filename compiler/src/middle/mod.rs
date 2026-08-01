@@ -13861,6 +13861,11 @@ fn analyze_expr_effect(
                 analyze_expr_effect(v, mode, scope, effects, ctx);
             }
         }
+        Expr::Lambda { body: _body, .. } => {
+            // Definition-site closure bodies are intentionally opaque here. They are charged at the
+            // concrete application/escape sites above; bind the code-holding field explicitly so
+            // walker completeness cannot confuse this contract with a wildcard omission.
+        }
         _ => {}
     }
 }
@@ -22335,15 +22340,14 @@ fn declassify_source(
 /// `loop`/`for`) is MAY-merged via `merge_taint_over` over EXACTLY the oracle's path set — If: `[then,
 /// (else | snap)]` (a value cleared on BOTH branches is precisely cleared; a uniform base path would OR it
 /// back), loops: `[snap, body]` (snap = the zero-iteration path). A `for` loop var inherits the
-/// collection/range label (mirrors the oracle's For arm); a `hybrid` block is left UNMERGED (the oracle
-/// recurses+restores it, so merging here would be STRICTER than the enforcing pass → a spurious reject).
+/// collection/range label (mirrors the oracle's For arm). Research/Exploit bodies and all Hybrid lanes
+/// are recursively MAY-merged; statement-position Match and IfLet use the same path join discipline.
 /// Block-`let`s AND destructured pattern vars are seeded with their REAL span so `merge_taint_over`'s
 /// span-identity distinguishes a branch-nested SHADOW (a new binding — its label must not leak to the
 /// outer same-named binding) from a REASSIGNMENT (same span — its label carries). This closes the
 /// value-position nested-control-flow fail-open the former hand-rolled `_ => {}` left open. Non-`Var`
-/// assign, `match`/`if let`/`@research`/`@exploit` used as a STATEMENT, and cross-iteration loop carry
-/// stay named residuals — each SHARED with the enforcing pass, so ignoring them keeps parity (never
-/// stricter → no new false positive).
+/// assignment remains outside this label-only helper; cross-iteration loop carry is handled by the
+/// monotone fixpoint immediately below.
 /// Seed a loop's carried taint/secret labels into `scope` to a MONOTONE fixpoint BEFORE the enforcing body
 /// pass checks its sinks. The enforcing `analyze_stmts` walks a loop body once in straight-line order, so a
 /// sink that reads a variable BEFORE a same-body reassignment (`while { send(a); a=b; }`) or through a
@@ -22408,6 +22412,372 @@ fn seed_loop_carried_labels(
     }
 }
 
+#[derive(Clone, Copy)]
+enum BlockLabelDomain<'a> {
+    Taint {
+        sources: &'a BTreeSet<String>,
+        param_returns: &'a BTreeMap<String, BTreeSet<usize>>,
+        method_sources: &'a BTreeSet<String>,
+    },
+    Secret {
+        sources: &'a BTreeSet<String>,
+        param_returns: &'a BTreeMap<String, BTreeSet<usize>>,
+        method_sources: &'a BTreeSet<String>,
+    },
+}
+
+impl BlockLabelDomain<'_> {
+    fn expr_source(
+        self,
+        expr: &Expr,
+        scope: &BTreeMap<String, ScopeBinding>,
+        struct_fields: &PlaceTypes<'_>,
+    ) -> Option<String> {
+        match self {
+            Self::Taint {
+                sources,
+                param_returns,
+                method_sources,
+            } => expr_taint_source_m(
+                expr,
+                scope,
+                sources,
+                param_returns,
+                method_sources,
+                struct_fields,
+            ),
+            Self::Secret {
+                sources,
+                param_returns,
+                method_sources,
+            } => expr_secret_source_m(
+                expr,
+                scope,
+                sources,
+                param_returns,
+                method_sources,
+                struct_fields,
+            ),
+        }
+    }
+
+    fn seed_let(
+        self,
+        name: &str,
+        ty: Option<&str>,
+        init: &Expr,
+        scope: &mut BTreeMap<String, ScopeBinding>,
+        struct_fields: &PlaceTypes<'_>,
+    ) {
+        match self {
+            Self::Taint {
+                sources,
+                param_returns,
+                method_sources,
+            } => seed_one_let(
+                name,
+                ty,
+                init,
+                scope,
+                sources,
+                param_returns,
+                method_sources,
+                struct_fields,
+            ),
+            Self::Secret {
+                sources,
+                param_returns,
+                method_sources,
+            } => seed_one_let_secret(
+                name,
+                ty,
+                init,
+                scope,
+                sources,
+                param_returns,
+                method_sources,
+                struct_fields,
+            ),
+        }
+    }
+
+    fn seed_pattern(
+        self,
+        scope: &mut BTreeMap<String, ScopeBinding>,
+        pattern: &Pattern,
+        source: &Option<String>,
+        struct_fields: &PlaceTypes<'_>,
+    ) {
+        match self {
+            Self::Taint { .. } => seed_taint_pattern(scope, pattern, source, struct_fields),
+            Self::Secret { .. } => {
+                seed_secret_pattern(scope, pattern, source.is_some(), struct_fields)
+            }
+        }
+    }
+
+    fn assign_binding(self, binding: &mut ScopeBinding, source: Option<String>) {
+        match self {
+            Self::Taint { .. } => {
+                binding.info.tainted = source.is_some();
+                if source.is_some() {
+                    binding.info.declassified = false;
+                }
+                binding.info.taint_source = source;
+            }
+            Self::Secret { .. } => binding.secret = source.is_some(),
+        }
+    }
+
+    fn taint_place(self, binding: &mut ScopeBinding, source: String) {
+        match self {
+            Self::Taint { .. } => {
+                binding.info.tainted = true;
+                binding.info.taint_source = Some(source);
+                binding.info.declassified = false;
+            }
+            Self::Secret { .. } => binding.secret = true,
+        }
+    }
+
+    fn loop_binding(self, var: &str, source: Option<String>) -> ScopeBinding {
+        let (tainted, taint_source, secret) = match self {
+            Self::Taint { .. } => (source.is_some(), source, false),
+            Self::Secret { .. } => (false, None, source.is_some()),
+        };
+        ScopeBinding {
+            info: BindingInfo {
+                name: var.to_string(),
+                ty: None,
+                mode: String::new(),
+                tainted,
+                taint_source,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            closure_lambda: None,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
+            secret,
+        }
+    }
+}
+
+/// Total statement walker shared by the integrity and confidentiality value-block lanes.
+///
+/// The domain owns only label-specific operations. Statement structure, recursive descent,
+/// branch/loop joins, pattern binding, and every code-holding field are handled once here so a new
+/// `Stmt` variant or field cannot silently drift between the two security labels.
+fn walk_block_labels(
+    stmts: &[Stmt],
+    local: &mut BTreeMap<String, ScopeBinding>,
+    domain: BlockLabelDomain<'_>,
+    struct_fields: &PlaceTypes<'_>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let {
+                name,
+                ty,
+                init,
+                span,
+            } => {
+                domain.seed_let(name, ty.as_deref(), init, local, struct_fields);
+                if let Some(binding) = local.get_mut(name) {
+                    binding.info.span = Some((span.start, span.end));
+                }
+            }
+            Stmt::LetPattern {
+                pattern,
+                init,
+                span,
+            } => {
+                let source = domain.expr_source(init, local, struct_fields);
+                domain.seed_pattern(local, pattern, &source, struct_fields);
+                for name in pattern.bound_names() {
+                    if let Some(binding) = local.get_mut(&name) {
+                        binding.info.span = Some((span.start, span.end));
+                    }
+                }
+            }
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                let source = domain.expr_source(value, local, struct_fields);
+                if let Some(binding) = local.get_mut(name) {
+                    domain.assign_binding(binding, source);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                if let Some(root) = assign_target_root(target) {
+                    if let Some(source) = domain.expr_source(value, local, struct_fields) {
+                        if let Some(binding) = local.get_mut(root) {
+                            domain.taint_place(binding, source);
+                        }
+                    }
+                }
+            }
+            Stmt::If { cond, then, else_ } => {
+                // The reduced value-label model is explicit-flow-only, but it must still traverse the
+                // condition. The enforcing lane owns the separate secret-PC rejection.
+                drop(domain.expr_source(cond, local, struct_fields));
+                let mut then_scope = local.clone();
+                walk_block_labels(then, &mut then_scope, domain, struct_fields);
+                let else_scope = if let Some(body) = else_ {
+                    let mut scope = local.clone();
+                    walk_block_labels(body, &mut scope, domain, struct_fields);
+                    scope
+                } else {
+                    local.clone()
+                };
+                merge_taint_over(local, &[&then_scope, &else_scope]);
+            }
+            Stmt::While {
+                cond,
+                body,
+                invariant,
+            } => {
+                drop(domain.expr_source(cond, local, struct_fields));
+                for predicate in invariant {
+                    drop(domain.expr_source(predicate, local, struct_fields));
+                }
+                let snapshot = local.clone();
+                let mut body_scope = local.clone();
+                walk_block_labels(body, &mut body_scope, domain, struct_fields);
+                merge_taint_over(local, &[&snapshot, &body_scope]);
+            }
+            Stmt::Loop { body, invariant } => {
+                for predicate in invariant {
+                    drop(domain.expr_source(predicate, local, struct_fields));
+                }
+                let snapshot = local.clone();
+                let mut body_scope = local.clone();
+                walk_block_labels(body, &mut body_scope, domain, struct_fields);
+                merge_taint_over(local, &[&snapshot, &body_scope]);
+            }
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
+                let source = domain.expr_source(expr, local, struct_fields);
+                let snapshot = local.clone();
+                let mut body_scope = local.clone();
+                domain.seed_pattern(&mut body_scope, pattern, &source, struct_fields);
+                walk_block_labels(body, &mut body_scope, domain, struct_fields);
+                merge_taint_over(local, &[&snapshot, &body_scope]);
+            }
+            Stmt::For {
+                var,
+                source,
+                body,
+                invariant,
+            } => {
+                let source = match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        let start_source = domain.expr_source(start, local, struct_fields);
+                        let end_source = domain.expr_source(end, local, struct_fields);
+                        start_source.or(end_source)
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        domain.expr_source(expr, local, struct_fields)
+                    }
+                };
+                for predicate in invariant {
+                    drop(domain.expr_source(predicate, local, struct_fields));
+                }
+                let snapshot = local.clone();
+                let mut body_scope = local.clone();
+                body_scope.insert(var.clone(), domain.loop_binding(var, source));
+                walk_block_labels(body, &mut body_scope, domain, struct_fields);
+                merge_taint_over(local, &[&snapshot, &body_scope]);
+            }
+            Stmt::ResearchBlock { intent: _, body } | Stmt::ExploitBlock { intent: _, body } => {
+                let snapshot = local.clone();
+                let mut body_scope = local.clone();
+                walk_block_labels(body, &mut body_scope, domain, struct_fields);
+                merge_taint_over(local, &[&snapshot, &body_scope]);
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                let snapshot = local.clone();
+                let mut lanes = vec![snapshot.clone()];
+                for body in [gpu, cpu, prove].into_iter().flatten() {
+                    let mut lane_scope = snapshot.clone();
+                    walk_block_labels(body, &mut lane_scope, domain, struct_fields);
+                    lanes.push(lane_scope);
+                }
+                let lane_refs: Vec<&BTreeMap<String, ScopeBinding>> = lanes.iter().collect();
+                merge_taint_over(local, &lane_refs);
+            }
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
+                let source = domain.expr_source(scrutinee, local, struct_fields);
+                let mut arm_scopes = Vec::new();
+                for arm in arms {
+                    let mut arm_scope = local.clone();
+                    domain.seed_pattern(&mut arm_scope, &arm.pattern, &source, struct_fields);
+                    if let Expr::Block { stmts, .. } = &arm.body {
+                        walk_block_labels(stmts, &mut arm_scope, domain, struct_fields);
+                    } else {
+                        drop(domain.expr_source(&arm.body, &arm_scope, struct_fields));
+                    }
+                    arm_scopes.push(arm_scope);
+                }
+                let arm_refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
+                merge_taint_over(local, &arm_refs);
+            }
+            Stmt::ExprStmt(Expr::IfLet {
+                pattern,
+                scrutinee,
+                then,
+                else_,
+                ..
+            }) => {
+                let source = domain.expr_source(scrutinee, local, struct_fields);
+                let mut then_scope = local.clone();
+                domain.seed_pattern(&mut then_scope, pattern, &source, struct_fields);
+                if let Expr::Block { stmts, .. } = then.as_ref() {
+                    walk_block_labels(stmts, &mut then_scope, domain, struct_fields);
+                } else {
+                    drop(domain.expr_source(then, &then_scope, struct_fields));
+                }
+                let mut else_scope = local.clone();
+                if let Expr::Block { stmts, .. } = else_.as_ref() {
+                    walk_block_labels(stmts, &mut else_scope, domain, struct_fields);
+                } else {
+                    drop(domain.expr_source(else_, &else_scope, struct_fields));
+                }
+                merge_taint_over(local, &[&then_scope, &else_scope]);
+            }
+            Stmt::ExprStmt(Expr::Call { callee, args })
+                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+            {
+                if let Some(root) = assign_target_root(&args[0]) {
+                    let source = args[1..]
+                        .iter()
+                        .find_map(|arg| domain.expr_source(arg, local, struct_fields));
+                    if let Some(source) = source {
+                        if let Some(binding) = local.get_mut(root) {
+                            domain.taint_place(binding, source);
+                        }
+                    }
+                }
+            }
+            Stmt::ExprStmt(expr) => {
+                drop(domain.expr_source(expr, local, struct_fields));
+            }
+            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { forall: _ } => {}
+        }
+    }
+}
+
 fn walk_block_taint(
     stmts: &[Stmt],
     local: &mut BTreeMap<String, ScopeBinding>,
@@ -22416,305 +22786,18 @@ fn walk_block_taint(
     method_tainting_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Let {
-                name,
-                ty,
-                init,
-                span,
-            } => {
-                seed_one_let(
-                    name,
-                    ty.as_deref(),
-                    init,
-                    local,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                if let Some(b) = local.get_mut(name) {
-                    b.info.span = Some((span.start, span.end));
-                }
-            }
-            Stmt::LetPattern {
-                pattern,
-                init,
-                span,
-            } => {
-                let label = expr_taint_source_m(
-                    init,
-                    local,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                seed_taint_pattern(local, pattern, &label, struct_fields);
-                for n in pattern.bound_names() {
-                    if let Some(b) = local.get_mut(&n) {
-                        b.info.span = Some((span.start, span.end));
-                    }
-                }
-            }
-            Stmt::Assign {
-                target: Expr::Var(name),
-                value,
-            } => {
-                let label = expr_taint_source_m(
-                    value,
-                    local,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                if let Some(b) = local.get_mut(name) {
-                    b.info.tainted = label.is_some();
-                    if label.is_some() {
-                        b.info.declassified = false;
-                    }
-                    b.info.taint_source = label;
-                }
-            }
-            Stmt::Assign { target, value } => {
-                // Value-position dual of the statement-level place-assignment fix: a non-`Var` target
-                // (`buf[0] = k` inside a value block) MAY-taints the root container binding (set-only).
-                if let Some(root) = assign_target_root(target) {
-                    if let Some(src) = expr_taint_source_m(
-                        value,
-                        local,
-                        tainting_fns,
-                        param_return_taint,
-                        method_tainting_fns,
-                        struct_fields,
-                    ) {
-                        if let Some(b) = local.get_mut(root) {
-                            b.info.tainted = true;
-                            b.info.taint_source = Some(src);
-                            b.info.declassified = false;
-                        }
-                    }
-                }
-            }
-            Stmt::If { then, else_, .. } => {
-                let mut then_c = local.clone();
-                walk_block_taint(
-                    then,
-                    &mut then_c,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                let else_c = if let Some(eb) = else_ {
-                    let mut c = local.clone();
-                    walk_block_taint(
-                        eb,
-                        &mut c,
-                        tainting_fns,
-                        param_return_taint,
-                        method_tainting_fns,
-                        struct_fields,
-                    );
-                    c
-                } else {
-                    local.clone()
-                };
-                merge_taint_over(local, &[&then_c, &else_c]);
-            }
-            Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
-                let snap = local.clone();
-                let mut body_c = local.clone();
-                walk_block_taint(
-                    body,
-                    &mut body_c,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                merge_taint_over(local, &[&snap, &body_c]);
-            }
-            Stmt::WhileLet { pattern, body, .. } => {
-                let snap = local.clone();
-                let mut body_c = local.clone();
-                // Oracle seeds `while let` pattern vars CLEAN (analyze_stmts WhileLet arm).
-                seed_taint_pattern(&mut body_c, pattern, &None, struct_fields);
-                walk_block_taint(
-                    body,
-                    &mut body_c,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                merge_taint_over(local, &[&snap, &body_c]);
-            }
-            Stmt::For {
-                var, body, source, ..
-            } => {
-                let taint_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => expr_taint_source_m(
-                        start,
-                        local,
-                        tainting_fns,
-                        param_return_taint,
-                        method_tainting_fns,
-                        struct_fields,
-                    ),
-                    crate::frontend::ForSource::Collection { expr } => expr_taint_source_m(
-                        expr,
-                        local,
-                        tainting_fns,
-                        param_return_taint,
-                        method_tainting_fns,
-                        struct_fields,
-                    ),
-                };
-                let snap = local.clone();
-                let mut body_c = local.clone();
-                body_c.insert(
-                    var.clone(),
-                    ScopeBinding {
-                        info: BindingInfo {
-                            name: var.clone(),
-                            ty: None,
-                            mode: String::new(),
-                            tainted: taint_src.is_some(),
-                            taint_source: taint_src,
-                            declassified: false,
-                            span: None,
-                        },
-                        closure_arity: None,
-                        closure_lambda: None,
-                        field_closures: BTreeMap::new(),
-                        fn_alias: None,
-                        fn_identities: FnIdentitySet::Unknown,
-                        field_fn_identities: BTreeMap::new(),
-                        builtin_gate_tags: BuiltinGateTags::Unknown,
-                        field_builtin_gate_tags: BTreeMap::new(),
-                        secret: false,
-                    },
-                );
-                walk_block_taint(
-                    body,
-                    &mut body_c,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                merge_taint_over(local, &[&snap, &body_c]);
-            }
-            // A statement-position `match` / `if let` INSIDE a value-position block reassigning an outer
-            // var in an arm body — the value-block dual of the `analyze_stmts` `ExprStmt(Match/IfLet)` fix
-            // (hunt wf_5b2a1bcc). Without it, `let out = match s { _ => { let mut y=0; match i { _ => { y =
-            // input(); } }; y } }; sink(out)` laundered the taint (the arm reassignment was dropped by the
-            // former `_ => {}`). Arm bodies are Blocks; a bare-expr arm cannot reassign an outer var.
-            Stmt::ExprStmt(Expr::Match {
-                scrutinee, arms, ..
-            }) => {
-                let st = expr_taint_source_m(
-                    scrutinee,
-                    local,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                let mut arm_cs = Vec::new();
-                for arm in arms {
-                    let mut c = local.clone();
-                    seed_taint_pattern(&mut c, &arm.pattern, &st, struct_fields);
-                    if let Expr::Block { stmts, .. } = &arm.body {
-                        walk_block_taint(
-                            stmts,
-                            &mut c,
-                            tainting_fns,
-                            param_return_taint,
-                            method_tainting_fns,
-                            struct_fields,
-                        );
-                    }
-                    arm_cs.push(c);
-                }
-                let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_cs.iter().collect();
-                merge_taint_over(local, &refs);
-            }
-            Stmt::ExprStmt(Expr::IfLet {
-                pattern,
-                scrutinee,
-                then,
-                else_,
-                ..
-            }) => {
-                let st = expr_taint_source_m(
-                    scrutinee,
-                    local,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                );
-                let mut then_c = local.clone();
-                seed_taint_pattern(&mut then_c, pattern, &st, struct_fields);
-                if let Expr::Block { stmts, .. } = then.as_ref() {
-                    walk_block_taint(
-                        stmts,
-                        &mut then_c,
-                        tainting_fns,
-                        param_return_taint,
-                        method_tainting_fns,
-                        struct_fields,
-                    );
-                }
-                let mut else_c = local.clone();
-                if let Expr::Block { stmts, .. } = else_.as_ref() {
-                    walk_block_taint(
-                        stmts,
-                        &mut else_c,
-                        tainting_fns,
-                        param_return_taint,
-                        method_tainting_fns,
-                        struct_fields,
-                    );
-                }
-                merge_taint_over(local, &[&then_c, &else_c]);
-            }
-            // `push`/`insert` inside a value block MAY-taints the container root (set-only) — the value-
-            // block dual of the statement-level container-mutation taint.
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if let Some(src) = args[1..].iter().find_map(|a| {
-                        expr_taint_source_m(
-                            a,
-                            local,
-                            tainting_fns,
-                            param_return_taint,
-                            method_tainting_fns,
-                            struct_fields,
-                        )
-                    }) {
-                        if let Some(b) = local.get_mut(root) {
-                            b.info.tainted = true;
-                            b.info.taint_source = Some(src);
-                            b.info.declassified = false;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    walk_block_labels(
+        stmts,
+        local,
+        BlockLabelDomain::Taint {
+            sources: tainting_fns,
+            param_returns: param_return_taint,
+            method_sources: method_tainting_fns,
+        },
+        struct_fields,
+    );
 }
 
-/// Confidentiality dual of [`walk_block_taint`] — see its doc for the merge discipline and residuals.
-/// Tracks the `secret` bool; a `for` over a secret collection binds a secret element; `while let` pattern
-/// vars are seeded non-secret (oracle parity).
 fn walk_block_secret(
     stmts: &[Stmt],
     local: &mut BTreeMap<String, ScopeBinding>,
@@ -22723,296 +22806,16 @@ fn walk_block_secret(
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Let {
-                name,
-                ty,
-                init,
-                span,
-            } => {
-                seed_one_let_secret(
-                    name,
-                    ty.as_deref(),
-                    init,
-                    local,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                );
-                if let Some(b) = local.get_mut(name) {
-                    b.info.span = Some((span.start, span.end));
-                }
-            }
-            Stmt::LetPattern {
-                pattern,
-                init,
-                span,
-            } => {
-                let secret = expr_secret_source_m(
-                    init,
-                    local,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-                .is_some();
-                seed_secret_pattern(local, pattern, secret, struct_fields);
-                for n in pattern.bound_names() {
-                    if let Some(b) = local.get_mut(&n) {
-                        b.info.span = Some((span.start, span.end));
-                    }
-                }
-            }
-            Stmt::Assign {
-                target: Expr::Var(name),
-                value,
-            } => {
-                let secret = expr_secret_source_m(
-                    value,
-                    local,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-                .is_some();
-                if let Some(b) = local.get_mut(name) {
-                    b.secret = secret;
-                }
-            }
-            Stmt::Assign { target, value } => {
-                // Value-position dual: a non-`Var` place-assignment of a secret MAY-labels the root
-                // container secret (set-only).
-                if let Some(root) = assign_target_root(target) {
-                    if expr_secret_source_m(
-                        value,
-                        local,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                    {
-                        if let Some(b) = local.get_mut(root) {
-                            b.secret = true;
-                        }
-                    }
-                }
-            }
-            Stmt::If { then, else_, .. } => {
-                let mut then_c = local.clone();
-                walk_block_secret(
-                    then,
-                    &mut then_c,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                );
-                let else_c = if let Some(eb) = else_ {
-                    let mut c = local.clone();
-                    walk_block_secret(
-                        eb,
-                        &mut c,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    );
-                    c
-                } else {
-                    local.clone()
-                };
-                merge_taint_over(local, &[&then_c, &else_c]);
-            }
-            Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
-                let snap = local.clone();
-                let mut body_c = local.clone();
-                walk_block_secret(
-                    body,
-                    &mut body_c,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                );
-                merge_taint_over(local, &[&snap, &body_c]);
-            }
-            Stmt::WhileLet { pattern, body, .. } => {
-                let snap = local.clone();
-                let mut body_c = local.clone();
-                seed_secret_pattern(&mut body_c, pattern, false, struct_fields);
-                walk_block_secret(
-                    body,
-                    &mut body_c,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                );
-                merge_taint_over(local, &[&snap, &body_c]);
-            }
-            Stmt::For {
-                var, body, source, ..
-            } => {
-                let secret_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => expr_secret_source_m(
-                        start,
-                        local,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                    .is_some(),
-                    crate::frontend::ForSource::Collection { expr } => expr_secret_source_m(
-                        expr,
-                        local,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                    .is_some(),
-                };
-                let snap = local.clone();
-                let mut body_c = local.clone();
-                body_c.insert(
-                    var.clone(),
-                    ScopeBinding {
-                        info: BindingInfo {
-                            name: var.clone(),
-                            ty: None,
-                            mode: String::new(),
-                            tainted: false,
-                            taint_source: None,
-                            declassified: false,
-                            span: None,
-                        },
-                        closure_arity: None,
-                        closure_lambda: None,
-                        field_closures: BTreeMap::new(),
-                        fn_alias: None,
-                        fn_identities: FnIdentitySet::Unknown,
-                        field_fn_identities: BTreeMap::new(),
-                        builtin_gate_tags: BuiltinGateTags::Unknown,
-                        field_builtin_gate_tags: BTreeMap::new(),
-                        secret: secret_src,
-                    },
-                );
-                walk_block_secret(
-                    body,
-                    &mut body_c,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                );
-                merge_taint_over(local, &[&snap, &body_c]);
-            }
-            // Statement-position `match` / `if let` inside a value block reassigning an outer var in an arm
-            // — the confidentiality dual of the `walk_block_taint` arms (hunt wf_e67160a7).
-            Stmt::ExprStmt(Expr::Match {
-                scrutinee, arms, ..
-            }) => {
-                let ss = expr_secret_source_m(
-                    scrutinee,
-                    local,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-                .is_some();
-                let mut arm_cs = Vec::new();
-                for arm in arms {
-                    let mut c = local.clone();
-                    seed_secret_pattern(&mut c, &arm.pattern, ss, struct_fields);
-                    if let Expr::Block { stmts, .. } = &arm.body {
-                        walk_block_secret(
-                            stmts,
-                            &mut c,
-                            secret_fns,
-                            param_return_taint,
-                            method_secret_fns,
-                            struct_fields,
-                        );
-                    }
-                    arm_cs.push(c);
-                }
-                let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_cs.iter().collect();
-                merge_taint_over(local, &refs);
-            }
-            Stmt::ExprStmt(Expr::IfLet {
-                pattern,
-                scrutinee,
-                then,
-                else_,
-                ..
-            }) => {
-                let ss = expr_secret_source_m(
-                    scrutinee,
-                    local,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-                .is_some();
-                let mut then_c = local.clone();
-                seed_secret_pattern(&mut then_c, pattern, ss, struct_fields);
-                if let Expr::Block { stmts, .. } = then.as_ref() {
-                    walk_block_secret(
-                        stmts,
-                        &mut then_c,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    );
-                }
-                let mut else_c = local.clone();
-                if let Expr::Block { stmts, .. } = else_.as_ref() {
-                    walk_block_secret(
-                        stmts,
-                        &mut else_c,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    );
-                }
-                merge_taint_over(local, &[&then_c, &else_c]);
-            }
-            // `push`/`insert` inside a value block MAY-secrets the container root (set-only).
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if args[1..].iter().any(|a| {
-                        expr_secret_source_m(
-                            a,
-                            local,
-                            secret_fns,
-                            param_return_taint,
-                            method_secret_fns,
-                            struct_fields,
-                        )
-                        .is_some()
-                    }) {
-                        if let Some(b) = local.get_mut(root) {
-                            b.secret = true;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    walk_block_labels(
+        stmts,
+        local,
+        BlockLabelDomain::Secret {
+            sources: secret_fns,
+            param_returns: param_return_taint,
+            method_sources: method_secret_fns,
+        },
+        struct_fields,
+    );
 }
 
 /// The taint-source label of an expression, or `None` if clean — the 4-arg wrapper over

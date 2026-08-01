@@ -1,0 +1,14 @@
+// CHECK_EXPECT: FAIL
+// CHECK_ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Checker-only control: a false postcondition must not build or run.
+fn impossible_savings(serial: i64, scheduled: i64) -> i64
+    requires(serial == 30)
+    requires(scheduled == 30)
+    ensures(result > 0)
+{
+    return serial - scheduled;
+}
+
+fn main() uses(io.print) {
+    print(impossible_savings(30, 30));
+}

@@ -259,18 +259,14 @@ else
   bad "proof_correspondence lacks its explicit source-only --no-pin-use contract"
 fi
 
-# --- 13. Suite freshness (seal end-to-end must not go stale) ---
-# Consumed by seal via `run_gate instrument_hygiene` and `run_gate gate_run_freshness`.
-if [[ -x scripts/gate_run_freshness.sh ]]; then
-  if bash scripts/gate_run_freshness.sh >/tmp/ih_fresh.out 2>&1; then
-    ok "gate_run_freshness PASS (suite stamps within max commits)"
-  else
-    # Surface the reason; this is a hard fail (not warn) — commit N+1 fails closed.
-    bad "gate_run_freshness FAIL (suite not run end-to-end recently, or unconfigured)"
-    tail -8 /tmp/ih_fresh.out | sed 's/^/    | /'
-  fi
+# --- 13. Suite freshness is a separate seal gate over a run-local ledger. ---
+# Do not execute it here: the standalone gate immediately after this one owns the
+# complete 19/23-row pre-freshness roster and promotes nothing until final validation.
+if [[ -x scripts/gate_run_freshness.sh ]] \
+   && grep -Fq 'run_gate gate_run_freshness' scripts/run_seal_checklist.sh; then
+  ok "gate_run_freshness is separately wired into the seal"
 else
-  bad "scripts/gate_run_freshness.sh missing"
+  bad "gate_run_freshness missing or not separately wired into the seal"
 fi
 
 if [[ "$fails" -gt 0 ]]; then

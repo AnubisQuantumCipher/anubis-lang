@@ -323,6 +323,61 @@ unset -f find
 [[ "$rc" -eq 2 && "$unreadable_output" == *"could not enumerate"* ]] && ok=1 || ok=0
 record output_dir_rejects_enumeration_failure "$ok" "rc=$rc output=$unreadable_output"
 
+broad_was_set="${RISC0_SKIP_BUILD_KERNELS+x}"
+broad_saved="${RISC0_SKIP_BUILD_KERNELS:-}"
+targeted_was_set="${ANUBIS_SKIP_RISC0_METAL+x}"
+targeted_saved="${ANUBIS_SKIP_RISC0_METAL:-}"
+runtime_was_set="${R0_DISABLE_METAL+x}"
+runtime_saved="${R0_DISABLE_METAL:-}"
+unset RISC0_SKIP_BUILD_KERNELS ANUBIS_SKIP_RISC0_METAL R0_DISABLE_METAL
+gate_configure_audit_profile_environment hosted
+[[ -z "${RISC0_SKIP_BUILD_KERNELS+x}" \
+  && "${ANUBIS_SKIP_RISC0_METAL:-}" == 1 \
+  && "${R0_DISABLE_METAL:-}" == 1 ]] && ok=1 || ok=0
+record hosted_profile_keeps_cpu_and_skips_metal "$ok" \
+  "broad=${RISC0_SKIP_BUILD_KERNELS+x} targeted=${ANUBIS_SKIP_RISC0_METAL:-unset} runtime=${R0_DISABLE_METAL:-unset}"
+
+RISC0_SKIP_BUILD_KERNELS=1
+ANUBIS_SKIP_RISC0_METAL=0
+R0_DISABLE_METAL=0
+gate_configure_audit_profile_environment hosted
+[[ -z "${RISC0_SKIP_BUILD_KERNELS+x}" \
+  && "$ANUBIS_SKIP_RISC0_METAL" == 1 \
+  && "$R0_DISABLE_METAL" == 1 ]] && ok=1 || ok=0
+record hosted_profile_overrides_conflicting_metal_settings "$ok" \
+  "broad=${RISC0_SKIP_BUILD_KERNELS+x} targeted=$ANUBIS_SKIP_RISC0_METAL runtime=$R0_DISABLE_METAL"
+
+export RISC0_SKIP_BUILD_KERNELS=1 ANUBIS_SKIP_RISC0_METAL=1 R0_DISABLE_METAL=1
+gate_configure_audit_profile_environment full
+[[ -z "${RISC0_SKIP_BUILD_KERNELS+x}" \
+  && -z "${ANUBIS_SKIP_RISC0_METAL+x}" \
+  && -z "${R0_DISABLE_METAL+x}" ]] && ok=1 || ok=0
+record full_profile_clears_all_metal_bypasses "$ok" \
+  "broad=${RISC0_SKIP_BUILD_KERNELS+x} targeted=${ANUBIS_SKIP_RISC0_METAL+x} runtime=${R0_DISABLE_METAL+x}"
+
+set +e
+gate_configure_audit_profile_environment unsupported >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 2 ]] && ok=1 || ok=0
+record audit_profile_rejects_unknown "$ok" "rc=$rc"
+
+if [[ -n "$broad_was_set" ]]; then
+  export RISC0_SKIP_BUILD_KERNELS="$broad_saved"
+else
+  unset RISC0_SKIP_BUILD_KERNELS
+fi
+if [[ -n "$targeted_was_set" ]]; then
+  export ANUBIS_SKIP_RISC0_METAL="$targeted_saved"
+else
+  unset ANUBIS_SKIP_RISC0_METAL
+fi
+if [[ -n "$runtime_was_set" ]]; then
+  export R0_DISABLE_METAL="$runtime_saved"
+else
+  unset R0_DISABLE_METAL
+fi
+
 printf 'GATE_COMMON_SELFTEST: %s (pass=%d fail=%d artifact=%s)\n' \
   "$([[ "$fail" -eq 0 ]] && echo PASS || echo FAIL)" "$pass" "$fail" "$TMP"
 [[ "$fail" -eq 0 ]]

@@ -11,10 +11,144 @@
 # FAIL CLOSED: if a target function cannot be located, the metric prints UNMEASURED and the script
 # exits non-zero. A metric that silently reports 0 because its regex missed is worse than no metric.
 #
-# Usage:  bash scripts/phase_metrics.sh [--json]
+# Usage:
+#   bash scripts/phase_metrics.sh
+#   bash scripts/phase_metrics.sh --append-ledger
+#
+# The ledger mode runs the read-only measurement first, then atomically appends its VERBATIM output
+# and return code to docs/evidence/PHASE_METRICS_LEDGER.md. Failed/unmeasured runs are recorded too;
+# a convergence ledger that keeps only green observations would be an evidence filter, not a ledger.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
+
+LEDGER="$ROOT/docs/evidence/PHASE_METRICS_LEDGER.md"
+
+ledger_mode() {
+  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
+
+append_fatal() {
+  echo "FATAL: $*" >&2
+  exit 2
+}
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    --append-ledger)
+      [[ $# -eq 1 ]] || { echo "FATAL: --append-ledger takes no argument"; exit 2; }
+      ledger_dir="$(dirname "$LEDGER")"
+      if [[ -e "$LEDGER" || -L "$LEDGER" ]]; then
+        [[ -f "$LEDGER" && ! -L "$LEDGER" ]] \
+          || append_fatal "ledger path is not a regular file: $LEDGER"
+      fi
+      mkdir -p "$ledger_dir" || append_fatal "cannot create ledger directory: $ledger_dir"
+      [[ -d "$ledger_dir" && ! -L "$ledger_dir" ]] \
+        || append_fatal "ledger directory is not a real directory: $ledger_dir"
+
+      # mkdir is the portable macOS/Linux exclusive lock. Keep it outside the worktree so the
+      # measurement does not count its own lock as a dirty path. Contenders fail closed instead of
+      # each reporting APPENDED after a last-writer-wins replacement. A stale lock is intentionally
+      # operator-visible; removing it without checking for a live writer would reopen the race.
+      lock_key="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:24])' "$LEDGER")" \
+        || append_fatal "cannot derive ledger lock key"
+      lock_root="${TMPDIR:-/tmp}/anubis-phase-metrics-locks-$(id -u)"
+      (umask 077 && mkdir -p "$lock_root") \
+        || append_fatal "cannot create ledger lock root: $lock_root"
+      [[ -d "$lock_root" && ! -L "$lock_root" ]] \
+        || append_fatal "ledger lock root is not a real directory: $lock_root"
+      lock_dir="$lock_root/$lock_key.lock"
+      out=""
+      next=""
+      lock_owned=0
+      cleanup_append() {
+        [[ -z "$out" ]] || rm -f "$out"
+        [[ -z "$next" ]] || rm -f "$next"
+        if [[ "$lock_owned" -eq 1 ]]; then
+          rmdir "$lock_dir" 2>/dev/null || true
+        fi
+      }
+      trap cleanup_append EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      trap 'exit 129' HUP
+      if ! mkdir "$lock_dir" 2>/dev/null; then
+        append_fatal "ledger append lock is held: $lock_dir"
+      fi
+      lock_owned=1
+
+      # Recheck under the lock. A read-only ledger is a deliberate freeze, not permission to replace
+      # it with a newly writable inode. Writable custom modes are preserved across the atomic move.
+      if [[ -e "$LEDGER" || -L "$LEDGER" ]]; then
+        [[ -f "$LEDGER" && ! -L "$LEDGER" ]] \
+          || append_fatal "ledger path changed and is not a regular file: $LEDGER"
+        prior_mode="$(ledger_mode "$LEDGER")" \
+          || append_fatal "cannot read ledger mode: $LEDGER"
+        [[ "$prior_mode" =~ ^[0-7]{3,4}$ ]] \
+          || append_fatal "unrecognized ledger mode '$prior_mode': $LEDGER"
+        mode_bits=$((8#$prior_mode))
+        (( (mode_bits & 0222) != 0 )) \
+          || append_fatal "ledger is read-only; refusing to unfreeze it: $LEDGER"
+      else
+        prior_mode="644"
+      fi
+
+      out="$(mktemp "${TMPDIR:-/tmp}/anubis_phase_metrics_out.XXXXXX")" \
+        || append_fatal "cannot create observation temporary outside the worktree"
+
+      set +e
+      bash "$0" >"$out" 2>&1
+      measure_rc=$?
+      set -u
+
+      # The replacement must live beside the ledger for an atomic rename, but create it only AFTER
+      # measurement so this script's machinery cannot inflate its own recorded dirty count.
+      next="$(mktemp "$ledger_dir/.phase_metrics_ledger.XXXXXX")" \
+        || append_fatal "cannot create ledger temporary in $ledger_dir"
+
+      if [[ -f "$LEDGER" ]]; then
+        cp "$LEDGER" "$next" || exit 2
+      else
+        printf '# Anubis phase-metrics ledger\n\n' >"$next" || exit 2
+        printf 'Append-only observations emitted by `bash scripts/phase_metrics.sh --append-ledger`. ' >>"$next" || exit 2
+        printf 'Each block is bound to the tree, commit, branch, and dirty count printed inside it.\n' >>"$next" || exit 2
+      fi
+      {
+        printf '\n## %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        printf 'Command: `bash scripts/phase_metrics.sh` · exit: `%s`\n\n' "$measure_rc"
+        printf '```text\n'
+        cat "$out"
+        printf '```\n'
+      } >>"$next" || exit 2
+      chmod "$prior_mode" "$next" || append_fatal "cannot preserve ledger mode $prior_mode"
+      mv -f "$next" "$LEDGER" || append_fatal "cannot atomically replace ledger: $LEDGER"
+      next=""
+      [[ -f "$LEDGER" && ! -L "$LEDGER" ]] \
+        || append_fatal "ledger replacement did not create a regular file: $LEDGER"
+      actual_mode="$(ledger_mode "$LEDGER")" \
+        || append_fatal "cannot verify ledger mode after append: $LEDGER"
+      [[ "$actual_mode" == "$prior_mode" ]] \
+        || append_fatal "ledger mode changed: expected $prior_mode, observed $actual_mode"
+
+      cat "$out"
+      rm -f "$out" || append_fatal "cannot remove observation temporary"
+      out=""
+      rmdir "$lock_dir" || append_fatal "cannot release ledger append lock: $lock_dir"
+      lock_owned=0
+      trap - EXIT INT TERM HUP
+      echo "PHASE_METRICS_LEDGER: APPENDED $LEDGER (measurement rc=$measure_rc)"
+      exit "$measure_rc"
+      ;;
+    --help|-h)
+      echo "usage: bash scripts/phase_metrics.sh [--append-ledger]"
+      exit 0
+      ;;
+    *)
+      echo "FATAL: unknown argument: $1"
+      exit 2
+      ;;
+  esac
+fi
 
 MID="compiler/src/middle/mod.rs"
 CAP="compiler/src/middle/capability.rs"
@@ -72,7 +206,37 @@ print(f"{'metric':40s} {'value':>10s}   target")
 print("-" * 74)
 print(f"{'middle/mod.rs lines':40s} {len(mid):>10d}   strictly decreasing (Phase 2+)")
 
-# ── duplicated lane pairs: structural similarity of the two source walkers ──
+# ── duplicated lane pairs ──
+# Count the four named pairs as PAIRS, not just one similarity percentage. A pair disappears only
+# when BOTH lane-specific implementations disappear. One missing sibling is an asymmetric state and
+# is UNMEASURED rather than credited as convergence.
+PAIR_SPECS = [
+    ('source walkers', 'expr_taint_source_m', 'expr_secret_source_m'),
+    ('pattern seeders', 'seed_taint_pattern', 'seed_secret_pattern'),
+    ('return summaries', 'body_returns_taint', 'body_returns_secret'),
+    ('block walkers', 'walk_block_taint', 'walk_block_secret'),
+]
+dup_pairs = 0
+dup_pair_lines = 0
+pair_bodies = {}
+for label, taint_name, secret_name in PAIR_SPECS:
+    taint_body = body(f'fn {taint_name}(')
+    secret_body = body(f'fn {secret_name}(')
+    pair_bodies[label] = (taint_body, secret_body)
+    if bool(taint_body) != bool(secret_body):
+        print(f"{'pair parity: ' + label:40s} {'UNMEASURED':>10s}   <- exactly one sibling exists")
+        bad += 1
+    elif taint_body and secret_body:
+        dup_pairs += 1
+        lines = (taint_body[1] - taint_body[0] + 1) + (secret_body[1] - secret_body[0] + 1)
+        dup_pair_lines += lines
+        print(f"{'  pair: ' + label:40s} {lines:>10d}   lines across both siblings")
+    else:
+        print(f"{'  pair: ' + label:40s} {'removed':>10s}   shared implementation expected")
+print(f"{'duplicated lane pairs':40s} {dup_pairs:>10d}   0")
+print(f"{'  ^ lines in duplicated pairs':40s} {dup_pair_lines:>10d}   decreasing")
+
+# Preserve the source pair's normalised similarity as a diagnostic, not as the pair-count proxy.
 def norm(text):
     for a, b in [('taint_source','LBL'),('secret_source','LBL'),('tainting_fns','FNS'),
                  ('secret_fns','FNS'),('method_tainting_fns','MFNS'),('method_secret_fns','MFNS'),
@@ -81,15 +245,18 @@ def norm(text):
         text = text.replace(a, b)
     return text.split('\n')
 
-t = body('fn expr_taint_source_m('); s = body('fn expr_secret_source_m(')
+t, s = pair_bodies['source walkers']
 if t and s:
     import difflib
     a, b = norm(t[2]), norm(s[2])
     ratio = difflib.SequenceMatcher(None, a, b).ratio()
-    print(f"{'source-walker pair similarity':40s} {ratio*100:>9.0f}%   0% (one implementation)")
-    print(f"{'  ^ lines in the pair':40s} {len(a)+len(b):>10d}   ~half")
+    print(f"{'source-walker pair similarity':40s} {ratio*100:>9.0f}%   diagnostic; pair count decides")
+    print(f"{'  ^ lines in the source pair':40s} {len(a)+len(b):>10d}   decreasing")
+elif not t and not s:
+    print(f"{'source-walker pair similarity':40s} {'removed':>10s}   shared implementation expected")
 else:
-    print(f"{'source-walker pair similarity':40s} {'UNMEASURED':>10s}   <- fn not found"); bad += 1
+    # Pair parity above already marks this asymmetric state UNMEASURED.
+    print(f"{'source-walker pair similarity':40s} {'UNMEASURED':>10s}   <- exactly one sibling exists")
 
 # ── fused cross-lane joins ──
 joins = sum(1 for l in mid if 'merge_taint_over(' in l and 'fn merge_taint_over' not in l)
@@ -158,7 +325,21 @@ for pat in ('fn walk_expr(', 'fn walk_stmt('):
 
 # ── walker families ──
 fams = 0
-fams += len(re.findall(r'^fn walk_block_\w+\(', '\n'.join(mid), re.M))
+for name in re.findall(r'^fn (walk_block_\w+)\(', '\n'.join(mid), re.M):
+    r = body(f'fn {name}(')
+    # The taint/secret entry points cease to be independent walker families once they become
+    # structure-free domain adapters over the one shared statement traversal. Do not hide future
+    # drift by subtracting them unconditionally: if either wrapper regains AST matching or control
+    # flow, count it as an independent family again.
+    thin_label_adapter = (
+        name in {'walk_block_taint', 'walk_block_secret'}
+        and r is not None
+        and r[2].count('walk_block_labels(') == 1
+        and r[2].count(name + '(') == 1
+        and not re.search(r'\b(?:Stmt|Expr)::', r[2])
+        and not re.search(r'\b(?:for|while|loop|match)\b', r[2])
+    )
+    fams += 0 if thin_label_adapter else 1
 fams += 1 if re.search(r'fn walk_expr', cap) else 0
 eff = pathlib.Path('compiler/src/middle/effects.rs')
 fams += 1 if (eff.exists() and 'fn walk_expr' in eff.read_text()) else 0
