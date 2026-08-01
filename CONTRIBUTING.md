@@ -20,22 +20,23 @@ currently open — the single source of truth for status).
 
 ## The one front door
 
-There is a single command that decides "is this green?" — the same one CI runs and
-the same one a reviewer runs on a clean checkout:
+The named 29-gate runner is the common front door. Hosted CI runs its explicit hosted profile; a
+reviewer can reproduce that bounded contract on a clean checkout:
 
 ```bash
-bash scripts/audit_a_plus.sh --out out/gate
+bash scripts/audit_unified.sh --profile hosted --out out/hosted
 ```
 
-It runs the 15 fail-closed gates (**G1–G15**): `fmt`, `clippy`, the unit tests, a
-release build, the language / turing-core / PCA / security / poc-kit / prove /
-enum-match / for-in / language-trio / offensive fixtures, and a dogfood pass. Any
-`FAIL` is a non-zero exit. If it is green here, it is green in CI.
+Every host-verifiable gate must pass. `G9_poc_kit` is exactly `EXTERNAL`, G14 is the non-executing
+host-isolation witness, and the only successful hosted verdict is `HOSTED_PASS`. The full Tart/VZ
+battery and require-Metal proof lane are separate operator-run evidence, never implied by hosted
+green; see [`docs/CI_TRUST_BOUNDARY.md`](docs/CI_TRUST_BOUNDARY.md).
 
 Prerequisites (macOS / Apple Silicon): the pinned toolchain is selected
 automatically by `rust-toolchain.toml` (`nightly-2026-05-10`); install `ripgrep`
 and `z3` (`brew install ripgrep z3`). The heavy self-host seal runs in a throwaway
-VM — see [`scripts/vm/README.md`](scripts/vm/README.md).
+VM — see [`scripts/vm/README.md`](scripts/vm/README.md). Run full or offensive lanes only under the
+repository's mandatory disposable-guest policy.
 
 ---
 

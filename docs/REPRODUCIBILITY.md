@@ -12,16 +12,22 @@
 - Receipts are verified with the real `risc0_zkvm::Receipt::verify` API.
 - Evidence bundles + `verify_bundle.sh` + `MANIFEST.sha256`.
 
-## Full release candidate
+## Legacy local release diagnostic (not publishable)
 
 `bash scripts/build_release_candidate.sh --metal-reference ... --require-metal --out ...`
 
-Produces a stamp directory containing logs, reports, the release binary copy, and a manifest.
+Produces a stamp directory containing local logs, reports, a mutable-build binary copy, and a
+bounded manifest. It is explicitly **not** commit-bound release evidence and cannot authorize a tag
+or release. The authoritative path is a clean full commit, `scripts/publish_pin.sh --release`
+followed by `scripts/publish_pin.sh --verify-release`,
+the source-current VM/offensive/diff refresh, and `bash scripts/run_seal_checklist.sh` as specified
+by `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`.
 
 ## What "reproducible on this host" means
 
 Given the same:
-- checkout at the sealed commit on `a-plus-maturity/20260705-1649`
+- exact sealed commit (normally reached through `main`; never substitute a mutable branch name for
+  the recorded full SHA)
 - same `/Users/sicarii/Desktop/metal-hybrid-prover` (or equivalent via `--metal-reference`)
 - same Rust + RISC0 toolchains
 

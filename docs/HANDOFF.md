@@ -1,5 +1,13 @@
 # HANDOFF — Anubis language completion arc
 
+> **HISTORICAL OPERATING MANUAL — not current execution authority.** The fleet, queue, phase table,
+> open-item table, pins, counts, and next-action instructions below are retained as a 2026-07-28/29
+> handoff record. Do not dispatch its retired panes or treat its board as live. Reconstruct current
+> state from `AGENTS.md`, `docs/CLAIMS.md`, `docs/COMPLETION_BLUEPRINT.md`, the canonical gates, and
+> the latest `docs/evidence/PHASE_<n>_COMPLETION_<date>.md`. `docs/HANDOFF_LIVE.md` is now an index
+> with the same authority order. The promise framing remains useful only with the explicit
+> `docs/CLAIMS.md` scope it already carries.
+
 You are taking over as **lead** of a four-agent fleet completing the Anubis programming language at
 `/Users/sicarii/anubis-lang`. Read this whole file before touching anything.
 
@@ -51,7 +59,7 @@ These come from the operator. Violating them is worse than shipping nothing.
 | **Agents never use git** | No commits, no pushes, ever. **Only the lead commits.** |
 | **Agents never `cargo build`** | Shared target dir lock. They ask; the lead builds. |
 | **Offensive work goes to FORGE only** | The Codex agent must NOT do anything offensive — it gets flagged. |
-| **Commit hygiene** | `git commit -F <file>`, never `-m` with backticks (zsh). Stage explicit paths. The post-commit hook AUTO-PUSHES `a-plus-maturity/*`. **Never `--force`.** |
+| **Commit hygiene** | `git commit -F <file>`, never `-m` with backticks (zsh). Stage explicit paths. A legacy local post-commit hook auto-pushes `a-plus-maturity/*`; use reviewed short-lived branches and explicit pushes. **Never `--force`.** |
 | **CVP** | Org `5fb4fec2-2657-49ed-b4ba-be7716e47cb0`, approved for dual-use cybersecurity. |
 
 ---
@@ -107,8 +115,10 @@ rather than reinterpreting. That is the entire reason "zero flips" means anythin
 Both-accept = benign symmetric blind spot. Always distinguish a true ACCEPT from a fail-open
 DEFERRAL, and note a runtime witness (file written) where one exists.
 
-**Content-addressed pins.** `scripts/publish_pin.sh` snapshots the binary so an agent's measurements
-cannot straddle two compilers. Publish after every build agents should see, and SAY SO.
+**Source-and-binary-addressed pins.** `scripts/publish_pin.sh` snapshots the binary and source
+manifest so an agent's measurements cannot straddle compilers or provenance epochs. Publish after
+every build agents should see, and SAY SO. The default is a bounded technical pin; only a clean
+`--release` publication followed by `--verify-release` is eligible for a tagged artifact.
 
 **Enforcing changes need a 0-flip verdict-diff** over 311 security + 244 language before landing.
 No exceptions — this rule has caught real regressions.
@@ -159,7 +169,7 @@ kinds exist outside the class (TYPE, ATTRIBUTE/MODE, ORDER/CFG, FILE/path) and d
 | 14 | Aggregate path seeders | **PARTIAL** — 5 shapes closed; **6 matrix rows open**; chain `c05` still ACCEPTs |
 | 15 | Research-lane immunity is ACCIDENTAL | **OPEN** — barrier exists (119 assertions), predicate does not |
 | 16 | 91% of dual-use surface unprobed | **OPEN, stated** — ~24,200 of ~26,700 lines |
-| 17 | `build`/`run` research-consent gap | **OPEN, low** — dead disjunct, latent hazard |
+| 17 | `build`/`run` research-consent gap | **CLOSED for the externally activated bounded Phase-1 epoch** — shared Build/Run/Prove/Repl predicate; final source-current guest `anubis-run-35251` passed 22/22 and offensive guest `anubis-offensive-gate-43849` passed 34/34 with strict identity MATCH; the final 20/20 host seal and independent `APPROVE` are bound by `out/phase1_finalization_51f4_r2_20260731T230000Z/`. The dirty epoch was not landed, released, or shipped |
 
 ### Item 14's six remaining rows (from the auditor's parity matrix, `auditor_round10.md`)
 
@@ -187,24 +197,44 @@ and callable tags into one monoid.
 
 ---
 
-## 6. CURRENT STATE
+## 6. HISTORICAL 2026-07-29 RECEIPT — NOT CURRENT STATE
 
-**Branch** `a-plus-maturity/safe-mode-trust-spine-20260725` (auto-pushes).
-**Pin** `vm/pins/anubis-c84978756eec` @ head `b3a8c2f`.
+**Artifact-bound historical measurement.** The rows below describe only the named immutable pin and
+the source snapshot recorded with it. They are not a live board and must not be refreshed to match a
+later tree. Current status is derived from `AGENTS.md`, `docs/CLAIMS.md`, and the canonical gates.
 
-### Board — every number measured this session
+Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
+and cannot verify later repairs.
+[receipt-scope: pre-fix-only; head: 0f407853; authority: none]
+
+That candidate's SHA-256 is
+`242902cfefc02838eb530925d633b784beeb994ace6b7039ad915c1afd8e31ff`, recorded at
+`2026-07-29T13:51:27Z`. Its snapshot also predates `03210603`.
+
+### Historical board for that pin
 
 | gate | result |
 |---|---|
-| security fixtures | **311/311** |
-| language fixtures | **244/244** |
-| compiler lib | **736/736** |
-| anubis tool | 194/194 |
-| stdlib fail-closed | 104/104 |
-| capset selfhost | 5/5 AGREE, 0 disagree |
-| native-authoritative | 882 files, 0 mismatches |
+| security fixtures | **320/320** |
+| language fixtures | **252/252** |
+| compiler lib | **764/764** host slice; clean-VM compiler suite `EXIT=0` |
+| anubis tool | clean-VM tool suite `EXIT=0` |
+| stdlib fail-closed | **104/104**, `timed_out=0` |
+| native-authoritative | **906 files, 0 mismatches** |
 | formal gate | PASS — no `sorry`/`admit`/free `axiom`; Lean 162 theorems / 15 modules |
-| docs drift | 33 stamps, 0 drift |
+| docs drift | **42 stamps, 0 drift** |
+| full VM slice | **PASS**, `gate failures : 0`, fixpoint `46ddce14…ba60` unchanged; guest `anubis-run-79352` torn down |
+| offensive platform | **34/34 PASS**, `isolation=tart-disposable-guest`; guest `anubis-offensive-gate-91145` torn down |
+
+This historical board verifies only the pre-fix `0f407853` snapshot. It does **not** verify the
+`03210603` annotated-container repair or the `889d9a7c` offensive/transform repairs, and it does not
+close CLAIMS 19a or 21 Row 8. Row 8 has a later bounded source-matched receipt in `docs/CLAIMS.md`.
+
+CLAIMS-20-authority: DEFER-TO-CLAIMS
+
+This historical board cannot decide that receipt's current status. Its disposition lives only in
+`docs/CLAIMS.md` and the latest Phase-1 completion report; do not infer closure from this handoff
+snapshot. Any such receipt is working-tree evidence unless its landing is recorded separately.
 
 ### Commits this session (newest last)
 
@@ -216,7 +246,7 @@ correction · `482a173` item 14 partial · `fde5a5c` items 16+17
 
 ---
 
-## 7. IN FLIGHT RIGHT NOW
+## 7. HISTORICAL 2026-07-28 FLEET SNAPSHOT — superseded by `docs/HANDOFF_LIVE.md`
 
 | Agent | Round | Task |
 |---|---|---|

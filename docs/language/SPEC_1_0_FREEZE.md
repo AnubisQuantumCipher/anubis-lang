@@ -72,7 +72,7 @@ Anything not listed here is experimental / research unless later promoted by MIN
 - Native SMT default flip **DONE 2026-07-25**. **var×var mul DONE**. **Division:** const/const fold to bv literal; nonneg+pow2 → bvlshr/bvand; general free non-pow2 still deferred
 - VZ slice-2 **live apply DONE 2026-07-25**: `anubis vz apply` / `vz run --confine`. DNS-pinned egress **policy + live frame pump** on `native-boot --kernel` (signed binary required)
 - `http_get`/`http_post` **run lowering DONE 2026-07-25**: cleartext pure-std TCP; **HTTPS via host `curl`** (system TLS TCB, same honesty as package registry)
-- Hosted CI Metal *proving*: workflow `.github/workflows/metal-prove.yml` on self-hosted labels `self-hosted,macOS,ARM64,metal` + `scripts/run_metal_prove_gate.sh`. Stock GHA remains cold-verify; claim only when that job observes `metal-hybrid`
+- Require-Metal *proving* is outside hosted CI: a separately approved operator runs `ANUBIS_REQUIRE_METAL=1 bash scripts/run_metal_prove_gate.sh` on local Apple Silicon and binds the result to the release commit and pin. Stock GitHub Actions remains cold-verify; no persistent self-hosted public-repository runner is authorized
 - Author-diversity: DDC toolchain diversity REAL; **architecture lane** `selfhost/backend_independent/token_scan.c` + `run_author_diversity_gate.sh` PASS. **TT-total still not claimed** (same-human residual)
 
 ## 6. Definition of “production-grade” for 1.0

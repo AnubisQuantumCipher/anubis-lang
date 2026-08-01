@@ -12,120 +12,80 @@ second source of truth; that is the exact disease the project is fighting.
 
 ---
 
-## The one sentence that decides "complete"
+## Product promise — the only shipping promise
 
-> `anubis check` PASS ⇒ the program cannot violate its stated contracts, effects, capabilities, or
-> information-flow policy at runtime.
+> **`anubis check` passing means Anubis found no way for the program to violate its stated
+> contracts, effects, capabilities, or information-flow policy at runtime — and everything it could
+> not decide, it refused rather than assumed.**
 
-`docs/language/ROADMAP.md` states the consequence plainly:
+This is **not a totality claim**. Green means no known defects on the measured surface, not no
+defects. [`docs/CLAIMS.md`](CLAIMS.md) is the single living list of known open residuals; a claim
+stronger than that list is a defect in the claim.
 
-> Phases 0–10 freestanding "DONE / At DoD / ROADMAP COMPLETE" are **FALSE** as a current *soundness*
-> claim while CLAIMS open §1 stands. **Open false accepts break it.**
+## Research aspiration — not scheduled and not claimed
 
-**Everything else can be green and it does not matter while a false accept stands.** That is the
-sequencing rationale for the whole file.
+A future research track may mechanize correspondence from source semantics through the implemented
+analyzer, solver obligations, runtime semantics, and evidence verifier. That requires a linking
+proof over the production implementation, not a larger audit corpus or a greener board. It has no
+ship date and is never presented as a current guarantee.
 
----
+Completion for the product therefore means: the product promise remains honest, every observed
+residual is named, every security lane is structurally total over the surface it claims, unknown
+security labels fail closed, and every completion claim is sealed behind a reproducible gate.
 
-## Measured baseline (2026-07-27, re-measure before quoting)
+## Status is derived, never maintained here
 
-| Quantity | Value | How to re-derive |
-|---|---:|---|
-| Commits | 778 | `git rev-list --count HEAD` |
-| Lean theorems | 162 | strip block comments first; naive grep gives 163 |
-| Lean modules | 15 | `ls formal/Anubis/*.lean` |
-| Security fixtures on disk | 280 | `ls examples/security/*.anb \| wc -l` |
-| Language fixtures | 244 | `ls tests/fixtures/language_core/*.anb \| wc -l` |
-| Security gate | 278/278 PASS | 2 red fixtures held out of tree pending their fix |
-| Language gate | 244/244 PASS | pin `ANUBIS_BIN=./target/release/anubis` |
+This document carries **no live board counts**. Re-derive current state from:
 
-Re-derive by command. A number quoted from memory in this project has been wrong more than once —
-including a "242/242 PASS" that was actually 242/244 FAIL.
+- `docs/CLAIMS.md` for open and permanent residuals;
+- `docs/language/ROADMAP.md` for graded feature status;
+- `bash scripts/phase_metrics.sh` for convergence metrics;
+- `bash scripts/run_seal_checklist.sh` for a source-bound host seal after a lead publishes a pin.
 
-### Corrections to the external assessment (2026-07-27)
-
-An outside review rated the project 9.8/10 and is largely fair on architecture and ambition. Three of
-its factual claims are **stale or false** and must not be carried forward:
-
-1. **"Security tests 149/149"** — stale. The corpus is 280 fixtures; the gate reads 278/278 with two
-   held out.
-2. **"150+ theorems / 14 Lean modules"** — stale. Measured: **162 theorems across 15 modules**.
-3. **"A green `anubis check` *never* certifies a contract that `anubis run` violates … This is not
-   marketing."** — **This was false when written.** On 2026-07-27, with a fully green board, this
-   program passed `check` and printed the secret at runtime:
-
-   ```anubis
-   fn key() -> secret<i64> { return 42; }
-   fn app(f) { print(f()); }
-   fn main() { app(key); }        // check exit 0; run printed 42
-   ```
-
-   Closed in `d5f0be8`. Four sibling carriers were still open at time of writing. **A green board is
-   when a claim surface is most dangerous** — a reviewer sees 244/244 and concludes the promise is
-   discharged, when the corpus merely stopped offering a counterexample.
-
-The assessment's architecture read (self-hosting, native solver, dual-use, fail-closed intent) is
-sound. Its *soundness* claim was not. Keep the first, discard the second.
+Historical observations remain in dated evidence artifacts. They are not copied into current prose.
 
 ---
 
-## PROGRESS — 2026-07-28 (measured, re-derive before quoting)
+## Phase order
 
-| Gate | Now |
-|---|---:|
-| unified audit (`audit_unified.sh --profile full`) | **24/24 PASS**, 0 failed / 0 skipped / 0 external |
-| language fixtures | **252/252** (re-measured after the trust-spine commits added 5) |
-| security fixtures | **317/317** |
-| stdlib fail-closed | **104/104** |
-| stdlib integration gate | **10 pass / 1 fail** (was 7/4) |
-| builtin surface (213) | **179 FAIL_CLOSED_OK · 11 RUN_REFUSES · 23 RUNS**, 0 crashes |
-| native-authoritative corpus | **906 files, 0 mismatches** (re-measured 2026-07-29; was 898) |
-| Lean | **162 theorems / 15 modules**, machine-checked on host (G21) |
+1. **Phase 0 — define done, correct the record, install convergence instruments.**
+2. **Phase 1 — evidence and isolation integrity.**
+3. **Phase 1.5 — GitHub as the system of record.**
+4. **Phase 2 — replace duplicated value-flow walkers with one total, lane-parameterized mechanism.**
+5. **Phase 3 — separate the security-label lattice from accept-biased type inference.**
+6. **Phase 4 — close or explicitly publish the residual soundness surface.**
+7. **Phase 5 — complete the language surface; optional for the product promise.**
+8. **Phase 6 — make regression controls and CI permanent.**
+9. **Phase 7 — produce the product-release evidence pack.**
+10. **Phase 8 — open-ended mechanized-correspondence research.**
 
-**Phase 1 — DONE.** 41/41 published carrier routes reject, element ladder 25/25, 25/25 pure guards
-still accept, 0 over-rejection.
+The detailed exit criteria are phase-owned. A later phase cannot redefine an earlier phase's exit.
 
-**Phase 2 — DONE.** `compiler/src/middle/carrier.rs` matches every `Expr` variant with no wildcard
-arm; `run_carrier_totality_gate.sh` PLANTS a variant and proves rustc refuses it, then restores the
-tree. Registered as **G23**. `compiler/src/middle/loopctl.rs` extends the same discipline to all 15
-`Stmt` variants.
+## Mandatory phase stop
 
-**Phase 3 — DONE.** `gate_common.sh`, content-addressed binary pins, coverage ratchets. Two ratchets
-were found pointed at the wrong quantity during Phase 6 and corrected — see CLAIMS 2026-07-28.
+At each phase boundary:
 
-**Phase 4 — DONE.** All five criteria; `t1_encrypted_c2 PASS (whoami over aop-2)`.
+1. stop before beginning the next phase;
+2. write `PHASE_<n>_COMPLETION_<YYYY-MM-DD>.md` with all required evidence sections;
+3. name the absolute tree, commit, branch, dirty state, binary provenance, and toolchain;
+4. map every exit criterion to the command and verbatim verdict line that decided it;
+5. show RED before GREEN for each fix and an accept-side guard for each enforcing change;
+6. try direct, alternate-carrier, and dead-branch falsification twins;
+7. paste start and end output from `scripts/phase_metrics.sh` verbatim;
+8. separate verified, believed, skipped, and unknown work;
+9. list what was not verified and what the phase got wrong;
+10. obtain operator approval before proceeding.
 
-**Phase 5 — DONE, bounded residual published.** 213 builtins classified by the (`check`, `run`) PAIR.
-The 11 `RUN_REFUSES` are proof-lane/native-lowering constructs with no run-lane implementation; they
-refuse rather than assume, so the published promise holds and `check` is INCOMPLETE about runnability.
-`break`/`continue` outside a loop now reject at check time.
+A phase with an unmet criterion reports **INCOMPLETE** and stops. It does not move the criterion,
+weaken the gate, or call the omission out of scope.
 
-**Phase 6 — DONE, and the VM seal is now CLAIMED (2026-07-29).** The seal was taken 2026-07-28 at 19/19 and re-run 2026-07-29 at **22/22, fixpoint unchanged**; this line said the seal was "deliberately NOT claimed" for a day after it had been. `run_failclosed` reaches
-`PASS_RUNTIME_FAILCLOSED_WHOLE`; **G24 promise-coherence** gate registered (it caught a real drift in
-HANDOFF.md on first run); counts reconciled across README/AGENTS/CLAIMS.
+## Landing discipline
 
-**Closed since the 2026-07-27 list, each verified by command:**
-
-- **crypto/hash/KDF/random builtin slice** — no longer unmeasured; every crypto name is classified in
-  `docs/evidence/builtin_surface_matrix.tsv`.
-- **research-mode receipt chain on the tart path** — a real crash op now seals:
-  `sealed vz_exploit_run … (seq=2)` and `receipt chain ok=true count=4`.
-- **`push` check/run divergence** — `let ys = push(xs,3); len(ys)` now runs and is CORRECT
-  (`3`, `[1, 2, 3]`); check rc=0, run rc=0.
-- **`vz-c2-cycle`** — closed under Phase 4.
-
-**Still open, and named:**
-
-- **Generics / HM / traits** — structurally absent from the language, and the reason the self-host
-  grammar cannot express the type engine's full surface. [NEEDS-HUMAN] parser growth.
-- **Trusting-trust closure** — DDC 34/34 and hermetic repro raise the bar; they do not close it.
-- **`edges_all_modules` is NOT this residual any more.** It was published as needing generics on the
-  assertion helpers; that diagnosis was wrong (the construct was, not the type system) and it is
-  closed — see CLAIMS 2026-07-28.
-
-**VM battery: 19/19, fixpoint sealed (2026-07-28).** `gate failures : 0`, `✓ fixpoint matches
-baseline`, `PASS — all gates green, fixpoint unchanged`. `formal` runs in the guest for the first
-time (elan + Lean v4.32.0 installed into `anubis-xcode`; it had been exit 127, toolchain absent).
-`EXPECTED_FIXPOINT_VM` re-baselined `189ac496… -> 46ddce14…` only after the board went green, having
-been deliberately held back at 17/19 and 18/19 — and the digest was reproduced across four
-independent disposable guests before it was written.
+- One bounded slice per review unit; never carry an unbisectable stack of compiler changes.
+- Code and documentation land in separate commits. Fixtures stay with the code slice they verify.
+- Trust-surface changes state the old and proposed accept conditions explicitly.
+- Only the active lead may build, publish pins, commit, or push; explicit paths only in a mixed tree.
+- A frozen pin is evidence about that artifact until source binding is verified; it is not evidence
+  about a later working tree.
+- Research, crash, fuzz, exploit, and offensive execution uses the required disposable guest. A host
+  run is never substituted for guest evidence.

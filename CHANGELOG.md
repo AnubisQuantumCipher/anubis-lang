@@ -10,7 +10,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > 0-flip verdict-diff, an over-rejection guard fixture, a VM seal, and an empty audit re-run on that
 > surface — not when a fixture goes green. Six items once passed the first three and were still open.
 
-## [Unreleased]
+## Unreleased
 
 `anubis check` passing means Anubis found no way for the program to violate its stated policy, and
 refused what it could not decide. It does **not** yet mean the program cannot violate that policy —
@@ -38,8 +38,8 @@ see `docs/CLAIMS.md` item 21 and the phased blueprint.
   violate at runtime. Tracked as `docs/CLAIMS.md` item 21.
 - `compiler/src/evidence/mod.rs` reports a taint field that is an alias of the typecheck result
   rather than an independently computed verdict.
-- CI is red on the default branch and the sealed VZ suite has never run for want of a registered
-  self-hosted runner.
+- Hosted CI is only a `HOSTED_PASS` witness. The sealed Tart/VZ battery and require-Metal lane are
+  explicitly out of CI until a dedicated hardened runner exists.
 
 ---
 
@@ -53,5 +53,3 @@ Release has been published yet**; see the blueprint's Phase 1.5.5.
 - `pca-v0.1` — 2026-07-10 — proof-carrying artifact: Ed25519 software signing plus attributable
   verify.
 - `pre-a-plus-capture-20260705-1649` — 2026-07-05 — baseline captured before the A-plus maturity arc.
-
-[Unreleased]: https://github.com/AnubisQuantumCipher/anubis-lang/compare/selfhost-fixpoint-v1...HEAD

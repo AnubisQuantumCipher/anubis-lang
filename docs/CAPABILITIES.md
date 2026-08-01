@@ -29,7 +29,7 @@ of a red row is not evidence of absence.
 | **Verified build front door** | ✅ | Without the explicit `--no-verify` escape hatch, `anubis build` runs the same checker and refuses the currently modeled unproven-contract cases |
 | **Contract lanes** | 🟡 | integer (exact i64) · float **comparison** · string **equality/length** · bounded arrays · loop invariants · struct fields. Outside the modeled fragment the checker **defers** — see the scoped promise below |
 | **Native SMT solver** | ✅ | a zero-dependency, Lean-verified QF_BV solver; **default-authoritative** on the proven integer fragment (opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`); Z3 cross-checks when present |
-| **Mechanized components** | 🟡 | 162 Lean 4 theorems across 15 modules cover the stated encoding, bit-blast, non-interference, and effect lemmas; `run_formal_gate.sh` checks those files and rejects `sorry`/`admit`/`axiom`. **Not** a proof of total language soundness, and **not** run on the hosted CI runner (see [CI reality](#ci-reality) below) |
+| **Mechanized components** | 🟡 | 162 Lean 4 theorems across 15 modules cover the stated encoding, bit-blast, non-interference, and effect lemmas; `run_formal_gate.sh` checks those files and rejects `sorry`/`admit`/`axiom`. **Not** a proof of total language soundness. Hosted CI installs the pinned Lean toolchain and requires this gate; see [CI reality](#ci-reality) below |
 
 ### What a green `check` actually promises
 
@@ -190,19 +190,20 @@ Deeper: [`LANGUAGE.md`](../LANGUAGE.md) · [`docs/CLI.md`](CLI.md) ·
 
 ## CI reality
 
-What the hosted CI runner actually executes, read from the gate log of the most recent completed
-`anubis-ci` run (2026-07-28):
+What the hosted CI workflow is configured to execute on this branch:
 
-- **21 gates are declared; 2 cannot run on the hosted runner.** `G21_formal` reports *"lake/elan not
-  installed on this runner; Lean proofs NOT checked here"*, and `G9_poc_kit` requires a dedicated
-  Tart/VZ runner. The Lean theorem count is therefore verified by running
-  `bash scripts/run_formal_gate.sh` locally or on the dedicated runner — **not** by the badge.
-- **The build is currently red.** Re-derive rather than trust this line:
+- The canonical roster contains **29 named gates**. Hosted CI installs the pinned Lean toolchain,
+  runs the formal gate explicitly, then runs `scripts/audit_unified.sh --profile hosted`.
+- A successful hosted result requires **28 PASS plus exactly `G9_poc_kit=EXTERNAL`**. G14 is only
+  its non-executing 5-check host-isolation witness. The verdict is `HOSTED_PASS`, never a full seal.
+- G9, the full 34-check G14 battery, and require-Metal parity are separately approved operator-run
+  evidence outside public CI. No persistent self-hosted runner is authorized by this design.
+- This text describes workflow intent, not a current GitHub result. Re-derive the live status:
 
 ```bash
 gh run list --workflow anubis-ci --status completed --limit 1 \
   --json conclusion,displayTitle,headBranch
-bash scripts/audit_unified.sh          # the same gate set, locally
+bash scripts/audit_unified.sh --profile hosted  # same bounded hosted contract, locally
 ```
 
 ---

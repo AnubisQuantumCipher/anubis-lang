@@ -4,7 +4,7 @@
 
 <br><br>
 
-[![CI](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml/badge.svg?branch=a-plus-maturity%2F20260705-1649)](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml)
+[![CI](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml)
 ![Built with Rust](https://img.shields.io/badge/built_with-Rust-000000?logo=rust&logoColor=white)
 ![Native SMT solver](https://img.shields.io/badge/native_SMT_solver-0_external_deps-1f6feb)
 ![Apple Silicon](https://img.shields.io/badge/target-Apple_Silicon-black?logo=apple)
@@ -140,8 +140,8 @@ residual inventory*. Absence of a red row is not evidence of absence. The projec
 itself, in [`docs/CLAIMS.md`](docs/CLAIMS.md), and means it.
 
 **2. Numbers are re-derived by command, never typed by hand.** These are measured from the tree on
-every gate run — security **327/327**, language **252/252**, stdlib fail-closed **104/104**,
-native-authoritative over **916 files**, **213 builtins**, and 162 Lean 4 theorems across 15 modules
+every gate run — security **327/327**, language **253/253**, stdlib fail-closed **104/104**,
+native-authoritative over **921 files**, **213 builtins**, and 162 Lean 4 theorems across 15 modules
 with no `sorry`/`admit`/`axiom`:
 
 ```bash
@@ -150,16 +150,17 @@ bash scripts/audit_unified.sh          # the full gate set
 bash scripts/run_formal_gate.sh        # the Lean theorem check
 ```
 
-**3. CI does not run every gate, and the build is not always green.** Two of the declared gates
-cannot execute on the hosted runner at all — `G9_poc_kit` needs a dedicated Tart/VZ runner, and
-`G21_formal` reports *"lake/elan not installed on this runner; Lean proofs NOT checked here"*. So
-**the Lean theorem count above is verified by running the gate locally, not by CI.** The badge at the
-top of this page is the live build state; it has been red during active development, and the gate
-report says which gates rather than the badge. Check both rather than trusting this paragraph:
+**3. Hosted CI is a bounded witness, not the sealed Apple/VZ result.** The
+`hosted-gate-witness` job installs the pinned Lean toolchain and evaluates the named 29-gate roster.
+Every host-verifiable gate must pass; `G9_poc_kit` remains exactly `EXTERNAL`, and G14 is limited to
+its non-executing host-isolation witness. A green badge therefore means `HOSTED_PASS`, not a Tart/VZ
+seal or require-Metal proof. Those lanes are deliberately out of CI until a dedicated hardened
+runner exists; see [`docs/CI_TRUST_BOUNDARY.md`](docs/CI_TRUST_BOUNDARY.md). Check the exact report
+and commit rather than inferring scope from the badge:
 
 ```bash
 gh run list --workflow anubis-ci --status completed --limit 1 --json conclusion,displayTitle
-bash scripts/audit_unified.sh          # the same gate set, locally, with a per-gate verdict
+bash scripts/audit_unified.sh --profile hosted --out out/hosted  # the hosted contract locally
 ```
 
 The phase-by-phase arc lives in [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md); the

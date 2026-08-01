@@ -19,7 +19,7 @@
 
 **Rule:** Anything not implemented in this slice **must** be listed here. The status authority is
 [`docs/CLAIMS.md`](../CLAIMS.md); `MATURITY_CLAIM_MATRIX.md` is the dated tranche ledger and
-`A_PLUS_ACCEPTANCE_CRITERIA.md` specifies GATE 1–15 of the 22 the runner now executes. No
+`A_PLUS_ACCEPTANCE_CRITERIA.md` specifies the current named G1–G29 runner contract. No
 over-claiming "general-purpose language complete".
 
 ## NOW REAL (previously planned — implemented 2026-07-09, see TURING_COMPLETENESS.md)

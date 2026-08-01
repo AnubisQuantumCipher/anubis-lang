@@ -3,7 +3,7 @@
 Auto-loaded into every agent session in this repo. Keep it TRUE; a stale file here silently briefs
 every worker with a dead plan and nothing warns you.
 
-Last verified against the tree: 2026-07-27.
+Last verified against the tree: 2026-07-31.
 
 ## What Anubis is
 
@@ -59,9 +59,14 @@ a four-times-proven defect generator here (`method_contracts`, `fn_declared_effe
 
 ## Standing rules
 
-- **No git. No commits, no pushes, ever.** The lead commits. This is absolute.
+- **Workers do not use git.** No worker commits, pushes, stages, or rewrites history. The
+  operator-appointed active lead is the sole committer/pusher and must stage only reviewed explicit
+  paths from a green coherent slice. On 2026-07-29 the operator appointed this Hermes session as the
+  replacement lead after the prior lead retired.
 - **READ-ONLY on `compiler/src/**` and `solver/**`** unless your lane explicitly grants otherwise.
   Deliver unified diffs and fixtures; the lead applies them.
+- **Code and docs never share a commit.** Fixtures stay with the code slice they verify; claims,
+  phase reports, and roadmap changes land separately after the code receipt exists.
 - **Zero fabrication.** Every number from a command you ran; every code claim with `file:line`. A
   step you did not run is **SKIPPED with a reason**, never PASS. Out of evidence is `[NEEDS-HUMAN]`.
   A plausible claim you did not verify is the worst thing you can hand the lead, because they will
@@ -114,32 +119,76 @@ tart guest** cloned from `anubis-xcode` (`./target/release/anubis vz status` fir
 guest name. Crash isolation is not air-gap; no zero-NIC claim without native-preflight. **If tart is
 red: STOP and say so. Do not fall through to the host.**
 
-## Current state (2026-07-29 — W1 bounded receipt)
+## Current state (2026-07-31 — Phase 1 bounded complete/activated; Phase 1.5 in progress)
 
 Commit `03210603` has a source-matched immutable candidate
 `vm/pins/anubis-58ba4abc0a63`, SHA-256
 `58ba4abc0a636d909aa72e4f8df06d6e2adcad3ae378396a4c62a63f106a25bf`.
-Against that pin, compiler library **766/766**, security **327/327**, language **252/252**,
-stdlib fail-closed **104/104**, native-authoritative **916 files, 0 mismatches**, and the formal gate
+Historical bounded receipt against that pin: compiler library **766/766**, security **327/327**,
+language **252 passed of 252**,
+stdlib fail-closed **104/104**, current native-authoritative **921 files, 0 mismatches** (the bounded
+W1 receipt itself graded 916 files), and the formal gate
 PASS. The bounded W1 place-resolution slice is green.
 
-The branch also contains the subsequent `889d9a7c` offensive isolation/evidence slice; its
-source-stable tool run passed **357/357** unit tests plus every integration-test binary. A combined
-release pin and whole-tree host/VZ seal are still pending. Do not report a whole-tree `SEAL_PASS`
-from the bounded W1 receipt.
+The branch also contains the subsequent `889d9a7c` offensive isolation/evidence slice. The fresh
+Phase-1 working-tree receipts below supersede the earlier pre-fix guest receipt and the later
+2026-07-30 offensive bundle whose report identity did not match its export manifest. Neither a
+superseding receipt nor a green gate turns the uncommitted tree into shipped work.
 
-Reproduce all of it with one command: **`bash scripts/run_seal_checklist.sh`**. It rebuilds once,
-pins that binary for every gate, scores only each gate's declared verdict line (never the log body —
-fixture rows contain `exp=FAIL` and a naive grep false-alarms), checks corpus completeness so a
-truncated run cannot pass, and REFUSES to report PASS if any precondition is unmet.
+At the deciding technical epoch, the dirty tree was green at security **327/327**, language **253/253**, stdlib
+fail-closed **104/104**, compiler library **771/771**, and formal. Native-authoritative and docs
+drift now share one tracked inventory of **921 files**; native-authoritative reported **0 mismatches,
+0 disagreements**, and the corpus/pin poison gate passed **27/27**. The two reduced block-label
+walkers are replaced by one total `walk_block_labels`; walker completeness is green with **0
+findings** on the registered security walkers.
+
+The immutable compiler used for the current technical receipt is
+`vm/pins/anubis-51f4a964347a`, SHA-256
+`51f4a964347a4a0f3ea2833331eb313315aa502c96c9d7a71fc3b20414eca027`. Its source-bound technical
+epoch was
+`0281e8034022fc62f4f853906a33173bc0286e9ae9a0e07b26d761a495962b03`; pin/tree verification
+passed at the opening and closing of the deciding runs. Disposable guest `anubis-run-23962`
+completed all **22/22** named VM gates with zero failures, unchanged fixpoint
+`46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60`, source identity unchanged
+before/sync/after, strict validator PASS, and verified teardown at
+`out/phase1_vm_51f4_postmetrics_final_20260731T182200Z`. Disposable guest
+`anubis-offensive-gate-41607` completed the offensive gate **34/34**; its strict manifest validator
+and independent revalidation both passed, and teardown was verified at
+`out/phase1_offensive_51f4_postmetrics_final_20260731T185000Z`. Both guests used 5,120 MiB under the
+unchanged 8,192 MiB host-reserve guard; the full battery used three build jobs. The post-metrics
+old/new check diff passed over **921 files with 0 flips and 0 timeouts** at
+`out/phase1_verdict_diff_281e_to_51f4_postmetrics_20260731T185400Z.json`; the independent
+falsification matrix passed **9/9**, PCA passed **19/19**, corpus/pin poison passed **27/27**, and
+walker completeness remained green with **0 findings**. Promise coherence passed over **5 product
+restatements**, each carrying scope plus a `docs/CLAIMS.md` pointer, with zero scan errors.
+
+Documentation is part of the pin source manifest. The external finalization receipt at
+`out/phase1_finalization_51f4_r2_20260731T230000Z/receipt.md` (SHA-256
+`ff6dc5cad927f27b299657df32dcf978ae6bfc2e3be18cb1a0be3334765ac328`) proves the required
+source-current VM **22/22**, offensive **34/34**, 921-row zero-flip diff, exact host seal **20/20**
+with captured exit 0, and manifest revalidation. Its post-receipt
+`independent_review.md` (SHA-256
+`b0a55b624afad5c4a3f341acf5b2dc411359d3b3d7e20942d99b969850b5f69b`) records `APPROVE` with no
+blocking finding and zero source writes. That satisfied the frozen report's external predicate and
+activated **bounded Phase 1 COMPLETE** for source tree
+`b3b5bfd8e472aec45856ff95a6d307670c20083c620f9971f90e5d4ce50be1a1`. It did not land or ship the
+dirty epoch and is not a release artifact.
+
+Any later source-current or release claim needs a fresh commit-bound build and immutable pin, then
+the VM→offensive→921-row-diff refresh sequence in
+`docs/evidence/PHASE_1_COMPLETION_2026-07-31.md` §§8/12 and a new
+**`bash scripts/run_seal_checklist.sh`** receipt. The dirty-epoch `51f4...` pin must never be attached
+to a tag or GitHub Release. The seal runner never rebuilds; it verifies and snapshots its selected
+source-bound pin, scores only declared verdict lines, and refuses missing/truncated preconditions.
 
 **Green means no KNOWN defects, not no defects.** Known-open, with probes on disk:
 
+- `docs/CLAIMS.md` item 21 remains load-bearing: unannotated container/return/parameter place types,
+  place-assignment parity in reduced walkers, conditional contract collection, function-value body
+  blind spots, and builtin-result callable identity are open. Row 8 is sealed only for annotated
+  `list<T>`/`map<K,V>` indexing; its unannotated array-literal twin is explicitly not closed.
 - `anubis run` is **not** fail-closed *as a whole* — the ~213-builtin domain/arity/wrong-type/I/O
   surface is unenumerated. The instrumented surface is green; the whole claim is not available.
-- The research half's **receipt chain** is unimplemented: `vz exploit`/`vz fuzz` produce no
-  engagement receipt and no host evidence, so the proof-carrying thesis fails for exactly the
-  operations that lane exists to prove.
 - The bare `anubis` shell alias is documented, not fixed.
 
 ## The binary moves. Use a pin, not `target/release/anubis`.
@@ -155,9 +204,12 @@ Resolve the pin ONCE at the start of a round and use it throughout:
     ANUBIS_BIN="$(scripts/publish_pin.sh --current)"
     "$ANUBIS_BIN" check foo.anb
 
-Pins are content-addressed and read-only, so a rebuild creates a NEW file and cannot mutate the one
-you are holding. If the lead publishes a new pin mid-round, finish on your old one — it still exists
-and still works — then re-measure deliberately instead of discovering the change inside your results.
+Pins are source-and-binary-addressed and read-only, so a rebuild or source-manifest change creates a
+NEW file and cannot mutate the one you are holding. If the lead publishes a new pin mid-round,
+finish on your old one — it still exists and still works — then re-measure deliberately instead of
+discovering the change inside your results. Ordinary publication creates a bounded technical pin;
+a tagged release requires a clean full commit, `scripts/publish_pin.sh --release`, and a closing
+`scripts/publish_pin.sh --verify-release`. A dirty-tree technical pin is never a release artifact.
 
 Report the pin PATH and its sha256, not just the sha256.
 

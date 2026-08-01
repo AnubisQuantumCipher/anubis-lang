@@ -55,7 +55,7 @@ ANUBIS_RISC0_METAL_REFERENCE=/Users/sicarii/Desktop/metal-hybrid-prover \
 
 Evidence bundles always record which source was used (`config_source`).
 
-## Running the full release-candidate builder (after changes)
+## Running the legacy local release diagnostic (after changes)
 
 ```bash
 bash scripts/build_release_candidate.sh \
@@ -65,6 +65,7 @@ bash scripts/build_release_candidate.sh \
 ```
 
 See the generated `RELEASE_CANDIDATE_REPORT.md` + `release_candidate.json` + `MANIFEST.sha256`.
+These artifacts are explicitly local diagnostics, not commit-bound or publishable release evidence.
 
 ## Verification after install
 

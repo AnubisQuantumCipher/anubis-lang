@@ -55,30 +55,38 @@ total." Residual composition shapes may still exist (e.g. D5 generic field insta
 struct-lit IF-at-construction from earlier HORUS census) without a current published red row.
 Absence of a red row is **not** evidence of absence.
 
-### Latest sealed baseline (re-stamped 2026-07-27 GROK-MAAT round 8 — not current working source or a total-soundness claim)
+### Latest bounded working-tree evidence (technical epoch 2026-07-31 — externally activated; not a total-soundness claim)
 
-This table is a dated baseline, not the live dirty-tree release status. Source-only repairs and
-verification-pending rows later in this document do not become current release claims until a fresh
-immutable pin and the required seal are recorded.
+This table combines the last stable baseline with explicitly named later working-tree receipts; it
+is not a release status. The deciding technical epoch is
+`0281e8034022fc62f4f853906a33173bc0286e9ae9a0e07b26d761a495962b03` on immutable compiler pin
+`vm/pins/anubis-51f4a964347a`. The external receipt
+`out/phase1_finalization_51f4_r2_20260731T230000Z/receipt.md` proves the required source-current
+VM/offensive/921-row-diff refreshes and exact docs-bound host seal; its independent review records
+`APPROVE` with no blocking finding and zero source writes. The frozen report's predicate is therefore
+satisfied: **Phase 1 is bounded COMPLETE / ACTIVATED** for source tree
+`b3b5bfd8e472aec45856ff95a6d307670c20083c620f9971f90e5d4ce50be1a1`. This reconciliation moves
+the live tree beyond that exact epoch. No landing, release, shipping, or total-soundness claim
+follows, and the dirty-epoch pin is not eligible for a tagged release.
 
-**Tip commits:** `ec65724` (unknown attr fail-closed) · `e6ebfd2` (research auth bypass) ·
-`c9415b7` (D4) · `f9fc7a7` (D1/D2/D3). Live instrument: `./target/release/anubis` (mtime
-2026-07-27 02:14 this pass).
+**Historical tip commits:** `ec65724` (unknown attr fail-closed) · `e6ebfd2` (research auth bypass) ·
+`c9415b7` (D4) · `f9fc7a7` (D1/D2/D3). Later rows explicitly name the immutable technical-epoch
+instrument; do not substitute mutable `./target/release/anubis`.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
 | **Security fixtures** | Lead gate **327/327 PASS**. Live disk inventory **327** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
-| **Language core** | **252/252 PASS** — re-measured 2026-07-28 after the trust-spine commits added 5 fixtures (`total 252 passed 252 failed 0`, 252 unique names in `fixture_report.json`); see the float-lane residual below. The "243/244" reading recorded earlier the same day was against the then-244 corpus on an unpinned instrument | pin `ANUBIS_BIN` (§6) |
+| **Language core** | **253/253 PASS** — Phase 1 adds the research-block local-field accept fixture; the earlier 252/252 receipt remains historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 916 files, 0 mismatches** (re-measured 2026-07-29: `mismatches=0 disagreements=0`; ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 921 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
-| VM seal of post-registry fixpoint | **SEALED** — 19/19 on 2026-07-28, re-run **22/22 on 2026-07-29** (guest `anubis-run-14791`), fixpoint `46ddce14…ba60` == `scripts/vm/EXPECTED_FIXPOINT_VM` both times | `bash scripts/vm/run-slice.sh`; see § *VM seal* below. This row read **Pending** until 2026-07-29 while the section below already said SEALED — the same document asserting both |
+| VM seal of post-registry fixpoint | **SEALED for the named technical epoch** — fresh **22/22** run on 2026-07-31 (guest `anubis-run-23962`), 0 gate failures, fixpoint `46ddce14…ba60` == `scripts/vm/EXPECTED_FIXPOINT_VM`, source identity stable before/sync/after, strict validator PASS, verified teardown; earlier receipts remain historical | `out/phase1_vm_51f4_postmetrics_final_20260731T182200Z`; this is distinct from the external docs-bound finalization seal and is not a landing or shipping claim |
 
 #### Honest-number methodology
 
@@ -120,7 +128,8 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    **Still not a totality claim.** These six are the shapes that were NAMED. The
    function-identity carrier family closed the same day (bare name, alias chain, if/match join,
    list/struct/map/enum element, return, identity forwarder, pass-through builtin, argument
-   position) with one carrier still open — see item 7. Green board does not invent completeness.
+   position) with one carrier still open — see boundary item B4. Green board does not invent
+   completeness.
 
 2. **check/run divergence — (R) CLOSED; (B) residual named.**  
    **(A)=0, (B)=7, (R)=3**; (R)+PCA **CLOSED**. **(B)** non-run by design — do not equate
@@ -233,7 +242,8 @@ expected      : 46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60
 PASS — all gates green, fixpoint unchanged.
 ```
 
-**All 20 gates `EXIT=0`** — cargo-test, tool-test, clippy, build-rel, language 252/252, turing,
+**Historical 2026-07-28 receipt: all 20 gates `EXIT=0`** — cargo-test, tool-test, clippy,
+build-rel, language 252 passed of 252, turing,
 security 317/317 (**historical stamp, 2026-07-28**), stdlib 10/10 (guest lane), shadow,
 seal (stage2 == stage3), dogfood,
 effect/capset/type/taint self-host (0 disagreements each), stdlib-fc 104/104, native-auth,
@@ -664,23 +674,56 @@ never terminates is a check/run divergence of a different kind, and is being cha
     through_map_action` test (attck.rs) closes the ATT&CK technique surface. Persistence mechanism
     names and malleable profile fields remain unprobed predictions.
 
-17. **`build` and `run` disagree on research CONSENT — mechanism gap, outcome currently agrees
-    (2026-07-28).**
+17. **`build` and `run` research CONSENT gap — SOURCE/VZ-CLOSED on the bounded dirty tree;
+    unlanded and unshipped (2026-07-31).**
 
-    `anubis run` requires an explicit `--allow-research` and refuses otherwise
-    (`ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW`). `anubis build` has no such flag and INFERS the same
-    permission: `ir.has_research || (ir.mode != Safe && !ir.taint_labels.is_empty())`.
+    All product callers that can lower or execute a whole program (`build`, `run`, `prove`, and
+    exact/interpreted `repl`) now consult `require_program_research_boundary` after resolving and
+    classifying the complete program. A Research/Exploit build without `--allow-research` rejects
+    with `ANUBIS_BUILD_RESEARCH_REQUIRES_ALLOW`; supplying the capability engages the same
+    disposable-VZ boundary as `run --allow-research`, before native lowering or artifact emission.
+    `lower_to_native` receives an explicit mode-derived caller capability and no longer infers
+    permission from `ir.has_research` or taint metadata. A redundant flag on a Safe program does not
+    enable research lowering. The signed compiler execution helper independently requires an
+    explicit Anubis VZ marker, and test-only raw execution helpers are no longer public APIs.
 
-    The second disjunct is **dead code** under current typecheck semantics — `has_research` is
-    already set for any function with `mode != Safe`, so it never changes the outcome. Both paths
-    therefore agree today, and the finding is LOW severity.
+    Poison/accept guards: `research_build_requires_explicit_consent_and_vz_before_lowering`,
+    `whole_program_callers_share_the_same_mode_derived_research_boundary`, and
+    `research_block_local_field_access_and_ordinary_twin_both_lower`. At the deciding technical
+    epoch, compiler library **771/771**, language **253/253**, security **327/327**, stdlib
+    fail-closed **104/104**, PCA **19/19**, and the independent direct/carrier/dead-branch
+    falsification matrix **9/9** passed. The current source-matching disposable-guest receipts are
+    recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`.
 
-    It is recorded anyway because it is a live maintenance hazard: if `has_research` is ever narrowed
-    to track only `@research` blocks, that dead disjunct silently reactivates and auto-enables the
-    research lane — `target_run`, host command execution — in a BUILT binary for programs the `run`
-    path would have refused, with the user never passing a consent flag at any point. The comment at
-    the site says the two paths should match; the mechanism is inference on one side and explicit
-    consent on the other.
+    The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) is retained as
+    a failed receipt, not promoted: security **327/327**, language **253/253**, stdlib fail-closed
+    **104/104**; the current native-authoritative corpus is **921 files**, while that failed receipt
+    graded 916 files with 0 mismatches; the measured builtin inventory was
+    **213 builtins**, while check/run parity and the documentation-coverage floor were RED. Phase 1
+    repairs those observed blockers and must rerun.
+
+    The audited source-bound rerun at `out/phase1_host_seal_audited_20260730T154003Z` mechanically
+    returned `SEAL_PASS` with 18/18 declared gates on pin `anubis-4dc5a51df23b`. It is **not promoted
+    to a whole-tree seal**: native-authoritative enumerated **921 files** from the live disk while the
+    docs gate enumerated **916 tracked files**. Five untracked `.anb` files explain the difference;
+    silently narrowing either side or staging unrelated showcase work is forbidden. The discrepancy
+    was a technical HOLD pending trust-surface sign-off.
+
+    **Superseding technical closure receipt:** immutable compiler pin
+    `vm/pins/anubis-51f4a964347a` (SHA-256
+    `51f4a964347a4a0f3ea2833331eb313315aa502c96c9d7a71fc3b20414eca027`) was verified at source
+    epoch `0281e8034022fc62f4f853906a33173bc0286e9ae9a0e07b26d761a495962b03`.
+    Disposable guest `anubis-run-23962` completed all 22 named VM gates with zero failures,
+    unchanged fixpoint, strict validator PASS, and verified deletion at
+    `out/phase1_vm_51f4_postmetrics_final_20260731T182200Z`; disposable guest
+    `anubis-offensive-gate-41607` passed 34/34 with a manifest-bound strict-validator PASS and
+    verified deletion at `out/phase1_offensive_51f4_postmetrics_final_20260731T185000Z`. The
+    post-metrics old/new diff covered 921 files with zero flips and zero timeouts. The finalization
+    receipt at `out/phase1_finalization_51f4_r2_20260731T230000Z/receipt.md` proves the required
+    source-current refreshes and exact 20/20 host seal, and its read-only review records `APPROVE`
+    with no blocking finding and zero source writes. The source/VZ condition and bounded Phase-1
+    activation predicate are therefore closed for the receipt's exact frozen source tree. Nothing
+    here establishes landing, release, shipping, or universal soundness.
 
 18. **The tag-lane DEFECT FACTORY — CONVERGED on pin `anubis-dacf4a164a02`; a user-fn carrier class
     is OPEN in its place (2026-07-28). The "still widening" judgment below was FALSIFIED by the
@@ -906,14 +949,17 @@ never terminates is a check/run divergence of a different kind, and is being cha
     listener hard-coding its headers independently. A different disease, recorded here so it is not
     lost.
 
-19a. **The malleable `transform` is ONE-DIRECTIONAL — OPEN, live in the published tree
-    (2026-07-29).**
+19a. **The malleable `transform` source repair landed in `889d9a7c`; post-repair guest
+    compatibility remains unsealed (`cli: harden offensive isolation and evidence identity`,
+    2026-07-29).**
+
+Landing-status: LANDED commit=`889d9a7c`
 
     Closing 19's `transform` residual by wiring `apply_transform` into the listener
     (`fded3c85`, pushed) removed a dead field and introduced two defects the dead field did not
-    have. **Inert is harmless; one-directional is a silent break.** Recorded against the
-    committed tree, not against a fix — the fix is WIP in the working tree and unsealed, so this
-    entry stands until a seal says otherwise.
+    have. **Inert is harmless; one-directional is a silent break.** Commit `889d9a7c` contains the
+    repair. A guest receipt can verify that repair only when its binary was built from a tree
+    containing `889d9a7c`; landing the source did not upgrade older evidence.
 
     | # | defect | witness |
     |---|---|---|
@@ -926,30 +972,44 @@ never terminates is a check/run divergence of a different kind, and is being cha
     consumer discarded the result. **When adding a check, verify the consumer does not swallow
     it** — otherwise the check is decorative and the board still reads green.
 
-    **Fix shape (WIP, working tree, NOT sealed and NOT committed):** the same parity shape used
-    for the ATT&CK catalog — `KNOWN_TRANSFORMS` + `TRANSFORMS_WITH_BEACON_INVERSE` (only `none`
-    today), `validate()` rejecting the two classes with distinct errors
+    **Fix shape (implemented in `889d9a7c`; bounded seal recorded below):** the same parity shape
+    used for the ATT&CK catalog — `KNOWN_TRANSFORMS` + `TRANSFORMS_WITH_BEACON_INVERSE` (only
+    `none` today), `validate()` rejecting the two classes with distinct errors
     (`ANUBIS_MALLEABLE_TRANSFORM_UNKNOWN` / `_NO_INVERSE`), `load_from_engage` returning
     `Result<Option<_>>`, and a parity test asserting every KNOWN transform has a non-identity arm.
 
     **Verification boundary, stated exactly.** The negative-control matrix (5 transform values,
-    each producing its correct distinct error) was run against the **mutable, unsealed** release
-    binary `d0394c6397…`. The published pin `be1db3a34b77…` **accepts `base64`** — it predates
-    the change — and `publish_pin.sh --verify` fails on source-tree hash, so **no pinned
-    instrument can currently measure this**. The listener consumer path is **unexecuted**: host
-    `listen` is refused by `ANUBIS_OFFENSIVE_HOST_FORBIDDEN` before engagement or profile loading
-    is reached, so ordering (`listener.rs` loads the profile before it binds) plus a passing
-    loader regression is **inference, not execution**. End-to-end requires
-    `run_offensive_platform_gate.sh` in a guest; the VM seal is blocked on admission headroom
-    (`free≈16.5 GiB` vs the guard's `20480 MiB`). Status: **WIP — non-VM checks passed, VM
-    verification blocked.**
+    each producing its correct distinct error) and the loader regression establish that invalid
+    profiles are rejected and the listener consumer does not collapse the error to `None`.
 
-20. **The 48 new offensive commands BYPASS the VZ isolation guard — OPEN, live and public,
-    highest-severity item on this list (2026-07-29).**
+Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
+and cannot verify later repairs.
+[receipt-scope: pre-fix-only; head: 0f407853; authority: none]
 
-    **Do not run any `credential-*`, `privesc-*`, `discovery-*`, `collection-*`, `evasion-*`,
-    `exfil-*`, `postex-*` command on the host until this is closed.** They execute against the
-    host and seal the results into the engagement.
+    That candidate's SHA-256 is
+    `242902cfefc02838eb530925d633b784beeb994ace6b7039ad915c1afd8e31ff`, recorded at
+    `2026-07-29T13:51:27Z`. Its VM and **34/34** offensive receipts do not verify the transform
+    repair or post-repair guest compatibility. A post-fix guest run was observed on 2026-07-30, but
+    its exported report bundle was not internally hash-consistent; that RED receipt remains below
+    as history. A fresh 2026-07-31 strict-validator receipt now supersedes it for the bounded dirty
+    technical epoch. The direct loader tests remain the bounded source oracle.
+
+20. **The 48-command offensive expansion bypassed the VZ isolation guard — source fix landed in
+    `889d9a7c`; POST-FIX GUEST VERIFICATION CLOSED for the bounded dirty technical epoch.**
+
+Landing-status: LANDED commit=`889d9a7c`
+
+CLAIMS-20-receipt-status: CLOSED
+CLAIMS-20-receipt-identity: MATCH
+
+Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
+and cannot verify later repairs.
+[receipt-scope: pre-fix-only; head: 0f407853; authority: none]
+
+    **Historical pre-fix warning; current policy remains guest-only.** Before this fix, no
+    `credential-*`, `privesc-*`, `discovery-*`, `collection-*`, `evasion-*`, `exfil-*`, or
+    `postex-*` command could be run on the host safely: they executed there and sealed the results
+    into the engagement. The fix makes those paths refuse; it does not authorize host execution.
 
     `isolation::require_vz_offensive(action)` is the guard behind this repo's most load-bearing
     operational claim — *"Anything research-gated or crash-capable runs inside a disposable tart
@@ -991,10 +1051,15 @@ never terminates is a check/run divergence of a different kind, and is being cha
     refusal anywhere are exactly these. A module that never tests a denial is a module whose guard
     surface nobody has looked at; here nobody had, because there was no guard.
 
-    **Fix — WIP in the working tree, host-verified, NOT sealed (2026-07-29).** All 48 handlers now
-    call `require_vz_offensive` before `load_engagement`, using the action label the handler already
-    seals into the receipt chain, so the guard and the receipt name the same thing. 59 guard call
-    sites total (48 new + 11 legacy). Three parity tests in `main.rs` bind it going forward:
+    **Fix — implemented in `889d9a7c`; current post-fix receipt is manifest-bound and strict-validator
+    green (2026-07-31).** The affected
+    handlers call `require_vz_offensive` before `load_engagement`, using the action label the handler
+    already seals into the receipt chain, so the guard and the receipt name the same thing. At that
+    commit, `main.rs` contains **60 literal guard call sites**. A raw text count is 61 because the
+    parity test itself contains the string `require_vz_offensive(\"{action}\")`; that line is an
+    assertion about calls, not a call. Frozen pin `vm/pins/anubis-4ca5b6f21917` independently emits
+    **60** entries in `offensive-doctor --json` at `isolation.host_forbidden_aop`. Three parity tests
+    in `main.rs` bind the policy going forward:
 
     - `every_offensive_handler_requires_a_vz_guest` — reads its own source via `include_str!`, so it
       cannot drift from what ships. **Proven RED before green**: deleting the single
@@ -1021,15 +1086,56 @@ never terminates is a check/run divergence of a different kind, and is being cha
     `postex-persistence-enum`, `credential-env-scan`, `infra-c2-check`, `infra-redirector-plan`,
     `payload-cyclic`, `report-attck-coverage`. Host suite 345/345, `main.rs` clippy-clean.
 
-    **Not yet verified, and the reason this stays OPEN:** no VM seal, and — more specifically — it
-    is unconfirmed that these commands still *succeed inside a guest*. The host probes prove the
-    guard refuses; only `run_offensive_platform_gate.sh` in a guest proves the fix did not simply
-    break the surface it was protecting. The battery is blocked on admission headroom
-    (`free ≈ 11.2 GiB` vs the guard's `20480 MiB`), and this repo does not commit code that has not
-    passed its verify step.
+    **Historical 2026-07-30 post-fix observation — RED receipt identity mismatch; retained, not
+    promoted.** Immutable pin
+    `vm/pins/anubis-a6f7f05fd132`, SHA-256
+    `a6f7f05fd132ed7ad9891b2884acf15e80625ba3f7f967939cbf808804320793`, is source-matched to tree
+    hash `658f3ebaa4274b168f61519beac9dfcd3560d07a3aa653e68cc287521df400ca` and contains `889d9a7c`.
+    Disposable guest `anubis-offensive-gate-82951` ran the complete offensive battery **34/34**;
+    `doctor_t17` and `t9_doctor_surfaces` passed, the transported binary hash matched the pin, the
+    export manifest reported `secret_scan: PASS`, and teardown was recorded separately as
+    `torn_down`. However, `export_manifest.json` binds the 475-byte guest report embedded in
+    `guest_stdout.log` (SHA-256
+    `85dde2273bb08c02334352768582566f09e68d5d091755e229b3e4b4b89c8504`), while the checked-out
+    host-augmented `report.json` is 520 bytes (SHA-256
+    `17592b9c7bd8330c435179344189218898f9e02e79a6ae625c48cc1a50ae9997`). Those are different
+    objects. Artifacts:
+    `out/phase1_offensive_complete_v4_20260730T191631Z/{guest_stdout.log,report.json,isolation.json,export_manifest.json,teardown_status.txt}`.
+    Therefore the bounded 34/34 guest observation and separate teardown record stand, but that
+    bundle is not the closure receipt.
+
+    **Superseding 2026-07-31 strict receipt — CLOSED / MATCH for the bounded technical epoch.**
+    Immutable compiler pin `vm/pins/anubis-51f4a964347a`, SHA-256
+    `51f4a964347a4a0f3ea2833331eb313315aa502c96c9d7a71fc3b20414eca027`, was source-verified at
+    technical epoch `0281e8034022fc62f4f853906a33173bc0286e9ae9a0e07b26d761a495962b03`.
+    Disposable guest `anubis-offensive-gate-41607` completed **34/34** checks, including both doctor
+    cases, under `isolation=tart-disposable-guest`; the transported binary hash matched the pin and
+    teardown recorded `torn_down`. The strict validator accepted exactly the allow-listed files in
+    `out/phase1_offensive_51f4_postmetrics_final_20260731T185000Z`: `report.json` is 4,157 bytes at
+    SHA-256 `1f93c22c8b9cd37124b50680e3b1bad70dade178b362060736019616023b18ee`,
+    `export_manifest.json` is SHA-256
+    `d1ef0a556f512af59eeb801ff817a20ae8596fabe07969fe534e3ecc33c00b71`, and
+    `offensive_verdict.json` is PASS with no errors at SHA-256
+    `05f2a561cad7c6e72c9738bccc751e319fb0e1377c6065c77014256a00cbfa99`. Independent revalidation
+    `/tmp/anubis-phase1-offensive-51f4-postmetrics-revalidation-20260731T185200Z.json` produced the
+    identical verdict object and hash. This supersedes the RED mismatch above; it does not erase
+    it. The external finalization receipt at
+    `out/phase1_finalization_51f4_r2_20260731T230000Z/receipt.md` proves the exact
+    VM/offensive/921-row-diff/host-seal predicate, and its independent review records `APPROVE` with
+    no blocking finding and zero source writes. Bounded acceptance is therefore activated for the
+    frozen source tree named above. The live tree has moved beyond that epoch and remains a distinct
+    landing/release question; no host execution, release, shipping, or universal-soundness claim is
+    made.
 
 21. **SIX items published as CLOSED are OPEN — 30 true accepts with runtime witnesses, survived
     adversarial refutation (2026-07-29). This is the largest open item on the list.**
+
+    **Evidence consequence (2026-07-30):** PCA schema v2 deliberately removed the independent
+    `taint_clean` boolean. The v1 producer set it to `true` merely because the bounded typechecker
+    returned `Ok`, which contradicted the live witnesses below. PCA v2 records that bounded
+    typecheck result without upgrading it into a total-flow theorem. Its parser denies unknown claim
+    fields, so a rehashed v2 object cannot smuggle the retired field back in; missing `pca.json` and
+    retired v1 claims also fail semantic verification rather than downgrading to hash-only success.
 
     **Method.** Eleven agents, each told to FALSIFY rather than confirm: six assigned one
     published-CLOSED item, five hunting the named-open residuals. ~192 probes, all written outside
@@ -1043,14 +1149,15 @@ never terminates is a check/run divergence of a different kind, and is being cha
 
     | item | published as | actual |
     |---|---|---|
-    | 7 (2nd list) | Function-identity carrier CLOSED `0eb5977` | **BROKEN** — 9 TA |
+    | B4 | Function-identity carrier CLOSED `0eb5977` | **BROKEN** — 9 TA |
     | 10 | `requires` through fn-value carrier CLOSED | **BROKEN** — 6 TA |
     | 11 | Nested-call argument `requires` CLOSED | **BROKEN** — 1 TA + 2 deferrals |
     | 12 | Bare-builtin carrier / trifecta CLOSED `c7643e5` | **BROKEN** — 5 TA |
     | 1 | Composition residuals D1–D6 closed | **BROKEN** — 15 TA |
     | 2 | check/run divergence (R) CLOSED | **BROKEN** — 1 TA |
 
-    **The single mechanism behind most of it: PLACE-ASSIGNMENT.** Item 7 closed the *read* carriers
+    **The single mechanism behind most of it: PLACE-ASSIGNMENT.** Boundary item B4 closed the *read*
+    carriers
     and left every *write* carrier open. All of these `check` green and `run` prints the secret:
 
     ```anubis
@@ -1081,9 +1188,8 @@ never terminates is a check/run divergence of a different kind, and is being cha
     **What this meant for the completeness question.** The engineering board was green — language
     252/252, security 317/317 (**historical stamp, 2026-07-29**), stdlib 104/104,
     native-authoritative 906/0, formal PASS, VM seal
-    22/22 fixpoint unchanged. **None of that is the language promise.** Against
-    *`anubis check` PASS ⇒ the program cannot violate its stated contracts, effects, capabilities or
-    information-flow policy at runtime*, the answer is **NO**, and it is not close: 30 programs pass
+    22/22 fixpoint unchanged. **None of that is the language promise.** Against the unscheduled
+    universal research aspiration, the answer is **NO**, and it is not close: 30 programs pass
     `check` and violate at runtime. `docs/language/ROADMAP.md` already says freestanding
     "Phase N DONE" is false as a soundness claim; this is the measurement behind that sentence.
 
@@ -1104,7 +1210,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
     | 1 | `middle/mod.rs:17910-17935` `collect_unconditional_param_contract_stmts` | descends only into `If`/`While` **cond**, `For` **source**, and nothing for `Loop` — **bodies are never walked**, so `fn_param_contract_apps` (:3684) stays empty and `discharge_carried_call_requires` (:7630) folds an empty vector to `true` | item 10's `if 1==1` / for / while / loop / match-arm / if-let class |
     | 2 | `middle/mod.rs:17964` | `Expr::Call` rebuilds the callee as `Expr::Var(name)` and records an application only if that NAME is a formal (`:17859-17869`) | the local-alias defeat |
     | 3 | `middle/mod.rs:762-777` | `Expr::CallExpr` with a `FieldAccess` callee → `FnIdentitySet::Unknown` unless the field is in `method_returns_param`/`method_sole_return` | struct-field-stored fn applied as `b.h(-1)` |
-    | 4 | `middle/mod.rs:10100` vs `~10141` (`Stmt::Assign`) | the `Expr::Var` target branch refreshes identity via `fn_identities_of`; the **non-`Var` place-assign branch sets only `tainted`/`taint_source`** and never refreshes identity | the whole place-assignment class (item 7) |
+    | 4 | `middle/mod.rs:10100` vs `~10141` (`Stmt::Assign`) | the `Expr::Var` target branch refreshes identity via `fn_identities_of`; the **non-`Var` place-assign branch sets only `tainted`/`taint_source`** and never refreshes identity | the whole place-assignment class (boundary item B4) |
     | 5 | `middle/mod.rs:22765` (`walk_block_secret`) | non-`Var` `Stmt::Assign` only sets `b.secret`, never touches `field_closures`/`field_fn_identities` — **the stale initializer wins** | `b.f = key` still reading as `plain` |
     | 6 | `middle/mod.rs:10311-10336` | **does** retain-and-insert the assigned identity into `field_fn_identities` — **and the consumer on that path never reads it** | — |
     | 7 | `middle/mod.rs:22460` | the non-`Var` `Stmt::Assign` arm calls `expr_taint_source_m`; `container_element_taint` is called **only** from container-LITERAL arms (`:23295-23338`), never from the place handler | taint duals of the write class |
@@ -1170,6 +1276,62 @@ never terminates is a check/run divergence of a different kind, and is being cha
     in `_ => None`, and `Expr::Index` fell straight through it. The fix shape already exists in the
     repo — it was simply never applied here.
 
+    **Row 8 — FIXED for annotated containers, clean-VM sealed, and landed in `03210603`
+    (2026-07-29).**
+    `place_struct_type` (`mod.rs:8514`) gained an `Expr::Index` arm resolving the base's element
+    type via a new `ty::container_element_type` (`list<T>` → `T`, `map<K,V>` → `V`, generic-depth
+    aware so `map<string, list<S>>` yields `list<S>`). It returns `None` for any unrecognised
+    spelling, so **the arm can only ADD a declared qualifier that was previously dropped, never
+    remove one.**
+
+    Before → after on the same program, same binary path:
+
+    ```anubis
+    struct S { k: secret<i64> }
+    fn main() { let xs: list<S> = [S { k: 7 }]; print(xs[0].k); }
+    // before: check rc=0, run printed 7
+    // after : ANUBIS_SECRET_EXFILTRATION: secret `declared field `k` of type `secret<i64>``
+    //         flows to egress `print` without declassify()
+    ```
+
+    | verification | result |
+    |---|---|
+    | compiler lib | **766/766** — source-current W1 suite, including recursive malformed-slot tests |
+    | tool unit suite | **351/351** plus all integration harnesses green |
+    | security corpus | **327/327** — includes the ten annotated list/map/generic/parameter fixtures |
+    | language corpus | **253/253** |
+    | stdlib fail-closed | **104/104**, `timed_out=0` |
+    | native-authoritative | current corpus **921 files**; this W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
+    | formal | **162 theorems / 15 modules**, machine-checked; no `sorry`/`admit`/free `axiom` |
+    | immutable candidate | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; source-tree verification PASS |
+
+    Fixtures added, including the over-rejection guard the project's rules require:
+    `secret_field_via_annotated_list_index_rejects.anb`,
+    `secret_field_via_annotated_map_index_rejects.anb`, and
+    `public_field_via_annotated_list_index_accepts.anb` (an unqualified field read through the same
+    index carrier must still ACCEPT — it does).
+
+    **Bounded honestly: the UNANNOTATED form is still OPEN.** `let xs = [S { k: 7 }]` infers the
+    bare type `list` with no element parameter (`mod.rs:21310`
+    `Expr::ArrayLiteral => Some("list")`), so `container_element_type("list")` is `None` and the
+    qualifier is still dropped. Four of §3.3's fifteen witnesses use the annotated or map form and
+    are closed; the unannotated ones are not. **Closing them requires element-type inference for
+    array literals, which is a different change and is not claimed here.** A unit test pins
+    `container_element_type("list") == None` precisely so this boundary cannot be mistaken for
+    closure.
+
+Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
+and cannot verify later repairs.
+[receipt-scope: pre-fix-only; head: 0f407853; authority: none]
+
+    **Seal provenance correction.** Disposable guest `anubis-run-79352` ran that historical
+    candidate, whose head precedes the annotated container fix in `03210603`. It cannot verify Row
+    8.
+
+    The bounded source-matched W1 receipt below,
+    pin `vm/pins/anubis-58ba4abc0a63`, is the evidence for the annotated subset; the unannotated
+    residual above remains OPEN.
+
     **These are TRUE ACCEPTS, not deferrals, and the verifiers proved it rather than asserting it.**
     Discriminators run: the DIRECT call inside the same `if 1 == 1 { }` REJECTS (rc=1), and the
     direct call inside a DEAD `if 1 == 2 { }` ACCEPTS — so the direct lane is path-condition aware,
@@ -1193,9 +1355,9 @@ never terminates is a check/run divergence of a different kind, and is being cha
     | compiler library | **766/766 PASS** |
     | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
     | security | **327/327 PASS** |
-    | language | **252/252 PASS** |
+    | language | **253/253 PASS** |
     | stdlib fail-closed | **104/104 PASS** |
-    | native-authoritative | **916 files, 0 mismatches** |
+    | native-authoritative | current corpus **921 files**; this W1 receipt graded 916 files, 0 mismatches |
     | formal inventory | **162 theorems / 15 modules**, gate PASS |
     | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
 
@@ -1452,7 +1614,7 @@ re-planting the exact bug in a scratch copy turns that gate RED.
 
 ### VZ isolation — the tart marker is FORGEABLE; the native air-gap is STRUCTURAL (probed 2026-07-28)
 
-Boundary item 4 has said "host-forgeable markers; operator is trust root" as an assertion. It was
+Boundary item B1 has said "host-forgeable markers; operator is trust root" as an assertion. It was
 probed, and the answer splits into two very different stories that share one word.
 
 **The tart marker is trivially forgeable.** `seal_vz_disposable_action` (`vz.rs:1354`) writes
@@ -1965,12 +2127,12 @@ than half-fixed without the required compiler-lane ownership and full-corpus ver
 
 Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
 
-### Open — boundary honesty / process (not silent overclaims)
+### Open — boundary honesty / process (stable IDs B1–B5; not silent overclaims)
 
-4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
-5. **Research elevation requires authorization** — bypass **CLOSED** (`e6ebfd2`); dual-use
+B1. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.
+B2. **Research elevation requires authorization** — bypass **CLOSED** (`e6ebfd2`); dual-use
    research remains intentional with explicit authorization, not a Safe free ride.  
-6. **Harness integrity + instrument fact — the two NAMED defects are closed; the CLASS is NOT
+B3. **Harness integrity + instrument fact — the two NAMED defects are closed; the CLASS is NOT
    (re-opened 2026-07-28 by the 67-script audit, `docs/HARNESS_INTEGRITY_AUDIT_2026-07-28.md`).**
    Language fixtures defaulted
    **DEBUG** while security graded **RELEASE**, so the two headline numbers described two different
@@ -1984,8 +2146,10 @@ Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
    hash that did not match the artifact. Both are closed with microbenches that show each guard
    FIRING rather than merely present.
 
-   Binaries are now published as content-addressed read-only pins (`scripts/publish_pin.sh`) so a
-   rebuild cannot mutate the instrument an agent is mid-measurement on.
+   Binaries are now published as source-and-binary-addressed read-only pins
+   (`scripts/publish_pin.sh`) so neither a rebuild nor a new source epoch can mutate or rebind the
+   instrument an agent is mid-measurement on. Ordinary pins remain bounded technical evidence;
+   release publication requires clean `--release` plus closing `--verify-release`.
 
    **Re-opened as a named residual (2026-07-28).** All 48 `scripts/run_*.sh` plus 19 support gates
    (67 scripts, 11,605 lines) were audited against five questions, with every red claim handed to an
@@ -2023,6 +2187,10 @@ Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
      empty scan root exits 1 with `tested nothing`; semantic drift writes a machine-readable FAIL
      report, symlinked parent directories are rejected, and the full test passes under
      `PYTHONOPTIMIZE=1`. The canonical self-test reported 40 stamps and zero drift.
+   - **Docs-stamp floor recalibrated 42 → 35 (2026-07-29).** Seven archived or pin-bound
+     observations were previously miscounted as live stamps. Their historical numbers remain intact
+     and are now explicitly marked on-line; no live-owned document was removed and semantic claim
+     scanning remains enabled for all of them.
    - **Shadow and `t3_uds`: source repairs are present; verification remains pending.** Shadow now
      has emit sites and labels a zero-diagnostic run `VACUOUS`; the UDS case no longer records PASS
      in both branches. Neither is promoted here to VM-sealed closure.
@@ -2039,9 +2207,12 @@ Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
      capability/diagnostic/hover shapes, and stable binary identity. Protocol controls are 6/6 and
      the frozen-pin roundtrip exited 0 with `completion_ok=True` and `forced_termination=False`.
 
-   - **Runtime evidence identity: source repair present; integrated build/probe/seal pending.** The
-     isolated runtime-hash module is 7/7, but `tools/anubis` has not been rebuilt from the current
-     working source and runtime-probe/runtime-plan schema 1.1 has not been VM-sealed. The behavior in
+   - **Runtime evidence identity: source-verified; VM seal pending.** The current
+     release build succeeds and the complete `anubis` binary suite is **351/351**, including filtered
+     scope, symlink/special-file/unreadable-path refusal, and changing-tree detection. Fresh host
+     runtime-probe/runtime-plan schema 1.1 evidence bundles both pass manifest verification and
+     report matching complete walks; they explicitly remain non-atomic against adversarial
+     flip-back mutation. The disposable-guest seal remains pending. The behavior in
      `docs/CLI.md` describes the source contract, not a current-source release verdict.
 
    **Instrument provenance is the most common defect:** the 2026-07-28 census found nine gates
@@ -2053,7 +2224,7 @@ Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
    `gate_common.sh` that every gate calls with its own counter, enforced by the adoption check —
    patching the four individually is how this class survived to the audit that found it.
 
-7. **Function-identity carrier — CLOSED 2026-07-27 (`0eb5977`).** A function reference reaching an
+B4. **Function-identity carrier — CLOSED 2026-07-27 (`0eb5977`).** A function reference reaching an
    application site through a container built by `push`/`insert` rather than a literal
    (`let fs = []; push(fs, key); app(fs)`) accepted and printed the secret at runtime.
 
@@ -2069,27 +2240,27 @@ Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
 
    `let fs = push(e, key); app(fs)` still accepts and is NOT a false accept: `push` returns `0`
    rather than the container, so the program panics before reaching any sink. That is a deferral on
-   an unrunnable program — and separately a footgun, tracked as item 8.
+   an unrunnable program — and separately a footgun, tracked as boundary item B5.
 
-8. **`push` expression-position return — CLOSED 2026-07-27.** `let ys = push(xs, 3); len(ys)` had
+B5. **`push` expression-position return — CLOSED 2026-07-27.** `let ys = push(xs, 3); len(ys)` had
    `check` rc=0 and `run` rc=1 (panic): the expression lowering returned `AnubisValue::Int(0)`, a
    placeholder, so functional-style use silently bound a non-container. It now returns the container,
    matching its siblings (`pop`, `insert`, `remove` all return something meaningful). Statement-position
    `push(xs, v)` is lowered separately and unaffected; both are pinned by
    `push_expression_returns_container_doc_ok.anb`. Opened and closed the same day.
 
-### Resolved this arc (do not re-open without new evidence)
+### Resolved this arc (stable IDs R1–R8; do not re-open without new evidence)
 
-7. ~~Published security red inventory (the eleven + D/research witnesses in corpus)~~ **EMPTY**
+R1. ~~Published security red inventory (the eleven + D/research witnesses in corpus)~~ **EMPTY**
    this pass — live zero known-red.  
-8. ~~D1/D2/D3 field qualifier through CALL result~~ **RESOLVED** `f9fc7a7`.  
-9. ~~D4 enum-payload qualifier at match binder~~ **RESOLVED** `c9415b7`.  
-10. ~~Research-block authorization bypass~~ **RESOLVED** `e6ebfd2` — bare `@research` no longer
+R2. ~~D1/D2/D3 field qualifier through CALL result~~ **RESOLVED** `f9fc7a7`.
+R3. ~~D4 enum-payload qualifier at match binder~~ **RESOLVED** `c9415b7`.
+R4. ~~Research-block authorization bypass~~ **RESOLVED** `e6ebfd2` — bare `@research` no longer
     elevates Safe.  
-11. ~~Unknown attributes silently ignored~~ **RESOLVED** `ec65724` fail-closed.  
-12. ~~Four mechanisms for the original eleven~~ **RESOLVED** (M1, M2-reg, M2-B, M3).  
-13. ~~Declared returns / R1 fields / (R)+PCA / stdlib 45/45 / capset 5/5~~ **RESOLVED**.  
-14. ~~P0 mul hang / Tier 1 / self-host harness~~ **RESOLVED**.
+R5. ~~Unknown attributes silently ignored~~ **RESOLVED** `ec65724` fail-closed.
+R6. ~~Four mechanisms for the original eleven~~ **RESOLVED** (M1, M2-reg, M2-B, M3).
+R7. ~~Declared returns / R1 fields / (R)+PCA / stdlib 45/45 / capset 5/5~~ **RESOLVED**.
+R8. ~~P0 mul hang / Tier 1 / self-host harness~~ **RESOLVED**.
 
 **Status vocabulary:** freestanding **REAL** / production-grade / fully proven / "roadmap
 complete" stamps are banned unless the same line cites a re-runnable command + observation (or a
@@ -2128,7 +2299,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Evidence bundle + tamper detection | package gate path `scripts/run_package_gate.sh` (seal history); unit evidence/tamper tests | Re-run package gate for live CI claims |
 | RISC0 receipt path (in-process) | prove/verify path + A15 gate history; shape + `Receipt::verify` API | Hosted Metal proving **not claimed** |
 | Metal parity (local Apple Silicon) | local Tier-2 parity history in A15 / doctor | Not hosted GPU prove |
-| Language core (fixtures + repro) | **252/252** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
+| Language core (fixtures + repro) | **253/253** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures; vault contacts `run` EXIT=0 post-PTAH | Research/exploit needs `--allow-research` + VZ where required; **proof/shell constructs are non-run by design** (CLAIMS open §2 (B)); (R) preflight false-rejects **closed**; *check ≠ run for proof/shell* is a named product residual, not a checker gap |
 | Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical narrative in `docs/language/ROADMAP.md` | **Named residual:** published reds empty ≠ Class D / D1–D6 closed; green board is not COMPLETE |
@@ -2138,7 +2309,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | In-repo package / PCA ecosystem | package gate history; `import` + evidence deps | Public package registry **not claimed** |
 | Third-party / multi-party reproduction | Phase 9 witness docs: [`phase9_independent_witness/`](language/phase9_independent_witness/) | Two recorded strangers + hashes; not infinite multi-party |
 | DDC toolchain diversity | DDC gate history 34/34 + Phase 9 hashes | Residual: same-author C sources (not TT-total) |
-| GitHub hosted witness | `scripts/audit_unified.sh --profile hosted` → 14 host-verifiable gates plus `G9=EXTERNAL`, G14 non-executing host isolation witness, verdict `HOSTED_PASS` | Not a full seal. Only default `audit_a_plus.sh` on the dedicated Tart/VZ runner may claim G9 PoC execution and the full G14 34-check battery |
+| GitHub hosted witness | `scripts/audit_unified.sh --profile hosted` → 28 passing host-verifiable gates plus exactly `G9=EXTERNAL`, G14 non-executing host isolation witness, verdict `HOSTED_PASS` | Not a full seal. Only a separately approved operator-run disposable Tart/VZ lane may claim G9 PoC execution and the full G14 34-check battery; no persistent public-repository runner is authorized |
 | A+ front door (2026-07-24 A15 re-seal) | **sealed:** `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` → pass=15 fail=0 skip=0; G14 VZ **34/34** tart guest | Re-run `bash scripts/audit_a_plus.sh` for a new seal date |
 | A+ hostile audit package | **sealed:** `implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` + STEP_STATUS | Independent of freestanding maturity adjectives |
 | Lean formal core | **lead-verified:** `bash scripts/run_formal_gate.sh` → `FORMAL_GATE: PASS`; every theorem machine-checked; no sorry/admit/axiom in core | Lean 4.32.0; no Mathlib; **162 theorems / 15 modules** (comment-stripped) |
@@ -2150,7 +2321,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | VZ apply Softnet CIDR from DNS-pinned allow-host | **CLAIMED 2026-07-25** | With `softnet` on PATH: `--allow-host` → tart `--net-softnet-block=0.0.0.0/0` + `--net-softnet-allow=<ip>/32`; mode `hostname-softnet`; without softnet → `hostname-policy-staged` host-only fallback; applied field `dns_pin_residual=rebind_after_pin` + HARD RESIDUAL notes; unit `cargo test -p anubis softnet_dns_pin` + `vz_apply` | **HARD residual sealed:** Softnet `/32` is apply-time DNS pin only — post-pin DNS rebind not enforced (not L7). Re-`vz apply` after DNS change. Not Keychain; live tart boot not in gate |
 | Effect-derived entitlement / sandbox profile | **CLAIMED 2026-07-25** | `anubis entitlements <file.anb>`; `package::entitlements` derive + seal `entitlement_profile.json` + `program.entitlements` plist; re-derive on PCA verify (`ANUBIS_ENTITLEMENT_DRIFT`); when source uses `cap_acquire_nonexportable`, derives `keychain-access-groups` + `com.apple.developer.secure-enclave` (still `apple_enforced_claim: false`); unit `nonexportable_cap_derives_keychain_and_se_keys` | Residual: OS enforcement only after codesign; path-level sandbox rules **not claimed** |
 | Hostname egress policy (DNS pin / deny-all) | **re-run 2026-07-25:** `cargo test -p anubis vz_egress` → pass | Policy compiled; live fd pump at native-boot |
-| Hosted Metal prove (local AS + self-hosted job) | **re-run 2026-07-25:** `ANUBIS_REQUIRE_METAL=1 bash scripts/run_metal_prove_gate.sh` → **METAL_PROVE_GATE: PASS** (Gate11 overall_verdict=PASS, metal-hybrid) | Stock GHA still cold-verify; hosted claim needs self-hosted Metal runner labels |
+| Require-Metal prove (operator-run local Apple Silicon) | **historical re-run 2026-07-25:** `ANUBIS_REQUIRE_METAL=1 bash scripts/run_metal_prove_gate.sh` → **METAL_PROVE_GATE: PASS** (Gate11 overall_verdict=PASS, metal-hybrid) | Not a hosted-CI claim. A source-current release receipt requires a separately approved operator-run rerun; no self-hosted public-repository runner is authorized |
 | VZ native-boot + egress pump | **landed** `anubis vz native-boot --kernel …` | Needs signed binary + bootable kernel; pump enforces DNS-pinned policy |
 | Author-diversity architecture lane | **re-run 2026-07-25:** `bash scripts/run_author_diversity_gate.sh` → PASS | TT-total **not claimed** (same-human residual) |
 | Hosted CI Metal **proving** | **not claimed** | Needs Apple Silicon GPU runners |

@@ -2,7 +2,7 @@
 
 **Status:** FROZEN for the 1.0 surface defined in [`SPEC_1_0_FREEZE.md`](SPEC_1_0_FREEZE.md)  
 **Effective date:** 2026-07-22  
-**Branch of record:** `a-plus-maturity/20260705-1649`
+**Branch of record:** `main` (operative only after the approved Phase-1.5 migration)
 
 ## Versioning
 
@@ -30,4 +30,7 @@ Anubis follows [Semantic Versioning 2.0.0](https://semver.org/):
 
 ## How to ship a 1.x change
 
-Follow `anubis-ship-cadence`: CODE vs DOCS commits; VM seal for CODE; zero-fabrication docs; push only `a-plus-maturity/*` until a release tag `v1.0.0` is cut by the operator.
+Use a short-lived branch and pull request for each coherent slice. Keep CODE/config and DOCS in
+separate commits, attach source-bound evidence, require the exact hosted check on the PR head, and
+never force-push or self-merge around a red/missing check. Only the operator may authorize a tag or
+Release; `v1.0.0` remains reserved for Phase 7.

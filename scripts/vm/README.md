@@ -39,24 +39,31 @@ circuit breaker that sacrifices the VM/test run before it sacrifices the host.
 ## Usage
 
 ```sh
-# validate the current working tree end-to-end in a throwaway clone:
+# Validate the current working tree against its source-current technical pin.
+# This is technical evidence only; it is not release/publish evidence:
 scripts/vm/run-slice.sh
-# leave the clone up to poke at it:
+# Require a clean, exact-HEAD, commit-bound release pin and execute that selected pin:
+scripts/vm/run-slice.sh --release
+# Debug only: retain the clone. A --keep run cannot emit PASS:
 scripts/vm/run-slice.sh --keep
 ```
 
 `run-slice.sh` clones the golden → boots headless → rsyncs the host tree in → runs
-the whole battery (test, clippy, language/turing/security/stdlib, shadow diff,
-**self-host seal**, dogfood) → asserts the seal's binary fixpoint equals
-`EXPECTED_FIXPOINT_VM` → deletes the clone. Exit 0 = all green + fixpoint unchanged.
+the exact 23-gate battery (selected-pin smoke, tests, clippy, build, language/turing/security/stdlib,
+shadow diff, **self-host seal**, dogfood, and the remaining named gates) → asserts the seal's binary
+fixpoint equals `EXPECTED_FIXPOINT_VM` → deletes the clone → re-closes source, Git, selected-pin,
+and evidence-manifest identity. Exit 0 means all named checks are green, the fixpoint is unchanged,
+and teardown is verified.
 
-It does **not** commit. On PASS it prints the `git` command; you commit on the host
-deliberately (a commit is a human-authored act, and `git commit` is not a heavy
-build, so it is safe on the host).
+It does **not** commit or publish. A no-flag PASS can support committing the tested technical slice,
+but cannot support a release claim. `--release` additionally requires the already-selected CURRENT
+pin to be a fresh clean exact-HEAD archive build; both modes execute and protocol-bind that immutable
+pin rather than treating the guest's mutable `target/release/anubis` as the receipt instrument.
 
-Guest sync preserves the golden image's warm `target/` cache, then overwrites the selected CLI and
-rebuilds against checksum-compared source; transferred files get current mtimes so Cargo cannot
-mistake changed source for an older cached output. It explicitly removes host-only `out/`, agent-worktree,
+Guest sync preserves the golden image's warm `target/` cache, copies only the host-verified CURRENT
+pin plus its metadata, and rebuilds checksum-compared source as a separate compilation gate;
+binary-aware gates receive the immutable selected pin through `ANUBIS_BIN`. Transferred files get
+current mtimes so Cargo cannot mistake changed source for an older cached output. It explicitly removes host-only `out/`, agent-worktree,
 adversary, export, and scratch trees instead of using recursive `--delete-excluded` over the
 48-GiB cache. `vm/pins/` copies only `CURRENT`, that selected immutable binary, and its metadata;
 archived guest pin binaries remain untouched and cannot become current.
@@ -75,7 +82,8 @@ launchctl print "gui/$(id -u)/com.anubis.host-resource-guard"
 
 ## Fixpoint parity
 
-`EXPECTED_FIXPOINT_VM` (currently `a01a1e8b…`; re-baselined on each `anubis_sh.anb`
+`EXPECTED_FIXPOINT_VM` (currently `46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60`;
+re-baselined on each `anubis_sh.anb`
 slice — see the log inside the file) is the in-VM self-host fixpoint. It differs
 from the **host** fixpoint (`c640badd…`, macOS 26.5.2) because the guest is on a
 different macOS point-build — a Mach-O-normalization byte difference, not a

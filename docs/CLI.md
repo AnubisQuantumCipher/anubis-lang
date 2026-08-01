@@ -3,10 +3,10 @@
 Dev form (from repo root):
 
 cargo run -- check <file.anb> [--evidence] [--emit ast,hir,mir] [--out DIR]
-cargo run -- build <file>
+cargo run -- build <file> [--allow-research]
 cargo run -- run <file.anb> [--evidence --out DIR]
 cargo run --release -p anubis -- prove <file> --backend risc0 --lane cpu|metal-hybrid \
-  [--metal-reference /path/to/metal-hybrid-prover] [--evidence]
+  [--metal-reference /path/to/metal-hybrid-prover] [--allow-research] [--evidence]
 cargo run -- verify <bundle>            # (alias: validate) re-derive + tamper/signature check
 cargo run -- verify-receipt --receipt <path> --image-id <path>
 cargo run -- doctor
@@ -30,11 +30,18 @@ Behavior:
   carry the diagnostic—never a proof claim.
 - `build`: verifies contracts by default, then emits a native artifact and optional evidence.
   `build --evidence` failures emit an artifact-free `FAIL` rejection bundle. `--no-verify` is an
-  explicit escape hatch and emits only clearly marked `UNVERIFIED` evidence.
+  explicit escape hatch and emits only clearly marked `UNVERIFIED` evidence. Research/Exploit
+  programs additionally require explicit `--allow-research` and a disposable Anubis VZ guest;
+  consent or isolation failure occurs before native lowering and artifact emission.
 - `run`: verifies the same contracts as `check`/default `build` before native lowering, then executes
   ordinary Safe Anubis programs. Unsupported constructs fail with
   `ANUBIS_UNSUPPORTED_NATIVE_LOWERING`.
+- Evidence claim blocks use PCA schema v2. They record parse, bounded typecheck, and solver-obligation
+  results but do not assert an independent total-flow `taint_clean` theorem. Semantic verification
+  rejects retired PCA-v1 claim blocks rather than grandfathering the stronger field.
 - `prove --backend risc0`: RISC0 receipt path (fresh, journal via verify-receipt).
+- `prove` and `repl` use the same complete-program Research/Exploit consent and disposable-VZ
+  boundary as `build`/`run`; a command name or raw flag alone cannot bypass mode classification.
 - `doctor`: reports binary version, git, rustc, RISC0 versions, patched `risc0-circuit-rv32im` path + existence + Metal HAL, `R0_DISABLE_METAL` status, Apple Silicon, Tier-2, smoke checks, evidence scripts/schemas. Supports `--require-risc0`, `--require-metal`, `--metal-reference`, `--evidence`, `--json`.
 - `capabilities --apple-native`: emits the machine-readable Apple-native capability matrix. It separates ready RISC0/Metal proof lanes from the plan-emitter-ready UMPG surface and planned CoreML/Neural Engine control-plane lanes.
 - `entitlements <file.anb>`: derives a macOS App Sandbox / entitlement **profile** from the program's proven effect set (same spine as `vz confine`). Sealed into evidence as `entitlement_profile.json` + optional `program.entitlements` plist; re-derived on `verify` (forged permissive profiles fail closed). **Derived profile, not enforced until signed** — every key has `apple_enforced_claim: false`; codesign is `needs_human`.
@@ -124,7 +131,7 @@ anubis vz fuzz poc_kit/bin/vuln_local --iterations 100000 --allow-research   # T
 - PoC kit gate: `bash scripts/run_poc_kit_gate.sh --out out/poc_kit`
 - Gold lab target: `bash poc_kit/build_vuln.sh` → `poc_kit/bin/vuln_local`
 
-## Offensive Platform (AOP) — T1–T7
+## Offensive Platform (AOP) — T1–T9
 
 - `anubis engage-init / engage-status` — engagement + PSK + RBAC + mTLS certs
 - `anubis listen --engage DIR` — HTTP+DNS+UDS C2, aop-2 encrypt, console at `http://127.0.0.1:4444/`
@@ -136,8 +143,11 @@ anubis vz fuzz poc_kit/bin/vuln_local --iterations 100000 --allow-research   # T
 - `anubis pattern-create / pattern-offset / gadget-search / browser-harness` — ROP/browser (T5)
 - `anubis pack-xor --input FILE` — lab packer (T6)
 - `anubis exploit-new / exploit-run` — exploit modules
+- `anubis vz exploit / vz fuzz / vz c2-cycle` — T8 disposable Apple-VZ execution surfaces; no host fallback
+- `anubis attck-catalog / opsec-score / malleable-init / campaign-init` — T9 control-plane surfaces
+- `anubis purple-report / phish-plan / lolbas-catalog / recon-hostinfo` — T9 reporting, PLAN_ONLY, catalog, and scoped reconnaissance surfaces
 - `anubis module-list` / `offensive-doctor --json`
-- Gate: `bash scripts/run_offensive_platform_gate.sh` (20 checks; host entrypoint runs in a disposable tart guest by default)
+- Gate: `bash scripts/run_offensive_platform_gate.sh` (**34 checks**; host entrypoint runs in a disposable tart guest by default)
 
 See `docs/language/OFFENSIVE_PLATFORM.md`.
 
@@ -152,7 +162,7 @@ only unannotated functions inherit the aggregate program mode.
 Run security fixtures:
 bash scripts/run_security_fixtures.sh --out out/gate15_security_fixtures
 
-Include in RC:
+Run the legacy local diagnostic (not publishable release evidence):
 bash scripts/build_release_candidate.sh --metal-reference /path --require-metal --include-security --out out/rc
 
 
@@ -234,6 +244,21 @@ cargo run --release -p anubis -- runtime-probe \
 This writes `runtime-probe.json`, `RUNTIME_PROBE.md`, and `MANIFEST.sha256`.
 Probe PASS means the requested local capabilities were observed enough for
 planning. It is not a RISC0 receipt, not a verified proof, and not runtime-exec.
+The JSON records `reference_tree_hash_scope`. The default in-repo reference uses
+`vendor-only-default-excluding-.git-target-.DS_Store`: the repository root is only
+a locator, so unrelated generated output is not read into the Metal reference
+identity. An explicit external reference uses
+`reference-root-excluding-.git-target-.DS_Store`. The independent vendor digest
+uses `vendor-subtree-excluding-.git-target-.DS_Store`.
+Tree hashes use the domain-separated, length-prefixed
+`anubis-tree-v2-sha256-lenprefixed` encoding; `reference_tree_hash_complete=false`
+fails RISC0 readiness rather than treating an unreadable, partially traversed, or
+symlinked reference tree as valid evidence. Two complete walks must match; the
+report explicitly states that this is not atomic against adversarial flip-back mutation.
+Vendor identity is independently labeled with `vendor_tree_hash_scope`,
+`vendor_tree_hash_algorithm`, and `vendor_tree_hash_complete`.
+These additions and the changed default hash scope are runtime-probe schema `1.1`;
+consumers must use the recorded scope and algorithm rather than compare v1 digests.
 
 ### Runtime plan (UMPG-style DAG)
 ```bash
@@ -250,6 +275,11 @@ plan includes parse, typecheck, taint, symbolic, lowering, RISC0 methods build,
 prove, receipt verify, and evidence nodes for the RISC0 backend. `status` remains
 `plan-only`; a PASS still requires actual receipt generation, verification, and
 bundle validation.
+Runtime-plan evidence that embeds the v2 runtime-probe hash metadata also uses
+schema version `1.1`. RISC0 plans require RISC0 readiness; `metal` and
+`metal-hybrid` RISC0 plans additionally require Metal readiness. The plan remains
+`plan-only`, but its embedded probe status is `FAIL` when requested capabilities
+are unavailable.
 
 ### CPU vs Metal parity (Gate 11)
 ```bash

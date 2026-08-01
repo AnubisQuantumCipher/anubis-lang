@@ -1,8 +1,43 @@
 # LIVE HANDOFF — you are the new LEAD. Read this, then `docs/HANDOFF.md`.
 
-**Written 2026-07-28 by the outgoing lead (pane `wV:p1`), who is being retired.**
-`docs/HANDOFF.md` is the permanent operating manual — goal, constraints, method, phases, gotchas.
-**This file is the live state at the instant of handover.** Read both. This one first.
+## CURRENT AUTHORITY — DERIVED, NOT HAND-TYPED
+
+This file no longer carries a manually maintained live pin, board, fleet assignment, or execution
+queue. Those values repeatedly survived after the tree changed. Reconstruct current state in this
+order instead:
+
+1. `AGENTS.md` — operating constraints and the bounded current claim;
+2. `docs/CLAIMS.md` — the living residual register;
+3. `docs/COMPLETION_BLUEPRINT.md` — phase order and mandatory stop protocol;
+4. `bash scripts/phase_metrics.sh` — convergence measurements for the exact live tree;
+5. `bash scripts/run_docs_drift_gate.sh`, `bash scripts/run_promise_coherence_gate.sh`, and
+   `bash scripts/run_walker_completeness_gate.sh` — the Phase-0 documentary/structural gates;
+6. the latest `PHASE_<n>_COMPLETION_<date>.md` — a phase receipt, if one exists.
+
+Do not infer PASS from this index. A pin is current only when `scripts/publish_pin.sh --verify`
+binds it to the source tree being discussed. A queued, skipped, historical, or differently pinned
+run is not current evidence.
+
+The latest bounded Phase-1 technical receipt is
+`docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`: immutable compiler pin
+`vm/pins/anubis-51f4a964347a`, technical source epoch `0281e803…`, disposable guest
+`anubis-run-23962` **22/22**, offensive guest `anubis-offensive-gate-41607` **34/34** with strict
+receipt identity MATCH, 921-file post-metrics diff with zero flips/timeouts, and verified teardown.
+Documentation participates in source identity. The external receipt
+`out/phase1_finalization_51f4_r2_20260731T230000Z/receipt.md` proves the source-current VM **22/22**,
+offensive **34/34**, 921-row zero-flip diff, and exact docs-bound host seal **20/20** with captured
+exit 0. Its independent review records `APPROVE`, no blocking finding, and zero source writes.
+That activates bounded Phase 1 completion for the receipt's exact frozen source tree; it does not
+make the dirty epoch landed, released, shipped, or universally sound.
+
+CLAIMS-20-authority: DEFER-TO-CLAIMS
+
+---
+
+## HISTORICAL SNAPSHOT BELOW — written 2026-07-28, never a current instruction
+
+**Written 2026-07-28 by the outgoing lead (pane `wV:p1`).** The remainder is retained as historical
+evidence only. Do not dispatch its retired panes, use its binary, or execute its queue.
 
 ---
 
@@ -184,7 +219,7 @@ SAY SO to the agents, since every agent measurement straddles two binaries until
 | 14 | aggregate path seeders | **PARTIAL** — 5 shapes closed, 6 matrix rows open. **c05 now REJECTS** (2026-07-29, via the EFFECT lane in safe mode — see §3; this does NOT by itself close tag-lane row 8) |
 | 15 | research-lane immunity ACCIDENTAL | OPEN — barrier exists, predicate does not (task #27) |
 | 16 | 91% of dual-use surface unprobed | OPEN, stated |
-| 17 | `build`/`run` research-consent gap | OPEN, low |
+| 17 | `build`/`run` research-consent gap | **CLOSED for the externally activated bounded Phase-1 epoch** — shared Build/Run/Prove/Repl boundary; final source-current VM guest `anubis-run-35251` passed 22/22 and offensive guest `anubis-offensive-gate-43849` passed 34/34 with strict identity MATCH; final 20/20 host seal and independent `APPROVE` are bound by `out/phase1_finalization_51f4_r2_20260731T230000Z/`. The dirty epoch was not landed, released, or shipped |
 | 18 | **the defect FACTORY — still widening** | OPEN — three shapes, falsifiable convergence test |
 | 19 | purple report claims false ATT&CK coverage | **3 of 4 CLOSED** — `map_action` + `listener.rs` were already in tree; catalog↔dispatch closed by FORGE (`9155bab3`, 7/7 pass, poison-tested). Residual: `malleable.rs` `transform` validated-but-never-read |
 

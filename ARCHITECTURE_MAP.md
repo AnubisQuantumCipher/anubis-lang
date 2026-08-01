@@ -77,14 +77,14 @@ Top-level layout (non-generated source tree):
 │   └── adr/
 │       ├── 0001-bootstrap-rust-host.md
 │       └── 0002-evidence-format.md
-├── scripts/ (25 gate/fixture/audit scripts)
-│   ├── audit_unified.sh (master gate runner — 15 gates, one command)
+├── scripts/ (gate, fixture, audit, evidence, and VM-control scripts)
+│   ├── audit_unified.sh (canonical runner — exact named G1–G29 roster)
 │   ├── run_language_fixtures.sh, run_turing_core_fixtures.sh
 │   ├── run_pca_gate.sh, run_prove_gate.sh, run_poc_kit_gate.sh
 │   ├── run_offensive_platform_gate.sh, run_enum_match_gate.sh
 │   ├── run_for_in_gate.sh, run_lang_trio_gate.sh, etc.
 ├── tools/grok-safety-check.sh
-├── .github/workflows/ci.yml (fmt/clippy/test + reproducibility on research_poc + verify)
+├── .github/workflows/ci.yml (28 hosted PASS + exactly G9 EXTERNAL; VZ/Metal out of CI)
 ├── src/ (empty placeholder)
 ├── frontend/ (empty placeholder)
 ├── middle/ (empty placeholder)
