@@ -79,30 +79,93 @@ jobs:
           path: |
             ~/.elan
             formal/.lake
-          key: elan-v4.2.3-${{ runner.os }}-${{ hashFiles('formal/lean-toolchain', 'formal/lakefile.toml') }}
+          key: elan-v4.2.3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('formal/lean-toolchain', 'formal/lakefile.toml') }}
       - name: Install elan + pinned Lean (version from formal/lean-toolchain)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TOOLCHAIN="$(tr -d '[:space:]' < formal/lean-toolchain)"
+          TOOLCHAIN="$(< formal/lean-toolchain)"
+          if [[ ! "$TOOLCHAIN" =~ ^leanprover/lean4:v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "invalid formal/lean-toolchain pin: $TOOLCHAIN" >&2
+            exit 1
+          fi
+          EXPECTED_LEAN_VERSION="${BASH_REMATCH[1]}"
           case "$(uname -m)" in
-            arm64) ELAN_ASSET=elan-aarch64-apple-darwin.tar.gz; ELAN_SHA=7cae4c03b2f0de4053fb04a91359d5804551e6e37a6ddd1b2e0097dc561ae4a9 ;;
-            x86_64) ELAN_ASSET=elan-x86_64-apple-darwin.tar.gz; ELAN_SHA=10d037a69731c0593723e018130c5f54afde175796b4af8ba1317e561e55598c ;;
+            arm64)
+              ELAN_ASSET=elan-aarch64-apple-darwin.tar.gz
+              ELAN_SHA=7cae4c03b2f0de4053fb04a91359d5804551e6e37a6ddd1b2e0097dc561ae4a9
+              EXPECTED_LEAN_TARGET_PREFIX=arm64-apple-darwin
+              ;;
+            x86_64)
+              ELAN_ASSET=elan-x86_64-apple-darwin.tar.gz
+              ELAN_SHA=10d037a69731c0593723e018130c5f54afde175796b4af8ba1317e561e55598c
+              EXPECTED_LEAN_TARGET_PREFIX=x86_64-apple-darwin
+              ;;
             *) echo "unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
           esac
+          ELAN_HOME_DIR="$HOME/.elan"
+          ELAN_BIN_DIR="$ELAN_HOME_DIR/bin"
+          ELAN_BIN="$ELAN_BIN_DIR/elan"
+          export ELAN_HOME="$ELAN_HOME_DIR"
+          export ELAN_TOOLCHAIN="$TOOLCHAIN"
+          printf 'ELAN_HOME=%s\n' "$ELAN_HOME_DIR" >> "$GITHUB_ENV"
+          printf 'ELAN_TOOLCHAIN=%s\n' "$TOOLCHAIN" >> "$GITHUB_ENV"
+          for path in "$ELAN_HOME_DIR" "$ELAN_BIN_DIR"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              [[ -d "$path" && ! -L "$path" ]] \
+                || { echo "refusing non-directory or symlinked elan cache path: $path" >&2; exit 1; }
+            fi
+          done
+
+          # A restored toolchain cache is only an optimization. Refresh the manager and
+          # proxies from the checksum-pinned archive on every run, then prove that the
+          # installed manager is byte-identical to that verified bootstrap binary.
           ELAN_TMP="$(mktemp -d "$RUNNER_TEMP/anubis-elan.XXXXXX")"
           gh release download v4.2.3 --repo leanprover/elan --pattern "$ELAN_ASSET" --output "$ELAN_TMP/elan.tar.gz"
           printf '%s  %s\n' "$ELAN_SHA" "$ELAN_TMP/elan.tar.gz" | shasum -a 256 -c -
           mkdir "$ELAN_TMP/bootstrap"
           tar -xzf "$ELAN_TMP/elan.tar.gz" -C "$ELAN_TMP/bootstrap"
           ELAN_INIT="$(find "$ELAN_TMP/bootstrap" -type f -name elan-init -print -quit)"
-          test -n "$ELAN_INIT" && test -x "$ELAN_INIT"
-          "$ELAN_INIT" -y --no-modify-path --default-toolchain "$TOOLCHAIN"
+          [[ -n "$ELAN_INIT" && -f "$ELAN_INIT" && ! -L "$ELAN_INIT" && -x "$ELAN_INIT" ]]
+          ELAN_INIT_SHA="$(shasum -a 256 "$ELAN_INIT" | awk '{print $1}')"
+          "$ELAN_INIT" -y --no-modify-path --default-toolchain none
+
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-          test "$("$HOME/.elan/bin/elan" --version | awk '{print $2}')" = 4.2.3
-          "$HOME/.elan/bin/elan" toolchain install "$TOOLCHAIN"
-          "$HOME/.elan/bin/lake" --version
+          [[ -f "$ELAN_BIN" && ! -L "$ELAN_BIN" && -x "$ELAN_BIN" ]]
+          test "$(shasum -a 256 "$ELAN_BIN" | awk '{print $1}')" = "$ELAN_INIT_SHA"
+          test "$("$ELAN_BIN" --version | awk '{print $2}')" = 4.2.3
+
+          ELAN_TOOLCHAINS="$("$ELAN_BIN" toolchain list)"
+          TOOLCHAIN_MATCHES="$(printf '%s\n' "$ELAN_TOOLCHAINS" | awk -v wanted="$TOOLCHAIN" '
+            { sub(/ \(default\)$/, "") }
+            $0 == wanted { count++ }
+            END { print count + 0 }
+          ')"
+          case "$TOOLCHAIN_MATCHES" in
+            0) "$ELAN_BIN" toolchain install "$TOOLCHAIN" ;;
+            1) ;;
+            *) echo "ambiguous exact Lean toolchain matches: $TOOLCHAIN_MATCHES" >&2; exit 1 ;;
+          esac
+          ELAN_TOOLCHAINS="$("$ELAN_BIN" toolchain list)"
+          test "$(printf '%s\n' "$ELAN_TOOLCHAINS" | awk -v wanted="$TOOLCHAIN" '
+            { sub(/ \(default\)$/, "") }
+            $0 == wanted { count++ }
+            END { print count + 0 }
+          ')" = 1
+          "$ELAN_BIN" default "$TOOLCHAIN"
+
+          LEAN_ID="$("$ELAN_BIN" run "$TOOLCHAIN" lean --version)"
+          printf '%s\n' "$LEAN_ID"
+          ACTUAL_LEAN_VERSION="$(printf '%s\n' "$LEAN_ID" | sed -nE 's/^Lean \(version ([^,]+), ([^,]+),.*$/\1/p')"
+          ACTUAL_LEAN_TARGET="$(printf '%s\n' "$LEAN_ID" | sed -nE 's/^Lean \(version ([^,]+), ([^,]+),.*$/\2/p')"
+          test "$ACTUAL_LEAN_VERSION" = "$EXPECTED_LEAN_VERSION"
+          [[ "$ACTUAL_LEAN_TARGET" == "$EXPECTED_LEAN_TARGET_PREFIX"* ]]
+
+          LAKE_ID="$("$ELAN_BIN" run "$TOOLCHAIN" lake --version)"
+          printf '%s\n' "$LAKE_ID"
+          ACTUAL_LAKE_LEAN_VERSION="$(printf '%s\n' "$LAKE_ID" | sed -nE 's/^Lake version .* \(Lean version ([^)]+)\)$/\1/p')"
+          test "$ACTUAL_LAKE_LEAN_VERSION" = "$EXPECTED_LEAN_VERSION"
       # Declared separately from the aggregate so a red formal lane is legible in the job list
       # instead of being one line inside the 29-gate summary.
       - name: Lean formal gate (162 theorems machine-checked)
