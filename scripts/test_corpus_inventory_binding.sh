@@ -4,6 +4,13 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$ROOT"
 
+# The hosted aggregate exports these controls for its real RISC0 build. This
+# harness also exercises the production release publisher, whose contract
+# correctly forbids every kernel/Metal bypass. Start the synthetic publisher
+# cases from that clean release contract so their intended poison reaches the
+# named check instead of all cases failing on an unrelated inherited bypass.
+unset ANUBIS_SKIP_RISC0_METAL RISC0_SKIP_BUILD_KERNELS R0_DISABLE_METAL
+
 pass=0
 fail=0
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/anubis-corpus-binding.XXXXXX")"
@@ -576,12 +583,21 @@ parent_config_guard_last="$(grep -nF 'assert_no_parent_cargo_configuration "$rel
   "$PIN/scripts/publish_pin.sh" | tail -1 | cut -d: -f1)"
 release_cargo_call_line="$(grep -nF '"$CARGO_BIN" build --locked --release -p anubis' \
   "$PIN/scripts/publish_pin.sh" | cut -d: -f1)"
+release_weakening_guard_line="$(grep -nF \
+  'for weakening_var in ANUBIS_SKIP_RISC0_METAL RISC0_SKIP_BUILD_KERNELS R0_DISABLE_METAL; do' \
+  "$PIN/scripts/publish_pin.sh" | cut -d: -f1)"
 if [[ "$parent_config_guard_count" == "2" \
    && "$parent_config_guard_first" -lt "$release_cargo_call_line" \
    && "$release_cargo_call_line" -lt "$parent_config_guard_last" ]]; then
   ok "release build rejects unbound ancestor Cargo configuration before and after Cargo"
 else
   bad "release build does not bound Cargo's ancestor configuration walk"
+fi
+if [[ -n "$release_weakening_guard_line" \
+   && "$release_weakening_guard_line" -lt "$release_cargo_call_line" ]]; then
+  ok "release-mode weakening controls are denied before Cargo"
+else
+  bad "release-mode weakening controls are not denied before Cargo"
 fi
 raw_python_bin_uses="$(grep -Fc '"$PYTHON_BIN"' "$PIN/scripts/publish_pin.sh")"
 if [[ "$raw_python_bin_uses" == "2" ]] \
@@ -673,6 +689,29 @@ if [[ $release_publish_rc -eq 0 && $release_verify_rc -eq 0 \
 else
   bad "release mode did not produce a verified clean commit-bound identity (publish=$release_publish_rc verify=$release_verify_rc)"
 fi
+
+for release_weakening_var in \
+  ANUBIS_SKIP_RISC0_METAL RISC0_SKIP_BUILD_KERNELS R0_DISABLE_METAL; do
+  release_weakening_current_before="$(shasum -a 256 "$PIN/vm/pins/CURRENT" | awk '{print $1}')"
+  (
+    cd "$PIN"
+    /usr/bin/env "$release_weakening_var=1" \
+      /bin/bash -p scripts/publish_pin.sh --release \
+      >"$TMP/release-$release_weakening_var.out" \
+      2>"$TMP/release-$release_weakening_var.err"
+  )
+  release_weakening_rc=$?
+  release_weakening_current_after="$(shasum -a 256 "$PIN/vm/pins/CURRENT" | awk '{print $1}')"
+  if [[ "$release_weakening_rc" -ne 0 \
+     && "$release_weakening_current_before" == "$release_weakening_current_after" ]] \
+     && grep -Fq \
+       "PIN_RELEASE_BUILD_ENV_DENIED: $release_weakening_var must be unset or 0" \
+       "$TMP/release-$release_weakening_var.err"; then
+    ok "release mode rejects caller $release_weakening_var before CURRENT mutation"
+  else
+    bad "release mode did not fail closed on caller $release_weakening_var (rc=$release_weakening_rc current_unchanged=$([[ \"$release_weakening_current_before\" == \"$release_weakening_current_after\" ]] && echo yes || echo no))"
+  fi
+done
 
 (cd "$PIN" && RUSTC_WRAPPER=/usr/bin/false /bin/bash -p scripts/publish_pin.sh --release \
   >"$TMP/release-rustc-wrapper.out" 2>"$TMP/release-rustc-wrapper.err")
