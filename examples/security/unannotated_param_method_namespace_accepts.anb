@@ -1,0 +1,35 @@
+// EXPECT: PASS
+// Phase 2 slice 1, REGRESSION GUARD for a FALSE REJECTION this slice originally introduced.
+//
+// This program is legitimate. `Plain::tag(self, s)` is called as `p.tag(p)`, so `s` is a `Plain`
+// whose `k` is a public `i64`; printing it is fine.
+//
+// The first version of the call-site place-type inference rejected it with
+// ANUBIS_SECRET_EXFILTRATION. `param_place_candidates` is keyed by BARE NAME and is filled only
+// from `Expr::Call` sites — free-function calls. The free `tag(p, b)` recorded `Box` in slot 1, and
+// the impl method `tag`, whose own formal `s` also sits at index 1, inherited it. A `Box.k` is
+// declared `secret<i64>`, so the method's perfectly public field read was charged as an
+// exfiltration.
+//
+// That is `AGENTS.md`'s standing rule, violated: "Never merge namespaces. A map keyed by a bare
+// method name that a free function can also claim is a four-times-proven defect generator here."
+// Methods now receive no hint from that map at all. Extending the inference to methods needs its
+// own method-keyed candidate map, which is separate work.
+//
+// Found by review, not by the corpus — every existing fixture passed. It is committed so the next
+// person who widens this inference has to keep the namespaces apart.
+struct Box { k: secret<i64> }
+struct Plain { k: i64 }
+
+fn tag(a, s) { return a; }
+
+impl Plain {
+    fn tag(self, s) { print(s.k); }
+}
+
+fn main() {
+    let p = Plain { k: 1 };
+    let b = Box { k: 42 };
+    let n = tag(p, b);
+    p.tag(p);
+}

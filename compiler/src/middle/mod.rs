@@ -5475,7 +5475,7 @@ fn analyze_function(
     // Nominal place types for this function's UNANNOTATED formals, chosen from the types its
     // callers really pass. Rebuilt (not merged) per function so one function's formals can never
     // resolve another's.
-    ctx.current_fn_param_place_hints = select_param_place_hints(name, params, ctx);
+    ctx.current_fn_param_place_hints = select_param_place_hints(name, params, is_method, ctx);
     ctx.applied_builtin_leg2 = false;
     ctx.applied_builtin_secret = false;
 
@@ -8892,20 +8892,34 @@ fn infer_undeclared_return_place_type(body: &[Stmt]) -> Option<String> {
 /// one, so binding any candidate describes a real call.
 fn collect_param_place_candidates(items: &[Item]) -> BTreeMap<String, Vec<BTreeSet<String>>> {
     let mut out: BTreeMap<String, Vec<BTreeSet<String>>> = BTreeMap::new();
+    collect_param_place_candidates_into(items, &mut out);
+    out
+}
+
+fn collect_param_place_candidates_into(
+    items: &[Item],
+    out: &mut BTreeMap<String, Vec<BTreeSet<String>>>,
+) {
     for item in items {
         match item {
-            Item::Fn { body, .. } => scan_calls_for_param_types(body, &mut out),
+            Item::Fn { body, .. } => scan_calls_for_param_types(body, out),
             Item::Impl { methods, .. } => {
                 for m in methods {
                     if let Item::Fn { body, .. } = m {
-                        scan_calls_for_param_types(body, &mut out);
+                        scan_calls_for_param_types(body, out);
                     }
                 }
             }
+            // `register_program_surface` recurses into modules, so a function declared inside one
+            // IS registered in `fn_params`/`all_fns` — but its call sites lived in a module body
+            // this pass never entered. For a program whose code sits under `module`, no hint was
+            // ever produced and the `secret<T>` field read through an unannotated formal stayed
+            // fail-open: exactly the hole this slice closes for top-level code, left open one
+            // nesting level down.
+            Item::Module { items, .. } => collect_param_place_candidates_into(items, out),
             _ => {}
         }
     }
-    out
 }
 
 /// Walk one body, tracking locals whose type is pinned by a construction, and record the nominal
@@ -9193,12 +9207,26 @@ fn nominal_type_has_flow_qualified_field(ty: &str, ctx: &SemanticContext) -> boo
 /// - several candidates and none flow-qualified: no hint. Nothing about confidentiality is at
 ///   stake, and picking arbitrarily among plain types could attribute one struct's field
 ///   declarations to another and FALSE-REJECT.
+///
+/// An impl METHOD gets no hint at all. `param_place_candidates` is keyed by bare name and is filled
+/// only from `Expr::Call` sites, which are free-function calls — so a method sharing a bare name
+/// with a free function would receive the FREE FUNCTION's argument types, attribute another
+/// struct's declared field qualifiers to its formal, and FALSE-REJECT. A method's `params` also
+/// carry `self` at index 0 while the candidate slots do not, so even a same-named match would be
+/// index-skewed. `AGENTS.md` states this as repository law — "never merge namespaces; a map keyed
+/// by a bare method name that a free function can also claim is a four-times-proven defect
+/// generator here" — and the effect registries at `:3070` already refuse the same lookup.
+/// Extending the hint to methods needs its own method-keyed candidate map, which is separate work.
 fn select_param_place_hints(
     fn_name: &str,
     params: &[(String, String)],
+    is_method: bool,
     ctx: &SemanticContext,
 ) -> BTreeMap<String, String> {
     let mut hints = BTreeMap::new();
+    if is_method {
+        return hints;
+    }
     let Some(slots) = ctx.param_place_candidates.get(fn_name) else {
         return hints;
     };
@@ -28989,7 +29017,7 @@ mod place_type_inference_tests {
         let mut ctx = ctx_with_structs(&[("Box", &[("k", "secret<i64>")])]);
         candidates(&mut ctx, "f", &[&["Box"]]);
         let params = vec![("s".to_string(), "Plain".to_string())];
-        assert!(select_param_place_hints("f", &params, &ctx).is_empty());
+        assert!(select_param_place_hints("f", &params, false, &ctx).is_empty());
     }
 
     #[test]
@@ -28998,7 +29026,7 @@ mod place_type_inference_tests {
         candidates(&mut ctx, "f", &[&["Box"]]);
         let params = vec![("s".to_string(), String::new())];
         assert_eq!(
-            select_param_place_hints("f", &params, &ctx).get("s"),
+            select_param_place_hints("f", &params, false, &ctx).get("s"),
             Some(&"Box".to_string())
         );
     }
@@ -29012,7 +29040,7 @@ mod place_type_inference_tests {
         candidates(&mut ctx, "f", &[&["Box", "Plain"]]);
         let params = vec![("s".to_string(), String::new())];
         assert_eq!(
-            select_param_place_hints("f", &params, &ctx).get("s"),
+            select_param_place_hints("f", &params, false, &ctx).get("s"),
             Some(&"Box".to_string())
         );
     }
@@ -29024,14 +29052,36 @@ mod place_type_inference_tests {
         let mut ctx = ctx_with_structs(&[("A", &[("k", "i64")]), ("B", &[("k", "string")])]);
         candidates(&mut ctx, "f", &[&["A", "B"]]);
         let params = vec![("s".to_string(), String::new())];
-        assert!(select_param_place_hints("f", &params, &ctx).is_empty());
+        assert!(select_param_place_hints("f", &params, false, &ctx).is_empty());
     }
 
     #[test]
     fn a_function_with_no_recorded_call_sites_binds_nothing() {
         let ctx = ctx_with_structs(&[("Box", &[("k", "secret<i64>")])]);
         let params = vec![("s".to_string(), String::new())];
-        assert!(select_param_place_hints("never_called", &params, &ctx).is_empty());
+        assert!(select_param_place_hints("never_called", &params, false, &ctx).is_empty());
+    }
+
+    #[test]
+    fn an_impl_method_never_reads_the_free_function_candidate_map() {
+        // `AGENTS.md`: never merge namespaces. `param_place_candidates` is keyed by BARE name and
+        // filled only from `Expr::Call` (free-function) sites, so a method sharing a name with a
+        // free function would inherit that function's argument types — attributing another
+        // struct's declared field qualifiers to its formal and FALSE-REJECTING. A method's params
+        // also carry `self` at index 0, so even a same-named match is index-skewed.
+        let mut ctx = ctx_with_structs(&[("Box", &[("k", "secret<i64>")])]);
+        candidates(&mut ctx, "get", &[&["Box"]]);
+        let method_params = vec![
+            ("self".to_string(), String::new()),
+            ("s".to_string(), String::new()),
+        ];
+        assert!(select_param_place_hints("get", &method_params, true, &ctx).is_empty());
+        // The free function of the same name still resolves normally.
+        let free_params = vec![("s".to_string(), String::new())];
+        assert_eq!(
+            select_param_place_hints("get", &free_params, false, &ctx).get("s"),
+            Some(&"Box".to_string())
+        );
     }
 
     #[test]
