@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// Phase 2 slice 3 OVER-REJECTION GUARD — the newly visible secret must still be RELEASABLE.
+//
+// Closing a leak route is only correct if the language's authorized release keeps working through
+// it. If this flips to FAIL, the fix stopped being an information-flow rule and became a ban on
+// storing callables in fields.
+fn key() -> secret<i64> { return 42; }
+
+struct S { f: i64 }
+
+fn main() {
+    let b = S { f: 0 };
+    b.f = key;
+    print(declassify(b.f(), "audit", "operator approved"));
+}

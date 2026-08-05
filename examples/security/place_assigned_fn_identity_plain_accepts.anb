@@ -1,0 +1,16 @@
+// EXPECT: PASS
+// Phase 2 slice 3 OVER-REJECTION GUARD.
+//
+// Storing an ordinary function in a field and applying it must stay legal. The new resolver fires
+// only when the recorded identity is a named function KNOWN to return a flow-qualified value, so a
+// plain callable is untouched. A future change that rejects any place-assigned callable — the easy
+// way to "close" the reject twins — fails here instead of shipping.
+fn plain() -> i64 { return 1; }
+
+struct S { f: i64 }
+
+fn main() {
+    let b = S { f: 0 };
+    b.f = plain;
+    print(b.f());
+}

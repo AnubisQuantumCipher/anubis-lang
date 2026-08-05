@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Phase 2 slice 3 — the DIRECT control that makes the pair meaningful.
+//
+// This always rejected. It ships beside the laundered twins so the corpus keeps proving the
+// asymmetry rather than merely proving that something rejects.
+fn key() -> secret<i64> { return 42; }
+
+fn main() {
+    print(key());
+}

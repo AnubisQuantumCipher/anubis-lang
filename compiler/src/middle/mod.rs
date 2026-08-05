@@ -23602,6 +23602,44 @@ fn walk_block_taint(
     );
 }
 
+/// The named function stored at an applied access path, when that name is in `flagged`.
+///
+/// SHARED by the integrity and confidentiality `Expr::CallExpr` arms on purpose. The two arms are
+/// line-for-line twins, and every time one of them grew a case the other eventually had to as
+/// well — this repository has produced four separate laundering paths that way. One function
+/// cannot drift from itself.
+///
+/// Reads `field_fn_identities`, which is where a PLACE-ASSIGNMENT (`b.f = key`) records a named
+/// function, as opposed to `field_closures`, which holds stored lambdas. Both maps describe the
+/// same thing — what is callable at `b.f` — and the `CallExpr` arms were consulting only one.
+///
+/// Conservative in the accept direction: only a `Known` identity set matches, so an `Unknown` set
+/// (analysis could not determine the callable) yields nothing here and the existing arms decide.
+/// It cannot invent a flow, only recognise one that was already recorded.
+fn place_assigned_identity_matching(
+    callee: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    flagged: &BTreeSet<String>,
+) -> Option<String> {
+    let (root, path) = flatten_access_path(callee)?;
+    let binding = scope.get(&root)?;
+    let FnIdentitySet::Known(names) = binding.field_fn_identities.get(&path)? else {
+        return None;
+    };
+    names
+        .iter()
+        .find(|name| {
+            // Resolve through an alias exactly as the sibling arms do, so `let g = key; b.f = g`
+            // is recognised as `key` rather than as an unknown local.
+            let target = scope
+                .get(*name)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(name.as_str());
+            flagged.contains(target)
+        })
+        .cloned()
+}
+
 fn walk_block_secret(
     stmts: &[Stmt],
     local: &mut BTreeMap<String, ScopeBinding>,
@@ -24228,6 +24266,18 @@ fn expr_taint_source_m(
                 if tainting_fns.contains(target) {
                     return Some(format!("return value of `{target}`"));
                 }
+            }
+            // `field_closures` holds a stored LAMBDA. A NAMED function assigned to a field by a
+            // PLACE-ASSIGNMENT (`b.f = dirty`) lands in `field_fn_identities` instead — a different
+            // map, written by the enforcing lane's non-`Var` `Stmt::Assign` arm, and until now read
+            // by nothing on this path. `docs/CLAIMS.md` item 21 root cause 6 states the disease
+            // exactly: a producer computes a label and the consumer on that same path ignores it.
+            //
+            // Struct-LITERAL construction (`S { f: dirty }`) already rejected, and so did the
+            // direct call and the local alias. Only the place-assign route laundered. The secret
+            // dual of this shape is runtime-proven: it printed the secret on a green `check`.
+            if let Some(target) = place_assigned_identity_matching(callee, scope, tainting_fns) {
+                return Some(format!("return value of `{target}`"));
             }
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
@@ -24996,6 +25046,15 @@ fn expr_secret_source_m(
                 if secret_fns.contains(target) {
                     return Some(format!("return value of `{target}`"));
                 }
+            }
+            // Confidentiality twin of the integrity arm above — see it for the mechanism.
+            //
+            // RUNTIME-PROVEN before this arm existed: `let b = S { f: 0 }; b.f = key; print(b.f())`
+            // passed `check` with exit 0 and PRINTED 42. `print(key())`, `let g = key; g()`, and
+            // `fn app(f){ print(f()); } app(key)` all rejected, so this was a pure laundering route
+            // through one map the consumer never read.
+            if let Some(target) = place_assigned_identity_matching(callee, scope, secret_fns) {
+                return Some(format!("return value of `{target}`"));
             }
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
@@ -29244,6 +29303,96 @@ mod carried_contract_path_condition_tests {
                 rhs: Box::new(unknown),
             }),
             Some(true)
+        );
+    }
+}
+
+/// Unit tests for the Phase-2 slice-3 place-assigned callable resolver.
+///
+/// The whole point of `place_assigned_identity_matching` is that ONE function serves both the
+/// integrity and confidentiality `CallExpr` arms, so they cannot drift apart the way this
+/// repository's twin walkers repeatedly have. These pin its conservatism: it recognises a recorded
+/// identity and refuses everything else.
+#[cfg(test)]
+mod place_assigned_identity_tests {
+    use super::*;
+
+    fn binding_with_field(path: &str, ids: FnIdentitySet) -> BTreeMap<String, ScopeBinding> {
+        let mut b = ScopeBinding {
+            info: BindingInfo {
+                name: "b".into(),
+                ty: None,
+                mode: "safe".into(),
+                tainted: false,
+                taint_source: None,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            closure_lambda: None,
+            secret: false,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
+        };
+        b.field_fn_identities.insert(path.to_string(), ids);
+        let mut scope = BTreeMap::new();
+        scope.insert("b".to_string(), b);
+        scope
+    }
+
+    fn call_of_field() -> Expr {
+        Expr::FieldAccess {
+            base: Box::new(Expr::Var("b".into())),
+            field: "f".into(),
+            span: Span { start: 0, end: 0 },
+        }
+    }
+
+    fn flagged(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    #[test]
+    fn a_recorded_flagged_identity_is_found() {
+        let scope = binding_with_field("f", FnIdentitySet::Known(flagged(&["key"])));
+        assert_eq!(
+            place_assigned_identity_matching(&call_of_field(), &scope, &flagged(&["key"])),
+            Some("key".to_string())
+        );
+    }
+
+    #[test]
+    fn a_recorded_unflagged_identity_is_not_found() {
+        // Storing an ordinary callable in a field must stay legal; this is the unit-level twin of
+        // `place_assigned_fn_identity_plain_accepts.anb`.
+        let scope = binding_with_field("f", FnIdentitySet::Known(flagged(&["plain"])));
+        assert_eq!(
+            place_assigned_identity_matching(&call_of_field(), &scope, &flagged(&["key"])),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unknown_identity_set_yields_nothing() {
+        // `Unknown` means analysis could not determine the callable. This resolver must not turn
+        // that into a flow — the surrounding arms decide what uncertainty costs.
+        let scope = binding_with_field("f", FnIdentitySet::Unknown);
+        assert_eq!(
+            place_assigned_identity_matching(&call_of_field(), &scope, &flagged(&["key"])),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unrecorded_path_yields_nothing() {
+        let scope = binding_with_field("other", FnIdentitySet::Known(flagged(&["key"])));
+        assert_eq!(
+            place_assigned_identity_matching(&call_of_field(), &scope, &flagged(&["key"])),
+            None
         );
     }
 }

@@ -1,0 +1,24 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Phase 2 slice 3 — the INTEGRITY twin of
+// `place_assigned_fn_identity_secret_rejects.anb`.
+//
+// Committed because fixing one lane and not its sibling is this repository's most reproduced
+// defect: the taint and secret `Expr::CallExpr` arms are line-for-line twins, and four separate
+// laundering paths have shipped from patching only one of them. Both arms now call ONE shared
+// resolver, so they cannot drift apart again.
+//
+// Not runtime-proven, and deliberately not claimed to be: `shell` is a proof/analysis construct
+// with no run-lane lowering, so the runtime refuses this program with a structured
+// ANUBIS_UNSUPPORTED_NATIVE_LOWERING rather than leaking. The finding here is the STRUCTURAL
+// asymmetry — direct rejects, place-assign accepted — and the secret dual above supplies the
+// runtime proof that the mechanism is real.
+fn dirty() -> tainted<i64> { return 7; }
+
+struct S { f: i64 }
+
+fn main() uses(shell) {
+    let b = S { f: 0 };
+    b.f = dirty;
+    shell(b.f());
+}
