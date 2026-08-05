@@ -103,7 +103,7 @@ operative default branch, and a local file proves nothing about it.
 
 ### 4. Every Phase 2 slice lands as its own PR with pasted gate evidence — **MET for slices 1–2; the criterion is standing**
 
-- PR #2 — <https://github.com/AnubisQuantumCipher/anubis-lang/pull/2> — Phase 2 slices 1 and 2,
+- PR #2 — <https://github.com/AnubisQuantumCipher/anubis-lang/pull/2> — Phase 2 slices 1, 2 and 3,
   with the full evidence table pasted in the description (verdict diff, fixture suites, library
   tests, fmt/clippy).
 - PR #3 — <https://github.com/AnubisQuantumCipher/anubis-lang/pull/3> — merged as `5ff1e87f`.
@@ -173,6 +173,7 @@ Every change in this phase has a recorded failure before its fix.
 | 4 | `in_if.anb` / `in_for.anb`: `check_rc=0`, `run` completed calling `callee(-1)` | both `check_rc=1` with `ANUBIS_ASSERTION_DISPROVED` |
 | 5 | slice-1 CI run `30989379521` = `Overall: FAIL (27/29 passed, 1 failed)`, `G16_docs_drift` | docs reconciled; `run_docs_drift_gate.sh` rc 0, `PASS (36 stamps checked, 0 drift)` |
 | 6 | release binary carried `/Users/sicarii/anubis-lang` (1 `strings` hit) | constant removed (PR #3, merged `5ff1e87f`) |
+| 7 | `d_place_assign.anb`: `b.f = key; print(b.f())` `check_rc=0`, `run` printed `42` | `check_rc=1` with `ANUBIS_SECRET_EXFILTRATION` |
 
 Row 5 is the most useful one: the local suites were all green and CI still failed. The gate was
 right and the local battery was incomplete.
@@ -186,27 +187,31 @@ Every enforcing change ships an accept-side fixture, and the whole corpus was di
 ```
 $ /usr/bin/python3 -I -B scripts/phase1_verdict_diff.py \
     --old vm/pins/anubis-149035b30c11-src-a88353570172-release \
-    --new vm/pins/anubis-bad018faeba7-src-032d9de847ea --root . --out out/p2_slice2_final_diff.json
-VERDICT_DIFF_V2 verdict=FAIL total=933 flips=4 timeouts=0 rc_changes=4
+    --new vm/pins/anubis-ce1c6c7262e8-src-02b7275ff84a --root . --out out/p2_slice3_diff.json
+VERDICT_DIFF_V2 verdict=FAIL total=938 flips=6 timeouts=0 rc_changes=6
 ```
 
 `verdict=FAIL` is the tool refusing to bless flips automatically. All four were inspected:
 
 ```
-$ jq -r '.acceptance_flips[]|"\(.old.class) -> \(.new.class)   \(.fixture)"' out/p2_slice2_final_diff.json
+$ jq -r '.acceptance_flips[]|"\(.old.class) -> \(.new.class)   \(.fixture)"' out/p2_slice3_diff.json
 ACCEPT -> REJECT   examples/security/contract_carried_guard_always_true_rejects.anb
 ACCEPT -> REJECT   examples/security/contract_carried_guard_for_range_rejects.anb
+ACCEPT -> REJECT   examples/security/place_assigned_fn_identity_secret_rejects.anb
+ACCEPT -> REJECT   examples/security/place_assigned_fn_identity_taint_rejects.anb
 ACCEPT -> REJECT   examples/security/unannotated_param_declared_secret_field_rejects.anb
 ACCEPT -> REJECT   examples/security/unannotated_return_declared_secret_field_rejects.anb
 ```
 
-All four are this branch's own `EXPECT: FAIL` fixtures — the intended closures. **Zero unintended
-flips across 933 files.**
+All six are this branch's own `EXPECT: FAIL` fixtures — the intended closures. **Zero unintended
+flips across 938 files.** (The final slice-3 run measures 938; the slice-2 run above measured 933
+before five more fixtures were added.)
 
 Accept-side guards, all `EXPECT: PASS` and all passing:
 `unannotated_param_plain_field_accepts`, `unannotated_return_plain_field_accepts`,
 `unannotated_param_declassify_accepts`, `contract_carried_dead_branch_accepts`,
-`contract_carried_empty_range_accepts`, `contract_carried_guard_valid_arg_accepts`.
+`contract_carried_empty_range_accepts`, `contract_carried_guard_valid_arg_accepts`,
+`place_assigned_fn_identity_plain_accepts`, `place_assigned_fn_identity_declassify_accepts`.
 
 The `declassify` and dead-branch guards are the load-bearing ones. The dead-branch guard is what
 caught the rejected solver-assumption design during slice 2 (§10).
@@ -224,6 +229,13 @@ through a function value, and several plain candidate types reaching one formal.
 and executed the violating call. Both closed. Dead-branch twins (`if 1 == 2`, `for i in 0..0`)
 confirmed still ACCEPTED — the fix does not over-reject. A non-constant guard (`if n > 0`) remains
 ACCEPTED; that is unchanged prior behavior, disclosed, not closed.
+
+**Slice 3 — place-assigned callable identity.** Direct call, local alias, higher-order application,
+and struct-literal construction all REJECTED; `b.f = key; print(b.f())` ACCEPTED and printed the
+secret at runtime. Closed. The integrity twin (`b.f = dirty; shell(b.f())`) shows the same
+structural asymmetry but is **not** runtime-provable — `shell` has no run-lane lowering, so the
+runtime refuses with a structured `ANUBIS_UNSUPPORTED_NATIVE_LOWERING` rather than leaking. The
+fixture says exactly that rather than implying a leak it cannot demonstrate.
 
 **Builtin laundering — a NEGATIVE result, recorded because it refutes a claim.** A read-only scout
 reported that 157 stdlib builtins are "implicitly clean in middle.rs analysis … all classification
@@ -245,7 +257,7 @@ launder an argument by construction. The scout's claim is refuted for single-hop
 slice was written for a defect that does not exist.
 
 Break attempts made in this phase: 2 place-type shapes, 4 contract-guard shapes, 2 dead-branch
-controls, 516 builtin sweep programs, 4 high-arity crypto programs. Survivors: the non-constant
+controls, 6 callable-identity shapes, 516 builtin sweep programs, 4 high-arity crypto programs. Survivors: the non-constant
 guard case, the polymorphic parameter case, and the function-value reachability case — all named in
 §9.
 
@@ -278,7 +290,7 @@ PHASE_METRICS: OK
 
 Phase end is recorded in the Phase 2 slice reports rather than here; this phase's changes were to
 GitHub state, not to the walker structure. **`middle/mod.rs` grew** (28,604 → ~29,600) because
-slices 1 and 2 ADD analysis rather than removing duplication. That moves the headline metric the
+slices 1–3 ADD analysis rather than removing duplication. That moves the headline metric the
 wrong way and is stated plainly rather than omitted: the "strictly decreasing" target belongs to the
 unification slices (3–5), which delete duplicated lanes. Slices 1 and 2 were chosen first because
 they close runtime-proven false accepts, and a smaller file that still leaks is not the goal.
@@ -315,7 +327,9 @@ they close runtime-proven false accepts, and a smaller file that still leaks is 
   (several plain candidate types reaching one formal), formals reached only through a function
   value, non-constant branch guards in carried contract discharge, the impl-method arm of
   `place_struct_type`, place-assignment parity in the reduced walkers, and builtin-result callable
-  identity.
+  identity. Slice 3 closes the *named-field* case of place-assignment identity; a callable reached
+  through a **container element** rather than a named field path is unchanged, and an `Unknown`
+  identity set is still not charged.
 - **`anubis run` is not fail-closed as a whole.** The ~213-builtin domain/arity/wrong-type/I/O
   surface remains unenumerated. This phase's sweep tested *laundering*, not runnability.
 - **The bare `anubis` alias hazard** is documented, not fixed.
@@ -366,6 +380,9 @@ Code and docs are in separate commits throughout.
 | `phase2/unified-value-flow` | `86abfc6b` | slice 1 code + 6 fixtures |
 | | `8b8e54c0` | slice 2 code + 6 fixtures |
 | | `b1e743e0` | docs stamp reconciliation (docs only) |
+| | `cf3b2f34` | this report (docs only) |
+| | `3b3d932c` | slice 3 code + 5 fixtures |
+| | `ddb86919` | slice 3 docs restamp (docs only) |
 | `fix/release-binary-operator-path` | `09fbfd71` | merged → `5ff1e87f` |
 | `release/public-packaging-lane` | `ddd21a8d` | release lane, open |
 
