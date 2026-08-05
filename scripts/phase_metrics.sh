@@ -171,6 +171,40 @@ mid = pathlib.Path(mid_p).read_text().splitlines()
 cap = pathlib.Path(cap_p).read_text()
 front = pathlib.Path(front_p).read_text()
 WC = re.compile(r'_\s*=>')
+
+
+def strip_line_comments(text):
+    """Drop `//` line comments before counting wildcard arms.
+
+    The wildcard count was measured over RAW source, so a comment that merely MENTIONS `_ => None`
+    -- for example one explaining why a wildcard was removed -- counted as a wildcard. Replacing
+    two real wildcard arms with explicit variant lists and documenting why therefore left the
+    metric unchanged at 7, reporting no progress for a change that made two walkers total.
+
+    A metric that a comment can move is not measuring the code. Only `//` is stripped, and only
+    outside a string literal, which is all this file's walkers use.
+    """
+    out = []
+    for line in text.splitlines():
+        in_str = False
+        esc = False
+        cut = None
+        for i, ch in enumerate(line):
+            if esc:
+                esc = False
+                continue
+            if ch == '\\':
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if not in_str and ch == '/' and i + 1 < len(line) and line[i + 1] == '/':
+                cut = i
+                break
+        out.append(line if cut is None else line[:cut])
+    return "\n".join(out)
+
 bad = 0
 
 def variants(name):
@@ -269,7 +303,7 @@ tot_wc = 0; missing = []
 for fn in LABEL_FNS:
     r = body(fn)
     if not r: missing.append(fn); continue
-    tot_wc += len(WC.findall(r[2]))
+    tot_wc += len(WC.findall(strip_line_comments(r[2])))
 if missing:
     print(f"{'_ => in label-lane walkers':40s} {'UNMEASURED':>10s}   <- {', '.join(missing)}"); bad += 1
 else:

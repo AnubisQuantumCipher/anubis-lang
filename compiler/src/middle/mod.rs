@@ -24139,14 +24139,45 @@ fn expr_taint_source_m(
                             )
                         })
                     }),
-                    _ => None,
+                    // TOTAL over `Stmt`. Only an expression statement and a statement-level `if`
+                    // can be a block's VALUE; the rest bind, loop, branch away, or declare, and
+                    // none of them is the thing this block evaluates to. Enumerated rather than
+                    // wildcarded so a new value-producing `Stmt` cannot be silently read as
+                    // contributing no label.
+                    Stmt::Let { .. }
+                    | Stmt::LetPattern { .. }
+                    | Stmt::WhileLet { .. }
+                    | Stmt::Assign { .. }
+                    | Stmt::While { .. }
+                    | Stmt::Loop { .. }
+                    | Stmt::For { .. }
+                    | Stmt::Break
+                    | Stmt::Continue
+                    | Stmt::ResearchBlock { .. }
+                    | Stmt::ExploitBlock { .. }
+                    | Stmt::HybridBlock { .. }
+                    | Stmt::SpecBlock { .. } => None,
                 }
             }
             tail.as_deref()
                 .or_else(|| {
                     stmts.last().and_then(|stmt| match stmt {
                         Stmt::ExprStmt(expr) => Some(expr),
-                        _ => None,
+                        // TOTAL over `Stmt`: only a trailing expression statement is a block tail.
+                        Stmt::Let { .. }
+                        | Stmt::LetPattern { .. }
+                        | Stmt::WhileLet { .. }
+                        | Stmt::Assign { .. }
+                        | Stmt::If { .. }
+                        | Stmt::While { .. }
+                        | Stmt::Loop { .. }
+                        | Stmt::For { .. }
+                        | Stmt::Break
+                        | Stmt::Continue
+                        | Stmt::ResearchBlock { .. }
+                        | Stmt::ExploitBlock { .. }
+                        | Stmt::HybridBlock { .. }
+                        | Stmt::SpecBlock { .. } => None,
                     })
                 })
                 .and_then(|t| {
@@ -24362,7 +24393,21 @@ fn expr_taint_source_m(
                 })
             })
         }
-        _ => None,
+        // TOTAL over `Expr`, no wildcard. These variants carry no integrity label: a literal is
+        // constant, a `Symbolic`/`UnifiedBuffer`/`RawPtr` is a research-lane construct with no
+        // value flow through this lane, and `Other` is an unparsed remnant that reaches no sink.
+        //
+        // Spelling them out rather than writing a wildcard arm is the point. This walker decides a
+        // SECURITY question, and a wildcard means the next `Expr` variant someone adds is silently
+        // classified CLEAN — the under-approximating catch-all `AGENTS.md` calls a defect factory
+        // and `scripts/phase_metrics.sh` counts under `in label-lane walkers`. Now a new variant
+        // fails to COMPILE here and its author has to decide what it means for taint.
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => None,
     }
 }
 
@@ -24890,14 +24935,41 @@ fn expr_secret_source_m(
                             )
                         })
                     }),
-                    _ => None,
+                    // TOTAL over `Stmt`, the confidentiality twin of the taint helper above.
+                    Stmt::Let { .. }
+                    | Stmt::LetPattern { .. }
+                    | Stmt::WhileLet { .. }
+                    | Stmt::Assign { .. }
+                    | Stmt::While { .. }
+                    | Stmt::Loop { .. }
+                    | Stmt::For { .. }
+                    | Stmt::Break
+                    | Stmt::Continue
+                    | Stmt::ResearchBlock { .. }
+                    | Stmt::ExploitBlock { .. }
+                    | Stmt::HybridBlock { .. }
+                    | Stmt::SpecBlock { .. } => None,
                 }
             }
             tail.as_deref()
                 .or_else(|| {
                     stmts.last().and_then(|stmt| match stmt {
                         Stmt::ExprStmt(expr) => Some(expr),
-                        _ => None,
+                        // TOTAL over `Stmt`: only a trailing expression statement is a block tail.
+                        Stmt::Let { .. }
+                        | Stmt::LetPattern { .. }
+                        | Stmt::WhileLet { .. }
+                        | Stmt::Assign { .. }
+                        | Stmt::If { .. }
+                        | Stmt::While { .. }
+                        | Stmt::Loop { .. }
+                        | Stmt::For { .. }
+                        | Stmt::Break
+                        | Stmt::Continue
+                        | Stmt::ResearchBlock { .. }
+                        | Stmt::ExploitBlock { .. }
+                        | Stmt::HybridBlock { .. }
+                        | Stmt::SpecBlock { .. } => None,
                     })
                 })
                 .and_then(|t| {
@@ -25140,7 +25212,19 @@ fn expr_secret_source_m(
                 })
             })
         }
-        _ => None,
+        // TOTAL over `Expr`, the confidentiality twin of the taint walker's tail — see it for why
+        // a wildcard is not acceptable in a walker that decides a security question.
+        //
+        // `TaintSource` appears here but not there: it is an INTEGRITY seed, so it carries no
+        // confidentiality label and is genuinely clean in this lane. Stating that explicitly is
+        // better than letting a wildcard imply it.
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => None,
     }
 }
 
