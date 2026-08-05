@@ -34,7 +34,7 @@ session.
 
 | PR | branch | head | state |
 |---|---|---|---|
-| #2 | `phase2/unified-value-flow` | `58dfab9f` (+ report commit pending, see §4) | open; needs CI on final head |
+| #2 | `phase2/unified-value-flow` | `490939cb` | open; CI dispatched, result unknown at session end |
 | #4 | `release/public-packaging-lane` | `b90c3bd3` | `CLEAN` — **mergeable, was ready when this session ended** |
 | #1 | `a-plus-maturity/safe-mode-trust-spine-20260725` | `0e910c9b` | stale; targets the OLD default. Triage or close. |
 
@@ -104,17 +104,20 @@ inspected and named.
 
 ## 4. THE FIRST THING TO DO ON RESUME
 
-One report commit was prepared but **not pushed** before the session ended.
+Everything is pushed. `phase2/unified-value-flow` HEAD is `490939cb`, and every file on it was
+verified byte-identical to the local copy with `git hash-object`.
 
-- File: `docs/evidence/PHASE_1.5_COMPLETION_2026-08-05.md`
-- SHA-256: `d686b20dec8e5aac5f5f7c705b0cd1114702599df14e72198ecbaa18e2aa19bc`
-- Present in the phase2 worktree, gated green (docs drift rc 0, promise coherence rc 0)
-- It must land on `phase2/unified-value-flow` as a **docs-only** commit on top of `58dfab9f`
+The ordered next actions:
 
-Use `/tmp/mkcommit.py` (backed up, §6) or an equivalent, because the harness blocks `git add` /
-`git push`. Then let CI run on the final head and merge PR #2.
-
----
+1. **Check CI on `490939cb`.** It was dispatched as this session ended and its result is unknown
+   here. Two runs fire per push (`push` + `pull_request`); both report `hosted-gate-witness` and
+   both must pass. Expect ~35-45 minutes.
+2. **Resolve the CodeRabbit review threads on PR #2.** The ruleset requires thread resolution, and
+   it is what caught the false rejection in §8 — read each one before resolving it.
+3. **Merge PR #2**, then **merge PR #4** (it was `CLEAN`). Merging one puts the other `BEHIND`
+   under the strict policy, so it needs `update-branch` and another CI cycle. Plan for two.
+4. **Then build the Release** — Phase 1.5 criterion 5, the only thing between INCOMPLETE and
+   COMPLETE. Steps in §5.
 
 ## 5. The remaining road
 
@@ -193,9 +196,9 @@ session).
 
 Verify with `shasum -a 256 -c MANIFEST.sha256` from inside that directory.
 
-The authoritative copy of all committed work is the remote branch
-`phase2/unified-value-flow`. The backup exists for the one unpushed report commit (§4) and for the
-pins, which are gitignored build products.
+The authoritative copy of all committed work is the remote branch `phase2/unified-value-flow` at
+`490939cb`. The backup exists for the pins — which are gitignored build products and cannot be
+recovered from git — and as an offline snapshot of the source and evidence.
 
 ---
 
