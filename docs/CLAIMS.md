@@ -75,13 +75,13 @@ instrument; do not substitute mutable `./target/release/anubis`.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **339/339 PASS**. Live disk inventory **339** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **344/344 PASS**. Live disk inventory **344** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **253/253 PASS** — Phase 1 adds the research-block local-field accept fixture; the earlier 252/252 receipt remains historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 933 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 938 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -2279,7 +2279,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **339/339** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **344/344** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 882 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
