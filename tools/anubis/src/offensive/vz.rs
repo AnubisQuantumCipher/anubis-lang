@@ -290,10 +290,11 @@ fn workspace_root() -> Option<String> {
             }
         }
     }
-    let candidates = [
-        PathBuf::from("/Users/sicarii/anubis-lang"),
-        dirs::home_dir()?.join("anubis-lang"),
-    ];
+    // `~/anubis-lang` covers the author's own machine without baking a specific home directory
+    // into every shipped binary. The absolute `/Users/sicarii/anubis-lang` that used to sit here
+    // was strictly redundant with it for that machine, resolved for nobody else, and was the only
+    // occurrence of the operator's username in the release Mach-O.
+    let candidates = [dirs::home_dir()?.join("anubis-lang")];
     for p in candidates {
         if p.is_dir() {
             return Some(p.display().to_string());
