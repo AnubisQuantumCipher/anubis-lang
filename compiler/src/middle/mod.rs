@@ -1,6 +1,6 @@
 //! Middle: typed HIR, mode/effect checks, taint tracking, and Z3 obligations.
 
-use crate::frontend::{Expr, Item, Mode, Pattern, Span, Stmt, AST};
+use crate::frontend::{Expr, ForSource, Item, Mode, Pattern, Span, Stmt, AST};
 use crate::BuildMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2888,6 +2888,34 @@ struct SemanticContext {
     /// modeled as a solver integer ONLY when this is an integer type — otherwise a float-returning
     /// callee (`frac -> f64`) would seed a float into the integer domain via composition.
     fn_ret_types: BTreeMap<String, String>,
+    /// UNDECLARED return type → the nominal place type the body actually constructs.
+    ///
+    /// `fn_ret_types` stores the EMPTY STRING for `fn make() { return Box{..} }` (:3706), and every
+    /// declared-field-qualifier lookup filters empty (`place_struct_type`, :8546/:8556) and yields
+    /// `None`. `None` is FAIL-OPEN on that path, so `print(make().k)` read a declared
+    /// `secret<i64>` field as public and PRINTED IT on a green `check` (`docs/CLAIMS.md` item 21,
+    /// "unannotated return place types").
+    ///
+    /// Deliberately a SEPARATE map rather than a better `fn_ret_types` value: `fn_ret_types` feeds
+    /// solver-lane modelability and the serialized surface, so widening it would move HIR/fixpoint
+    /// bytes for a confidentiality fix. This map is read ONLY by the place-type resolver.
+    ///
+    /// Populated only when EVERY return site of a return-type-less function constructs the SAME
+    /// nominal type, so the resolver can never invent a type the function does not return.
+    fn_ret_place_hints: BTreeMap<String, String>,
+    /// Function name → per-parameter set of nominal place types observed at DIRECT call sites.
+    /// Pre-computed over the whole program before any body is analyzed, because a callee's body is
+    /// analyzed without its callers' scopes.
+    param_place_candidates: BTreeMap<String, Vec<BTreeSet<String>>>,
+    /// Per-body scratch: UNANNOTATED parameter name → the nominal place type chosen from
+    /// `param_place_candidates` for the function currently being analyzed.
+    ///
+    /// `fn leak(s) { print(s.k) }` binds `s` with `info.ty == Some("")` (:5603), so
+    /// `place_struct_type`'s `Expr::Var` arm resolved nothing and the declared `secret<i64>` field
+    /// `k` was read as public — runtime-proven printing. Read ONLY by the place-type resolver, for
+    /// the same reason `fn_ret_place_hints` is separate: `info.ty` is on the serialized
+    /// `BindingInfo` and must not move for an analysis-scratch fix.
+    current_fn_param_place_hints: BTreeMap<String, String>,
     /// Function name → (parameter names, `requires` clauses, `ensures` clauses). Registered in
     /// pass 1 so a caller can, at a call site, ASSERT the callee's precondition and ASSUME its
     /// postcondition — the composition that makes contracts chain.
@@ -3258,6 +3286,10 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         effects::compute_fn_effect_rows(&ast.items, &ctx.all_fns, &ctx.fn_declared_effects);
     // Non-exportable sealedness: program summary before per-fn linearity.
     ctx.cap_summary = capability::program_summary(&ast.items);
+    // Whole-program call-shape data, gathered BEFORE any body is analyzed because a callee's body
+    // is analyzed with no view of its callers. Supplies the nominal place type of an UNANNOTATED
+    // formal so a declared `secret<T>` field read through that formal is still charged.
+    ctx.param_place_candidates = collect_param_place_candidates(&ast.items);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -3705,6 +3737,16 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 );
                 ctx.fn_ret_types
                     .insert(name.clone(), ret.clone().unwrap_or_default());
+                // A function with no `-> T` stores the empty spelling above, which every declared
+                // field-qualifier lookup filters away. Recover the nominal type the body actually
+                // constructs so `print(make().k)` can still see that `k` is declared `secret<i64>`.
+                // Recorded in a separate map: `fn_ret_types` is read by the solver lane and the
+                // serialized surface, and this inference must not move either.
+                if ret.is_none() {
+                    if let Some(inferred) = infer_undeclared_return_place_type(body) {
+                        ctx.fn_ret_place_hints.insert(name.clone(), inferred);
+                    }
+                }
                 if !generics.is_empty() {
                     ctx.fn_generics.insert(name.clone(), generics.clone());
                 }
@@ -5422,6 +5464,10 @@ fn analyze_function(
     // the lambda arm of `check_expr_semantics` clears it around a closure body. `None` for no `-> T`.
     ctx.current_fn_return = ret.map(|r| r.to_string());
     ctx.current_fn = Some(name.to_string());
+    // Nominal place types for this function's UNANNOTATED formals, chosen from the types its
+    // callers really pass. Rebuilt (not merged) per function so one function's formals can never
+    // resolve another's.
+    ctx.current_fn_param_place_hints = select_param_place_hints(name, params, ctx);
     ctx.applied_builtin_leg2 = false;
     ctx.applied_builtin_secret = false;
 
@@ -8506,6 +8552,12 @@ pub(crate) struct PlaceTypes<'a> {
     fn_ret: &'a BTreeMap<String, String>,
     method_ret: &'a BTreeMap<String, String>,
     enum_payloads: &'a BTreeMap<String, Vec<String>>,
+    /// Inferred nominal return types for functions with NO `-> T`. Consulted only after `fn_ret`
+    /// yields nothing, so a DECLARED type always wins and this can only turn `None` into a type.
+    fn_ret_hints: &'a BTreeMap<String, String>,
+    /// Inferred nominal types for the currently analyzed function's UNANNOTATED parameters.
+    /// Consulted only after the binding's own `ty` yields nothing, for the same reason.
+    param_hints: &'a BTreeMap<String, String>,
 }
 
 impl SemanticContext {
@@ -8515,8 +8567,577 @@ impl SemanticContext {
             fn_ret: &self.fn_ret_types,
             method_ret: &self.method_ret_types,
             enum_payloads: &self.enum_payload_types,
+            fn_ret_hints: &self.fn_ret_place_hints,
+            param_hints: &self.current_fn_param_place_hints,
         }
     }
+}
+
+/// The nominal type a constructor expression DEFINITELY produces, or `None`.
+///
+/// Deliberately narrow: only a struct literal or an enum construction names a type the program
+/// certainly builds. Everything else — a call, a variable, a container, a join — either needs a
+/// scope this resolver does not have or is a place whose type the existing arms already handle.
+/// Guessing here would let the place-type resolver attribute one struct's declared field
+/// qualifiers to another value, which is a FALSE REJECTION, so unknown stays `None`.
+fn nominal_construction_type(e: &Expr) -> Option<String> {
+    match e {
+        Expr::StructLiteral { name, .. } => Some(name.clone()),
+        Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
+        _ => None,
+    }
+}
+
+/// Collect every `return <expr>` argument reachable from a STATEMENT, in source order.
+///
+/// TOTAL over `Stmt` on purpose (`docs/CLAIMS.md` item 21 and the `carrier.rs`/`loopctl.rs`
+/// precedent): the caller requires UNANIMITY across return sites, so a variant this walker
+/// silently skipped would let a disagreeing `return` go uncounted and the resolver would bind a
+/// type the function does not always produce. A new `Stmt` variant must fail to COMPILE here.
+fn collect_return_exprs_stmt(s: &Stmt, out: &mut Vec<Expr>) {
+    match s {
+        Stmt::Let { init, .. } => collect_return_exprs_expr(init, out),
+        Stmt::LetPattern { init, .. } => collect_return_exprs_expr(init, out),
+        Stmt::WhileLet { expr, body, .. } => {
+            collect_return_exprs_expr(expr, out);
+            body.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+        }
+        Stmt::Assign { target, value } => {
+            collect_return_exprs_expr(target, out);
+            collect_return_exprs_expr(value, out);
+        }
+        Stmt::If { cond, then, else_ } => {
+            collect_return_exprs_expr(cond, out);
+            then.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+            if let Some(e) = else_ {
+                e.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+            }
+        }
+        Stmt::While {
+            cond,
+            body,
+            invariant,
+        } => {
+            collect_return_exprs_expr(cond, out);
+            invariant
+                .iter()
+                .for_each(|i| collect_return_exprs_expr(i, out));
+            body.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+        }
+        Stmt::Loop { body, invariant } => {
+            invariant
+                .iter()
+                .for_each(|i| collect_return_exprs_expr(i, out));
+            body.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+        }
+        Stmt::For {
+            source,
+            body,
+            invariant,
+            ..
+        } => {
+            match source {
+                ForSource::Range { start, end } => {
+                    collect_return_exprs_expr(start, out);
+                    collect_return_exprs_expr(end, out);
+                }
+                ForSource::Collection { expr } => collect_return_exprs_expr(expr, out),
+            }
+            invariant
+                .iter()
+                .for_each(|i| collect_return_exprs_expr(i, out));
+            body.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+        }
+        Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
+        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+            body.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for part in [gpu, cpu, prove].into_iter().flatten() {
+                part.iter().for_each(|b| collect_return_exprs_stmt(b, out));
+            }
+        }
+        Stmt::ExprStmt(e) => collect_return_exprs_expr(e, out),
+    }
+}
+
+/// Collect every `return <expr>` argument reachable from an EXPRESSION, in source order.
+///
+/// TOTAL over `Expr` for the same reason as the statement walker. `Expr::Lambda` is the one
+/// deliberate stop: a `return` inside a lambda body returns from the LAMBDA, not from the
+/// enclosing function, so counting it would make an unrelated type disagree and merely suppress
+/// the inference — safe, but wrong about which sites exist.
+fn collect_return_exprs_expr(e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::Call { callee, args } => {
+            if callee == "return" {
+                // `return;` with no value carries no nominal type; record the unit form so the
+                // caller sees a disagreeing site rather than silently ignoring it.
+                out.push(
+                    args.first()
+                        .cloned()
+                        .unwrap_or(Expr::Other("return".into())),
+                );
+            }
+            args.iter().for_each(|a| collect_return_exprs_expr(a, out));
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_return_exprs_expr(callee, out);
+            args.iter().for_each(|a| collect_return_exprs_expr(a, out));
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_return_exprs_expr(lhs, out);
+            collect_return_exprs_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Declassify { inner: expr, .. }
+        | Expr::Try(expr) => collect_return_exprs_expr(expr, out),
+        Expr::ArrayLiteral { elements } => {
+            elements
+                .iter()
+                .for_each(|x| collect_return_exprs_expr(x, out));
+        }
+        Expr::Index { base, index } => {
+            collect_return_exprs_expr(base, out);
+            collect_return_exprs_expr(index, out);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            fields
+                .iter()
+                .for_each(|(_, v)| collect_return_exprs_expr(v, out));
+        }
+        Expr::FieldAccess { base, .. } => collect_return_exprs_expr(base, out),
+        Expr::EnumConstruct { fields, .. } => {
+            fields
+                .iter()
+                .for_each(|x| collect_return_exprs_expr(x, out));
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_return_exprs_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_return_exprs_expr(g, out);
+                }
+                collect_return_exprs_expr(&arm.body, out);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            collect_return_exprs_expr(cond, out);
+            collect_return_exprs_expr(then, out);
+            collect_return_exprs_expr(else_, out);
+        }
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            collect_return_exprs_expr(scrutinee, out);
+            collect_return_exprs_expr(then, out);
+            collect_return_exprs_expr(else_, out);
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_return_exprs_expr(k, out);
+                collect_return_exprs_expr(v, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            stmts.iter().for_each(|s| collect_return_exprs_stmt(s, out));
+            if let Some(t) = tail {
+                collect_return_exprs_expr(t, out);
+            }
+        }
+        // A `return` inside a lambda body belongs to the lambda. Stop.
+        Expr::Lambda { .. } => {}
+        Expr::Var(_)
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => {}
+    }
+}
+
+/// Infer the nominal place type of a function that declared NO `-> T`.
+///
+/// Returns a type only when EVERY value the function can hand back constructs the SAME nominal
+/// type. That unanimity requirement is what makes the result usable by the place-type resolver:
+/// the caller of `make()` is then reading a field of a type the function always produces, so
+/// honoring that type's DECLARED field qualifiers cannot attribute a qualifier to a value that
+/// never has it. Any disagreeing, unresolvable, or valueless return suppresses the inference and
+/// the resolver keeps its previous `None`.
+fn infer_undeclared_return_place_type(body: &[Stmt]) -> Option<String> {
+    let mut returns = Vec::new();
+    body.iter()
+        .for_each(|s| collect_return_exprs_stmt(s, &mut returns));
+    // A trailing expression statement is the implicit return value (`fn make() { Box{..} }`).
+    if let Some(Stmt::ExprStmt(tail)) = body.last() {
+        if !matches!(tail, Expr::Call { callee, .. } if callee == "return") {
+            returns.push(tail.clone());
+        }
+    }
+    let mut agreed: Option<String> = None;
+    for r in &returns {
+        let nominal = nominal_construction_type(r)?;
+        match &agreed {
+            None => agreed = Some(nominal),
+            Some(prev) if *prev == nominal => {}
+            Some(_) => return None,
+        }
+    }
+    agreed
+}
+
+/// Per-parameter nominal place types observed at DIRECT call sites of each user function.
+///
+/// A callee's body is analyzed with no view of its callers, so `fn leak(s) { print(s.k) }` had no
+/// way to learn that every caller passes a `Box` whose `k` is declared `secret<i64>`. This pass
+/// supplies exactly that, and only from types the program REALLY passes: each recorded candidate
+/// comes from an argument that is either an inline construction or a local whose initializer is
+/// one, so binding any candidate describes a real call.
+fn collect_param_place_candidates(items: &[Item]) -> BTreeMap<String, Vec<BTreeSet<String>>> {
+    let mut out: BTreeMap<String, Vec<BTreeSet<String>>> = BTreeMap::new();
+    for item in items {
+        match item {
+            Item::Fn { body, .. } => scan_calls_for_param_types(body, &mut out),
+            Item::Impl { methods, .. } => {
+                for m in methods {
+                    if let Item::Fn { body, .. } = m {
+                        scan_calls_for_param_types(body, &mut out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Walk one body, tracking locals whose type is pinned by a construction, and record the nominal
+/// type of every direct-call argument.
+///
+/// A local is dropped from the map the moment a second binding or assignment gives it a different
+/// (or unresolvable) type, so a reused name can never contribute a stale candidate.
+fn scan_calls_for_param_types(body: &[Stmt], out: &mut BTreeMap<String, Vec<BTreeSet<String>>>) {
+    let mut locals: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut calls: Vec<(String, Vec<Expr>)> = Vec::new();
+    for s in body {
+        collect_local_place_types_stmt(s, &mut locals);
+        collect_call_sites_stmt(s, &mut calls);
+    }
+    for (callee, args) in calls {
+        let slots = out.entry(callee).or_default();
+        if slots.len() < args.len() {
+            slots.resize(args.len(), BTreeSet::new());
+        }
+        for (i, a) in args.iter().enumerate() {
+            let nominal = nominal_construction_type(a).or_else(|| match a {
+                Expr::Var(v) => locals.get(v).cloned().flatten(),
+                _ => None,
+            });
+            if let Some(t) = nominal {
+                slots[i].insert(t);
+            }
+        }
+    }
+}
+
+/// Record every local whose nominal place type is pinned by an annotation or a construction.
+///
+/// Flow-INsensitive by design: a name bound or assigned twice with different resolutions collapses
+/// to `None` rather than keeping either. That makes shadowing and reassignment safe without
+/// modelling scopes — the only thing a surviving entry can say is "every binding of this name in
+/// this body agrees on this type", which is exactly the strength the candidate set needs.
+fn collect_local_place_types_stmt(s: &Stmt, locals: &mut BTreeMap<String, Option<String>>) {
+    let record = |name: &str, resolved: Option<String>, locals: &mut BTreeMap<_, _>| {
+        locals
+            .entry(name.to_string())
+            .and_modify(|slot: &mut Option<String>| {
+                if *slot != resolved {
+                    *slot = None;
+                }
+            })
+            .or_insert(resolved);
+    };
+    match s {
+        Stmt::Let { name, ty, init, .. } => {
+            let resolved = ty
+                .clone()
+                .filter(|t| !t.is_empty())
+                .or_else(|| nominal_construction_type(init));
+            record(name, resolved, locals);
+        }
+        Stmt::Assign {
+            target: Expr::Var(n),
+            value,
+        } => {
+            let resolved = nominal_construction_type(value);
+            record(n, resolved, locals);
+        }
+        Stmt::Assign { .. } | Stmt::LetPattern { .. } => {}
+        Stmt::WhileLet { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => {
+            body.iter()
+                .for_each(|b| collect_local_place_types_stmt(b, locals));
+        }
+        Stmt::If { then, else_, .. } => {
+            then.iter()
+                .for_each(|b| collect_local_place_types_stmt(b, locals));
+            if let Some(e) = else_ {
+                e.iter()
+                    .for_each(|b| collect_local_place_types_stmt(b, locals));
+            }
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for part in [gpu, cpu, prove].into_iter().flatten() {
+                part.iter()
+                    .for_each(|b| collect_local_place_types_stmt(b, locals));
+            }
+        }
+        Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } | Stmt::ExprStmt(_) => {}
+    }
+}
+
+/// Every `Expr::Call` reachable from a statement, as `(callee, args)`.
+///
+/// Structurally mirrors `collect_return_exprs_stmt`: same descent, same total match, so the two
+/// passes cannot drift into disagreeing about which parts of a body they can see. Only `Expr::Call`
+/// is recorded — a `CallExpr` through a value has no static callee NAME to key a parameter on.
+fn collect_call_sites_stmt(s: &Stmt, out: &mut Vec<(String, Vec<Expr>)>) {
+    match s {
+        Stmt::Let { init, .. } => collect_call_sites_expr(init, out),
+        Stmt::LetPattern { init, .. } => collect_call_sites_expr(init, out),
+        Stmt::WhileLet { expr, body, .. } => {
+            collect_call_sites_expr(expr, out);
+            body.iter().for_each(|b| collect_call_sites_stmt(b, out));
+        }
+        Stmt::Assign { target, value } => {
+            collect_call_sites_expr(target, out);
+            collect_call_sites_expr(value, out);
+        }
+        Stmt::If { cond, then, else_ } => {
+            collect_call_sites_expr(cond, out);
+            then.iter().for_each(|b| collect_call_sites_stmt(b, out));
+            if let Some(e) = else_ {
+                e.iter().for_each(|b| collect_call_sites_stmt(b, out));
+            }
+        }
+        Stmt::While {
+            cond,
+            body,
+            invariant,
+        } => {
+            collect_call_sites_expr(cond, out);
+            invariant
+                .iter()
+                .for_each(|i| collect_call_sites_expr(i, out));
+            body.iter().for_each(|b| collect_call_sites_stmt(b, out));
+        }
+        Stmt::Loop { body, invariant } => {
+            invariant
+                .iter()
+                .for_each(|i| collect_call_sites_expr(i, out));
+            body.iter().for_each(|b| collect_call_sites_stmt(b, out));
+        }
+        Stmt::For {
+            source,
+            body,
+            invariant,
+            ..
+        } => {
+            match source {
+                ForSource::Range { start, end } => {
+                    collect_call_sites_expr(start, out);
+                    collect_call_sites_expr(end, out);
+                }
+                ForSource::Collection { expr } => collect_call_sites_expr(expr, out),
+            }
+            invariant
+                .iter()
+                .for_each(|i| collect_call_sites_expr(i, out));
+            body.iter().for_each(|b| collect_call_sites_stmt(b, out));
+        }
+        Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
+        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+            body.iter().for_each(|b| collect_call_sites_stmt(b, out));
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for part in [gpu, cpu, prove].into_iter().flatten() {
+                part.iter().for_each(|b| collect_call_sites_stmt(b, out));
+            }
+        }
+        Stmt::ExprStmt(e) => collect_call_sites_expr(e, out),
+    }
+}
+
+/// Every `Expr::Call` reachable from an expression, as `(callee, args)`.
+///
+/// Unlike the return-site walker this DOES descend into `Expr::Lambda`: a call written inside a
+/// lambda is still a real application of the named callee with those arguments, so its argument
+/// types are legitimate candidates.
+fn collect_call_sites_expr(e: &Expr, out: &mut Vec<(String, Vec<Expr>)>) {
+    match e {
+        Expr::Call { callee, args } => {
+            out.push((callee.clone(), args.clone()));
+            args.iter().for_each(|a| collect_call_sites_expr(a, out));
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_call_sites_expr(callee, out);
+            args.iter().for_each(|a| collect_call_sites_expr(a, out));
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_call_sites_expr(lhs, out);
+            collect_call_sites_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Declassify { inner: expr, .. }
+        | Expr::Try(expr) => collect_call_sites_expr(expr, out),
+        Expr::ArrayLiteral { elements } => {
+            elements
+                .iter()
+                .for_each(|x| collect_call_sites_expr(x, out));
+        }
+        Expr::Index { base, index } => {
+            collect_call_sites_expr(base, out);
+            collect_call_sites_expr(index, out);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            fields
+                .iter()
+                .for_each(|(_, v)| collect_call_sites_expr(v, out));
+        }
+        Expr::FieldAccess { base, .. } => collect_call_sites_expr(base, out),
+        Expr::EnumConstruct { fields, .. } => {
+            fields.iter().for_each(|x| collect_call_sites_expr(x, out));
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_call_sites_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_call_sites_expr(g, out);
+                }
+                collect_call_sites_expr(&arm.body, out);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            collect_call_sites_expr(cond, out);
+            collect_call_sites_expr(then, out);
+            collect_call_sites_expr(else_, out);
+        }
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            collect_call_sites_expr(scrutinee, out);
+            collect_call_sites_expr(then, out);
+            collect_call_sites_expr(else_, out);
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_call_sites_expr(k, out);
+                collect_call_sites_expr(v, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            stmts.iter().for_each(|s| collect_call_sites_stmt(s, out));
+            if let Some(t) = tail {
+                collect_call_sites_expr(t, out);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_call_sites_expr(body, out),
+        Expr::Var(_)
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => {}
+    }
+}
+
+/// Does this nominal type declare at least one information-flow-qualified field?
+///
+/// Used only to break a tie between several candidate types for one formal. Preferring the
+/// qualified one keeps the choice on the RESTRICTIVE side of the lattice, which is the direction a
+/// security label must round toward when the analysis is uncertain.
+fn nominal_type_has_flow_qualified_field(ty: &str, ctx: &SemanticContext) -> bool {
+    ctx.struct_fields
+        .get(ty)
+        .map(|fields| {
+            fields
+                .values()
+                .any(|f| ty::strip_flow_qualifier(f) != f.trim())
+        })
+        .unwrap_or(false)
+}
+
+/// Choose one nominal place type per UNANNOTATED formal from the types callers really pass.
+///
+/// Every candidate came from a real argument, so binding one describes a real call and any
+/// resulting diagnostic is a TRUE positive for that call site. The rules:
+///
+/// - an ANNOTATED formal is never touched — a declared type always wins;
+/// - exactly one candidate: use it;
+/// - several candidates: use the flow-qualified one (rounding toward the restrictive end of the
+///   lattice), deterministically ordered so the choice cannot depend on map iteration;
+/// - several candidates and none flow-qualified: no hint. Nothing about confidentiality is at
+///   stake, and picking arbitrarily among plain types could attribute one struct's field
+///   declarations to another and FALSE-REJECT.
+fn select_param_place_hints(
+    fn_name: &str,
+    params: &[(String, String)],
+    ctx: &SemanticContext,
+) -> BTreeMap<String, String> {
+    let mut hints = BTreeMap::new();
+    let Some(slots) = ctx.param_place_candidates.get(fn_name) else {
+        return hints;
+    };
+    for (i, (pname, pty)) in params.iter().enumerate() {
+        if !pty.trim().is_empty() {
+            continue;
+        }
+        let Some(candidates) = slots.get(i) else {
+            continue;
+        };
+        let chosen = match candidates.len() {
+            0 => None,
+            1 => candidates.iter().next().cloned(),
+            _ => candidates
+                .iter()
+                .find(|c| nominal_type_has_flow_qualified_field(c, ctx))
+                .cloned(),
+        };
+        if let Some(t) = chosen {
+            hints.insert(pname.clone(), t);
+        }
+    }
+    hints
 }
 
 fn place_struct_type(
@@ -8525,7 +9146,16 @@ fn place_struct_type(
     struct_fields: &PlaceTypes<'_>,
 ) -> Option<String> {
     match e {
-        Expr::Var(v) => scope.get(v).and_then(|b| b.info.ty.clone()),
+        // An UNANNOTATED formal has `info.ty == Some("")` (:5603), not `None`, so the original
+        // `.and_then(|b| b.info.ty.clone())` returned `Some("")`, `struct_field_type_for_place`
+        // found no struct named `""`, and the declared field qualifier was dropped. Filter the
+        // empty spelling, then fall back to the call-site-derived hint. A DECLARED annotation is
+        // still consulted first and always wins.
+        Expr::Var(v) => scope
+            .get(v)
+            .and_then(|b| b.info.ty.clone())
+            .filter(|t| !t.is_empty())
+            .or_else(|| struct_fields.param_hints.get(v).cloned()),
         Expr::FieldAccess { base, field, .. } => {
             let base_ty = place_struct_type(base, scope, struct_fields)?;
             struct_field_type_for_place(&base_ty, field, struct_fields)
@@ -8545,6 +9175,9 @@ fn place_struct_type(
                 .get(target)
                 .filter(|t| !t.is_empty())
                 .cloned()
+                // A function with no `-> T` stores the EMPTY STRING, which the filter above drops.
+                // The hint carries the nominal type every return site of that function constructs.
+                .or_else(|| struct_fields.fn_ret_hints.get(target).cloned())
         }
         // D2: the impl-method twin — `v.make().k`. Bare-name keyed like every other method registry,
         // and an empty entry means unknown or ambiguous across impls, which stays fail-open rather
@@ -19227,11 +19860,15 @@ fn reject_secret_pc_public_return(
     let frt = ctx.fn_ret_types.clone();
     let mrt = ctx.method_ret_types.clone();
     let ept = ctx.enum_payload_types.clone();
+    let frh = ctx.fn_ret_place_hints.clone();
+    let pph = ctx.current_fn_param_place_hints.clone();
     let struct_fields = PlaceTypes {
         fields: &sf,
         fn_ret: &frt,
         method_ret: &mrt,
         enum_payloads: &ept,
+        fn_ret_hints: &frh,
+        param_hints: &pph,
     };
     let val_is_secret = |val: &Expr, scope: &BTreeMap<String, ScopeBinding>| {
         expr_secret_source_m(
@@ -19410,11 +20047,15 @@ fn reject_secret_scrutinee_returns_in_expr(
     let frt = ctx.fn_ret_types.clone();
     let mrt = ctx.method_ret_types.clone();
     let ept = ctx.enum_payload_types.clone();
+    let frh = ctx.fn_ret_place_hints.clone();
+    let pph = ctx.current_fn_param_place_hints.clone();
     let struct_fields = PlaceTypes {
         fields: &sf,
         fn_ret: &frt,
         method_ret: &mrt,
         enum_payloads: &ept,
+        fn_ret_hints: &frh,
+        param_hints: &pph,
     };
     let val_is_secret = |val: &Expr| {
         expr_secret_source_m(
@@ -27990,6 +28631,227 @@ fn scan_param_bounds_expr(
             scan_param_bounds_expr(else_, p, lower, upper_le, upper_lt, idx);
         }
         _ => {}
+    }
+}
+
+/// Unit tests for the Phase-2 slice-1 place-type inference.
+///
+/// These pin the MECHANISM, not just the end-to-end verdict. The security fixtures in
+/// `examples/security/unannotated_*` prove the diagnostics; these prove that the inference itself
+/// stays UNANIMITY-gated and RESTRICTIVE-biased, which is what keeps it from inventing a type and
+/// false-rejecting.
+#[cfg(test)]
+mod place_type_inference_tests {
+    use super::*;
+
+    fn span() -> Span {
+        Span { start: 0, end: 0 }
+    }
+
+    fn struct_lit(name: &str) -> Expr {
+        Expr::StructLiteral {
+            name: name.to_string(),
+            fields: Vec::new(),
+            span: span(),
+        }
+    }
+
+    fn ret(e: Expr) -> Stmt {
+        Stmt::ExprStmt(Expr::Call {
+            callee: "return".into(),
+            args: vec![e],
+        })
+    }
+
+    #[test]
+    fn unanimous_returns_infer_the_nominal_type() {
+        let body = vec![ret(struct_lit("Box"))];
+        assert_eq!(
+            infer_undeclared_return_place_type(&body),
+            Some("Box".to_string())
+        );
+    }
+
+    #[test]
+    fn a_trailing_expression_counts_as_a_return() {
+        let body = vec![Stmt::ExprStmt(struct_lit("Box"))];
+        assert_eq!(
+            infer_undeclared_return_place_type(&body),
+            Some("Box".to_string())
+        );
+    }
+
+    #[test]
+    fn disagreeing_returns_infer_nothing() {
+        // Two different nominal types: binding either one would attribute that struct's declared
+        // field qualifiers to values of the other, which is a FALSE REJECTION.
+        let body = vec![
+            Stmt::If {
+                cond: Expr::Literal("true".into()),
+                then: vec![ret(struct_lit("Box"))],
+                else_: Some(vec![ret(struct_lit("Plain"))]),
+            },
+            ret(struct_lit("Box")),
+        ];
+        assert_eq!(infer_undeclared_return_place_type(&body), None);
+    }
+
+    #[test]
+    fn an_unresolvable_return_suppresses_the_inference() {
+        // One resolvable and one opaque return: the opaque one could be any type, so unanimity is
+        // not established and the resolver must keep its previous `None`.
+        let body = vec![
+            ret(struct_lit("Box")),
+            ret(Expr::Call {
+                callee: "mystery".into(),
+                args: Vec::new(),
+            }),
+        ];
+        assert_eq!(infer_undeclared_return_place_type(&body), None);
+    }
+
+    #[test]
+    fn a_return_inside_a_lambda_belongs_to_the_lambda() {
+        // The lambda's `return Plain{}` must not be counted as a return of the enclosing function,
+        // which would make it disagree with the real `return Box{}` and suppress a valid inference.
+        let body = vec![
+            Stmt::Let {
+                name: "f".into(),
+                ty: None,
+                init: Expr::Lambda {
+                    params: Vec::new(),
+                    body: Box::new(Expr::Call {
+                        callee: "return".into(),
+                        args: vec![struct_lit("Plain")],
+                    }),
+                },
+                span: span(),
+            },
+            ret(struct_lit("Box")),
+        ];
+        assert_eq!(
+            infer_undeclared_return_place_type(&body),
+            Some("Box".to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_body_infers_nothing() {
+        assert_eq!(infer_undeclared_return_place_type(&[]), None);
+    }
+
+    fn ctx_with_structs(entries: &[(&str, &[(&str, &str)])]) -> SemanticContext {
+        let mut ctx = SemanticContext::default();
+        for (name, fields) in entries {
+            let mut m = BTreeMap::new();
+            for (f, t) in *fields {
+                m.insert((*f).to_string(), (*t).to_string());
+            }
+            ctx.struct_fields.insert((*name).to_string(), m);
+        }
+        ctx
+    }
+
+    fn candidates(ctx: &mut SemanticContext, f: &str, slots: &[&[&str]]) {
+        ctx.param_place_candidates.insert(
+            f.to_string(),
+            slots
+                .iter()
+                .map(|s| s.iter().map(|t| (*t).to_string()).collect())
+                .collect(),
+        );
+    }
+
+    #[test]
+    fn a_declared_annotation_is_never_overridden() {
+        let mut ctx = ctx_with_structs(&[("Box", &[("k", "secret<i64>")])]);
+        candidates(&mut ctx, "f", &[&["Box"]]);
+        let params = vec![("s".to_string(), "Plain".to_string())];
+        assert!(select_param_place_hints("f", &params, &ctx).is_empty());
+    }
+
+    #[test]
+    fn a_single_candidate_is_bound() {
+        let mut ctx = ctx_with_structs(&[("Box", &[("k", "secret<i64>")])]);
+        candidates(&mut ctx, "f", &[&["Box"]]);
+        let params = vec![("s".to_string(), String::new())];
+        assert_eq!(
+            select_param_place_hints("f", &params, &ctx).get("s"),
+            Some(&"Box".to_string())
+        );
+    }
+
+    #[test]
+    fn several_candidates_round_toward_the_flow_qualified_one() {
+        // Both types are really passed, so charging the secret one is a TRUE positive for that
+        // call site. Rounding the other way would silently drop a declared qualifier.
+        let mut ctx =
+            ctx_with_structs(&[("Box", &[("k", "secret<i64>")]), ("Plain", &[("k", "i64")])]);
+        candidates(&mut ctx, "f", &[&["Box", "Plain"]]);
+        let params = vec![("s".to_string(), String::new())];
+        assert_eq!(
+            select_param_place_hints("f", &params, &ctx).get("s"),
+            Some(&"Box".to_string())
+        );
+    }
+
+    #[test]
+    fn several_plain_candidates_bind_nothing() {
+        // Nothing about confidentiality is at stake, and picking arbitrarily could attribute one
+        // struct's field declarations to another value and false-reject.
+        let mut ctx = ctx_with_structs(&[("A", &[("k", "i64")]), ("B", &[("k", "string")])]);
+        candidates(&mut ctx, "f", &[&["A", "B"]]);
+        let params = vec![("s".to_string(), String::new())];
+        assert!(select_param_place_hints("f", &params, &ctx).is_empty());
+    }
+
+    #[test]
+    fn a_function_with_no_recorded_call_sites_binds_nothing() {
+        let ctx = ctx_with_structs(&[("Box", &[("k", "secret<i64>")])]);
+        let params = vec![("s".to_string(), String::new())];
+        assert!(select_param_place_hints("never_called", &params, &ctx).is_empty());
+    }
+
+    #[test]
+    fn a_local_rebound_to_a_different_type_stops_being_a_candidate() {
+        // Flow-insensitive by design: two disagreeing bindings of one name collapse to unknown
+        // rather than letting a stale type describe the argument.
+        let body = vec![
+            Stmt::Let {
+                name: "v".into(),
+                ty: None,
+                init: struct_lit("Box"),
+                span: span(),
+            },
+            Stmt::Let {
+                name: "v".into(),
+                ty: None,
+                init: struct_lit("Plain"),
+                span: span(),
+            },
+            Stmt::ExprStmt(Expr::Call {
+                callee: "sink".into(),
+                args: vec![Expr::Var("v".into())],
+            }),
+        ];
+        let mut out = BTreeMap::new();
+        scan_calls_for_param_types(&body, &mut out);
+        assert_eq!(out.get("sink").map(|s| s[0].len()), Some(0));
+    }
+
+    #[test]
+    fn an_argument_constructed_inline_is_a_candidate() {
+        let body = vec![Stmt::ExprStmt(Expr::Call {
+            callee: "sink".into(),
+            args: vec![struct_lit("Box")],
+        })];
+        let mut out = BTreeMap::new();
+        scan_calls_for_param_types(&body, &mut out);
+        assert_eq!(
+            out.get("sink")
+                .map(|s| s[0].iter().cloned().collect::<Vec<_>>()),
+            Some(vec!["Box".to_string()])
+        );
     }
 }
 

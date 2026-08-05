@@ -1,0 +1,18 @@
+// EXPECT: PASS
+// Phase 2 slice 1 OVER-REJECTION GUARD for
+// `unannotated_param_declared_secret_field_rejects.anb`.
+//
+// The call-site place-type inference must resolve `s` to `Plain` and then find NOTHING to charge:
+// `Plain.k` carries no information-flow qualifier, so printing it stays legal. A future change
+// that marks every unannotated formal restrictive — the tempting way to "close" the reject twin —
+// fails here instead of shipping a compiler that refuses ordinary programs.
+struct Plain { k: i64 }
+
+fn show(s) {
+    print(s.k);
+}
+
+fn main() {
+    let p = Plain { k: 7 };
+    show(p);
+}

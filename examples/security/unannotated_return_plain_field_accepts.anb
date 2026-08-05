@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// Phase 2 slice 1 OVER-REJECTION GUARD for
+// `unannotated_return_declared_secret_field_rejects.anb`.
+//
+// Return-type inference must recover `Plain` and charge nothing. A future change that treats an
+// UNRESOLVED return type as restrictive rather than as unknown would reject this ordinary factory.
+struct Plain { k: i64 }
+
+fn make() {
+    return Plain { k: 7 };
+}
+
+fn main() {
+    print(make().k);
+}

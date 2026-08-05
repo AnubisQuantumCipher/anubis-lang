@@ -1,0 +1,18 @@
+// EXPECT: PASS
+// Phase 2 slice 1 OVER-REJECTION GUARD: the newly visible secret must still be RELEASABLE.
+//
+// Closing the unannotated-parameter route is only correct if the declared escape hatch keeps
+// working through it. `declassify` is the language's authorized release: once the place type
+// resolves to `Box` and `k` is seen as `secret<i64>`, an explicit declassify with a policy and a
+// reason must clear the egress exactly as it does for an ANNOTATED formal. If this fixture ever
+// flips to FAIL, the fix stopped being an information-flow rule and became a blanket ban.
+struct Box { k: secret<i64> }
+
+fn release(s) {
+    print(declassify(s.k, "audit", "operator approved"));
+}
+
+fn main() {
+    let b = Box { k: 42 };
+    release(b);
+}

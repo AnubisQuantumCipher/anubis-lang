@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Phase 2 slice 1 — the DIRECT control for the two laundering twins.
+//
+// This shape always rejected. It is committed alongside them so the pair keeps proving the thing
+// that makes a finding real in this repository: the direct form is REFUSED and the laundered form
+// is ACCEPTED. If a future refactor ever makes this one accept, the two reject fixtures beside it
+// would still pass for the wrong reason, and the corpus would be measuring nothing.
+struct Box { k: secret<i64> }
+
+fn main() {
+    let b = Box { k: 42 };
+    print(b.k);
+}
