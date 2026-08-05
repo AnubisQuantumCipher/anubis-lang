@@ -1817,6 +1817,29 @@ def validate_output_root_exclusion(
     return compact_snapshot_receipt(receipt)
 
 
+def registered_corpus_count() -> int:
+    """The exact number of `.anb` programs the native-authoritative corpus must contain.
+
+    Read from `scripts/lib/native_corpus_expected_count.txt`, resolved relative to THIS producer
+    rather than to `--root`, so a diff pointed at some other tree cannot supply its own count.
+
+    Fails closed: a missing, empty, non-numeric, or non-positive file raises. A corpus-completeness
+    check that silently defaults to zero would accept a truncated corpus, which is precisely the
+    failure this repository has already shipped once (an unmatched `grep` under `set -euo pipefail`
+    truncating a run mid-way while still printing green).
+    """
+    path = Path(__file__).resolve().parent / "lib" / "native_corpus_expected_count.txt"
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SystemExit(f"cannot read registered corpus count at {path}: {exc}") from exc
+    if not re.fullmatch(r"[1-9][0-9]*", raw):
+        raise SystemExit(
+            f"registered corpus count at {path} must be a positive integer, got {raw!r}"
+        )
+    return int(raw)
+
+
 def main() -> int:
     python_runtime_open = require_isolated_python_runtime()
     parser = argparse.ArgumentParser(
@@ -1838,7 +1861,12 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--workers", default=4, type=int)
     parser.add_argument("--timeout", default=90, type=int)
-    parser.add_argument("--expected-count", default=921, type=int)
+    # The registered-corpus size is a TRACKED fact, not a literal buried in an argument default.
+    # It was `921` in two places here; growing the corpus by six security fixtures then failed with
+    # "inventory count 927 != expected 921" and the only way forward was to edit a magic number
+    # inside the producer. A tracked file keeps the check exactly as strict — the count must match
+    # EXACTLY — while making a corpus change a reviewable one-line diff instead of invisible drift.
+    parser.add_argument("--expected-count", default=registered_corpus_count(), type=int)
     args = parser.parse_args()
 
     started_utc = dt.datetime.now(dt.timezone.utc)
@@ -1856,8 +1884,11 @@ def main() -> int:
         raise SystemExit(
             "Phase-1 final diff requires exactly 90 seconds per invocation"
         )
-    if args.expected_count != 921:
-        raise SystemExit("Phase-1 final diff requires expected count 921")
+    if args.expected_count != registered_corpus_count():
+        raise SystemExit(
+            "verdict diff requires the registered corpus count "
+            f"{registered_corpus_count()} from scripts/lib/native_corpus_expected_count.txt"
+        )
     if not re.fullmatch(r"[0-9a-f]{64}", args.expected_old_sha256):
         raise SystemExit("--expected-old-sha256 must be 64 lowercase hex")
     if not re.fullmatch(r"[0-9a-f]{64}", args.expected_old_meta_sha256):

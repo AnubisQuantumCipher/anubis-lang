@@ -1,0 +1,14 @@
+// EXPECT: PASS
+// Phase 2 slice 2 OVER-REJECTION GUARD — an empty `for` range.
+//
+// `0..0` is empty, so the body never runs and the contract is never violated. The collector
+// derives the guard `0 < 0` from the range bounds, folds it to false, and drops the application.
+// Without that derivation, teaching the collector to see `for` bodies would have rejected every
+// provably-empty loop.
+fn callee(x) requires(x >= 0) { return x; }
+
+fn app(f) {
+    for i in 0..0 { f(-1); }
+}
+
+fn main() { app(callee); }

@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Phase 2 slice 2 — carried call-site contract discharge under a branch guard.
+//
+// RUNTIME-PROVEN false accept before this fixture existed: `check` exited 0 and the program RAN to
+// completion calling `callee(-1)`, violating its own `requires(x >= 0)`.
+//
+// The direct twin `fn app(f) { f(-1); }` (contract_carried_direct_violation_rejects.anb) already
+// rejected. Wrapping the identical call in `if 1 == 1` made the collector skip it, so
+// `discharge_carried_call_requires` folded an EMPTY application vector to `true`. A guard that
+// always holds is not a reason to stop checking.
+fn callee(x) requires(x >= 0) { return x; }
+
+fn app(f) {
+    if 1 == 1 { f(-1); }
+}
+
+fn main() { app(callee); }

@@ -1,0 +1,19 @@
+// EXPECT: PASS
+// Phase 2 slice 2 OVER-REJECTION GUARD — a guard that is constantly FALSE.
+//
+// The original collector skipped every guarded application on the stated reasoning that "charging
+// a contract from a path that may not run would be an over-rejection". That reasoning is exactly
+// right for THIS program: the branch is dead, `callee(-1)` never executes, and rejecting it would
+// be a false rejection.
+//
+// The fix keeps that property by folding the guard: constant-false means the application is
+// dropped. An earlier draft passed guards to the solver as assumptions instead, and this fixture
+// is the one that caught it returning ANUBIS_ASSERTION_UNPROVEN — a fail-open traded for a false
+// rejection, which is worse. It did not ship.
+fn callee(x) requires(x >= 0) { return x; }
+
+fn app(f) {
+    if 1 == 2 { f(-1); }
+}
+
+fn main() { app(callee); }

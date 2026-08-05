@@ -2789,6 +2789,14 @@ struct ParamContractApplication {
     callee: Expr,
     param_indices: BTreeSet<usize>,
     args: Vec<Expr>,
+    /// The branch guards that must hold for this application to execute, as a conjunction in the
+    /// CALLEE's own variable namespace (so the call site substitutes them exactly like `args`).
+    ///
+    /// Empty means the application runs whenever the enclosing function runs. A non-empty set is
+    /// discharged as `path_conditions => requires`, which is why collecting a CONDITIONAL
+    /// application is now sound: an unsatisfiable guard makes the implication vacuous, so a dead
+    /// branch cannot over-reject, while a reachable one is charged exactly as it should be.
+    path_conditions: Vec<Expr>,
 }
 
 #[derive(Debug, Default)]
@@ -3713,7 +3721,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         .collect();
                     let shadowed = ctx.fn_param_shadowed.get(name).cloned().unwrap_or_default();
                     let mut applications =
-                        collect_unconditional_param_contract_applications(body, &param_indices);
+                        collect_param_contract_applications(body, &param_indices);
                     applications.retain(|application| {
                         application
                             .param_indices
@@ -7699,6 +7707,26 @@ fn discharge_carried_call_requires(
             .iter()
             .map(|arg| substitute_vars(arg, &substitutions))
             .collect();
+        // Resolve this application's guards by CONSTANT FOLDING, and act only on a definite answer:
+        //
+        //   all guards fold TRUE  -> the call definitely executes; charge it exactly like a direct,
+        //                            unguarded call.
+        //   any guard folds FALSE -> the branch is dead; the call never executes; charge nothing.
+        //   anything else         -> unchanged from before this mechanism existed: charge nothing.
+        //
+        // An earlier draft passed the guards down as SMT ASSUMPTIONS so the solver could discharge
+        // `guards => requires` and get vacuity for free. That is the more precise design and it is
+        // where this should end up, but as written it OVER-REJECTED: `if 1 == 2 { f(-1); }` and
+        // `for i in 0..0 { f(-1); }` came back ANUBIS_ASSERTION_UNPROVEN instead of accepting,
+        // because a varless guard fact does not survive the obligation's assumption filtering the
+        // way the enforcing lane's own scoped guards do. Shipping that would have traded a
+        // fail-open for a false rejection, which is a worse defect. Constant folding decides the
+        // cases that motivated the change and CANNOT over-reject, so it ships; the solver-backed
+        // form stays open with the filtering gap named.
+        match const_bool_guards(&application.path_conditions, &substitutions) {
+            Some(true) => {}
+            _ => return all,
+        }
         discharge_resolved_call_requires_d(
             ctx,
             assumptions,
@@ -7708,6 +7736,62 @@ fn discharge_carried_call_requires(
             depth + 1,
         ) && all
     })
+}
+
+/// Fold a guard conjunction to a definite `true`/`false`, or `None` when it is not constant.
+fn const_bool_guards(guards: &[Expr], substitutions: &BTreeMap<String, Expr>) -> Option<bool> {
+    let mut all_true = true;
+    for guard in guards {
+        match const_bool(&substitute_vars(guard, substitutions)) {
+            Some(true) => {}
+            Some(false) => return Some(false),
+            None => all_true = false,
+        }
+    }
+    all_true.then_some(true)
+}
+
+/// Evaluate a boolean expression whose value is fixed at compile time.
+///
+/// Deliberately tiny and total-by-refusal: anything it does not recognise is `None`, and `None`
+/// only ever causes a guarded application to be SKIPPED. It can therefore make the checker miss a
+/// violation, never invent one. `Expr::Other` — the marker for a reachability condition that is
+/// not a predicate at all, such as `while let` — falls through to `None` by construction.
+fn const_bool(e: &Expr) -> Option<bool> {
+    match e {
+        Expr::Literal(v) => match v.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+        Expr::Unary { op, expr } if op == "!" => const_bool(expr).map(|b| !b),
+        Expr::Binary { op, lhs, rhs } => match op.as_str() {
+            "&&" => match (const_bool(lhs), const_bool(rhs)) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            },
+            "||" => match (const_bool(lhs), const_bool(rhs)) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+            "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+                let a = wrap_safety_const_i64(lhs)?;
+                let b = wrap_safety_const_i64(rhs)?;
+                Some(match op.as_str() {
+                    "==" => a == b,
+                    "!=" => a != b,
+                    "<" => a < b,
+                    "<=" => a <= b,
+                    ">" => a > b,
+                    _ => a >= b,
+                })
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn discharge_resolved_call_requires(
@@ -18527,94 +18611,169 @@ fn contract_application_param_indices(
         .collect()
 }
 
-/// Collect applications of function-valued formals that execute whenever the enclosing function
-/// executes. Conditional branches, short-circuit RHS expressions, and loop bodies are intentionally
-/// omitted: charging a contract from a path that may not run would be an over-rejection.
-fn collect_unconditional_param_contract_applications(
+/// Collect applications of function-valued formals, each tagged with the branch guards that must
+/// hold for it to run.
+///
+/// This used to collect only UNCONDITIONAL applications, on the stated reasoning that "charging a
+/// contract from a path that may not run would be an over-rejection". The reasoning is right; the
+/// conclusion was too strong, and it was a documented FAIL-OPEN. Runtime-proven:
+///
+/// ```text
+/// fn callee(x) requires(x >= 0) { return x; }
+/// fn app(f) { if 1 == 1 { f(-1); } }
+/// fn main() { app(callee); }
+/// ```
+///
+/// The direct form `fn app(f) { f(-1); }` rejects with `ANUBIS_ASSERTION_DISPROVED`. Wrapping the
+/// very same call in `if 1 == 1` — or a `while`, or a `for` — made `discharge_carried_call_requires`
+/// fold an EMPTY application vector to `true`, and the program ran to completion calling
+/// `callee(-1)`. A guard that always holds is not a reason to stop checking.
+///
+/// The fix keeps the original concern intact by carrying the guard instead of dropping the
+/// application: the obligation becomes `guards => requires`. An unsatisfiable guard makes that
+/// vacuously true, so a genuinely dead branch still cannot over-reject, and the discharge side
+/// additionally SKIPS any application whose guards are not solver-modelable — preserving exactly
+/// today's behavior wherever the guard cannot be reasoned about.
+fn collect_param_contract_applications(
     body: &[Stmt],
     params: &BTreeMap<String, usize>,
 ) -> Vec<ParamContractApplication> {
     let mut out = Vec::new();
-    collect_unconditional_param_contract_stmts(body, params, &mut out);
+    collect_param_contract_stmts(body, params, &mut out);
     out
 }
 
-fn collect_unconditional_param_contract_stmts(
+/// Run `descend`, then PREPEND this construct's guard to every application it appended.
+///
+/// Each nesting level contributes only the guard IT introduces, so the conjunction assembles
+/// correctly however deep the nesting goes — including through a value-position `Expr::Block`,
+/// whose statements are reached by the expression walker and therefore cannot see an ambient
+/// guard stack. An earlier draft threaded a shared stack and assigned the whole thing at each
+/// level; a block nested inside a branch would then have kept only the guards from inside the
+/// block, dropping the outer ones and charging the obligation with a weaker premise than actually
+/// holds — a false rejection.
+///
+/// Prepending keeps the guards in outermost-to-innermost order, which is only cosmetic: the
+/// discharge side conjoins them.
+fn with_path_condition(
+    guard: Expr,
+    out: &mut Vec<ParamContractApplication>,
+    descend: impl FnOnce(&mut Vec<ParamContractApplication>),
+) {
+    let mark = out.len();
+    descend(out);
+    for application in &mut out[mark..] {
+        application.path_conditions.insert(0, guard.clone());
+    }
+}
+
+/// A guard this collector cannot express as a boolean expression.
+///
+/// `Expr::Other` is never solver-modelable, so an application tagged with it is always SKIPPED at
+/// discharge — i.e. it reproduces the old omit-entirely behavior for constructs whose reachability
+/// condition is not a plain predicate (`while let`, hybrid-block alternatives).
+fn inexpressible_guard(reason: &str) -> Expr {
+    Expr::Other(format!("anubis.path-condition.inexpressible:{reason}"))
+}
+
+fn collect_param_contract_stmts(
     body: &[Stmt],
     params: &BTreeMap<String, usize>,
     out: &mut Vec<ParamContractApplication>,
 ) {
-    use crate::frontend::ForSource;
     for stmt in body {
         match stmt {
-            Stmt::Let {
-                name: _,
-                ty: _,
-                init,
-                span: _,
+            Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+                collect_param_contract_expr(init, params, out)
             }
-            | Stmt::LetPattern {
-                pattern: _,
-                init,
-                span: _,
-            } => collect_unconditional_param_contract_expr(init, params, out),
-            Stmt::WhileLet {
-                pattern: _,
-                expr,
-                body: _,
-            } => collect_unconditional_param_contract_expr(expr, params, out),
+            Stmt::WhileLet { expr, body, .. } => {
+                collect_param_contract_expr(expr, params, out);
+                with_path_condition(inexpressible_guard("while-let"), out, |out| {
+                    collect_param_contract_stmts(body, params, out)
+                });
+            }
             Stmt::Assign { target, value } => {
-                collect_unconditional_param_contract_expr(target, params, out);
-                collect_unconditional_param_contract_expr(value, params, out);
+                collect_param_contract_expr(target, params, out);
+                collect_param_contract_expr(value, params, out);
             }
-            Stmt::If {
-                cond,
-                then: _,
-                else_: _,
+            Stmt::If { cond, then, else_ } => {
+                collect_param_contract_expr(cond, params, out);
+                with_path_condition(cond.clone(), out, |out| {
+                    collect_param_contract_stmts(then, params, out)
+                });
+                if let Some(else_body) = else_ {
+                    let negated = Expr::Unary {
+                        op: "!".into(),
+                        expr: Box::new(cond.clone()),
+                    };
+                    with_path_condition(negated, out, |out| {
+                        collect_param_contract_stmts(else_body, params, out)
+                    });
+                }
             }
-            | Stmt::While {
-                cond,
-                body: _,
-                invariant: _,
-            } => collect_unconditional_param_contract_expr(cond, params, out),
-            Stmt::For {
-                var: _,
-                source,
-                body: _,
-                invariant: _,
-            } => match source {
-                ForSource::Range { start, end } => {
-                    collect_unconditional_param_contract_expr(start, params, out);
-                    collect_unconditional_param_contract_expr(end, params, out);
-                }
-                ForSource::Collection { expr } => {
-                    collect_unconditional_param_contract_expr(expr, params, out)
-                }
-            },
+            Stmt::While { cond, body, .. } => {
+                collect_param_contract_expr(cond, params, out);
+                with_path_condition(cond.clone(), out, |out| {
+                    collect_param_contract_stmts(body, params, out)
+                });
+            }
+            Stmt::For { source, body, .. } => {
+                // A range loop runs its body exactly when the range is non-empty, and a collection
+                // loop exactly when the collection is non-empty. Both are ordinary predicates the
+                // solver already understands, so an empty-range loop stays vacuous rather than
+                // charging a contract for a body that never executes.
+                let guard = match source {
+                    ForSource::Range { start, end } => {
+                        collect_param_contract_expr(start, params, out);
+                        collect_param_contract_expr(end, params, out);
+                        Expr::Binary {
+                            op: "<".into(),
+                            lhs: Box::new(start.clone()),
+                            rhs: Box::new(end.clone()),
+                        }
+                    }
+                    ForSource::Collection { expr } => {
+                        collect_param_contract_expr(expr, params, out);
+                        Expr::Binary {
+                            op: ">".into(),
+                            lhs: Box::new(Expr::Call {
+                                callee: "len".into(),
+                                args: vec![expr.clone()],
+                            }),
+                            rhs: Box::new(Expr::Literal("0".into())),
+                        }
+                    }
+                };
+                with_path_condition(guard, out, |out| {
+                    collect_param_contract_stmts(body, params, out)
+                });
+            }
             Stmt::ExprStmt(expr) => {
-                collect_unconditional_param_contract_expr(expr, params, out);
+                collect_param_contract_expr(expr, params, out);
+                // Everything after an unconditional `return` is unreachable in this body.
                 if matches!(expr, Expr::Call { callee, .. } if callee == "return") {
-                    break;
+                    return;
                 }
             }
-            Stmt::Loop {
-                body: _,
-                invariant: _,
+            // A `loop` body and a research/exploit block always execute, so they add no guard and
+            // their applications keep whatever guards the ENCLOSING constructs prepend.
+            Stmt::Loop { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => collect_param_contract_stmts(body, params, out),
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for part in [gpu, cpu, prove].into_iter().flatten() {
+                    with_path_condition(inexpressible_guard("hybrid-block"), out, |out| {
+                        collect_param_contract_stmts(part, params, out)
+                    });
+                }
             }
-            | Stmt::ResearchBlock { intent: _, body: _ }
-            | Stmt::ExploitBlock { intent: _, body: _ }
-            | Stmt::HybridBlock {
-                gpu: _,
-                cpu: _,
-                prove: _,
-            }
-            | Stmt::SpecBlock { forall: _ } => {}
-            Stmt::Break | Stmt::Continue => break,
+            Stmt::SpecBlock { .. } => {}
+            Stmt::Break | Stmt::Continue => return,
         }
     }
 }
 
-fn collect_unconditional_param_contract_expr(
+fn collect_param_contract_expr(
     expr: &Expr,
     params: &BTreeMap<String, usize>,
     out: &mut Vec<ParamContractApplication>,
@@ -18628,10 +18787,13 @@ fn collect_unconditional_param_contract_expr(
                     callee: callee_expr,
                     param_indices,
                     args: args.clone(),
+                    // Stamped by the statement walker, which is the only thing that knows the
+                    // guards in effect at this expression.
+                    path_conditions: Vec::new(),
                 });
             }
             for arg in args {
-                collect_unconditional_param_contract_expr(arg, params, out);
+                collect_param_contract_expr(arg, params, out);
             }
         }
         Expr::CallExpr { callee, args } => {
@@ -18646,22 +18808,23 @@ fn collect_unconditional_param_contract_expr(
                         callee: callee.as_ref().clone(),
                         param_indices,
                         args: args.clone(),
+                        path_conditions: Vec::new(),
                     });
                 }
             }
-            collect_unconditional_param_contract_expr(callee, params, out);
+            collect_param_contract_expr(callee, params, out);
             for arg in args {
-                collect_unconditional_param_contract_expr(arg, params, out);
+                collect_param_contract_expr(arg, params, out);
             }
         }
         Expr::Binary { op, lhs, rhs } => {
-            collect_unconditional_param_contract_expr(lhs, params, out);
+            collect_param_contract_expr(lhs, params, out);
             if op != "&&" && op != "||" {
-                collect_unconditional_param_contract_expr(rhs, params, out);
+                collect_param_contract_expr(rhs, params, out);
             }
         }
         Expr::Unary { op: _, expr } | Expr::Cast { expr, ty: _ } => {
-            collect_unconditional_param_contract_expr(expr, params, out)
+            collect_param_contract_expr(expr, params, out)
         }
         Expr::Tainted { ty: _, inner }
         | Expr::Declassify {
@@ -18671,15 +18834,15 @@ fn collect_unconditional_param_contract_expr(
         }
         | Expr::Assume(inner)
         | Expr::Assert(inner)
-        | Expr::Try(inner) => collect_unconditional_param_contract_expr(inner, params, out),
+        | Expr::Try(inner) => collect_param_contract_expr(inner, params, out),
         Expr::ArrayLiteral { elements } => {
             for element in elements {
-                collect_unconditional_param_contract_expr(element, params, out);
+                collect_param_contract_expr(element, params, out);
             }
         }
         Expr::Index { base, index } => {
-            collect_unconditional_param_contract_expr(base, params, out);
-            collect_unconditional_param_contract_expr(index, params, out);
+            collect_param_contract_expr(base, params, out);
+            collect_param_contract_expr(index, params, out);
         }
         Expr::StructLiteral {
             name: _,
@@ -18687,14 +18850,14 @@ fn collect_unconditional_param_contract_expr(
             span: _,
         } => {
             for (_, value) in fields {
-                collect_unconditional_param_contract_expr(value, params, out);
+                collect_param_contract_expr(value, params, out);
             }
         }
         Expr::FieldAccess {
             base,
             field: _,
             span: _,
-        } => collect_unconditional_param_contract_expr(base, params, out),
+        } => collect_param_contract_expr(base, params, out),
         Expr::EnumConstruct {
             enum_name: _,
             variant: _,
@@ -18703,13 +18866,13 @@ fn collect_unconditional_param_contract_expr(
             span: _,
         } => {
             for field in fields {
-                collect_unconditional_param_contract_expr(field, params, out);
+                collect_param_contract_expr(field, params, out);
             }
         }
         Expr::MapLiteral { entries, span: _ } => {
             for (key, value) in entries {
-                collect_unconditional_param_contract_expr(key, params, out);
-                collect_unconditional_param_contract_expr(value, params, out);
+                collect_param_contract_expr(key, params, out);
+                collect_param_contract_expr(value, params, out);
             }
         }
         Expr::Match {
@@ -18729,11 +18892,11 @@ fn collect_unconditional_param_contract_expr(
             then: _,
             else_: _,
             span: _,
-        } => collect_unconditional_param_contract_expr(scrutinee, params, out),
+        } => collect_param_contract_expr(scrutinee, params, out),
         Expr::Block { stmts, tail } => {
-            collect_unconditional_param_contract_stmts(stmts, params, out);
+            collect_param_contract_stmts(stmts, params, out);
             if let Some(tail) = tail {
-                collect_unconditional_param_contract_expr(tail, params, out);
+                collect_param_contract_expr(tail, params, out);
             }
         }
         Expr::Lambda { params: _, body: _ }
@@ -28855,6 +29018,236 @@ mod place_type_inference_tests {
     }
 }
 
+/// Unit tests for the Phase-2 slice-2 carried-contract path conditions.
+///
+/// The security fixtures in `examples/security/contract_carried_*` prove the end-to-end verdicts;
+/// these pin the two properties that make the change safe: guards COMPOSE through nesting, and an
+/// undecidable guard yields `None` so the application is skipped rather than charged.
+#[cfg(test)]
+mod carried_contract_path_condition_tests {
+    use super::*;
+
+    fn lit(n: &str) -> Expr {
+        Expr::Literal(n.into())
+    }
+
+    fn cmp(op: &str, a: &str, b: &str) -> Expr {
+        Expr::Binary {
+            op: op.into(),
+            lhs: Box::new(lit(a)),
+            rhs: Box::new(lit(b)),
+        }
+    }
+
+    fn apply(callee: &str, arg: Expr) -> Stmt {
+        Stmt::ExprStmt(Expr::Call {
+            callee: callee.into(),
+            args: vec![arg],
+        })
+    }
+
+    fn one_formal() -> BTreeMap<String, usize> {
+        let mut m = BTreeMap::new();
+        m.insert("f".to_string(), 0usize);
+        m
+    }
+
+    #[test]
+    fn an_unguarded_application_carries_no_guard() {
+        let body = vec![apply("f", lit("-1"))];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert!(apps[0].path_conditions.is_empty());
+    }
+
+    #[test]
+    fn an_if_body_application_carries_the_guard() {
+        // The whole defect: this application used not to be collected AT ALL, so the discharge
+        // folded an empty vector to `true` and the contract went unchecked.
+        let body = vec![Stmt::If {
+            cond: cmp("==", "1", "1"),
+            then: vec![apply("f", lit("-1"))],
+            else_: None,
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].path_conditions.len(), 1);
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn an_else_body_carries_the_negated_guard() {
+        let body = vec![Stmt::If {
+            cond: cmp("==", "1", "2"),
+            then: Vec::new(),
+            else_: Some(vec![apply("f", lit("-1"))]),
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        // `!(1 == 2)` is constantly true, so the else branch definitely runs and must be charged.
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn nested_guards_compose_outermost_first() {
+        // Each level prepends only the guard IT introduces. An earlier draft assigned the whole
+        // ambient stack at each level, which dropped outer guards for anything reached through a
+        // value-position block — charging the obligation with a weaker premise than actually holds.
+        let body = vec![Stmt::If {
+            cond: cmp("==", "1", "1"),
+            then: vec![Stmt::If {
+                cond: cmp("<", "0", "5"),
+                then: vec![apply("f", lit("-1"))],
+                else_: None,
+            }],
+            else_: None,
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].path_conditions.len(), 2);
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_dead_branch_folds_false_and_is_dropped() {
+        let body = vec![Stmt::If {
+            cond: cmp("==", "1", "2"),
+            then: vec![apply("f", lit("-1"))],
+            else_: None,
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn an_empty_for_range_folds_false() {
+        let body = vec![Stmt::For {
+            var: "i".into(),
+            source: ForSource::Range {
+                start: lit("0"),
+                end: lit("0"),
+            },
+            body: vec![apply("f", lit("-1"))],
+            invariant: Vec::new(),
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_nonempty_for_range_folds_true() {
+        let body = vec![Stmt::For {
+            var: "i".into(),
+            source: ForSource::Range {
+                start: lit("0"),
+                end: lit("1"),
+            },
+            body: vec![apply("f", lit("-1"))],
+            invariant: Vec::new(),
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_non_constant_guard_is_undecided_and_therefore_skipped() {
+        // Preserves exactly the behavior that existed before guarded applications were collected
+        // at all: undecided means charge nothing, never charge without the premise.
+        let body = vec![Stmt::If {
+            cond: Expr::Binary {
+                op: ">".into(),
+                lhs: Box::new(Expr::Var("n".into())),
+                rhs: Box::new(lit("0")),
+            },
+            then: vec![apply("f", lit("-1"))],
+            else_: None,
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_while_let_guard_is_inexpressible_and_never_folds_true() {
+        let body = vec![Stmt::WhileLet {
+            pattern: crate::frontend::Pattern::Wildcard,
+            expr: lit("0"),
+            body: vec![apply("f", lit("-1"))],
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert_eq!(
+            const_bool_guards(&apps[0].path_conditions, &BTreeMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_loop_body_adds_no_guard_because_it_always_runs() {
+        let body = vec![Stmt::Loop {
+            body: vec![apply("f", lit("-1"))],
+            invariant: Vec::new(),
+        }];
+        let apps = collect_param_contract_applications(&body, &one_formal());
+        assert_eq!(apps.len(), 1);
+        assert!(apps[0].path_conditions.is_empty());
+    }
+
+    #[test]
+    fn const_bool_refuses_anything_it_does_not_recognise() {
+        assert_eq!(const_bool(&Expr::Var("x".into())), None);
+        assert_eq!(const_bool(&inexpressible_guard("while-let")), None);
+        assert_eq!(const_bool(&lit("true")), Some(true));
+        assert_eq!(const_bool(&lit("false")), Some(false));
+    }
+
+    #[test]
+    fn short_circuit_conjunction_folds_without_both_sides() {
+        // `false && <unknown>` is false regardless of the unknown, so the branch is still provably
+        // dead. The dual holds for `true || <unknown>`.
+        let unknown = Expr::Var("x".into());
+        assert_eq!(
+            const_bool(&Expr::Binary {
+                op: "&&".into(),
+                lhs: Box::new(lit("false")),
+                rhs: Box::new(unknown.clone()),
+            }),
+            Some(false)
+        );
+        assert_eq!(
+            const_bool(&Expr::Binary {
+                op: "||".into(),
+                lhs: Box::new(lit("true")),
+                rhs: Box::new(unknown),
+            }),
+            Some(true)
+        );
+    }
+}
+
 #[cfg(test)]
 mod fn_identity_spine_tests {
     use super::*;
@@ -29070,7 +29463,7 @@ mod fn_identity_spine_tests {
             }),
             args: vec![Expr::Var("value".into())],
         })];
-        assert!(collect_unconditional_param_contract_applications(&body, &params).is_empty());
+        assert!(collect_param_contract_applications(&body, &params).is_empty());
     }
 
     #[test]
@@ -29083,7 +29476,7 @@ mod fn_identity_spine_tests {
             }),
             args: vec![Expr::Literal("1".into())],
         })];
-        let applications = collect_unconditional_param_contract_applications(&body, &params);
+        let applications = collect_param_contract_applications(&body, &params);
         assert_eq!(applications.len(), 1);
         assert_eq!(applications[0].param_indices, BTreeSet::from([0]));
     }

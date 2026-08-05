@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Phase 2 slice 2 — the `for` twin of the guarded-application false accept.
+//
+// A `for` body was skipped by the same collector rule as an `if` body. `0..1` is a non-empty range,
+// so the body definitely executes and `callee(-1)` definitely violates `requires(x >= 0)`.
+// Runtime-proven accepted-and-executed before the fix.
+fn callee(x) requires(x >= 0) { return x; }
+
+fn app(f) {
+    for i in 0..1 { f(-1); }
+}
+
+fn main() { app(callee); }

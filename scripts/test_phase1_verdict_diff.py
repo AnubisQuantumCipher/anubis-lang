@@ -316,7 +316,15 @@ class Phase1VerdictDiffIdentityTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), "921")
+            # This test is about ISOLATION — the helper must ignore a poisoned PYTHONPATH — so the
+            # count is incidental. Read it from the tracked file rather than repeating the literal:
+            # a third copy of the corpus size would just be a third thing to forget to update.
+            expected = (
+                (ROOT / "scripts/lib/native_corpus_expected_count.txt")
+                .read_text(encoding="utf-8")
+                .strip()
+            )
+            self.assertEqual(result.stdout.strip(), expected)
             self.assertFalse(marker.exists())
 
     def test_substituted_old_pin_is_rejected_before_measurement(self) -> None:

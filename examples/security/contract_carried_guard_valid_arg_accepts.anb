@@ -1,0 +1,14 @@
+// EXPECT: PASS
+// Phase 2 slice 2 OVER-REJECTION GUARD — a reachable guard over an argument that SATISFIES the
+// contract.
+//
+// The branch definitely executes and the application is definitely charged, which is the whole
+// point of the change. It must then DISCHARGE: `7 >= 0` holds. If this flips to FAIL, the fix
+// stopped discharging contracts and started refusing guarded calls outright.
+fn callee(x) requires(x >= 0) { return x; }
+
+fn app(f) {
+    if 1 == 1 { f(7); }
+}
+
+fn main() { app(callee); }

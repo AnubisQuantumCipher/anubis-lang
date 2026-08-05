@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Phase 2 slice 2 — the DIRECT control for the two guarded twins.
+//
+// This shape always rejected. It ships beside them so the pair keeps proving what makes a finding
+// real here: the direct form is REFUSED and the guarded form was ACCEPTED. If this ever flips to
+// accept, the two reject fixtures next to it would still pass for the wrong reason.
+fn callee(x) requires(x >= 0) { return x; }
+
+fn app(f) { f(-1); }
+
+fn main() { app(callee); }
