@@ -174,6 +174,7 @@ Every change in this phase has a recorded failure before its fix.
 | 5 | slice-1 CI run `30989379521` = `Overall: FAIL (27/29 passed, 1 failed)`, `G16_docs_drift` | docs reconciled; `run_docs_drift_gate.sh` rc 0, `PASS (36 stamps checked, 0 drift)` |
 | 6 | release binary carried `/Users/sicarii/anubis-lang` (1 `strings` hit) | constant removed (PR #3, merged `5ff1e87f`) |
 | 7 | `d_place_assign.anb`: `b.f = key; print(b.f())` `check_rc=0`, `run` printed `42` | `check_rc=1` with `ANUBIS_SECRET_EXFILTRATION` |
+| 8 | slice 1 wrongly REJECTED a method printing a public field (`rc=1 ANUBIS_SECRET_EXFILTRATION`) — a false rejection found by review, not by the corpus | `rc=0`; guard fixture committed |
 
 Row 5 is the most useful one: the local suites were all green and CI still failed. The gate was
 right and the local battery was incomplete.
@@ -187,14 +188,14 @@ Every enforcing change ships an accept-side fixture, and the whole corpus was di
 ```
 $ /usr/bin/python3 -I -B scripts/phase1_verdict_diff.py \
     --old vm/pins/anubis-149035b30c11-src-a88353570172-release \
-    --new vm/pins/anubis-ce1c6c7262e8-src-02b7275ff84a --root . --out out/p2_slice3_diff.json
-VERDICT_DIFF_V2 verdict=FAIL total=938 flips=6 timeouts=0 rc_changes=6
+    --new vm/pins/anubis-81f11e11b770-src-1b8864f8ff5b --root . --out out/p2_final_diff.json
+VERDICT_DIFF_V2 verdict=FAIL total=939 flips=6 timeouts=0 rc_changes=6
 ```
 
 `verdict=FAIL` is the tool refusing to bless flips automatically. All four were inspected:
 
 ```
-$ jq -r '.acceptance_flips[]|"\(.old.class) -> \(.new.class)   \(.fixture)"' out/p2_slice3_diff.json
+$ jq -r '.acceptance_flips[]|"\(.old.class) -> \(.new.class)   \(.fixture)"' out/p2_final_diff.json
 ACCEPT -> REJECT   examples/security/contract_carried_guard_always_true_rejects.anb
 ACCEPT -> REJECT   examples/security/contract_carried_guard_for_range_rejects.anb
 ACCEPT -> REJECT   examples/security/place_assigned_fn_identity_secret_rejects.anb
@@ -204,14 +205,16 @@ ACCEPT -> REJECT   examples/security/unannotated_return_declared_secret_field_re
 ```
 
 All six are this branch's own `EXPECT: FAIL` fixtures — the intended closures. **Zero unintended
-flips across 938 files.** (The final slice-3 run measures 938; the slice-2 run above measured 933
-before five more fixtures were added.)
+flips across 939 files.** (The final run measures 939 files against pin
+`anubis-81f11e11b770-src-1b8864f8ff5b`; earlier runs in this phase measured 933 and 938 before
+later fixtures were added.)
 
 Accept-side guards, all `EXPECT: PASS` and all passing:
 `unannotated_param_plain_field_accepts`, `unannotated_return_plain_field_accepts`,
 `unannotated_param_declassify_accepts`, `contract_carried_dead_branch_accepts`,
 `contract_carried_empty_range_accepts`, `contract_carried_guard_valid_arg_accepts`,
-`place_assigned_fn_identity_plain_accepts`, `place_assigned_fn_identity_declassify_accepts`.
+`place_assigned_fn_identity_plain_accepts`, `place_assigned_fn_identity_declassify_accepts`,
+`unannotated_param_method_namespace_accepts`.
 
 The `declassify` and dead-branch guards are the load-bearing ones. The dead-branch guard is what
 caught the rejected solver-assumption design during slice 2 (§10).
@@ -364,6 +367,20 @@ they close runtime-proven false accepts, and a smaller file that still leaks is 
   historical root-cause table, which the scout read as current.
 - **Its `is_io_taint_source`/builtin fail-open claim was refuted by measurement** (§5). Had I
   written a slice against it, I would have "fixed" a defect that does not exist.
+- **My own slice-1 code introduced a FALSE REJECTION, and the corpus did not catch it.** CodeRabbit
+  did, on PR #2. `select_param_place_hints` looked up the bare-name candidate map for impl methods
+  too, so a method sharing a name with a free function inherited that function's argument types by
+  index. A legitimate program — a method printing a public `i64` field — was rejected with
+  `ANUBIS_SECRET_EXFILTRATION`. This is `AGENTS.md` law violated verbatim ("never merge
+  namespaces"), by me, in a slice whose entire premise is that written-down labels must be read by
+  the right consumer. **Every one of the 344 security fixtures passed while this was live.** A green
+  corpus is exactly when a new defect is least visible; the guard is now committed as
+  `unannotated_param_method_namespace_accepts.anb`.
+- **A second review finding did not reproduce, and I did not pretend it did.** The module-descent
+  gap is real in the abstract — `collect_param_place_candidates` skipped `Item::Module` while
+  `register_program_surface` recurses into it — but I could not construct a witness: a multi-file
+  `import` program already rejected before the change. It ships as hardening that can only add
+  candidates from real call sites, explicitly not as a closed defect.
 - **I nearly falsified historical records.** The obvious response to `G16_docs_drift` is to renumber
   every flagged line. Most flagged lines are dated receipts, and renumbering them would have made
   them lie about what a past epoch measured.
@@ -383,6 +400,9 @@ Code and docs are in separate commits throughout.
 | | `cf3b2f34` | this report (docs only) |
 | | `3b3d932c` | slice 3 code + 5 fixtures |
 | | `ddb86919` | slice 3 docs restamp (docs only) |
+| | `5b1fd8ba` | report extended for slice 3 (docs only) |
+| | `ff7e74d6` | review fixes + namespace regression guard |
+| | `58dfab9f` | docs restamp for that guard (docs only) |
 | `fix/release-binary-operator-path` | `09fbfd71` | merged → `5ff1e87f` |
 | `release/public-packaging-lane` | `ddd21a8d` | release lane, open |
 
