@@ -107,7 +107,7 @@ operative default branch, and a local file proves nothing about it.
   with the full evidence table pasted in the description (verdict diff, fixture suites, library
   tests, fmt/clippy).
 - PR #3 — <https://github.com/AnubisQuantumCipher/anubis-lang/pull/3> — merged as `5ff1e87f`.
-- PR #4 — <https://github.com/AnubisQuantumCipher/anubis-lang/pull/4> — release packaging lane.
+- PR #4 — <https://github.com/AnubisQuantumCipher/anubis-lang/pull/4> — release packaging lane; **merged** as `d06ca6be`.
 
 This criterion cannot be "finished", only kept. It is met in the only way it can be: the workflow
 exists, is enforced by the ruleset rather than by intention, and the first two Phase 2 slices went
@@ -175,6 +175,7 @@ Every change in this phase has a recorded failure before its fix.
 | 6 | release binary carried `/Users/sicarii/anubis-lang` (1 `strings` hit) | constant removed (PR #3, merged `5ff1e87f`) |
 | 7 | `d_place_assign.anb`: `b.f = key; print(b.f())` `check_rc=0`, `run` printed `42` | `check_rc=1` with `ANUBIS_SECRET_EXFILTRATION` |
 | 8 | slice 1 wrongly REJECTED a method printing a public field (`rc=1 ANUBIS_SECRET_EXFILTRATION`) — a false rejection found by review, not by the corpus | `rc=0`; guard fixture committed |
+| 9 | `expr_taint_source_m` / `expr_secret_source_m` ended in `_ => None`; a new `Expr` variant would be silently clean | both total over `Expr`; `G19_walker_completeness` PASS |
 
 Row 5 is the most useful one: the local suites were all green and CI still failed. The gate was
 right and the local battery was incomplete.
@@ -292,8 +293,10 @@ PHASE_METRICS: OK
 ```
 
 Phase end is recorded in the Phase 2 slice reports rather than here; this phase's changes were to
-GitHub state, not to the walker structure. **`middle/mod.rs` grew** (28,604 → ~29,600) because
-slices 1–3 ADD analysis rather than removing duplication. That moves the headline metric the
+GitHub state, not to the walker structure. **`middle/mod.rs` grew** (28,604 → ~30,100) because
+slices 1–3 ADD analysis rather than removing duplication. The one target this phase MOVED is
+`_ => in label-lane walkers`, **6 real → 4**, by making both `Expr` source walkers total; it did
+**not** reach 0, and the commit that claimed it had was retracted (§10). That moves the headline metric the
 wrong way and is stated plainly rather than omitted: the "strictly decreasing" target belongs to the
 unification slices (3–5), which delete duplicated lanes. Slices 1 and 2 were chosen first because
 they close runtime-proven false accepts, and a smaller file that still leaks is not the goal.
@@ -381,6 +384,18 @@ they close runtime-proven false accepts, and a smaller file that still leaks is 
   `register_program_surface` recurses into it — but I could not construct a witness: a multi-file
   `import` program already rejected before the change. It ships as hardening that can only add
   candidates from real call sites, explicitly not as a closed defect.
+- **I published "the metric hit its target" and it was not true.** I enumerated all 15 `Stmt`
+  variants in two nested block-value helpers and reported
+  `_ => in label-lane walkers` reaching **0**. Those arms were written `Stmt::While { .. }`, which
+  discards `cond`/`body` exactly as `_` did. `G19_walker_completeness` failed the commit with 19
+  findings — *"code can hide there (a `..` or `_` is discarding it)"* — and it was right. Naming a
+  variant without binding its code-holding fields is not totality, it is the same hiding with more
+  words. Retracted in `ad8068fe`; the honest number is **4**, and reaching 0 needs the helper to
+  genuinely descend, not more enumeration.
+- **The wildcard metric was itself miscounting.** It matched `_\s*=>` against RAW source, so a
+  COMMENT mentioning a wildcard counted as one. The published 7 included a pre-existing comment.
+  After stripping comments the true movement is **6 real → 4**, from removing the two `Expr` tails.
+  A metric a comment can move is not measuring the code.
 - **I nearly falsified historical records.** The obvious response to `G16_docs_drift` is to renumber
   every flagged line. Most flagged lines are dated receipts, and renumbering them would have made
   them lie about what a past epoch measured.
@@ -404,7 +419,7 @@ Code and docs are in separate commits throughout.
 | | `ff7e74d6` | review fixes + namespace regression guard |
 | | `58dfab9f` | docs restamp for that guard (docs only) |
 | `fix/release-binary-operator-path` | `09fbfd71` | merged → `5ff1e87f` |
-| `release/public-packaging-lane` | `ddd21a8d` | release lane, open |
+| `release/public-packaging-lane` | `ddd21a8d` | merged → `d06ca6be` |
 
 Unrelated work untouched: the shared checkout `/Users/sicarii/anubis-lang` was never staged,
 committed, reset, or cleaned. All work happened in `~/anubis-worktrees/phase2-unified-walker`. The

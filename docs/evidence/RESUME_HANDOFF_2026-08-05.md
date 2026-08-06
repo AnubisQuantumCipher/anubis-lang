@@ -24,7 +24,7 @@ session.
 |---|---|
 | repository | `AnubisQuantumCipher/anubis-lang`, PUBLIC |
 | default branch | `main` |
-| `main` HEAD | `5ff1e87f95eed8b402729efdb131e848797e8f48` |
+| `main` HEAD | `d06ca6be4d53eaa167cacfa34a1dee57d1f91c45` |
 | protection | ruleset id `20440878`, `enforcement=active`, rules `deletion,non_fast_forward,pull_request,required_status_checks`, **bypass_actors empty** |
 | required check | `hosted-gate-witness`, `integration_id=15368`, `strict_required_status_checks_policy=true` |
 | approvals required | `0` (single maintainer — deliberate, disclosed) |
@@ -34,11 +34,12 @@ session.
 
 | PR | branch | head | state |
 |---|---|---|---|
-| #2 | `phase2/unified-value-flow` | `490939cb` | open; CI dispatched, result unknown at session end |
-| #4 | `release/public-packaging-lane` | `b90c3bd3` | `CLEAN` — **mergeable, was ready when this session ended** |
+| #2 | `phase2/unified-value-flow` | `ad8068fe` | open; synced onto `main`, review threads resolved, CI dispatched |
+| #4 | `release/public-packaging-lane` | — | **MERGED** as `d06ca6be` |
 | #1 | `a-plus-maturity/safe-mode-trust-spine-20260725` | `0e910c9b` | stale; targets the OLD default. Triage or close. |
 
-Merged this session: **PR #3** → `5ff1e87f` (removed the operator home path from the release binary).
+Merged this session: **PR #3** → `5ff1e87f` (operator home path out of the release binary) and
+**PR #4** → `d06ca6be` (release packaging lane).
 
 ### Local worktrees
 
@@ -109,13 +110,12 @@ verified byte-identical to the local copy with `git hash-object`.
 
 The ordered next actions:
 
-1. **Check CI on `490939cb`.** It was dispatched as this session ended and its result is unknown
+1. **Check CI on `ad8068fe`.** It was dispatched as this session ended and its result is unknown
    here. Two runs fire per push (`push` + `pull_request`); both report `hosted-gate-witness` and
    both must pass. Expect ~35-45 minutes.
-2. **Resolve the CodeRabbit review threads on PR #2.** The ruleset requires thread resolution, and
-   it is what caught the false rejection in §8 — read each one before resolving it.
-3. **Merge PR #2**, then **merge PR #4** (it was `CLEAN`). Merging one puts the other `BEHIND`
-   under the strict policy, so it needs `update-branch` and another CI cycle. Plan for two.
+2. ~~Resolve the CodeRabbit review threads.~~ **Done** — both addressed with code changes and
+   resolved; `unresolved_threads=0`.
+3. **Merge PR #2.** PR #4 is already merged.
 4. **Then build the Release** — Phase 1.5 criterion 5, the only thing between INCOMPLETE and
    COMPLETE. Steps in §5.
 
@@ -143,6 +143,10 @@ The ordered next actions:
 
 `docs/CLAIMS.md` item 21 is **not** closed. Open, with the mechanism already located:
 
+- **`_ => in label-lane walkers` is 4, target 0.** The remaining four are the block-value `Stmt`
+  arms inside `expr_taint_source_m` / `expr_secret_source_m`. Enumerating them with `{ .. }` does
+  NOT count — `G19_walker_completeness` rejects that as code hiding behind more words, and it
+  already caught me doing it once. Reaching 0 needs the helper to genuinely descend.
 - **unannotated polymorphic parameters** — several *plain* candidate types reaching one formal binds
   nothing today.
 - **formals reached only through a function value** — no direct call site to learn from.
@@ -227,6 +231,20 @@ recovered from git — and as an offline snapshot of the source and evidence.
   `clippy::doc_lazy_continuation`. Put a blank `///` line before a paragraph that follows a list.
 
 ---
+
+## 7b. A second lesson: a metric you can move with a comment
+
+I "closed" the wildcard metric to 0 by enumerating every `Stmt` variant as `Stmt::While { .. }`.
+That discards `cond` and `body` exactly as `_` did. `G19_walker_completeness` failed the commit with
+19 findings and was right — naming a variant without binding its code-holding fields is not
+totality. Retracted in `ad8068fe`.
+
+Separately, the metric itself matched `_\s*=>` against raw source, so a COMMENT mentioning a
+wildcard counted as one. The published 7 included a pre-existing comment. Fixed to strip `//`
+comments; the honest movement this session is **6 real → 4**.
+
+Two gates disagreeing is not noise. The one that says "you did less than you think" is the one to
+believe.
 
 ## 8. The most important lesson from this session
 
