@@ -24139,45 +24139,23 @@ fn expr_taint_source_m(
                             )
                         })
                     }),
-                    // TOTAL over `Stmt`. Only an expression statement and a statement-level `if`
-                    // can be a block's VALUE; the rest bind, loop, branch away, or declare, and
-                    // none of them is the thing this block evaluates to. Enumerated rather than
-                    // wildcarded so a new value-producing `Stmt` cannot be silently read as
-                    // contributing no label.
-                    Stmt::Let { .. }
-                    | Stmt::LetPattern { .. }
-                    | Stmt::WhileLet { .. }
-                    | Stmt::Assign { .. }
-                    | Stmt::While { .. }
-                    | Stmt::Loop { .. }
-                    | Stmt::For { .. }
-                    | Stmt::Break
-                    | Stmt::Continue
-                    | Stmt::ResearchBlock { .. }
-                    | Stmt::ExploitBlock { .. }
-                    | Stmt::HybridBlock { .. }
-                    | Stmt::SpecBlock { .. } => None,
+                    // NOT enumerated, deliberately. Naming each variant with `{ .. }` discards
+                    // exactly the `cond`/`body`/`init` fields a wildcard discards, so it buys no
+                    // safety -- and G19_walker_completeness correctly rejects it as code hiding
+                    // behind more words. This helper asks only "what is this block's VALUE"; a
+                    // loop or a binding has none, and descending into one would report a label
+                    // from a statement the block does not evaluate to.
+                    _ => None,
                 }
             }
             tail.as_deref()
                 .or_else(|| {
                     stmts.last().and_then(|stmt| match stmt {
                         Stmt::ExprStmt(expr) => Some(expr),
-                        // TOTAL over `Stmt`: only a trailing expression statement is a block tail.
-                        Stmt::Let { .. }
-                        | Stmt::LetPattern { .. }
-                        | Stmt::WhileLet { .. }
-                        | Stmt::Assign { .. }
-                        | Stmt::If { .. }
-                        | Stmt::While { .. }
-                        | Stmt::Loop { .. }
-                        | Stmt::For { .. }
-                        | Stmt::Break
-                        | Stmt::Continue
-                        | Stmt::ResearchBlock { .. }
-                        | Stmt::ExploitBlock { .. }
-                        | Stmt::HybridBlock { .. }
-                        | Stmt::SpecBlock { .. } => None,
+                        // Same reasoning as the helper above: only a trailing expression
+                        // statement is a block tail, and enumerating the rest with `{ .. }` would
+                        // hide their code rather than handle it.
+                        _ => None,
                     })
                 })
                 .and_then(|t| {
@@ -24935,41 +24913,23 @@ fn expr_secret_source_m(
                             )
                         })
                     }),
-                    // TOTAL over `Stmt`, the confidentiality twin of the taint helper above.
-                    Stmt::Let { .. }
-                    | Stmt::LetPattern { .. }
-                    | Stmt::WhileLet { .. }
-                    | Stmt::Assign { .. }
-                    | Stmt::While { .. }
-                    | Stmt::Loop { .. }
-                    | Stmt::For { .. }
-                    | Stmt::Break
-                    | Stmt::Continue
-                    | Stmt::ResearchBlock { .. }
-                    | Stmt::ExploitBlock { .. }
-                    | Stmt::HybridBlock { .. }
-                    | Stmt::SpecBlock { .. } => None,
+                    // NOT enumerated, deliberately. Naming each variant with `{ .. }` discards
+                    // exactly the `cond`/`body`/`init` fields a wildcard discards, so it buys no
+                    // safety -- and G19_walker_completeness correctly rejects it as code hiding
+                    // behind more words. This helper asks only "what is this block's VALUE"; a
+                    // loop or a binding has none, and descending into one would report a label
+                    // from a statement the block does not evaluate to.
+                    _ => None,
                 }
             }
             tail.as_deref()
                 .or_else(|| {
                     stmts.last().and_then(|stmt| match stmt {
                         Stmt::ExprStmt(expr) => Some(expr),
-                        // TOTAL over `Stmt`: only a trailing expression statement is a block tail.
-                        Stmt::Let { .. }
-                        | Stmt::LetPattern { .. }
-                        | Stmt::WhileLet { .. }
-                        | Stmt::Assign { .. }
-                        | Stmt::If { .. }
-                        | Stmt::While { .. }
-                        | Stmt::Loop { .. }
-                        | Stmt::For { .. }
-                        | Stmt::Break
-                        | Stmt::Continue
-                        | Stmt::ResearchBlock { .. }
-                        | Stmt::ExploitBlock { .. }
-                        | Stmt::HybridBlock { .. }
-                        | Stmt::SpecBlock { .. } => None,
+                        // Same reasoning as the helper above: only a trailing expression
+                        // statement is a block tail, and enumerating the rest with `{ .. }` would
+                        // hide their code rather than handle it.
+                        _ => None,
                     })
                 })
                 .and_then(|t| {
