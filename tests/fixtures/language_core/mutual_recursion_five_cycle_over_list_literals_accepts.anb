@@ -1,0 +1,18 @@
+// EXPECT: PASS (no crash)
+//
+// Stress cover for the same bug regressed by
+// `mutual_recursion_over_list_literals_accepts.anb`: a 5-function mutual
+// recursion cycle (a -> b -> c -> d -> e -> a) proves the fix scales past
+// the trivial 2-cycle case. Pre-fix, this produced the same
+// `fatal runtime error: stack overflow, aborting` as the 2-cycle repro.
+
+fn a(node) { if node[0] == "b" { return b(node[1]); } return ["a", a(node[1])]; }
+fn b(node) { if node[0] == "c" { return c(node[1]); } return ["b", b(node[1])]; }
+fn c(node) { if node[0] == "d" { return d(node[1]); } return ["c", c(node[1])]; }
+fn d(node) { if node[0] == "e" { return e(node[1]); } return ["d", d(node[1])]; }
+fn e(node) { if node[0] == "a" { return a(node[1]); } return ["e", e(node[1])]; }
+
+fn main() {
+    let x = a(["b", "c", "d", "e", "a"]);
+    print(x[0]);
+}
