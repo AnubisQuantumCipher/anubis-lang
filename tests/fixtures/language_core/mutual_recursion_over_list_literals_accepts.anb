@@ -1,0 +1,38 @@
+// EXPECT: PASS
+//
+// Regression cover for a stack overflow in the interprocedural identity walker
+// (compiler/src/middle/mod.rs). Two mutually-recursive functions returning raw
+// list literals — a common shape for symbolic differentiation / interpreter
+// eval — would drive `fn_identities_carried_by_value` <-> `collect_container_fn_identities`
+// <-> `fn_identities_of` in an unbounded native recursion because the family
+// crossed the depth-guard boundary through the depth-0 wrapper.
+//
+// The bug is not caught by `returned_is_recursive` at :707: that predicate
+// only detects SELF-reference by string-matching the callee's own name, so a
+// mutual pair `d(){return dp()}` + `dp(){return d()}` sails through and hits
+// the unguarded family. The fix threads `FN_ALIAS_MAX_DEPTH` through
+// `fn_identities_carried_by_value_d` and `collect_container_fn_identities_d`,
+// including the non-container element fallback that used to reset depth.
+//
+// The bound is a DEFERRAL, never an assertion: reaching MAX_DEPTH returns
+// `FnIdentitySet::Unknown`, which can only fail to resolve an identity and
+// therefore only fail to reject; it cannot invent one. Same argument as
+// `fn_alias_of_d`'s docstring at :359-:365.
+
+fn d(node) {
+    if node[0] == "pow" {
+        return dp(node[1], node[2]);
+    }
+    return ["add", d(node[1]), d(node[2])];
+}
+
+fn dp(base, e) {
+    let du = d(base);
+    return ["mul", ["pow", base, e], du];
+}
+
+fn main() {
+    let ast = ["pow", "x", 2];
+    let deriv = d(ast);
+    print(deriv[0]);
+}

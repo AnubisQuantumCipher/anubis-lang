@@ -625,7 +625,7 @@ fn fn_identities_of_d(
                 return fn_identities_of_d(&args[0], scope, ctx, depth + 1);
             }
             if matches!(callee.as_str(), "pop" | "last") && args.len() == 1 {
-                return fn_identities_carried_by_value(&args[0], scope, ctx);
+                return fn_identities_carried_by_value_d(&args[0], scope, ctx, depth + 1);
             }
             if matches!(callee.as_str(), "get" | "remove") && args.len() >= 2 {
                 if let Some(index) = args.get(1).and_then(|index| match index {
@@ -634,7 +634,7 @@ fn fn_identities_of_d(
                 }) {
                     return fn_identities_at_contract_path(&args[0], index, scope, ctx, depth + 1);
                 }
-                return fn_identities_carried_by_value(&args[0], scope, ctx);
+                return fn_identities_carried_by_value_d(&args[0], scope, ctx, depth + 1);
             }
             if matches!(callee.as_str(), "fold" | "reduce") {
                 return args
@@ -664,14 +664,14 @@ fn fn_identities_of_d(
             if let Some(lits) = ctx.fn_recursive_container_ids.get(callee).cloned() {
                 let mut acc = FnIdentitySet::empty();
                 for lit in &lits {
-                    let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                    let ids = fn_identities_carried_by_value_d(lit, scope, ctx, depth + 1);
                     acc = match (&acc, &ids) {
                         (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
                         (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
                         _ => FnIdentitySet::union(acc, ids),
                     };
                 }
-                if matches!(acc, FnIdentitySet::Known(ref n) if !n.is_empty()) {
+                if matches!(&acc, FnIdentitySet::Known(n) if !n.is_empty()) {
                     return acc;
                 }
             }
@@ -709,14 +709,14 @@ fn fn_identities_of_d(
                     collect_array_literals(returned, &mut lits);
                     let mut acc = FnIdentitySet::empty();
                     for lit in lits {
-                        let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                        let ids = fn_identities_carried_by_value_d(lit, scope, ctx, depth + 1);
                         acc = match (&acc, &ids) {
                             (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
                             (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
                             _ => FnIdentitySet::union(acc, ids),
                         };
                     }
-                    if matches!(acc, FnIdentitySet::Known(ref n) if !n.is_empty()) {
+                    if matches!(&acc, FnIdentitySet::Known(n) if !n.is_empty()) {
                         return acc;
                     }
                 }
@@ -741,7 +741,8 @@ fn fn_identities_of_d(
                                 // let the resolver that does not apply erase the one that does, so
                                 // `mk(leak)` came back Unknown while `mk([leak])` worked.
                                 let named = fn_identities_of_d(arg, scope, ctx, depth + 1);
-                                let dug = fn_identities_carried_by_value(arg, scope, ctx);
+                                let dug =
+                                    fn_identities_carried_by_value_d(arg, scope, ctx, depth + 1);
                                 let resolved = match (&named, &dug) {
                                     (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => named,
                                     (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => dug,
@@ -751,7 +752,7 @@ fn fn_identities_of_d(
                             }
                         }
                     }
-                    if !matches!(carried, FnIdentitySet::Known(ref n) if n.is_empty()) {
+                    if !matches!(&carried, FnIdentitySet::Known(n) if n.is_empty()) {
                         return carried;
                     }
                 }
@@ -1946,6 +1947,35 @@ fn collect_container_fn_identities(
     ctx: &SemanticContext,
     out: &mut BTreeMap<String, FnIdentitySet>,
 ) {
+    collect_container_fn_identities_d(init, prefix, scope, ctx, out, 0);
+}
+
+/// Depth-bounded core of [`collect_container_fn_identities`].
+///
+/// Bound mirrors [`fn_alias_of_d`] (`FN_ALIAS_MAX_DEPTH`). This walker's `Expr::Call` arm
+/// reads `fn_recursive_container_ids[callee]` (populated by the `body_dbg.contains("callee:
+/// \"<name>\"")` self-reference test near line 3599) and delegates each literal to
+/// [`fn_identities_carried_by_value_d`], which for an `ArrayLiteral` re-enters HERE. The
+/// non-container element path in the entries loop below used to call the depth-0 wrapper
+/// [`fn_identities_of`], resetting the depth counter that [`fn_identities_of_d`] already
+/// threaded — so for a mutual pair like `d(){return dp()}` + `dp(){return d()}` the walker
+/// crashed via `fatal runtime error: stack overflow` (`repro_cycle.anb`). Threading `depth`
+/// through the family closes that hole.
+///
+/// The bound is a DEFERRAL, never an assertion: giving up early records nothing at the
+/// current path, so a caller sees a MISSING identity rather than a wrong one. The same
+/// argument [`fn_alias_of_d`]'s docstring gives at :359–:365 applies verbatim here.
+fn collect_container_fn_identities_d(
+    init: &Expr,
+    prefix: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    out: &mut BTreeMap<String, FnIdentitySet>,
+    depth: u32,
+) {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return;
+    }
     let path = |segment: &str| {
         if prefix.is_empty() {
             segment.to_string()
@@ -1982,9 +2012,9 @@ fn collect_container_fn_identities(
         // Descending into both operands rather than only the literal side matters: the leak may be
         // on either, and `xs + [leak]` and `[leak] + xs` are the same program.
         Expr::Binary { lhs, rhs, .. } => {
-            collect_container_fn_identities(lhs, prefix, scope, ctx, out);
+            collect_container_fn_identities_d(lhs, prefix, scope, ctx, out, depth + 1);
             let mut other = BTreeMap::new();
-            collect_container_fn_identities(rhs, prefix, scope, ctx, &mut other);
+            collect_container_fn_identities_d(rhs, prefix, scope, ctx, &mut other, depth + 1);
             for (key, identities) in other {
                 out.entry(key)
                     .and_modify(|current| {
@@ -2009,22 +2039,22 @@ fn collect_container_fn_identities(
             };
             let mut acc = FnIdentitySet::empty();
             for lit in &lits {
-                let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                let ids = fn_identities_carried_by_value_d(lit, scope, ctx, depth + 1);
                 acc = match (&acc, &ids) {
                     (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
                     (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
                     _ => FnIdentitySet::union(acc, ids),
                 };
             }
-            if matches!(acc, FnIdentitySet::Known(ref n) if !n.is_empty()) {
+            if matches!(&acc, FnIdentitySet::Known(n) if !n.is_empty()) {
                 out.insert(path("*"), acc);
             }
             return;
         }
         Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
-            collect_container_fn_identities(then, prefix, scope, ctx, out);
+            collect_container_fn_identities_d(then, prefix, scope, ctx, out, depth + 1);
             let mut other = BTreeMap::new();
-            collect_container_fn_identities(else_, prefix, scope, ctx, &mut other);
+            collect_container_fn_identities_d(else_, prefix, scope, ctx, &mut other, depth + 1);
             for (key, identities) in other {
                 out.entry(key)
                     .and_modify(|current| {
@@ -2037,7 +2067,14 @@ fn collect_container_fn_identities(
         Expr::Match { arms, .. } => {
             for arm in arms {
                 let mut arm_values = BTreeMap::new();
-                collect_container_fn_identities(&arm.body, prefix, scope, ctx, &mut arm_values);
+                collect_container_fn_identities_d(
+                    &arm.body,
+                    prefix,
+                    scope,
+                    ctx,
+                    &mut arm_values,
+                    depth + 1,
+                );
                 for (key, identities) in arm_values {
                     out.entry(key)
                         .and_modify(|current| {
@@ -2061,9 +2098,9 @@ fn collect_container_fn_identities(
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
         ) {
-            collect_container_fn_identities(value, &key, scope, ctx, out);
+            collect_container_fn_identities_d(value, &key, scope, ctx, out, depth + 1);
         } else {
-            out.insert(key, fn_identities_of(value, scope, ctx));
+            out.insert(key, fn_identities_of_d(value, scope, ctx, depth + 1));
         }
     }
 }
@@ -14016,10 +14053,49 @@ fn fn_identities_carried_by_value(
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) -> FnIdentitySet {
+    fn_identities_carried_by_value_d(value, scope, ctx, 0)
+}
+
+/// Depth-bounded core of [`fn_identities_carried_by_value`].
+///
+/// Mirrors [`fn_alias_of_d`]'s bound because this walker also resolves THROUGH a callee's
+/// entry in `fn_recursive_container_ids`: for the mutual pair
+///
+/// ```text
+/// fn d(n)   { if … { return dp(…); } return ["add", d(…), d(…)]; }
+/// fn dp(b,e){ let du = d(b); return ["mul", ["pow",b,e], du]; }
+/// ```
+///
+/// `returned_is_recursive` at the `fn_sole_return` site gates its bounded branch on
+/// SELF-reference (`format!("{returned:?}").contains("callee: \"<name>\"")`), so neither
+/// function's return names itself and the bounded branch is skipped. The unbounded branch
+/// walked `fn_recursive_container_ids["d"]` = `[["add", Call{d}, Call{d}]]`, and the
+/// `Expr::Call` arm below re-fetched `fn_recursive_container_ids["d"]` on the inner
+/// callable, driving `carried_by_value → collect_container_fn_identities → fn_identities_of
+/// (depth reset) → back into carried_by_value` in an unbounded native stack — a denial-of-
+/// service on `anubis check`, exactly what `fn_alias_of_d`'s docstring at :359–:365 warns
+/// against for its own walker family.
+///
+/// The bound is a DEFERRAL, never an assertion: running out of depth returns
+/// `FnIdentitySet::Unknown`, which can only fail to resolve an identity and therefore only
+/// fail to reject; it cannot invent one. Because `Unknown` propagates through
+/// [`FnIdentitySet::union`] the SAME way at depth 8 as it does at depth 0, the fix is
+/// non-weakening: the checker still accepts everything it accepted before (nothing here
+/// added a Known identity), and still rejects everything it would reject on a
+/// termination-fixed run.
+fn fn_identities_carried_by_value_d(
+    value: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> FnIdentitySet {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return FnIdentitySet::Unknown;
+    }
     match value {
         Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
             let mut fields = BTreeMap::new();
-            collect_container_fn_identities(value, "", scope, ctx, &mut fields);
+            collect_container_fn_identities_d(value, "", scope, ctx, &mut fields, depth + 1);
             fields
                 .into_values()
                 .fold(FnIdentitySet::empty(), FnIdentitySet::union)
@@ -14046,7 +14122,7 @@ fn fn_identities_carried_by_value(
             };
             let mut acc = FnIdentitySet::empty();
             for lit in &lits {
-                let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                let ids = fn_identities_carried_by_value_d(lit, scope, ctx, depth + 1);
                 acc = match (&acc, &ids) {
                     (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
                     (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
@@ -14066,8 +14142,8 @@ fn fn_identities_carried_by_value(
         // same reason the capture resolvers must not annihilate each other: Unknown here means
         // "this operand carries nothing I can name", not "this expression may be anything".
         Expr::Binary { lhs, rhs, .. } => {
-            let l = fn_identities_carried_by_value(lhs, scope, ctx);
-            let r = fn_identities_carried_by_value(rhs, scope, ctx);
+            let l = fn_identities_carried_by_value_d(lhs, scope, ctx, depth + 1);
+            let r = fn_identities_carried_by_value_d(rhs, scope, ctx, depth + 1);
             match (&l, &r) {
                 (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => l,
                 (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => r,
