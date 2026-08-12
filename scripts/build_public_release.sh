@@ -40,6 +40,19 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$PIN" && -n "$TAG" && -n "$OUT" ]] || die "usage: --pin <path> --tag <tag> --out <dir> [--ci-artifact <dir>]"
 
+# Resolve OUT to an absolute path BEFORE any subshell captures $STAGE = $OUT/$TAG/$COMMIT.
+# The two ( cd "$STAGE/…" && tar -czf "$STAGE/dist/…" ) blocks near the end of this script
+# evaluate $STAGE from the SUBSHELL's cwd — a relative --out would make the tar destination
+# unreachable and the script fails with:
+#     tar: Failed to open 'out/.../dist/anubis-<tag>-macos-arm64.tar.gz'
+# after the leak scan already passed and the whole staged tree is on disk. Same trap applies
+# to the evidence archive and the SHA256SUMS emit in the following two subshells.
+#
+# `mkdir -p "$OUT" && cd "$OUT" && pwd` is the standard idiom: creates the base if missing,
+# then re-canonicalizes to an absolute path. Symlink resolution is left to the caller (no
+# `-P`) so a caller's chosen symlink layout is preserved.
+OUT="$(mkdir -p -- "$OUT" && cd -- "$OUT" && pwd)"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
