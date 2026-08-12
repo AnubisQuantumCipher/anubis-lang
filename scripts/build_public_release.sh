@@ -169,14 +169,41 @@ LEAK="$STAGE/public/evidence/leak-scan.txt"
 } > "$LEAK"
 leak_fail=0
 scan_binary="$STAGE/public/binary/macos-arm64/anubis"
+# The `/Users/[a-z]` pattern is intended to catch operator-home leaks (e.g. `/Users/sicarii/…`
+# baked into DWARF debuginfo, panic messages, or format strings). Two `/Users/<name>` paths are
+# NOT operator homes and appear here only as documented examples in `--help` text that the Rust
+# compiler embeds from `///` doc comments:
+#
+#   * `/Users/admin` — the canonical Tart guest user, documented at:
+#     - tools/anubis/src/vz.rs (Sync + Exploit variants, sample `--to` paths)
+#     - docs/CLI.md (§ anubis vz sync example line)
+#     - docs/language/POC_KIT.md (guest-home conventions)
+#   * `/Users/runner` — GitHub Actions macos-latest home; can appear in embedded workflow
+#     env-var help text or referenced in CI-produced error strings baked into build artifacts.
+#
+# These are documented public constants, not operator identifiers. The scanner subtracts them
+# from the /Users/ count so a legitimate example does not fail the release. Any OTHER
+# `/Users/<name>` occurrence is still an operator-home leak and fails closed.
+leak_users_safe_prefixes='/Users/(admin|runner)([^A-Za-z0-9_]|$)'
 for pattern in '/Users/[a-z]' '/private/var/folders' 'cargo/registry' 'BEGIN [A-Z ]*PRIVATE KEY' 'AKIA[0-9A-Z]{16}' 'ghp_[A-Za-z0-9]{20,}'; do
   n="$(strings -a "$scan_binary" 2>/dev/null | grep -cE "$pattern" || true)"
+  if [[ "$pattern" == '/Users/[a-z]' && "$n" -ne 0 ]]; then
+    safe_n="$(strings -a "$scan_binary" 2>/dev/null | grep -cE "$leak_users_safe_prefixes" || true)"
+    n=$(( n - safe_n ))
+    (( n < 0 )) && n=0
+  fi
   printf '%-34s %s\n' "$pattern" "$n" >> "$LEAK"
   if [[ "$n" -ne 0 ]]; then
     leak_fail=1
     printf '  OFFENDING:\n' >> "$LEAK"
-    strings -a "$scan_binary" 2>/dev/null | grep -oE "$pattern.{0,60}" | sort -u | head -20 \
-      | sed 's/^/    /' >> "$LEAK"
+    if [[ "$pattern" == '/Users/[a-z]' ]]; then
+      strings -a "$scan_binary" 2>/dev/null | grep -oE "$pattern.{0,60}" \
+        | grep -vE "$leak_users_safe_prefixes" | sort -u | head -20 \
+        | sed 's/^/    /' >> "$LEAK"
+    else
+      strings -a "$scan_binary" 2>/dev/null | grep -oE "$pattern.{0,60}" \
+        | sort -u | head -20 | sed 's/^/    /' >> "$LEAK"
+    fi
   fi
 done
 # No .git, no key material, no raw build trees anywhere in the staged tree.
