@@ -151,6 +151,49 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    hosted CI does not prove Metal execution; and native general free/signed non-power-of-two
    division remains deferred. Unit or hosted greens must not silently close these boundaries.
 
+### Phase 1.5 — sealed VZ + metal-prove workflow jobs are explicitly OUT-OF-CI (2026-08-12)
+
+Two jobs in the GitHub Actions workflows target label sets that no GitHub-hosted
+runner will ever match: `sealed-vz-gate-suite` in `.github/workflows/ci.yml` calls
+`runs-on: [self-hosted, macOS, ARM64, tart-vz]`, and the entire `metal-prove.yml`
+workflow calls `runs-on: [self-hosted, macOS, ARM64, metal]`. If no self-hosted
+runner with matching labels is registered, both queue and never execute; if one
+is registered on a machine that lacks the underlying hardware (Tart/VZ substrate;
+Metal-capable GPU), the job runs but produces no meaningful evidence.
+
+**This is deliberate.** The substantive evidence for both lanes is produced OFFLINE,
+by running the same scripts the workflow steps would call, on a machine the
+operator physically controls, inside a disposable Tart guest per
+`docs/language/POC_KIT.md`:
+
+- **Sealed VZ battery** — `bash scripts/run_seal_checklist.sh --profile core --bin <pin> --out <dir>`
+  produces `seal_verdict.json` (declared-verdict-line scoring, corpus-completeness
+  check, refuses overall PASS on any instrument-precondition miss) and per-gate
+  `.score.json` receipts. This is what a Phase 1 finalization root is composed of,
+  e.g. `out/phase1_finalization_51f4_r2_20260731T230000Z/`.
+- **Metal prove gate** — `bash scripts/run_metal_prove_gate.sh` produces
+  metal-parity evidence when Metal hardware is present; on hosts without Metal
+  it refuses rather than silently degrading. Cross-check against CPU via
+  `bash scripts/check_metal_parity.sh` (see `docs/METAL_BACKEND.md` for the full
+  pipeline).
+
+**The absence of an in-CI green check for these jobs is intentional. Presenting a
+permanently-skipped job as passing would be worse than not running it.** GitHub
+Actions reports both jobs as `queued` indefinitely; the workflow file's
+`runs-on` clause is the honest label; the offline evidence is the honest source.
+
+The substantive off-CI evidence lands attached to Releases (source manifest bound
+by pin SHA, seal verdict JSON, per-gate score JSONs, independent-review verdict)
+so that a third party can reverify against a tagged commit without depending on
+GitHub's CI infrastructure.
+
+Registering a self-hosted runner with matching labels remains an OPEN option
+per `docs/COMPLETION_BLUEPRINT.md` phase 1.5 criterion 6; it is not a
+requirement for the current evidence pipeline to be honest. Any such runner
+registration must first document its untrusted-PR-run policy, its sandbox
+scope, and its credential surface, per the security concerns in
+`docs/language/POC_KIT.md`.
+
 ### Phase 5 closed — builtin surface, and the instrument that was measuring it (2026-07-28)
 
 **Commit `1a19479`.** 213 builtins, every cell classified by the PAIR (`check`, `run`):
