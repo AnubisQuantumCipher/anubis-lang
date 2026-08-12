@@ -1,0 +1,13 @@
+pin_schema: anubis.binary-pin.v2
+pin: vm/pins/anubis-1d98ae1e381f-src-98acd2ed239f
+sha256: 1d98ae1e381f0f5dbdb84591b72b98a2e66ad783052667c578cdfa5d570d2dff
+source: target/release/anubis
+build_mode: technical-existing-target
+head: 54bff5815bd85055c63f9649c71419a46fec7b08
+head_tree: 444ec83fbcf7794d3a0e28ce4ee918f0a1025b07
+commit_bound: false
+manifest_schema: anubis.pin-source-manifest.v2
+policy_sha256: 83f24fb1199b0d674c584fee9756097b2167a91b62a1aec1b10ca44f2827847f
+src_tree: 98acd2ed239f8ece97d2319034e188f8906f8108f278cc754ecab82f54e9bdfb
+src_count: 1644
+src_list_sha256: 2c1d731438d2542ea0415e7a9eeccad5e904a0e90b79e41e6bd62f74215837d0
