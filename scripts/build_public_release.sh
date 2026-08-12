@@ -181,29 +181,28 @@ scan_binary="$STAGE/public/binary/macos-arm64/anubis"
 #   * `/Users/runner` — GitHub Actions macos-latest home; can appear in embedded workflow
 #     env-var help text or referenced in CI-produced error strings baked into build artifacts.
 #
-# These are documented public constants, not operator identifiers. The scanner subtracts them
-# from the /Users/ count so a legitimate example does not fail the release. Any OTHER
-# `/Users/<name>` occurrence is still an operator-home leak and fails closed.
+# These are documented public constants, not operator identifiers. Any OTHER `/Users/<name>`
+# occurrence is still an operator-home leak and fails closed.
+#
+# The scanner extracts one MATCH per hit (not one record per hit) so a `strings` record that
+# contains both an allowlisted `/Users/admin` AND an unsafe `/Users/sicarii` yields TWO
+# matches — only the safe one is filtered, and the operator-home leak still fails the gate.
+# Word-boundary continuation (`[^[:space:]]{0,60}`) keeps each match from eating past the next
+# space into a co-located path.
 leak_users_safe_prefixes='/Users/(admin|runner)([^A-Za-z0-9_]|$)'
 for pattern in '/Users/[a-z]' '/private/var/folders' 'cargo/registry' 'BEGIN [A-Z ]*PRIVATE KEY' 'AKIA[0-9A-Z]{16}' 'ghp_[A-Za-z0-9]{20,}'; do
-  n="$(strings -a "$scan_binary" 2>/dev/null | grep -cE "$pattern" || true)"
-  if [[ "$pattern" == '/Users/[a-z]' && "$n" -ne 0 ]]; then
-    safe_n="$(strings -a "$scan_binary" 2>/dev/null | grep -cE "$leak_users_safe_prefixes" || true)"
-    n=$(( n - safe_n ))
-    (( n < 0 )) && n=0
+  matches="$(strings -a "$scan_binary" 2>/dev/null | grep -oE "$pattern[^[:space:]]{0,60}" || true)"
+  if [[ "$pattern" == '/Users/[a-z]' ]]; then
+    offending="$(printf '%s\n' "$matches" | grep -vE "^${leak_users_safe_prefixes}" || true)"
+  else
+    offending="$matches"
   fi
+  n="$(printf '%s' "$offending" | grep -c . || true)"
   printf '%-34s %s\n' "$pattern" "$n" >> "$LEAK"
   if [[ "$n" -ne 0 ]]; then
     leak_fail=1
     printf '  OFFENDING:\n' >> "$LEAK"
-    if [[ "$pattern" == '/Users/[a-z]' ]]; then
-      strings -a "$scan_binary" 2>/dev/null | grep -oE "$pattern.{0,60}" \
-        | grep -vE "$leak_users_safe_prefixes" | sort -u | head -20 \
-        | sed 's/^/    /' >> "$LEAK"
-    else
-      strings -a "$scan_binary" 2>/dev/null | grep -oE "$pattern.{0,60}" \
-        | sort -u | head -20 | sed 's/^/    /' >> "$LEAK"
-    fi
+    printf '%s\n' "$offending" | sort -u | head -20 | sed 's/^/    /' >> "$LEAK"
   fi
 done
 # No .git, no key material, no raw build trees anywhere in the staged tree.
