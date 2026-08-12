@@ -1,4 +1,4 @@
-// EXPECT: PASS (no crash)
+// EXPECT: PASS
 //
 // Stress cover for the same bug regressed by
 // `mutual_recursion_over_list_literals_accepts.anb`: a 5-function mutual

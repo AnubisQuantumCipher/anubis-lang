@@ -1,4 +1,4 @@
-// EXPECT: PASS (no crash; program type-checks and lowers)
+// EXPECT: PASS
 //
 // Regression cover for a stack overflow in the interprocedural identity walker
 // (compiler/src/middle/mod.rs). Two mutually-recursive functions returning raw

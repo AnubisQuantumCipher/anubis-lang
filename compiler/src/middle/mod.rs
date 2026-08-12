@@ -741,7 +741,8 @@ fn fn_identities_of_d(
                                 // let the resolver that does not apply erase the one that does, so
                                 // `mk(leak)` came back Unknown while `mk([leak])` worked.
                                 let named = fn_identities_of_d(arg, scope, ctx, depth + 1);
-                                let dug = fn_identities_carried_by_value_d(arg, scope, ctx, depth + 1);
+                                let dug =
+                                    fn_identities_carried_by_value_d(arg, scope, ctx, depth + 1);
                                 let resolved = match (&named, &dug) {
                                     (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => named,
                                     (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => dug,
@@ -2066,7 +2067,14 @@ fn collect_container_fn_identities_d(
         Expr::Match { arms, .. } => {
             for arm in arms {
                 let mut arm_values = BTreeMap::new();
-                collect_container_fn_identities_d(&arm.body, prefix, scope, ctx, &mut arm_values, depth + 1);
+                collect_container_fn_identities_d(
+                    &arm.body,
+                    prefix,
+                    scope,
+                    ctx,
+                    &mut arm_values,
+                    depth + 1,
+                );
                 for (key, identities) in arm_values {
                     out.entry(key)
                         .and_modify(|current| {
@@ -14053,8 +14061,10 @@ fn fn_identities_carried_by_value(
 /// Mirrors [`fn_alias_of_d`]'s bound because this walker also resolves THROUGH a callee's
 /// entry in `fn_recursive_container_ids`: for the mutual pair
 ///
-///     fn d(n)   { if … { return dp(…); } return ["add", d(…), d(…)]; }
-///     fn dp(b,e){ let du = d(b); return ["mul", ["pow",b,e], du]; }
+/// ```text
+/// fn d(n)   { if … { return dp(…); } return ["add", d(…), d(…)]; }
+/// fn dp(b,e){ let du = d(b); return ["mul", ["pow",b,e], du]; }
+/// ```
 ///
 /// `returned_is_recursive` at the `fn_sole_return` site gates its bounded branch on
 /// SELF-reference (`format!("{returned:?}").contains("callee: \"<name>\"")`), so neither
