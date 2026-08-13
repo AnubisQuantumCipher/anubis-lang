@@ -349,28 +349,47 @@ print(f"{'walker families':40s} {fams:>10d}   non-increasing, → 1")
 # The taint/secret entry points are thin adapters over the single shared statement traversal
 # `walk_block_labels`. Once they no longer own AST matching, the "general ExprStmt arm" question
 # is answered by whichever function carries the traversal. Credit the adapter for delegating,
-# subject to the SAME thin-adapter shape the walker-families count uses above AND a positive
-# check that `walk_block_labels` itself carries the general ExprStmt arm. If either lane
-# regains local AST matching, the check falls back to grading the local body.
+# subject to a strict thin-adapter shape AND a positive check that `walk_block_labels` itself
+# carries the general ExprStmt arm. If either lane regains local AST matching in ANY form the
+# check recognises (qualified or imported variant name, `match`, `if let`, or a `matches!(...)`
+# macro), the check falls back to grading the local body and reports UNMEASURED if the arm is
+# neither delegated nor locally present.
 shared_walker_body = body('fn walk_block_labels(')
 shared_has_arm = bool(
     shared_walker_body
-    and re.search(r'Stmt::ExprStmt\(\s*(?:expr|e)\s*\)', shared_walker_body[2])
+    and re.search(r'\bStmt::ExprStmt\(\s*(?:expr|e)\s*\)', shared_walker_body[2])
 )
+# Every declared Expr/Stmt variant name — matches both qualified (`Stmt::Let { .. }`) and
+# imported (`Let { .. }`) forms a walker might use after `use frontend::Stmt::*;`. Kept in one
+# alternation so a new variant automatically enters the check.
+_variant_names = sorted({v for v in (E + S) if re.fullmatch(r'[A-Z]\w*', v)}, key=len, reverse=True)
+_variant_re = re.compile(
+    r'\b(?:' + '|'.join(re.escape(v) for v in _variant_names) + r')\s*(?:\(|\{|=>)'
+) if _variant_names else None
+_local_ast_patterns = re.compile(r'\b(?:for|while|loop|match|if\s+let|matches!)\b')
 for fn in ['fn walk_block_taint(', 'fn walk_block_secret(']:
     r = body(fn)
     if not r: continue
     name = fn[3:-1]
-    local_arm = bool(re.search(r'Stmt::ExprStmt\(\s*(?:expr|e)\s*\)', r[2]))
+    local_arm = bool(re.search(r'\bStmt::ExprStmt\(\s*(?:expr|e)\s*\)', r[2]))
+    # Strip the fn declaration and signature before checking for local matching; body() returns
+    # a span starting at the `fn` line, so `count(name + '(') == 1` would otherwise be counting
+    # the declaration itself and treat any additional self-mention as a violation.
+    body_after_sig = re.sub(r'\Afn\s+\w+\s*\([^)]*\)\s*(?:->[^{]*)?\{', '', r[2], count=1, flags=re.S)
+    has_local_variant = bool(_variant_re and _variant_re.search(body_after_sig))
+    has_local_ast_form = bool(_local_ast_patterns.search(body_after_sig))
     delegates_shared = (
-        r[2].count('walk_block_labels(') == 1
-        and r[2].count(name + '(') == 1
-        and not re.search(r'\b(?:Stmt|Expr)::', r[2])
-        and not re.search(r'\b(?:for|while|loop|match)\b', r[2])
+        body_after_sig.count('walk_block_labels(') == 1
+        and name + '(' not in body_after_sig
+        and not has_local_variant
+        and not has_local_ast_form
     )
     gen = local_arm or (delegates_shared and shared_has_arm)
     detail = 'local' if local_arm else ('via walk_block_labels' if gen else 'missing')
-    print(f"{'general ExprStmt arm: '+name:40s} {('yes' if gen else 'NO'):>10s}   yes ({detail})")
+    verdict = 'yes' if gen else 'UNMEASURED'
+    print(f"{'general ExprStmt arm: '+name:40s} {verdict:>10s}   {detail}")
+    if not gen:
+        bad += 1
 
 print()
 print(f"Expr variants: {len(E)}   Stmt variants: {len(S)}")
