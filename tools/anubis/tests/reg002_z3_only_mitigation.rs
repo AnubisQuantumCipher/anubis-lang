@@ -55,14 +55,22 @@ fn default_accepts_division_but_records_z3_only_when_log_env_is_set() {
     );
 
     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-    let n_records = log.lines().filter(|l| !l.trim().is_empty()).count();
+    let records: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
     assert!(
-        n_records >= 1,
+        !records.is_empty(),
         "expected at least one z3-only audit record from the division ensures; \
-         got {n_records} lines. log:\n{log}"
+         got 0 lines. log:\n{log}"
     );
-    // Every record must be a JSONL line naming the kind and the verdict.
-    for line in log.lines().filter(|l| !l.trim().is_empty()) {
+    // Every record must be well-formed JSONL with the documented shape. We enforce structure
+    // via targeted substring probes rather than pulling in a JSON dependency in tests/: the
+    // encoder is a small hand-rolled one whose contract is (a) balanced braces, (b) three named
+    // string/atom fields, (c) valid escaping of at least backslash / quote / newline. Any drift
+    // from that shape breaks the audit contract this test guards.
+    for line in &records {
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "audit record not enclosed in braces: {line}"
+        );
         assert!(
             line.contains("\"kind\":\"z3-only\""),
             "audit record missing `kind` tag: {line}"
@@ -70,6 +78,20 @@ fn default_accepts_division_but_records_z3_only_when_log_env_is_set() {
         assert!(
             line.contains("\"verdict\":\"unsat\"") || line.contains("\"verdict\":\"sat\""),
             "audit record missing decisive verdict: {line}"
+        );
+        // The `smt` field is required and non-empty. Look for the field name followed by an
+        // opening quote and any character (not the closing quote-then-brace); this rules out
+        // `"smt":""` (empty) and `"smt":null` (wrong type) without pulling in a JSON parser.
+        assert!(
+            line.contains("\"smt\":\"") && !line.contains("\"smt\":\"\""),
+            "audit record missing non-empty `smt` payload: {line}"
+        );
+        // Payload must at minimum reference the division op that triggered the fall-through.
+        // If the compiler stops emitting `bvsdiv` for `a / b`, the audit surface has changed
+        // shape and this test — the contract lock — must be revisited.
+        assert!(
+            line.contains("bvsdiv"),
+            "audit record does not name the offending bvsdiv op: {line}"
         );
     }
 

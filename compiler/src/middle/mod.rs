@@ -15053,29 +15053,54 @@ fn record_z3_only_decision(smt: &str, verdict: Option<&str>) {
         _ => return,
     };
     use std::io::Write as _;
-    let Ok(mut f) = std::fs::OpenOptions::new()
+    // Complete JSON string encoder: escape every character whose literal presence would break
+    // JSONL parsing (backslash, quote, all C0 control chars, DEL). Anything else stays verbatim,
+    // so an SMT payload's ASCII operators and identifiers are preserved for offline diffing.
+    fn esc(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\x08' => out.push_str("\\b"),
+                '\x0c' => out.push_str("\\f"),
+                c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+                    out.push_str(&format!("\\u{:04x}", c as u32));
+                }
+                c => out.push(c),
+            }
+        }
+        out
+    }
+    // Surface open/write failures on stderr with a stable prefix so the operator can grep for
+    // dropped audit records. The compiler still returns z3's verdict unchanged — the audit log is
+    // best-effort by design (a failed write must not turn a passing check into a failing one) —
+    // but silence on a broken audit path is itself a defect this branch refuses to hide.
+    let mut f = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-    else {
-        return;
-    };
-    // Escape newlines and double-quotes so one line = one record; keep the SMT payload verbatim so
-    // the operator can diff it against the native-decidable fragment offline.
-    let esc = |s: &str| {
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("ANUBIS_Z3_ONLY_LOG_OPEN_FAILED: path={} err={}", path, e);
+            return;
+        }
     };
     let verdict_json = match verdict {
         Some(v) => format!("\"{}\"", esc(v)),
         None => "null".to_string(),
     };
-    let _ = writeln!(
+    if let Err(e) = writeln!(
         f,
         "{{\"kind\":\"z3-only\",\"verdict\":{verdict_json},\"smt\":\"{}\"}}",
         esc(smt)
-    );
+    ) {
+        eprintln!("ANUBIS_Z3_ONLY_LOG_WRITE_FAILED: path={} err={}", path, e);
+    }
 }
 
 /// Compare `anubis_solver::native_check_sat` to z3's verdict for one obligation and record the

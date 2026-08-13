@@ -187,7 +187,7 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    green on the fixed binary; 1215+ `cargo test --release` and 259/259 G5 language fixtures
    also green.
 
-6. **REG-002 — z3-only fragment is forgeable by a compromised z3 — MITIGATED (2026-08-13).**
+6. **REG-002 — z3-only fragment is forgeable by a compromised z3 — CONDITIONALLY MITIGATED (2026-08-13).**
    Obligations outside the native Lean-proven fragment (division, remainder, nonlinear beyond
    native, floats, strings, quantifiers) fall through to z3 alone. Pre-mitigation: if z3 answered
    `unsat` (= "proven"), the runtime trusted it with no certificate check and no replay — replay
@@ -209,18 +209,24 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    protected — a lying z3 on a native-decidable goal is caught by `ANUBIS_NATIVE_DISAGREE`; the
    residual was the z3-only surface.
 
-   **Mitigation landed 2026-08-13.** Two opt-in env-var controls exposed at
+   **Mitigation landed 2026-08-13, and it is OPT-IN.** The default configuration still trusts
+   z3 alone on z3-only obligations — mitigation applies only when the operator sets
+   `ANUBIS_REQUIRE_NATIVE_PROOFS=1`. Two env-var controls exposed at
    `compiler/src/middle/mod.rs`'s `run_z3_obligation_with_smt` fall-through:
 
-   - `ANUBIS_Z3_ONLY_LOG=<path>` — audit trail. Writes one JSONL record per z3-only obligation
-     (SMT + verdict, verbatim) so the operator can enumerate exactly which obligations relied
-     on z3-only trust and diff them against the native-decidable fragment offline. Sound-by-
-     construction: the log never influences the returned verdict.
-   - `ANUBIS_REQUIRE_NATIVE_PROOFS=1` — fail-closed. Refuses to trust z3 alone: any obligation
-     the native authoritative solver declines returns `FAIL` with
-     `ANUBIS_Z3_ONLY_UNTRUSTED` before z3 is even spawned. This narrows the trust to the
-     machine-checked native fragment plus a documented, refusable "z3-decided, unchecked"
-     class, exactly as this entry previously named as the acceptable Phase-4 outcome.
+   - `ANUBIS_Z3_ONLY_LOG=<path>` — best-effort audit trail. Writes one JSONL record per
+     z3-only obligation (SMT + verdict) so the operator can enumerate the obligations that
+     relied on z3-only trust and diff them against the native-decidable fragment offline. Open
+     and write failures are reported on stderr as `ANUBIS_Z3_ONLY_LOG_{OPEN,WRITE}_FAILED` so a
+     broken audit path is not silent; a failed write does NOT change the returned verdict
+     (sound-by-construction). Concurrent processes writing the same path may interleave records
+     — the log is not atomically locked.
+   - `ANUBIS_REQUIRE_NATIVE_PROOFS=1` — enforcement. Any obligation the native authoritative
+     solver declined returns `FAIL` with `ANUBIS_Z3_ONLY_UNTRUSTED` before z3 is even spawned.
+     This narrows the trust to the machine-checked native fragment plus a refusable
+     "z3-decided, unchecked" class, exactly as this entry previously named as the acceptable
+     Phase-4 outcome. **This is the actual mitigation — without it, the residual behaviour is
+     unchanged.**
 
    Regression fixture: `tests/fixtures/language_core/z3_only_log_records_declined_obligation.anb`.
    Rust integration test: `tools/anubis/tests/reg002_z3_only_mitigation.rs` — locks both the
@@ -270,10 +276,11 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    **Status 2026-08-13.** REG-001 CLOSED (PR #16, `898c31ff`) — the modelability cascade now
    registers the return of any int-typed call as a solver var, so downstream precondition
    obligations are checked. REG-003 CLOSED (PR #15, `2eaf6cd2`) — capability linearity now
-   tracks consumption across parameter boundaries. REG-002 MITIGATED (item 6 above): an audit
-   trail (`ANUBIS_Z3_ONLY_LOG`) and a fail-closed refusal path (`ANUBIS_REQUIRE_NATIVE_PROOFS=1`)
-   let the operator either enumerate the z3-trust surface or refuse it entirely; the full
-   in-process UNSAT-certificate replay is named as the remaining residual and is a genuine
+   tracks consumption across parameter boundaries. REG-002 CONDITIONALLY MITIGATED (item 6
+   above): a best-effort audit trail (`ANUBIS_Z3_ONLY_LOG`) records z3-only obligations, and
+   opt-in enforcement (`ANUBIS_REQUIRE_NATIVE_PROOFS=1`) refuses the entire z3-only class. The
+   default configuration is UNCHANGED — without the env var, z3-only trust remains. The full
+   in-process UNSAT-certificate replay stays named as the remaining residual and is a genuine
    Phase 4 architectural item.
 
    The prior instance of the same class caught in this arc was the mutual-recursion identity
