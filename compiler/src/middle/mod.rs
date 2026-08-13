@@ -23334,7 +23334,7 @@ impl SourceLane {
     }
 }
 
-fn walk_block_source(
+fn source_lane_apply_block(
     stmts: &[Stmt],
     local: &mut BTreeMap<String, ScopeBinding>,
     lane_fns: &BTreeSet<String>,
@@ -23725,7 +23725,7 @@ fn expr_source(
         }
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
-            walk_block_source(
+            source_lane_apply_block(
                 stmts,
                 &mut local,
                 lane_fns,
