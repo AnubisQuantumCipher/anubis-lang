@@ -4,7 +4,7 @@ See `MATURITY_CLAIM_MATRIX.md` for historical gate rows. Living freeze:
 [`docs/language/SPEC_1_0_FREEZE.md`](language/SPEC_1_0_FREEZE.md) ·
 [`docs/language/SEMVER_1_0_POLICY.md`](language/SEMVER_1_0_POLICY.md).
 
-## Known open issues (2026-07-27)
+## Known open issues (baseline 2026-07-27; entries dated inline)
 
 Any A15/A+ seal dated 2026-07-24 or earlier (`ROADMAP_A_PLUS.md`, `A_PLUS_CLOSEOUT.md`,
 `A_PLUS_FINAL_REPORT.md`, and the tail of `MATURITY_CLAIM_MATRIX.md`) predates every item below —
