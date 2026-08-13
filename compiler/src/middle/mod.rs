@@ -15053,12 +15053,20 @@ fn record_z3_only_decision(smt: &str, verdict: Option<&str>) {
         _ => return,
     };
     use std::io::Write as _;
-    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
         return;
     };
     // Escape newlines and double-quotes so one line = one record; keep the SMT payload verbatim so
     // the operator can diff it against the native-decidable fragment offline.
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let esc = |s: &str| {
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+    };
     let verdict_json = match verdict {
         Some(v) => format!("\"{}\"", esc(v)),
         None => "null".to_string(),
