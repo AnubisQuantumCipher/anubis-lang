@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// Over-rejection guard for REG-001: a producer WITH `ensures` should still allow
+// the caller-side precondition to discharge — the fix must not over-reject when
+// the callee has a genuine post-state contract that satisfies the caller.
+fn produce_pos() -> i64 ensures(result > 0) { return 42; }
+fn needs_pos(x: i64) -> i64 requires(x > 0) ensures(result == x) { return x; }
+fn main() {
+    let v = produce_pos();
+    let r = needs_pos(v);
+    print(r);
+    return 0;
+}

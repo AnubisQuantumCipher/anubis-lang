@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// REG-001 regression cover (preserved 2026-08-13 from adversarial evaluation).
+//
+// Precondition `x > 0` on `needs_pos` was silently dropped when the argument came
+// from an ensures-less producer. The four-way `is_bool_modelable_*` cascade in
+// `discharge_resolved_call_requires` fell through to a terminal `else` that set
+// `all_requires_checkable = false` without emitting an obligation, so `anubis
+// check` returned PASS on a program that violated the precondition at runtime.
+//
+// The fix registers a callee's declared-integer-return name as an unconstrained
+// solver int var at the `let v = produce()` site, so the discharge emits
+// `(bvsgt anb_v (_ bv0 64))` with `anb_v` a free BV — z3 disproves via `v = 0`.
+fn produce() -> i64 { return 0 - 42; }
+fn needs_pos(x: i64) -> i64 requires(x > 0) ensures(result == x) { return x; }
+fn main() {
+    let v = produce();
+    let r = needs_pos(v);
+    print(r);
+    return 0;
+}

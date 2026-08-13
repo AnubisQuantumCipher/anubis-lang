@@ -9575,10 +9575,43 @@ fn analyze_stmts(
                         Expr::Var(name.clone()),
                         all_requires_checkable,
                     );
-                    if !concrete_ensures.is_empty() {
-                        // The callee guarantees an integer postcondition about its result, so this
-                        // binding is solver-modelable. Inline-call composition uses this exact helper.
+                    // REG-001 (2026-08-13): when the callee has a declared integer return type,
+                    // register `name` as an UNCONSTRAINED solver int var regardless of whether the
+                    // callee ships an integer `ensures`. Prior behaviour was to skip the
+                    // insertion whenever `concrete_ensures.is_empty()`, so `let v = produce()`
+                    // with an ensures-less `produce() -> i64` left `v` unmodelable, and any
+                    // downstream `requires(v > 0)` at the next call site FAILED the four-way
+                    // `is_bool_modelable_*` cascade in `discharge_resolved_call_requires`. The
+                    // terminal `else` at that cascade merely set `all_requires_checkable = false`
+                    // and never emitted the obligation — so the precondition was SILENTLY
+                    // DROPPED, and `anubis check` returned PASS on a program that violated it
+                    // at runtime. Reproducer preserved in docs/CLAIMS.md § REG-001.
+                    //
+                    // Registering `name` unconstrained closes the fail-open: the discharge
+                    // now emits `(assert (> anb_v 0))` with `anb_v` a free 64-bit BV, and z3
+                    // returns `sat` with counterexample `anb_v = 0` -> ANUBIS_ASSERTION_DISPROVED.
+                    // The docstring at `docs/PROOF_CORRESPONDENCE.md:55-57` (*"A value wrongly
+                    // judged unmodelable silently drops its obligation"*) names this exact
+                    // shape as the class this fix belongs to.
+                    //
+                    // Non-weakening: registering `name` unconstrained is what a solver-visible
+                    // caller with no post-state knowledge SHOULD look like. Any program that
+                    // relied on the prior silent drop was accepting a program the checker could
+                    // not prove. If the callee has genuine ensures, `concrete_ensures` is
+                    // non-empty and the additional facts are asserted below — same as before.
+                    // If the callee returns a NON-integer type, the ret-type check below falls
+                    // through and `name` stays unregistered (no change in behavior).
+                    let callee_ret_int = ctx
+                        .fn_ret_types
+                        .get(callee)
+                        .is_some_and(|ret| is_integer_ty(ret));
+                    if callee_ret_int || !concrete_ensures.is_empty() {
+                        // The callee guarantees an integer postcondition about its result, or
+                        // has a declared integer return type. Either way this binding is
+                        // solver-modelable (constrained by ensures if present; unconstrained
+                        // otherwise, so any incompatible downstream precondition is caught).
                         ctx.solver_int_vars.insert(name.clone());
+                        ctx.symbolic_widths.insert(name.clone(), 64);
                         for concrete in concrete_ensures {
                             if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
                                 let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);

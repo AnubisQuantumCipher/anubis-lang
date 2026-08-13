@@ -126,7 +126,7 @@ Commit `03210603` has a source-matched immutable candidate
 `58ba4abc0a636d909aa72e4f8df06d6e2adcad3ae378396a4c62a63f106a25bf`.
 Historical bounded receipt against that pin: compiler library **766/766**, security **327/327**,
 language **252 passed of 252**,
-stdlib fail-closed **104/104**, current native-authoritative **923 files, 0 mismatches** (the bounded
+stdlib fail-closed **104/104**, current native-authoritative **925 files, 0 mismatches** (the bounded
 W1 receipt itself graded 916 files), and the formal gate
 PASS. The bounded W1 place-resolution slice is green.
 
@@ -135,7 +135,7 @@ Phase-1 working-tree receipts below supersede the earlier pre-fix guest receipt 
 2026-07-30 offensive bundle whose report identity did not match its export manifest. Neither a
 superseding receipt nor a green gate turns the uncommitted tree into shipped work.
 
-At the deciding technical epoch, the dirty tree was green at security **327/327**, language **255/255**, stdlib
+At the deciding technical epoch, the dirty tree was green at security **327/327**, language **257/257**, stdlib
 fail-closed **104/104**, compiler library **771/771**, and formal. Native-authoritative and docs
 drift now share one tracked inventory of **921 files**; native-authoritative reported **0 mismatches,
 0 disagreements**, and the corpus/pin poison gate passed **27/27**. The two reduced block-label

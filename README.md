@@ -140,8 +140,8 @@ residual inventory*. Absence of a red row is not evidence of absence. The projec
 itself, in [`docs/CLAIMS.md`](docs/CLAIMS.md), and means it.
 
 **2. Numbers are re-derived by command, never typed by hand.** These are measured from the tree on
-every gate run — security **327/327**, language **255/255**, stdlib fail-closed **104/104**,
-native-authoritative over **923 files**, **213 builtins**, and 162 Lean 4 theorems across 15 modules
+every gate run — security **327/327**, language **257/257**, stdlib fail-closed **104/104**,
+native-authoritative over **925 files**, **213 builtins**, and 162 Lean 4 theorems across 15 modules
 with no `sorry`/`admit`/`axiom`:
 
 ```bash
