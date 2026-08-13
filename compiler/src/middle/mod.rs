@@ -23558,7 +23558,7 @@ fn expr_taint_source_m(
         }
         // Non-source Expr variants — enumerated so a new Expr variant forces a decision at compile
         // time rather than silently returning None (walker-carrier-totality; capability.rs §
-        // walk_expr is the reference). All seven listed here are non-code-holding value shapes
+        // walk_expr is the reference). All six listed here are non-code-holding value shapes
         // and are correctly bound with `(_)` / `{ .. }` — no G19 field-discard risk because none
         // of these variants embed `Expr` or `Stmt` payloads.
         Expr::Literal(_)
