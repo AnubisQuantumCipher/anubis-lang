@@ -23284,9 +23284,9 @@ fn expr_taint_source_m(
         // `taint_reassign_to_clean` contract, in value position) and a reassign-to-tainted is caught.
         // Value-position block: thread the block's statement flow through `walk_block_taint` (the
         // scope-aware stmt walker, at parity with the enforcing `analyze_stmts` merge discipline), then
-        // read the tail's label in the block's post-statement scope. This closes the former `_ => {}`
-        // fail-open where nested control-flow inside the block (`{ let r=0; if c { r=x; } r }`) was
-        // dropped and a laundered value read clean.
+        // read the tail's label in the block's post-statement scope. This closes a prior
+        // wildcard-fail-open where nested control-flow inside the block
+        // (`{ let r=0; if c { r=x; } r }`) was dropped and a laundered value read clean.
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
             walk_block_taint(
@@ -23556,7 +23556,17 @@ fn expr_taint_source_m(
                 })
             })
         }
-        _ => None,
+        // Non-source Expr variants — enumerated so a new Expr variant forces a decision at compile
+        // time rather than silently returning None (walker-carrier-totality; capability.rs §
+        // walk_expr is the reference). All seven listed here are non-code-holding value shapes
+        // and are correctly bound with `(_)` / `{ .. }` — no G19 field-discard risk because none
+        // of these variants embed `Expr` or `Stmt` payloads.
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => None,
     }
 }
 
@@ -24325,7 +24335,17 @@ fn expr_secret_source_m(
                 })
             })
         }
-        _ => None,
+        // Non-source Expr variants — enumerated so a new Expr variant forces a decision at compile
+        // time rather than silently returning None. `TaintSource` is a taint-only source and is
+        // not a secret carrier, so it belongs here rather than in the explicit-source list above.
+        // All bound with `(_)` / `{ .. }` are non-code-holding.
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => None,
     }
 }
 
