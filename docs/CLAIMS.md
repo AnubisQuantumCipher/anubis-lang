@@ -161,7 +161,7 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 
    Reproducer (adversarial-eval preserved 2026-08-13, built from `6f4a141c`):
 
-   ```
+   ```text
    fn produce() -> i64 { return 0 - 42; }
    fn needs_pos(x: i64) -> i64 requires(x > 0) ensures(result == x) { return x; }
    fn main() { let v = produce(); let r = needs_pos(v); print(r); return 0; }
@@ -187,7 +187,7 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 
    Reproducer (adversarial-eval preserved 2026-08-13, malicious z3 script preserved separately):
 
-   ```
+   ```text
    fn div_lie(a: i64, b: i64) -> i64
        requires(b != 0)
        ensures(result * b == a)     // false in the general case
@@ -209,7 +209,7 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 
    Reproducer (adversarial-eval preserved 2026-08-13):
 
-   ```
+   ```text
    fn spend_twice(tok) { cap_use(tok); cap_use(tok); }
    fn main() { let t = cap_mint("pay:100"); spend_twice(t); return 0; }
    ```
