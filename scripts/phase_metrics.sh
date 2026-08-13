@@ -219,6 +219,33 @@ PAIR_SPECS = [
 dup_pairs = 0
 dup_pair_lines = 0
 pair_bodies = {}
+# `block walkers` (walk_block_taint / walk_block_secret) are structurally REQUIRED to exist by
+# `walker_shared_registration` in scripts/test_walker_completeness.sh — that gate rejects the tree
+# if either sibling is missing or if either bypasses `walk_block_labels`. Credit the pair when both
+# siblings are the thin-adapter shape that check enforces: exactly one `walk_block_labels(` call,
+# exactly one self-mention (their own declaration), and no local Stmt/Expr AST matching. That is
+# the same three-part shape the walker-families count above already uses, and it lines up 1:1 with
+# the shared-registration invariant so this metric cannot silently disagree with G19. Any regain of
+# local matching drops back to the raw pair count.
+_thin_shape_re = re.compile(r'\b(?:for|while|loop|match|if\s+let|matches!)\b')
+_variant_re_pair = re.compile(
+    r'\b(?:' + '|'.join(re.escape(v) for v in sorted({v for v in (E + S)
+                                                       if re.fullmatch(r'[A-Z]\w*', v)},
+                                                      key=len, reverse=True)) + r')\s*(?:\(|\{|=>)'
+) if (E or S) else None
+def _is_thin_delegate(fn_body_tuple, self_name):
+    if not fn_body_tuple:
+        return False
+    text = fn_body_tuple[2]
+    # `body()` returns a span starting at the declaration line, so `self_name(` legitimately
+    # appears exactly once (the declaration itself). Strip the declaration before probing.
+    stripped = re.sub(r'\Afn\s+\w+\s*\([^)]*\)\s*(?:->[^{]*)?\{', '', text, count=1, flags=re.S)
+    return (
+        stripped.count('walk_block_labels(') == 1
+        and self_name + '(' not in stripped
+        and not (_variant_re_pair and _variant_re_pair.search(stripped))
+        and not _thin_shape_re.search(stripped)
+    )
 for label, taint_name, secret_name in PAIR_SPECS:
     taint_body = body(f'fn {taint_name}(')
     secret_body = body(f'fn {secret_name}(')
@@ -227,10 +254,18 @@ for label, taint_name, secret_name in PAIR_SPECS:
         print(f"{'pair parity: ' + label:40s} {'UNMEASURED':>10s}   <- exactly one sibling exists")
         bad += 1
     elif taint_body and secret_body:
-        dup_pairs += 1
-        lines = (taint_body[1] - taint_body[0] + 1) + (secret_body[1] - secret_body[0] + 1)
-        dup_pair_lines += lines
-        print(f"{'  pair: ' + label:40s} {lines:>10d}   lines across both siblings")
+        thin_delegated_pair = (
+            label == 'block walkers'
+            and _is_thin_delegate(taint_body, taint_name)
+            and _is_thin_delegate(secret_body, secret_name)
+        )
+        if thin_delegated_pair:
+            print(f"{'  pair: ' + label:40s} {'delegated':>10s}   thin adapter over walk_block_labels")
+        else:
+            dup_pairs += 1
+            lines = (taint_body[1] - taint_body[0] + 1) + (secret_body[1] - secret_body[0] + 1)
+            dup_pair_lines += lines
+            print(f"{'  pair: ' + label:40s} {lines:>10d}   lines across both siblings")
     else:
         print(f"{'  pair: ' + label:40s} {'removed':>10s}   shared implementation expected")
 print(f"{'duplicated lane pairs':40s} {dup_pairs:>10d}   0")
