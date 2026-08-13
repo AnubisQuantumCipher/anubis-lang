@@ -1,0 +1,21 @@
+// EXPECT: FAIL
+// REG-003 regression cover (preserved 2026-08-13 from adversarial evaluation).
+//
+// A callee body that double-uses an untyped parameter used to check-clean:
+// `use_var("tok")` found no tracked token in `caps` and hit the `_ =>` accept-bias.
+// The second `cap_use(tok)` was never flagged; a caller could double-spend by
+// passing a live capability to a callee that consumed it twice inside its body.
+//
+// The fix (`compiler/src/middle/capability.rs`, walk_expr's CAP_USE arm) inserts
+// a `Consumed` token for a bare-parameter argument once the first `cap_use(param)`
+// has walked its arg — so a SECOND `cap_use(param)` in the same body hits
+// `Some(Consumed)` in use_var and fires `ANUBIS_CAPABILITY_REUSE`.
+fn spend_twice(tok) {
+    cap_use(tok);
+    cap_use(tok);
+}
+fn main() {
+    let t = cap_acquire("net.send");
+    spend_twice(t);
+    return 0;
+}

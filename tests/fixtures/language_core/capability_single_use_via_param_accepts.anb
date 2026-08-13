@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Over-rejection guard for REG-003. A single `cap_use(param)` inside a callee
+// remains accept-biased (unknown provenance from the caller's perspective) —
+// the fix only tightens the SECOND use, not the first.
+fn spend_once(tok) { cap_use(tok); }
+fn main() {
+    let t = cap_acquire("net.send");
+    spend_once(t);
+    return 0;
+}
