@@ -6078,9 +6078,24 @@ pub fn compile_sign_and_run_source(
 
 /// Compile lowered native Rust (with audited crypto) into `out_exe` via cargo.
 pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) -> Result<()> {
+    // The package name is CONTENT-DERIVED (sha256 of the generated Rust), never random.
+    // Cargo folds the package name into the crate metadata hash, which decides symbol
+    // mangling and codegen-unit layout — the previous per-build random name made every
+    // native build byte-nondeterministic (field-diagnosed 2026-08-13 via jackal-calc:
+    // byte-identical generated .rs across builds, permuted string pools in the binary).
+    // Content addressing restores reproducibility for identical source, stays unique
+    // across different programs, and turns same-name concurrent collisions under the
+    // shared CARGO_TARGET_DIR benign: same name now implies same bytes. It also lets
+    // cargo reuse its fingerprint across rebuilds of an unchanged program. The scratch
+    // project dir below keeps the unique suffix — it is deleted after the build and
+    // must not collide between concurrent builds.
+    let package_name = {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(rust_source.as_bytes());
+        // The anubis_run_ prefix keeps the name a valid identifier (hex may lead with a digit).
+        format!("anubis_run_{}", hex::encode(&digest[..12]))
+    };
     let suffix = anubis_unique_suffix().replace('-', "_");
-    // Cargo package names must be valid identifiers (no leading digits after renames).
-    let package_name = format!("anubis_run_{suffix}");
     let dir = std::env::temp_dir().join(format!("anubis-run-build-{suffix}"));
     std::fs::create_dir_all(dir.join("src"))?;
     std::fs::write(dir.join("Cargo.toml"), anubis_run_cargo_toml(&package_name))?;
