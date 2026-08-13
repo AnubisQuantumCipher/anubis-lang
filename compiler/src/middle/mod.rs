@@ -14663,6 +14663,11 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     // z3 unchanged — see `anubis_solver`'s four termination bounds (2026-07-26): a pre-blast gate-cost
     // ceiling, a CNF clause ceiling, the CDCL conflict budget + wall-clock net, and a RUP
     // certificate-work ceiling. Every one of them can only turn a verdict into a deferral.
+    // Track whether the authoritative native path declined for this obligation. If it did, the
+    // z3 fall-through below decides alone — the REG-002 trust residual. On the fall-through we
+    // emit an audit log entry (opt-in via ANUBIS_Z3_ONLY_LOG) that captures the SMT and z3's
+    // verdict verbatim, so the operator can audit exactly which obligations were z3-only.
+    let mut native_declined = false;
     if native_authoritative() {
         match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
@@ -14739,7 +14744,40 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                     };
                 }
             }
-            None => {} // out of fragment / undecided → z3 exactly as before
+            None => {
+                // Out of fragment / undecided / over budget → z3 answers alone. Mark it so the
+                // audit log at the z3 fall-through below can attribute the verdict correctly.
+                native_declined = true;
+                // REG-002 residual: a compromised z3 that forges `unsat` on an obligation the
+                // native solver cannot decide cannot be caught by the cross-check.
+                //
+                // Two mitigations live here (both opt-in; default behaviour is unchanged):
+                // (1) `ANUBIS_Z3_ONLY_LOG=<path>` writes one JSONL record per z3-only obligation
+                //     so the operator can audit exactly which obligations relied on z3-only trust.
+                // (2) `ANUBIS_REQUIRE_NATIVE_PROOFS=1` refuses to trust z3 alone; returns FAIL
+                //     with `ANUBIS_Z3_ONLY_UNTRUSTED` before the z3 spawn below.
+                if require_native_proofs() {
+                    eprintln!(
+                        "ANUBIS_Z3_ONLY_UNTRUSTED: obligation `{}` requires native proof \
+                         (ANUBIS_REQUIRE_NATIVE_PROOFS=1) but the native solver declined; refusing \
+                         to trust z3 alone",
+                        obligation.name
+                    );
+                    return SolverCheck {
+                        name: obligation.name.clone(),
+                        status: "FAIL".into(),
+                        detail: "ANUBIS_Z3_ONLY_UNTRUSTED: native solver declined and \
+                                 ANUBIS_REQUIRE_NATIVE_PROOFS=1 refuses to trust z3 alone; \
+                                 this obligation lives outside the machine-checked native \
+                                 fragment (see docs/CLAIMS.md § REG-002)"
+                            .into(),
+                        model: None,
+                        smt,
+                    };
+                }
+                // Otherwise fall through to z3 exactly as before; the JSONL logging is emitted
+                // just after z3 answers so the record captures both the obligation and its verdict.
+            }
         }
     }
     let mut child = match Command::new("z3")
@@ -14792,6 +14830,12 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     // `ANUBIS_NATIVE_SHADOW=1` the native verdict is compared against z3's right here, where the
     // real proof/counterexample decisions are made. z3's verdict below is returned unchanged.
     native_shadow_compare(&smt, Some(first));
+    // REG-002 audit hook: when the native authoritative path declined and z3 answered alone,
+    // record the SMT + z3's verdict verbatim (opt-in via ANUBIS_Z3_ONLY_LOG). Sound-by-
+    // construction: never influences the returned verdict.
+    if native_declined {
+        record_z3_only_decision(&smt, Some(first));
+    }
     match first {
         "unsat" => SolverCheck {
             name: obligation.name.clone(),
@@ -14986,6 +15030,44 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
     // so normal builds pay nothing and the compiler fixpoint is unaffected.
     native_shadow_compare(smt, ans.as_deref());
     ans
+}
+
+/// `ANUBIS_REQUIRE_NATIVE_PROOFS=1` (or `true`/`on`/`yes`) refuses to trust z3 on obligations the
+/// native solver declined — REG-002 mitigation. Anything else keeps default behaviour (trust z3).
+fn require_native_proofs() -> bool {
+    match std::env::var("ANUBIS_REQUIRE_NATIVE_PROOFS") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "on" | "yes")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Append one JSONL record to `ANUBIS_Z3_ONLY_LOG` (if set) per z3-only obligation. Records the
+/// verdict and the SMT payload verbatim so the operator can audit the z3-trust surface without
+/// pre-knowing what will land there. Sound-by-construction: never influences the returned verdict.
+fn record_z3_only_decision(smt: &str, verdict: Option<&str>) {
+    let path = match std::env::var("ANUBIS_Z3_ONLY_LOG") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return,
+    };
+    use std::io::Write as _;
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    // Escape newlines and double-quotes so one line = one record; keep the SMT payload verbatim so
+    // the operator can diff it against the native-decidable fragment offline.
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let verdict_json = match verdict {
+        Some(v) => format!("\"{}\"", esc(v)),
+        None => "null".to_string(),
+    };
+    let _ = writeln!(
+        f,
+        "{{\"kind\":\"z3-only\",\"verdict\":{verdict_json},\"smt\":\"{}\"}}",
+        esc(smt)
+    );
 }
 
 /// Compare `anubis_solver::native_check_sat` to z3's verdict for one obligation and record the

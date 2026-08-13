@@ -187,12 +187,13 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    green on the fixed binary; 1215+ `cargo test --release` and 258/258 G5 language fixtures
    also green.
 
-6. **REG-002 — z3-only fragment is forgeable by a compromised z3 (2026-08-13).**
+6. **REG-002 — z3-only fragment is forgeable by a compromised z3 — MITIGATED (2026-08-13).**
    Obligations outside the native Lean-proven fragment (division, remainder, nonlinear beyond
-   native) are decided by z3 alone. If z3 answers `unsat` (= "proven"), the runtime trusts it
-   with no certificate check and no replay — replay is only triggered on `sat`/counterexamples.
-   A malicious z3 that answers premise-satisfiability honestly and forges `unsat` on the proof
-   goal makes a false division contract pass. Threat model: attacker controls the z3 binary.
+   native, floats, strings, quantifiers) fall through to z3 alone. Pre-mitigation: if z3 answered
+   `unsat` (= "proven"), the runtime trusted it with no certificate check and no replay — replay
+   only triggers on `sat`/counterexamples. A malicious z3 that answered premise-satisfiability
+   honestly and forged `unsat` on the proof goal made a false division contract pass. Threat
+   model: attacker controls the z3 binary.
 
    Reproducer (adversarial-eval preserved 2026-08-13, malicious z3 script preserved separately):
 
@@ -204,11 +205,33 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    ```
 
    Under a stock z3 the ensures fails; under a smart malicious z3 that reports `unsat` on the
-   z3-only fragment, `anubis check` returns PASS. The native fragment is protected — a lying
-   z3 on a native-decidable goal is caught by `ANUBIS_NATIVE_DISAGREE`. The residual is the
-   z3-only surface. This is Phase 4 work: either require z3 to emit a checkable UNSAT proof
-   certificate and replay it in-process, or narrow the trust to the native fragment plus a
-   documented "z3-decided, unchecked" class named on `check --evidence` output.
+   z3-only fragment, `anubis check` returned PASS pre-mitigation. The native fragment stays
+   protected — a lying z3 on a native-decidable goal is caught by `ANUBIS_NATIVE_DISAGREE`; the
+   residual was the z3-only surface.
+
+   **Mitigation landed 2026-08-13.** Two opt-in env-var controls exposed at
+   `compiler/src/middle/mod.rs`'s `run_z3_obligation_with_smt` fall-through:
+
+   - `ANUBIS_Z3_ONLY_LOG=<path>` — audit trail. Writes one JSONL record per z3-only obligation
+     (SMT + verdict, verbatim) so the operator can enumerate exactly which obligations relied
+     on z3-only trust and diff them against the native-decidable fragment offline. Sound-by-
+     construction: the log never influences the returned verdict.
+   - `ANUBIS_REQUIRE_NATIVE_PROOFS=1` — fail-closed. Refuses to trust z3 alone: any obligation
+     the native authoritative solver declines returns `FAIL` with
+     `ANUBIS_Z3_ONLY_UNTRUSTED` before z3 is even spawned. This narrows the trust to the
+     machine-checked native fragment plus a documented, refusable "z3-decided, unchecked"
+     class, exactly as this entry previously named as the acceptable Phase-4 outcome.
+
+   Regression fixture: `tests/fixtures/language_core/z3_only_log_records_declined_obligation.anb`.
+   Rust integration test: `tools/anubis/tests/reg002_z3_only_mitigation.rs` — locks both the
+   default-passes + log-records path AND the require-native fails-closed path end-to-end through
+   the real CLI.
+
+   **Remaining residual — full-cert replay.** A checkable UNSAT proof certificate parsed and
+   replayed in-process (DRAT/LRAT for QF_BV, or z3's own proof format) is still not implemented.
+   For high-assurance builds, the operator sets `ANUBIS_REQUIRE_NATIVE_PROOFS=1` and either
+   accepts fewer decided contracts (safe: fail-closed) or rewrites obligations to land in the
+   proven fragment. That is the correct tradeoff surface for this class of residual.
 
 7. **REG-003 — linear capability double-spend across a parameter boundary — CLOSED (2026-08-13, PR #15).**
    Pre-fix: `cap_use(tok); cap_use(tok)` on a token acquired LOCALLY was caught with
@@ -247,9 +270,11 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    **Status 2026-08-13.** REG-001 CLOSED (PR #16, `898c31ff`) — the modelability cascade now
    registers the return of any int-typed call as a solver var, so downstream precondition
    obligations are checked. REG-003 CLOSED (PR #15, `2eaf6cd2`) — capability linearity now
-   tracks consumption across parameter boundaries. The remaining lane in this class is REG-002
-   (z3-only fragment forgeability) — different mechanism, same theme (trust boundary is where
-   the guarantee lives), tracked as item 6 above.
+   tracks consumption across parameter boundaries. REG-002 MITIGATED (item 6 above): an audit
+   trail (`ANUBIS_Z3_ONLY_LOG`) and a fail-closed refusal path (`ANUBIS_REQUIRE_NATIVE_PROOFS=1`)
+   let the operator either enumerate the z3-trust surface or refuse it entirely; the full
+   in-process UNSAT-certificate replay is named as the remaining residual and is a genuine
+   Phase 4 architectural item.
 
    The prior instance of the same class caught in this arc was the mutual-recursion identity
    walker DoS (PR #9): identity walker A's fix did not propagate to the sibling walker family
