@@ -7,7 +7,7 @@
 # Exit 1 = any HIGH consumer or witness is missing (fail closed).
 #
 # WARN lines do not fail: parity residuals still open (e.g. seed_taint_pattern D4,
-# body_returns_secret LetPattern twin). They must appear as WARN when open so a
+# historical body_returns_secret LetPattern twin). They must appear as WARN when open so a
 # skeptic can see them without treating them as green.
 #
 # Complements scripts/run_security_fixtures.sh — does not replace it.
@@ -88,24 +88,24 @@ need "declared_field_type call sites"    'declared_field_type\('             "$M
 echo "=== 3. BINDER CONSUME — enforce + summary expr ==="
 need "qualified_pattern_binders"         'fn qualified_pattern_binders'      "$M"
 fn_body_has "seed_effect_pattern → D4"   seed_effect_pattern   'qualified_pattern_binders'
-fn_body_has "seed_secret_pattern → D4"   seed_secret_pattern   'qualified_pattern_binders'
+fn_body_has "seed_pattern → D4"          seed_pattern          'qualified_pattern_binders'
 
 echo "=== 4. SUMMARY RETURN CONSUME (D4-S both lanes) ==="
 need "seed_declared_pattern_binders"     'fn seed_declared_pattern_binders'  "$M"
 need "collect_stmt_patterns"             'fn collect_stmt_patterns'          "$M"
-summary_return_has "body_returns_taint D4-S"  body_returns_taint  'is_tainted'
-summary_return_has "body_returns_secret D4-S" body_returns_secret 'is_secret'
+summary_return_has "body_returns D4-S taint"  body_returns  'is_tainted'
+summary_return_has "body_returns D4-S secret" body_returns  'is_secret'
 
 echo "=== 5. PARITY PROBES (warn only — do not fail HIGH gate) ==="
-if rg -n 'fn seed_taint_pattern' -A30 "$M" | rg -q 'qualified_pattern_binders'; then
-  echo "ok: seed_taint_pattern consults declared payloads"
+if rg -n 'fn seed_pattern' -A40 "$M" | rg -q 'qualified_pattern_binders'; then
+  echo "ok: seed_pattern consults declared payloads"
 else
-  echo "WARN: seed_taint_pattern lacks qualified_pattern_binders (summary-expr parity residual)"
+  echo "WARN: seed_pattern lacks qualified_pattern_binders (summary-expr parity residual)"
 fi
-if rg -n 'fn body_returns_secret' -A120 "$M" | rg -q 'LetPattern'; then
-  echo "ok: body_returns_secret has LetPattern"
+if rg -n 'fn body_returns' -A220 "$M" | rg -q 'LetPattern'; then
+  echo "ok: body_returns has LetPattern"
 else
-  echo "WARN: body_returns_secret lacks LetPattern (H8 twin residual vs body_returns_taint)"
+  echo "WARN: body_returns lacks LetPattern (H8 residual)"
 fi
 
 echo "=== 6. WITNESSES (direct + via-summary) ==="
