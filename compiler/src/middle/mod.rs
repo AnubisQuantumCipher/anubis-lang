@@ -9575,9 +9575,20 @@ fn analyze_stmts(
                         Expr::Var(name.clone()),
                         all_requires_checkable,
                     );
-                    if !concrete_ensures.is_empty() {
-                        // The callee guarantees an integer postcondition about its result, so this
-                        // binding is solver-modelable. Inline-call composition uses this exact helper.
+                    // REG-001 fix (2026-08-13): register `name` as a solver int var when the
+                    // callee has a declared integer return type, even without an `ensures`. Without
+                    // this, an opaque-provenance callee's result (e.g. `let z = produce();` where
+                    // `produce()` has no contract) leaves `z` unmodeled by the solver, so a later
+                    // `needs_pos(z)` obligation silently drops. See docs/CLAIMS.md § Open —
+                    // load-bearing item 5 (REG-001) for the exact reproducer.
+                    let callee_ret_int = ctx
+                        .fn_ret_types
+                        .get(callee)
+                        .is_some_and(|ret| is_integer_ty(ret));
+                    if callee_ret_int {
+                        // The callee's return is a modelable integer (constrained by ensures if
+                        // present; unconstrained otherwise). Inline-call composition uses the exact
+                        // same helper for the constrained case.
                         ctx.solver_int_vars.insert(name.clone());
                         for concrete in concrete_ensures {
                             if is_bool_modelable(&concrete, &ctx.solver_int_vars) {

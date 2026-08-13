@@ -531,22 +531,34 @@ fn dpll(assign0: list<i64>, cnf: list<list<i64>>, max_var: i64, depth: i64) -> l
     }
 
     let br = pick_branch_var(assign, max_var);
-    if br == 0 {
-        // no var left but not satisfied ⇒ unsat
+    // pick_branch_var returns 0 (no unassigned var) or a value in [1, max_var]. Two guards:
+    // (1) an explicit early return on the algorithmically impossible br == i64::MIN to give the
+    //     wrap-safety check the `distinct br i64::MIN` assumption on the fall-through — same
+    //     shape as tests/fixtures/language_core/wrap_guarded_negation_accepts.anb.
+    // (2) a positive-form guard on br > 0 so the `0 - br` on the false branch is provably wrap-
+    //     safe (br > 0 excludes br == i64::MIN, and (1) already discharged the corner case).
+    if br == 0 - 9223372036854775807 - 1 {
+        // Algorithmically impossible: pick_branch_var only returns 0 or values in [1, max_var].
+        // Kept as an explicit fail-closed guard so wrap-safety proves the negation below.
         assign[0] = 0;
         return assign;
     }
-
-    // try true
-    let try_t = assign_lit_core(assign, br);
-    let res_t = dpll(try_t, cnf, max_var, depth + 1);
-    if res_t[0] == 1 {
-        return res_t;
+    if br > 0 {
+        // try true
+        let try_t = assign_lit_core(assign, br);
+        let res_t = dpll(try_t, cnf, max_var, depth + 1);
+        if res_t[0] == 1 {
+            return res_t;
+        }
+        // try false
+        let try_f = assign_lit_core(assign, 0 - br);
+        let res_f = dpll(try_f, cnf, max_var, depth + 1);
+        return res_f;
     }
-    // try false
-    let try_f = assign_lit_core(assign, 0 - br);
-    let res_f = dpll(try_f, cnf, max_var, depth + 1);
-    return res_f;
+
+    // no var left but not satisfied ⇒ unsat
+    assign[0] = 0;
+    return assign;
 }
 
 fn empty_assign(max_var: i64) -> list<i64> {

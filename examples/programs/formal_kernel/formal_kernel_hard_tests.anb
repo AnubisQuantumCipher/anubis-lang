@@ -237,10 +237,17 @@ fn dpll(assign0: list<i64>, cnf: list<list<i64>>, max_var: i64, depth: i64) -> l
     }
     if formula_satisfied(assign, cnf) == 1 { assign[0] = 1; return assign; }
     let br = pick_branch_var(assign, max_var);
-    if br == 0 { assign[0] = 0; return assign; }
-    let res_t = dpll(assign_lit_core(assign, br), cnf, max_var, depth + 1);
-    if res_t[0] == 1 { return res_t; }
-    return dpll(assign_lit_core(assign, 0 - br), cnf, max_var, depth + 1);
+    // Two guards for wrap-safety of `0 - br` below (mirrors formal_kernel.anb dpll):
+    // (1) explicit early return on the algorithmically impossible br == i64::MIN;
+    // (2) positive-form guard on br > 0 to give the wrap check `bvsgt anb_br 0`.
+    if br == 0 - 9223372036854775807 - 1 { assign[0] = 0; return assign; }
+    if br > 0 {
+        let res_t = dpll(assign_lit_core(assign, br), cnf, max_var, depth + 1);
+        if res_t[0] == 1 { return res_t; }
+        return dpll(assign_lit_core(assign, 0 - br), cnf, max_var, depth + 1);
+    }
+    assign[0] = 0;
+    return assign;
 }
 fn empty_assign(max_var: i64) -> list<i64> {
     let mut a = []; push(a, 0);
