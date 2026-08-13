@@ -25211,6 +25211,7 @@ impl ReturnSummaryLane {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn seed_let(
         self,
         name: &str,
@@ -25324,6 +25325,7 @@ impl ReturnSummaryLane {
 }
 
 /// Lane-parameterized replacement for `body_returns_taint` / `body_returns_secret`.
+#[allow(clippy::too_many_arguments)]
 fn body_returns(
     stmts: &[Stmt],
     scope: &mut BTreeMap<String, ScopeBinding>,
