@@ -1,0 +1,18 @@
+// CHECK_EXPECT: FAIL
+// CHECK_ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Hostile check mutant: verifies whether a violated requires nested in a helper is
+// still discharged, rather than checked only for direct calls in main.
+fn positive_only(value: i64) -> i64
+    requires(value > 0)
+    ensures(result > 0)
+{
+    return value;
+}
+
+fn hidden_violation() -> i64 {
+    return positive_only(0);
+}
+
+fn main() {
+    print(hidden_violation());
+}

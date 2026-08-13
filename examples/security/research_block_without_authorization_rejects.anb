@@ -1,0 +1,21 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+// Lead agent 2026-07-27, from GROK-SET round 7. An AUTHORIZATION BYPASS, and the most
+// security-significant defect closed in this arc.
+//
+// `@research fn probe()` without metadata was correctly rejected with this same code. A BARE
+// `@research { ... }` block was not — it elevated the enclosing function out of Safe mode with no
+// authorization at all. So any Safe program could obtain research capabilities just by wrapping the
+// code in a block, which defeats the entire purpose of the policy the attribute form enforces.
+//
+// The block form structurally CANNOT carry authorization — `Stmt::ResearchBlock` holds only
+// `intent` — so the requirement is placed where it can actually be met: the enclosing function must
+// itself be authorized. That is also the design intent, since blocks are mode elevators WITHIN an
+// authorized function rather than an independent grant.
+//
+// Paired with `research_block_inside_authorized_fn_accepts`, which must stay green: this closes an
+// authorization bypass, not the research lane.
+fn main() {
+    @research { shell("true"); }
+    print(1);
+}

@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// FABLE5 2026-07-27. Integrity twin of `declared_secret_fn_value_in_list_apply_rejects` (M1, named
+// callable stored in a container). The container-apply arms of both source resolvers already
+// resolved the stored value; only their CONSUMERS were lambda-only, so a NAMED function stored in a
+// list fell through as though the container held nothing.
+// Both lanes are fixed in the same commit deliberately: closing one and not the other leaves a form
+// the sibling lane already rejects as a working launder path, which is how these two walkers have
+// drifted apart before.
+fn get() -> tainted<i64> {
+    return 42;
+}
+fn main() uses(shell) {
+    let xs = [get];
+    shell(xs[0]());
+}

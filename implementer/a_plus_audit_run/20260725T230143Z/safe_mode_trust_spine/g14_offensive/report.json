@@ -1,0 +1,8 @@
+{
+  "total": 34,
+  "passed": 34,
+  "failed": 0,
+  "overall_verdict": "PASS",
+  "binary": "target/release/anubis",
+  "isolation": "tart-disposable-guest"
+}

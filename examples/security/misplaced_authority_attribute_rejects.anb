@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_MISPLACED_AUTHORITY_ATTRIBUTE
+// An authority mark on an item that cannot retain it must not be silently discarded.
+@verified
+struct Config {}
+
+fn main() {
+    print(1);
+}

@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Integrity dual: tainted-returning function reaching a `shell` sink through a struct FIELD that
+// crosses a call boundary.
+fn t() -> tainted<i64> { return 42; }
+struct H { f: i64 }
+fn app(h) uses(shell) { shell(h.f()); }
+fn main() uses(shell) { app(H { f: t }); }

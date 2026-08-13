@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// GROK-SEKHMET attack2 (2026-07-26). H5 unanimity only looks at statement-level
+// `return Var` collections. `return if c { f } else { f }` is ONE return whose
+// expression is If — never enters unanimous_forwarded_return — so the same-param
+// forwarder is dropped from the registry. Discriminator: classic
+// `if c { return f; } else { return f; }` rejects (h5_branch_forwarder_same_param_rejects).
+// TODAY (Tier-1 binary): check PASSES and `anubis run` writes the file — known false accept.
+fn pick(c: bool, f) {
+    return if c { f } else { f };
+}
+fn main() {
+    let leaked = pick(true, || write_file("h5_return_if_expr_same.txt", "y"));
+    leaked();
+    print(1);
+}

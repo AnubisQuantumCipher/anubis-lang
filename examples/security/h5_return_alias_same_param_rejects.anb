@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// GROK-SEKHMET attack2. H5 unanimity requires every collected return to be the
+// same `Expr::Var` *syntactically*. `let a = f; return a` is Var(a), not Var(f),
+// so the function is not registered as a forwarder even though both branches
+// forward the same parameter. Discriminator: bare `return f` in both arms rejects.
+// TODAY (Tier-1 binary): check PASSES and run writes — known false accept.
+fn pick(c: bool, f) {
+    if c {
+        let a = f;
+        return a;
+    } else {
+        return f;
+    }
+}
+fn main() {
+    let leaked = pick(true, || write_file("h5_return_alias_same.txt", "y"));
+    leaked();
+    print(1);
+}

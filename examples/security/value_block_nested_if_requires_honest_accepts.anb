@@ -1,0 +1,23 @@
+// EXPECT: PASS
+// Walker-parity H13 over-rejection guard. Same value-block nested-if shape as
+// value_block_nested_if_requires_discharge_rejects.anb, but the contracted call is
+// *honest* (`a = 5` satisfies `requires(x > 0)`). The fix must discharge under the
+// nested path condition without false-rejecting a provable call.
+// TODAY: check PASSES (and must keep passing after the H13 fix).
+fn g(x: i64) -> i64 requires(x > 0) {
+    return x;
+}
+fn main() {
+    let a = 5;
+    let z = if true {
+        if true {
+            g(a);
+        } else {
+            0;
+        }
+        1
+    } else {
+        0
+    };
+    print(z);
+}

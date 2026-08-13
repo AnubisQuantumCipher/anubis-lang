@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `clamp("5", 0, 10)` printed `5`.
+// Inverted-bounds already fail-closed; wrong-type must join that class.
+fn main() {
+    print(clamp("5", 0, 10));
+}

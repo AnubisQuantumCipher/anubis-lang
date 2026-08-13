@@ -1,7 +1,8 @@
 // ---- Cryptography via audited crates (RWC Ch16: don't roll your own) ----
 // Native `anubis run` only. Crates: sha2, hmac, hkdf, chacha20poly1305, argon2,
-// pbkdf2, getrandom, subtle, ed25519-dalek. Same AnubisValue surface as pure guest crypto
-// for shared APIs; Ed25519 / PHC are host-audited extras.
+// pbkdf2, getrandom, subtle, ed25519-dalek, x25519-dalek. Same AnubisValue surface
+// as pure guest crypto for shared APIs; Ed25519 / X25519 / PHC are host-audited extras.
+// Grounding: David Wong, Real-World Cryptography (Manning 2021).
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
@@ -9,6 +10,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -151,10 +153,21 @@ fn anubis_hkdf_sha256(
     let ikm_b = anubis_crypto_bytes(&ikm);
     let salt_b = anubis_crypto_bytes(&salt);
     let info_b = anubis_crypto_bytes(&info);
-    let n = length.as_i64().max(0) as usize;
-    if n == 0 {
-        return anubis_mk_list(vec![]);
+    // RFC 5869 §2.3: L ∈ [1, 255*HashLen]. Prior code silently coerced negative L to 0 via
+    // `.max(0)` and returned an empty byte list — a SILENT_WRONG that would feed a downstream
+    // `ensures(len(key) == 32)` and let a contract hold "for the wrong reason" (the caller
+    // sees an empty vec and never checks). Fail closed on non-positive length, matching
+    // `anubis_random_bytes`'s posture. Kept parity with the pure lane so both host runtimes
+    // enforce the same domain (a caller that verifies against pure and runs against audited —
+    // or vice versa — cannot straddle a boundary at which one side silently accepts).
+    let n_raw = length.as_i64();
+    if n_raw < 1 {
+        panic!(
+            "ANUBIS_CRYPTO_HKDF_LENGTH: L must be >= 1 (RFC 5869), got {}",
+            n_raw
+        );
     }
+    let n = n_raw as usize;
     if n > 255 * 32 {
         panic!(
             "ANUBIS_CRYPTO_HKDF_TOO_LONG: requested {} bytes (max {})",
@@ -190,8 +203,50 @@ fn anubis_domain_hash(label: AnubisValue, data: AnubisValue) -> AnubisValue {
     anubis_mk_str(anubis_hex_encode(&anubis_sha256_bytes(msg)))
 }
 
+/// TupleHash spirit (RWC Ch2): length-prefix each part so `H(a||b) ≠ H(ab)` ambiguity dies.
+/// `parts` must be a list of strings or byte lists.
+fn anubis_tuple_hash(label: AnubisValue, parts: AnubisValue) -> AnubisValue {
+    let lab = anubis_crypto_bytes(&label);
+    let AnubisValue::List(items) = parts else {
+        panic!("ANUBIS_CRYPTO_TUPLE_HASH: parts must be a list");
+    };
+    if lab.len() > u32::MAX as usize || items.len() > u32::MAX as usize {
+        panic!("ANUBIS_CRYPTO_TUPLE_HASH_TOO_LARGE");
+    }
+    let mut msg = Vec::new();
+    msg.push(0x02); // domain version distinct from domain_hash
+    msg.extend_from_slice(&(lab.len() as u32).to_be_bytes());
+    msg.extend_from_slice(&lab);
+    msg.extend_from_slice(&(items.len() as u32).to_be_bytes());
+    for (i, p) in items.iter().enumerate() {
+        let b = anubis_crypto_bytes(p);
+        if b.len() > u32::MAX as usize {
+            panic!("ANUBIS_CRYPTO_TUPLE_HASH_PART_TOO_LARGE: index {i}");
+        }
+        msg.extend_from_slice(&(b.len() as u32).to_be_bytes());
+        msg.extend_from_slice(&b);
+    }
+    anubis_mk_str(anubis_hex_encode(&anubis_sha256_bytes(msg)))
+}
+
+/// 12-byte nonce from a 64-bit counter (RWC Ch4: unique per key). Layout: 4 zero bytes + BE u64.
+/// Suitable for moderate sequential protocols; never reuse a counter under the same key.
+fn anubis_aead_nonce_from_counter(counter: AnubisValue) -> AnubisValue {
+    let c = counter.as_i64();
+    if c < 0 {
+        panic!("ANUBIS_CRYPTO_NONCE_COUNTER: counter must be >= 0");
+    }
+    let mut n = [0u8; 12];
+    n[4..12].copy_from_slice(&(c as u64).to_be_bytes());
+    anubis_bytes_list(&n)
+}
+
 fn anubis_random_bytes(n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(0) as usize;
+    let n_raw = n.as_i64();
+    if n_raw < 0 {
+        panic!("ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH: byte count must be non-negative, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     if n > 1 << 20 {
         panic!("ANUBIS_CRYPTO_RANDOM_TOO_LARGE: max 1MiB per call");
     }
@@ -306,7 +361,20 @@ fn anubis_pbkdf2_hmac_sha256(
     if iters < 1 || iters > u32::MAX as i64 {
         panic!("ANUBIS_CRYPTO_PBKDF2_ITERATIONS: must be in 1..2^32-1");
     }
-    let n = length.as_i64().max(0) as usize;
+    // RFC 8018 §5.2 dkLen: must be a positive integer, at most (2^32-1)*hLen. Prior code
+    // silently coerced non-positive length to 0 via `.max(0)` and returned an empty byte
+    // list — same SILENT_WRONG shape closed on HKDF. Kept parity with the pure lane so both
+    // host runtimes enforce the same domain (a caller that verifies against pure and runs
+    // against audited — or vice versa — cannot straddle a boundary at which one side silently
+    // accepts).
+    let n_raw = length.as_i64();
+    if n_raw < 1 {
+        panic!(
+            "ANUBIS_CRYPTO_PBKDF2_LENGTH: dkLen must be >= 1 (RFC 8018), got {}",
+            n_raw
+        );
+    }
+    let n = n_raw as usize;
     let dk = anubis_pbkdf2_hmac_sha256_raw(
         &anubis_crypto_bytes(&password),
         &anubis_crypto_bytes(&salt),
@@ -582,4 +650,160 @@ fn anubis_ed25519_verify(public_key: AnubisValue, msg: AnubisValue, signature: A
 /// Host runtime identity — useful for tests asserting audited path is live.
 fn anubis_crypto_backend() -> AnubisValue {
     anubis_mk_str("audited-crates".into())
+}
+
+// ---- X25519 ECDH (RWC Ch5) + hybrid envelope (RWC Ch6 ECIES spirit) ----
+
+fn anubis_x25519_from_sk_bytes(sk_b: &[u8]) -> StaticSecret {
+    if sk_b.len() != 32 {
+        panic!(
+            "ANUBIS_CRYPTO_X25519_SK_LEN: secret key must be 32 bytes, got {}",
+            sk_b.len()
+        );
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(sk_b);
+    StaticSecret::from(seed)
+}
+
+fn anubis_x25519_from_pk_bytes(pk_b: &[u8]) -> X25519Public {
+    if pk_b.len() != 32 {
+        panic!(
+            "ANUBIS_CRYPTO_X25519_PK_LEN: public key must be 32 bytes, got {}",
+            pk_b.len()
+        );
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(pk_b);
+    X25519Public::from(arr)
+}
+
+fn anubis_x25519_keygen() -> AnubisValue {
+    let mut seed = [0u8; 32];
+    if let Err(e) = getrandom::getrandom(&mut seed) {
+        panic!("ANUBIS_CRYPTO_X25519_RNG: {}", e);
+    }
+    let sk = StaticSecret::from(seed);
+    let pk = X25519Public::from(&sk);
+    anubis_mk_list(vec![
+        anubis_bytes_list(sk.to_bytes().as_slice()),
+        anubis_bytes_list(pk.as_bytes()),
+    ])
+}
+
+fn anubis_x25519_public_key(secret_key: AnubisValue) -> AnubisValue {
+    let sk = anubis_x25519_from_sk_bytes(&anubis_crypto_bytes(&secret_key));
+    let pk = X25519Public::from(&sk);
+    anubis_bytes_list(pk.as_bytes())
+}
+
+/// Raw Diffie–Hellman shared secret. RWC: never use raw shared as AEAD key — HKDF first.
+fn anubis_x25519_shared(secret_key: AnubisValue, peer_public: AnubisValue) -> AnubisValue {
+    let sk = anubis_x25519_from_sk_bytes(&anubis_crypto_bytes(&secret_key));
+    let pk = anubis_x25519_from_pk_bytes(&anubis_crypto_bytes(&peer_public));
+    let shared = sk.diffie_hellman(&pk);
+    anubis_bytes_list(shared.as_bytes())
+}
+
+fn anubis_hybrid_derive_key(shared: &[u8], eph_pk: &[u8], recip_pk: &[u8]) -> [u8; 32] {
+    use hkdf::Hkdf;
+    // IKM = shared; salt = eph_pk || recip_pk (binds both static identities into the transcript).
+    let mut salt = Vec::with_capacity(64);
+    salt.extend_from_slice(eph_pk);
+    salt.extend_from_slice(recip_pk);
+    let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
+    let mut okm = [0u8; 32];
+    if hk
+        .expand(b"anubis-hybrid-v1|chacha20-poly1305", &mut okm)
+        .is_err()
+    {
+        panic!("ANUBIS_CRYPTO_HYBRID_HKDF_FAILED");
+    }
+    okm
+}
+
+/// Hybrid seal (ECIES spirit, RWC Ch6): ephemeral X25519 + HKDF + ChaCha20-Poly1305.
+/// Returns [eph_public_32, nonce_12, ciphertext_and_tag].
+fn anubis_hybrid_seal(
+    recipient_public: AnubisValue,
+    aad: AnubisValue,
+    plaintext: AnubisValue,
+) -> AnubisValue {
+    let recip_pk_b = anubis_crypto_bytes(&recipient_public);
+    let recip_pk = anubis_x25519_from_pk_bytes(&recip_pk_b);
+    let mut eph_seed = [0u8; 32];
+    if let Err(e) = getrandom::getrandom(&mut eph_seed) {
+        panic!("ANUBIS_CRYPTO_HYBRID_RNG: {}", e);
+    }
+    let eph_sk = StaticSecret::from(eph_seed);
+    let eph_pk = X25519Public::from(&eph_sk);
+    let shared = eph_sk.diffie_hellman(&recip_pk);
+    let key = anubis_hybrid_derive_key(shared.as_bytes(), eph_pk.as_bytes(), recip_pk.as_bytes());
+    let mut nonce = [0u8; 12];
+    if let Err(e) = getrandom::getrandom(&mut nonce) {
+        panic!("ANUBIS_CRYPTO_HYBRID_NONCE_RNG: {}", e);
+    }
+    let cipher = ChaCha20Poly1305::new((&key).into());
+    let aad_b = anubis_crypto_bytes(&aad);
+    let pt = anubis_crypto_bytes(&plaintext);
+    let ct = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: &pt,
+                aad: &aad_b,
+            },
+        )
+        .unwrap_or_else(|_| panic!("ANUBIS_CRYPTO_HYBRID_SEAL_FAILED"));
+    anubis_mk_list(vec![
+        anubis_bytes_list(eph_pk.as_bytes()),
+        anubis_bytes_list(&nonce),
+        anubis_bytes_list(&ct),
+    ])
+}
+
+/// Hybrid open: recipient static secret + envelope fields from hybrid_seal.
+fn anubis_hybrid_open(
+    recipient_secret: AnubisValue,
+    eph_public: AnubisValue,
+    aad: AnubisValue,
+    nonce: AnubisValue,
+    ciphertext_and_tag: AnubisValue,
+) -> AnubisValue {
+    let recip_sk = anubis_x25519_from_sk_bytes(&anubis_crypto_bytes(&recipient_secret));
+    let recip_pk = X25519Public::from(&recip_sk);
+    let eph_pk_b = anubis_crypto_bytes(&eph_public);
+    let eph_pk = anubis_x25519_from_pk_bytes(&eph_pk_b);
+    let shared = recip_sk.diffie_hellman(&eph_pk);
+    let key = anubis_hybrid_derive_key(shared.as_bytes(), eph_pk.as_bytes(), recip_pk.as_bytes());
+    let (k, n) = {
+        let nb = anubis_crypto_bytes(&nonce);
+        if nb.len() != 12 {
+            panic!(
+                "ANUBIS_CRYPTO_HYBRID_NONCE_LEN: expected 12 bytes, got {}",
+                nb.len()
+            );
+        }
+        let mut nn = [0u8; 12];
+        nn.copy_from_slice(&nb);
+        (key, nn)
+    };
+    let cipher = ChaCha20Poly1305::new((&k).into());
+    let aad_b = anubis_crypto_bytes(&aad);
+    let blob = anubis_crypto_bytes(&ciphertext_and_tag);
+    if blob.len() < 16 {
+        panic!("ANUBIS_CRYPTO_HYBRID_OPEN_FAILED: ciphertext shorter than tag");
+    }
+    match cipher.decrypt(
+        Nonce::from_slice(&n),
+        Payload {
+            msg: &blob,
+            aad: &aad_b,
+        },
+    ) {
+        Ok(pt) => anubis_bytes_list(&pt),
+        Err(_) => panic!(
+            "ANUBIS_CRYPTO_HYBRID_OPEN_FAILED: authentication tag mismatch (fail closed)"
+        ),
+    }
 }

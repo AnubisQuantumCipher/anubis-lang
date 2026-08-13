@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// Over-rejection guard for M1's named-callable-in-a-container arms. Storing an ORDINARY function in
+// a list and applying it must stay clean — the new arms consult the taint/secret summaries and must
+// charge nothing when the summary says nothing. If this goes red, the container arms have started
+// charging on the mere presence of a stored callable rather than on what it actually returns.
+fn ok() -> i64 {
+    return 7;
+}
+fn main() {
+    let xs = [ok];
+    print(xs[0]());
+}

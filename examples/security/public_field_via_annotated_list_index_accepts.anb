@@ -1,0 +1,10 @@
+// OVER-REJECTION GUARD for the `Expr::Index` arm added for CLAIMS 21 root cause 8.
+// Resolving the element type must NOT reject a field that carries no flow qualifier.
+//
+// EXPECT: PASS
+struct S { k: i64 }
+
+fn main() {
+    let xs: list<S> = [S { k: 7 }];
+    print(xs[0].k);
+}

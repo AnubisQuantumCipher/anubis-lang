@@ -3,29 +3,47 @@
 **Goal:** engagement-scoped, evidence-native red-team / exploit platform.  
 **Not:** unscoped malware.
 
-## Isolation (permanent for AOP; PoC kit preserved)
+## Isolation (permanent; offensive power preserved inside VZ)
 
 **AOP red-team platform execution** (C2, inject, lateral, engagement packer, …)
 runs **only** inside Apple Virtualization (tart + Virtualization.framework,
 golden base `anubis-xcode`, SSH `admin` + `~/.ssh/tart_anubis`).
 
-**Bounty PoC kit** (packing + gold `poc_kit/bin/vuln_local` + fuzz of `poc_kit/…`)
-keeps the documented host lab path from `docs/language/POC_KIT.md` — **not
-regressed**. Prefer `anubis vz exploit|fuzz` for primary crash evidence.
+**Bounty PoC kit** (packing + gold `poc_kit/bin/vuln_local` + fuzz) keeps the same
+packing, crash, and mutation capabilities, but crash-capable execution is now mandatory inside the
+same disposable VZ/tart boundary. The host orchestrates and collects evidence; it is not a fallback
+runner.
+
+The host-safe release build is copied into each disposable Apple-silicon guest and SHA-256 checked
+before execution. The recorded host/guest digest must match. This removes guest crates.io
+availability from the trust path without moving any research, crash, or offensive execution onto
+the host.
 
 | Host allowed | VZ guest required |
 |---|---|
 | engage-init / status, doctor, catalogs, plans | **listen**, agent-generate, task-queue |
-| **PoC kit:** `run --allow-research`, `fuzz --target poc_kit/…` | inject-plan, lateral-*, exploit-run |
+| PoC source editing, static `check`, reports, receipt verification | `run --allow-research`, all fuzz, inject-plan, lateral-*, exploit-run |
 | purple-report on guest loot, receipt-verify | pack-xor, persist-launchagent, recon-scan |
-| pattern/gadget math, vz status/doctor/* | fuzz of **non–poc_kit** targets |
+| pattern/gadget math, vz status/doctor/* | PoC kit crash target and mutation fuzz |
 | | string-scramble (AOP packer helper) |
 
-AOP host attempts → **`ANUBIS_OFFENSIVE_HOST_FORBIDDEN`**.  
-Non–poc_kit host fuzz → **`ANUBIS_FUZZ_HOST_FORBIDDEN`**.
+AOP host attempts → **`ANUBIS_OFFENSIVE_HOST_FORBIDDEN`**.
+Host research execution → **`ANUBIS_RESEARCH_HOST_FORBIDDEN`**.
+Any host fuzz → **`ANUBIS_FUZZ_HOST_FORBIDDEN`**.
 
-Guest markers: `ANUBIS_VZ_GUEST=1`, `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`,
-`ANUBIS_ISOLATION=*tart*`, `$HOME/.anubis-vz-guest`, `kern.hv_vmm_present=1`.
+Guest markers (**any one** is sufficient — the gate is OR-logic, not AND):
+`ANUBIS_VZ_GUEST=1`, `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`,
+`ANUBIS_ISOLATION=*tart*`, `/etc/anubis-vz-guest`, `$HOME/.anubis-vz-guest`.  
+**Not a guest marker:** `kern.hv_vmm_present=1` (GitHub-hosted macOS runners also
+report this; isolation code treats it as diagnostic only).
+
+**Honest boundary:** the env markers are trivially settable by any process running as the
+user (`export ANUBIS_VZ_GUEST=1`). The gate is a **safety mechanism** — it prevents the
+operator from accidentally running crash-capable code on the host — not a security barrier
+against deliberate circumvention. The genuinely stronger path is the **guest-bound run
+capability** (`ANUBIS_VZ_ENFORCE_RUN_CAP=1`), which pairs the marker with an HMAC-validated
+single-use token minted by the host orchestrator and consumed inside the guest. The
+canonical `anubis vz exploit`/`fuzz` paths set both.
 
 Protocol default: **`aop-2`** (AES-256-GCM encrypted beacons).
 
@@ -40,7 +58,7 @@ Protocol default: **`aop-2`** (AES-256-GCM encrypted beacons).
 | **T5** | pattern-create/offset, gadget-search, browser harness | **REAL** |
 | **T6** | XOR packer + C unpack stub + string-scramble | **REAL** |
 | **T7** | Operator web console + RBAC + **multi-operator token auth** | **REAL** |
-| **T8** | Apple VZ sandbox (`vz exploit|fuzz|c2-cycle|…`) | **REAL** |
+| **T8** | Apple VZ sandbox (`vz exploit|fuzz|c2-cycle|…`) + **guest-bound run capability** (host always mints; guest enforces on research/crash paths) | **REAL** (LAB_REAL HMAC cap; not Ed25519 PKI) |
 | **T9** | ATT&CK kill-chain, OPSEC score, recon, malleable C2, campaign playbook, purple-team report, phish PLAN_ONLY, LOLBAS catalog | **REAL** |
 
 Gate: `bash scripts/run_offensive_platform_gate.sh` (host entrypoint is VZ-isolated by default).
@@ -69,6 +87,10 @@ skipped by a stale guest binary.
 | Agent build | Nested agent `Cargo.toml` has empty `[workspace]` (no parent workspace collision) |
 
 ## Quick start
+
+The operational commands below run inside an Anubis-managed guest. Use `anubis vz exec` for an
+interactive guest shell or the sealed `run_offensive_platform_gate.sh` lifecycle; do not execute
+them directly on the host.
 
 ```bash
 cargo build --release -p anubis

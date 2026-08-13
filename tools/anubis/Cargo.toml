@@ -31,8 +31,12 @@ rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"
 webpki-roots = "0.26"
-risc0-zkvm = { version = "=3.0.5", features = ["prove", "std", "disable-dev-mode"] }
-risc0-circuit-rv32im = { version = "=4.0.4", features = ["prove"] }
+risc0-zkvm = { version = "=3.0.5", features = ["prove", "std", "disable-dev-mode"], optional = true }
+risc0-circuit-rv32im = { version = "=4.0.4", features = ["prove"], optional = true }
+
+[features]
+default = ["prove"]
+prove = ["dep:risc0-zkvm", "dep:risc0-circuit-rv32im"]
 
 # Native Apple Virtualization.framework backend (`anubis vz native-preflight`). Apple Silicon macOS
 # only — a true zero-NIC air-gap + per-hostname egress substrate that tart cannot express. Boots a VM
@@ -41,4 +45,5 @@ risc0-circuit-rv32im = { version = "=4.0.4", features = ["prove"] }
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-virtualization = "0.3"
+block2 = "0.6"
 libc = "0.2"

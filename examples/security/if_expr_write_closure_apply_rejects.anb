@@ -1,0 +1,19 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Walker-parity H18 (GROK-SEKHMET 2026-07-26). W2 treats a Lambda body as opaque at its
+// definition site by design — safe only if *every* application site descends. Binding a
+// write-lambda from an *if-expression* then applying it never attaches `closure_lambda`,
+// so the apply site charges nothing. Discriminator: local `let f = || write_file(...); f()`
+// rejects.
+// TODAY (pre-fix binary): check PASSES and `anubis run` writes the file — known false
+// accept; fixture is red until OPUS5 seeds closure bindings from if-expr arms.
+// Note: bare `{ … }` in value position parses as a MAP, not a block — use if/match arms.
+fn main() {
+    let f = if true {
+        || write_file("h18_if_apply.txt", "y")
+    } else {
+        || print(0)
+    };
+    f();
+    print(1);
+}

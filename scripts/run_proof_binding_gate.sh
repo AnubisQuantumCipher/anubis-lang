@@ -8,7 +8,8 @@
 #   verify_status == "passed" AND fresh_receipt_generated AND !dev_mode AND !mock_prover
 #   AND guest_binding == "anubis-program" AND journal(u32 LE) == R.
 # Anything else FAILs. Requires the metal-hybrid-prover reference for the patched circuit.
-set -uo pipefail
+# set -e so missing python / unhandled failures cannot leave overall=PASS hollow.
+set -euo pipefail
 
 REF="${ANUBIS_RISC0_METAL_REFERENCE:-/Users/sicarii/Desktop/metal-hybrid-prover}"
 OUT="out/proof_binding"
@@ -20,9 +21,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO"
-BIN="target/release/anubis"
+BIN="${ANUBIS_BIN:-target/release/anubis}"
 [ -x "$BIN" ] || { echo "FAIL: no release binary (cargo build --release -p anubis)"; exit 1; }
 [ -d "$REF/vendor/risc0-circuit-rv32im" ] || { echo "FAIL: RISC0 reference not at $REF"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 required for journal/ImageID oracles"; exit 127; }
 mkdir -p "$OUT"
 
 # name:expected — small computations so proving stays fast
@@ -56,16 +58,24 @@ PY
 done
 
 # The two programs must produce DIFFERENT ImageIDs (proof is program-bound, not fixed).
-python3 - "$OUT" <<'PY'
+# Previously this python block's exit status and PASS/FAIL text were discarded — a same-ImageID
+# result still printed Overall: PASS (Seshat T2, hollow evidence).
+id_verdict=$(python3 - "$OUT" <<'PY'
 import json, sys, pathlib
 o=pathlib.Path(sys.argv[1])
 try:
     a=json.load(open(o/"proof_factorial/backend/risc0/risc0_metadata.json"))["image_id"]
     b=json.load(open(o/"proof_fib/backend/risc0/risc0_metadata.json"))["image_id"]
-    print(f"distinct ImageIDs (binding): {'PASS' if a!=b else 'FAIL — SAME ID'}")
+    print(f"{'PASS' if a!=b else 'FAIL'} distinct ImageIDs (binding): a={a[:22]} b={b[:22]}")
 except Exception as e:
-    print(f"distinct ImageIDs: FAIL error={e}")
+    print(f"FAIL distinct ImageIDs: error={e}")
 PY
+)
+echo "  $id_verdict"
+case "$id_verdict" in
+  PASS*) : ;;
+  *) overall=FAIL ;;
+esac
 
 echo "{ \"overall_verdict\": \"$overall\" }" > "$OUT/report.json"
 echo "Overall: $overall"

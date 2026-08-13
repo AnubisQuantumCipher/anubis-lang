@@ -6,15 +6,44 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "=== KEYCHAIN_SE_GATE: soft path (mandatory) ==="
-ANUBIS_KEYCHAIN_CAPS=0 ANUBIS_KEYCHAIN_SE=0 \
-  cargo test -p anubis-compiler --lib backends::run::run_tests::keychain_se_probe_and_ne_acquire_run --quiet
+# Run ONE named test and prove it actually ran.
+#
+# libtest name filters are SUBSTRING matches, and a filter matching zero tests EXITS 0
+# ("0 passed; 0 failed; N filtered out"). Two of the three filters below were PREFIXES of the real
+# test names — `nonexportable_cap_derives_keychain` vs the actual
+# `nonexportable_cap_derives_keychain_and_se_keys`, and `nonexportable_token_as_print` vs
+# `nonexportable_token_as_print_arg_is_export`. They passed by substring luck. Rename either test's
+# prefix and this gate would run NOTHING and report success, on the lane that guards Secure Enclave
+# key export.
+#
+# `--exact` plus an assertion on the passed count closes both halves: the wrong name now fails
+# loudly instead of silently matching nothing.
+run_one() {
+  local desc="$1" name="$2"; shift 2
+  echo "=== KEYCHAIN_SE_GATE: $desc ==="
+  local out
+  out="$(env "$@" cargo test -p anubis-compiler --lib "$name" -- --exact 2>&1)"
+  local rc=$?
+  printf '%s\n' "$out" | grep -E '^test result:' || true
+  if [[ $rc -ne 0 ]]; then
+    echo "KEYCHAIN_SE_GATE: FAIL ($name exited $rc)" >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qE '^test result: ok\. 1 passed'; then
+    echo "KEYCHAIN_SE_GATE: FAIL ($name matched no test — a rename would have gone unnoticed)" >&2
+    return 1
+  fi
+}
 
-echo "=== KEYCHAIN_SE_GATE: entitlement derive for NE ==="
-cargo test -p anubis-compiler --lib package::entitlements::tests::nonexportable_cap_derives_keychain --quiet
+run_one "soft path (mandatory)" \
+  backends::run::run_tests::keychain_se_probe_and_ne_acquire_run \
+  ANUBIS_KEYCHAIN_CAPS=0 ANUBIS_KEYCHAIN_SE=0
 
-echo "=== KEYCHAIN_SE_GATE: static NE export still sealed ==="
-cargo test -p anubis-compiler --lib middle::capability::tests::nonexportable_token_as_print --quiet
+run_one "entitlement derive for NE" \
+  package::entitlements::tests::nonexportable_cap_derives_keychain_and_se_keys
+
+run_one "static NE export still sealed" \
+  middle::capability::tests::nonexportable_token_as_print_arg_is_export
 
 if [ "$(uname -s)" = "Darwin" ]; then
   echo "=== KEYCHAIN_SE_GATE: signed compile→codesign→Keychain bind ==="

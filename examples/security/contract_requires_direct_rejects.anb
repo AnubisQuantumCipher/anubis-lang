@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_
+// Control: the same contract violation called DIRECTLY is correctly rejected, and `run` refuses to
+// execute it. This is what makes the fn-value form a genuine gap rather than a blanket blind spot.
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() { print(f(-1)); }

@@ -66,7 +66,7 @@ cargo clippy --all-targets --all-features -- -D warnings  # clean (same warning)
 ### Docs (intentional references)
 - `docs/RISC0_METAL_HYBRID_REFERENCE.md` — entire contract section is written around the exact Desktop path.
 - `docs/METAL_BACKEND.md`, `docs/METAL_BACKEND_PIPELINE_MAP.md` — reference the path as the source of truth.
-- `ARCHITECTURE_MAP.md`, `ANUBIS_REALITY_AUDIT.md`, `REPO` comments, goal patches, etc.
+- `ARCHITECTURE_MAP.md`, `docs/history/ANUBIS_REALITY_AUDIT.md`, `REPO` comments, goal patches, etc.
 
 ### Out/ and implementer/ artifacts
 - Many historical bundles and reports contain the literal path (expected; they are evidence of past runs on this machine).

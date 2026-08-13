@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_ARGUMENT
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
+// `n.as_i64().max(0)`). A negative repeat count is a caller bug (e.g. a miscomputed
+// length), not a meaningful request for "zero repetitions" — the language's fail-closed
+// posture says surface it rather than silently produce an empty (but well-typed and
+// therefore unremarkable-looking) result.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit
+// (this entry also records the counter-argument: some languages treat negative
+// repeat/multiply counts as an unsurprising "zero" convention).
+fn main() {
+    print(repeat("x", -1));
+}

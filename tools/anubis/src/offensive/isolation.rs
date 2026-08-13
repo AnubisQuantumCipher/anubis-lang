@@ -1,19 +1,27 @@
 //! Isolation gate for AOP + PoC kit (advance without regression).
 //!
+//! # Threat model
+//!
+//! The env/file markers checked by `in_vz_guest()` are a **safety** mechanism — they prevent
+//! accidental host execution of crash-capable code. They are NOT a security barrier: any
+//! process running as the user can set `ANUBIS_VZ_GUEST=1`. This is by design — the operator
+//! is the trust root and can always recompile the binary without the gate.
+//!
+//! Defense-in-depth: the canonical `anubis vz exploit`/`fuzz` path layers a **guest-bound
+//! run capability** (HMAC-validated, single-use nonce, guest/program/engagement-bound) on
+//! top of the marker gate. When `ANUBIS_VZ_ENFORCE_RUN_CAP=1` is set, both the marker AND
+//! a valid capability must be present. The capability cannot be forged without the HMAC key.
+//!
 //! # Two tiers
 //!
 //! ## A — Red-team / C2 platform (strict Apple Virtualization)
 //! listen, agent, inject, lateral, exploit-run, engagement packer, etc.
 //! Host → `ANUBIS_OFFENSIVE_HOST_FORBIDDEN`.
 //!
-//! ## B — Bounty PoC kit (existing Anubis surface, not regressed)
-//! `anubis run --allow-research` and `anubis fuzz --target poc_kit/...` remain
-//! the documented lab path from `docs/language/POC_KIT.md` and
-//! `scripts/run_poc_kit_gate.sh`. Prefer `anubis vz exploit|fuzz` for primary
-//! crash evidence; host gold-fixture runs are still valid lab smoke.
-//!
-//! Advance: fuzz against a **non–poc_kit** local target requires VZ (or
-//! explicit `ANUBIS_POC_LAB_HOST=1`).
+//! ## B — Bounty PoC kit and research execution
+//! `anubis run --allow-research` and `anubis fuzz` retain their full capability inside an
+//! Anubis-managed disposable VZ/tart guest. The host is an orchestrator only; there is no crash-
+//! capable host fallback.
 //!
 //! Guest markers (any one — **explicit Anubis markers only**):
 //! - `ANUBIS_VZ_GUEST=1`
@@ -29,7 +37,9 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 /// True when this process is inside an Anubis-managed VZ/tart guest.
 pub fn in_vz_guest() -> bool {
@@ -53,11 +63,6 @@ pub fn in_vz_guest() -> bool {
     // Do NOT treat kern.hv_vmm_present alone as guest membership — CI runners
     // and many developer VMs set it without being Anubis tart disposable guests.
     false
-}
-
-/// Explicit operator override for host-side PoC lab (not for AOP C2).
-pub fn poc_lab_host_override() -> bool {
-    env_truthy("ANUBIS_POC_LAB_HOST")
 }
 
 fn env_truthy(key: &str) -> bool {
@@ -91,6 +96,7 @@ fn hv_vmm_present() -> bool {
 }
 
 /// Path is the in-repo gold lab fixture tree (`poc_kit/…`).
+#[cfg(test)]
 pub fn is_poc_kit_target(path: &Path) -> bool {
     let s = path.to_string_lossy();
     if s.contains("poc_kit/") || s.contains("poc_kit\\") {
@@ -129,102 +135,158 @@ pub fn is_poc_kit_target(path: &Path) -> bool {
 
 /// Fail closed unless running inside Apple Virtualization guest.
 /// Used for AOP red-team platform execution (C2, inject, lateral, …).
+///
+/// When `ANUBIS_RUN_CAP_PATH` is set (host-minted guest-bound capability), also
+/// validates and consumes that capability (single-use nonce). Guest identity is
+/// taken from `ANUBIS_VZ_GUEST_ID` or defaults to `anubis-xcode-guest`.
 pub fn require_vz_offensive(action: &str) -> Result<()> {
-    if in_vz_guest() {
-        return Ok(());
+    if !in_vz_guest() {
+        return Err(anyhow!(
+            "ANUBIS_OFFENSIVE_HOST_FORBIDDEN: `{action}` is red-team/offensive platform execution and must run inside an Apple Virtualization guest (tart / Virtualization.framework), never on the host.\n\
+             \n\
+             Isolation (AOP platform):\n\
+               1) ./target/release/anubis vz status   # golden: anubis-xcode\n\
+               2) anubis vz exploit|fuzz|exec|c2-cycle|stress --base anubis-xcode …\n\
+               3) Or guest env: export ANUBIS_VZ_GUEST=1 ; touch \"$HOME/.anubis-vz-guest\"\n\
+             \n\
+             PoC kit and research execution use the same mandatory boundary:\n\
+               anubis vz exploit --allow-research --base anubis-xcode <program>\n\
+               anubis vz fuzz --allow-research --base anubis-xcode <target>\n\
+             The host remains an orchestration and evidence-collection surface only."
+        ));
     }
-    Err(anyhow!(
-        "ANUBIS_OFFENSIVE_HOST_FORBIDDEN: `{action}` is red-team/offensive platform execution and must run inside an Apple Virtualization guest (tart / Virtualization.framework), never on the host.\n\
-         \n\
-         Isolation (AOP platform):\n\
-           1) ./target/release/anubis vz status   # golden: anubis-xcode\n\
-           2) anubis vz exploit|fuzz|exec|c2-cycle|stress --base anubis-xcode …\n\
-           3) Or guest env: export ANUBIS_VZ_GUEST=1 ; touch \"$HOME/.anubis-vz-guest\"\n\
-         \n\
-         PoC kit (packing / gold fixture) stays on the documented lab path:\n\
-           anubis run examples/security/poc_*.anb --allow-research\n\
-           anubis fuzz --target poc_kit/bin/vuln_local …\n\
-           bash scripts/run_poc_kit_gate.sh\n\
-         Prefer `anubis vz exploit|fuzz` for primary crash evidence."
-    ))
+    require_run_capability_if_configured(action)?;
+    Ok(())
+}
+
+/// Guest-bound capability gate.
+/// - When `ANUBIS_VZ_ENFORCE_RUN_CAP=1` (set by `anubis vz exploit|fuzz`), capability is **required**.
+/// - When only `ANUBIS_RUN_CAP_PATH` is set, still validate if present.
+fn require_run_capability_if_configured(action: &str) -> Result<()> {
+    let enforce = std::env::var("ANUBIS_VZ_ENFORCE_RUN_CAP").ok().as_deref() == Some("1");
+    let cap_path = match std::env::var("ANUBIS_RUN_CAP_PATH") {
+        Ok(p) if !p.trim().is_empty() => p,
+        _ if enforce => {
+            return Err(anyhow!(
+                "ANUBIS_RUN_CAP_REQUIRED: `{action}` requires a guest-bound run capability \
+                 (ANUBIS_RUN_CAP_PATH + ANUBIS_RUN_CAP_KEY); host orchestrator must mint one"
+            ));
+        }
+        _ => return Ok(()),
+    };
+    let key = std::env::var("ANUBIS_RUN_CAP_KEY").map_err(|_| {
+        anyhow!("ANUBIS_RUN_CAP_KEY_MISSING: capability path set but no ANUBIS_RUN_CAP_KEY")
+    })?;
+    let program_digest = std::env::var("ANUBIS_PROGRAM_DIGEST").unwrap_or_else(|_| "*".into());
+    let engagement_id = std::env::var("ANUBIS_ENGAGEMENT_ID").unwrap_or_else(|_| "*".into());
+    let engagement_hash = std::env::var("ANUBIS_ENGAGEMENT_HASH").unwrap_or_else(|_| "*".into());
+    let guest_id =
+        std::env::var("ANUBIS_VZ_GUEST_ID").unwrap_or_else(|_| "anubis-xcode-guest".into());
+
+    let cap = super::run_capability::read_cap(Path::new(&cap_path))?;
+    // Persist seen nonces under /tmp for single-guest process; multi-process needs shared store.
+    static SEEN: once_cell_noop::OnceLockMutex = once_cell_noop::OnceLockMutex;
+    let seen = SEEN.get();
+    let ctx = super::run_capability::ValidateCtx {
+        key: &key,
+        guest_id: &guest_id,
+        program_digest: if program_digest == "*" {
+            &cap.program_digest
+        } else {
+            &program_digest
+        },
+        engagement_id: if engagement_id == "*" {
+            &cap.engagement_id
+        } else {
+            &engagement_id
+        },
+        engagement_hash: if engagement_hash == "*" {
+            &cap.engagement_hash
+        } else {
+            &engagement_hash
+        },
+        // Isolation gate checks guest/program/engagement/nonce/expiry; typed
+        // effect enforcement is done by call sites that know the effect IR name.
+        effect: None,
+        target: None,
+        seen_nonces: seen,
+    };
+    super::run_capability::validate_and_consume(&cap, &ctx)
+        .map_err(|e| anyhow!("ANUBIS_RUN_CAP_REJECTED for `{action}`: {e}"))
+}
+
+/// Tiny once-mutex without new deps (std only).
+mod once_cell_noop {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    pub struct OnceLockMutex;
+    impl OnceLockMutex {
+        pub fn get(&'static self) -> &'static Mutex<HashSet<String>> {
+            static CELL: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+            CELL.get_or_init(|| Mutex::new(HashSet::new()))
+        }
+    }
 }
 
 /// Policy for `anubis run --allow-research` (PoC kit + research programs).
 ///
-/// Never regressed: host continues to run packing smokes and gold crash PoCs.
-/// Advance: prefer VZ for primary evidence (documented; not a hard block on host lab).
+/// Mandatory boundary: research execution is permitted only inside an Anubis VZ guest.
 pub fn require_research_run_allowed(action: &str) -> Result<()> {
-    if in_vz_guest() || poc_lab_host_override() {
-        return Ok(());
+    if !in_vz_guest() {
+        return Err(anyhow!(
+            "ANUBIS_RESEARCH_HOST_FORBIDDEN: `{action}` must run inside a disposable Apple \
+             Virtualization.framework guest; use `anubis vz exploit --allow-research --base \
+             anubis-xcode <program>`"
+        ));
     }
-    // Host lab: allowed (existing Anubis PoC kit contract). Soft note on stderr.
-    eprintln!(
-        "[anubis isolation] `{action}` on host (lab PoC kit path). \
-Primary crash evidence: prefer `anubis vz exploit --allow-research --base anubis-xcode …`. \
-AOP C2/inject/lateral remain VZ-only."
-    );
-    Ok(())
+    require_run_capability_if_configured(action)
 }
 
 /// Policy for `anubis fuzz --target …`.
 ///
-/// - VZ guest: always OK  
-/// - Host + `poc_kit/…` gold target: OK (run_poc_kit_gate)  
-/// - Host + `ANUBIS_POC_LAB_HOST=1`: OK  
-/// - Host + arbitrary path: require VZ (advance)
+/// - VZ guest: OK only with guest-bound capability when ENFORCE is set
+/// - Host: forbidden, including gold fixtures and environment overrides
 pub fn require_fuzz_allowed(target: &Path) -> Result<()> {
-    if in_vz_guest() || poc_lab_host_override() {
-        return Ok(());
-    }
-    if is_poc_kit_target(target) {
-        eprintln!(
-            "[anubis isolation] fuzz host lab gold fixture `{}`. \
-Primary evidence: prefer `anubis vz fuzz --allow-research --base anubis-xcode …`.",
+    if !in_vz_guest() {
+        return Err(anyhow!(
+            "ANUBIS_FUZZ_HOST_FORBIDDEN: fuzz target `{}` requires an Apple Virtualization guest.\n\
+             \n\
+             Options:\n\
+               anubis vz fuzz --allow-research --base anubis-xcode {}\n\
+               # or in guest: export ANUBIS_VZ_GUEST=1",
+            target.display(),
             target.display()
-        );
-        return Ok(());
+        ));
     }
-    Err(anyhow!(
-        "ANUBIS_FUZZ_HOST_FORBIDDEN: fuzz of non–poc_kit target `{}` requires an Apple Virtualization guest.\n\
-         \n\
-         Options:\n\
-           anubis vz fuzz --allow-research --base anubis-xcode {}\n\
-           # or in guest: export ANUBIS_VZ_GUEST=1\n\
-           # or gold lab only: anubis fuzz --target poc_kit/bin/vuln_local …\n\
-           # emergency host lab: ANUBIS_POC_LAB_HOST=1 anubis fuzz --target …",
-        target.display(),
-        target.display()
-    ))
+    require_run_capability_if_configured(&format!("fuzz:{}", target.display()))
 }
 
 /// JSON status for doctor / gates.
 pub fn isolation_status_json() -> serde_json::Value {
+    let host_forbidden_aop = crate::Commands::required_vz_actions();
     json!({
         "in_vz_guest": in_vz_guest(),
-        "poc_lab_host_override": poc_lab_host_override(),
+        "poc_lab_host_override": false,
+        "host_override_supported": false,
         "policy": {
             "aop_platform_requires_apple_virtualization": true,
-            "poc_kit_host_lab_gold_allowed": true,
-            "poc_kit_prefer_vz_for_primary_evidence": true,
-            "fuzz_non_poc_kit_requires_vz": true,
+            "poc_kit_host_lab_gold_allowed": false,
+            "all_research_and_fuzz_require_vz": true,
         },
-        "host_forbidden_aop": [
-            "listen", "agent-generate", "task-queue",
-            "inject-plan", "lateral-ssh", "lateral-smb",
-            "exploit-run", "persist-launchagent", "pack-xor",
-            "recon-scan", "string-scramble"
-        ],
-        "host_allowed_poc_kit": [
-            "run --allow-research (packing + gold local harness)",
-            "fuzz --target poc_kit/…",
-            "bash scripts/run_poc_kit_gate.sh",
-            "bash poc_kit/build_vuln.sh"
-        ],
+        "host_forbidden_aop": host_forbidden_aop,
+        "host_forbidden_policy_source": "Commands::required_vz_action (exhaustive macro table)",
+        "host_allowed_poc_kit": [],
         "host_allowed_control_plane": [
-            "engage-init", "engage-status", "offensive-doctor",
-            "attck-catalog", "opsec-score", "campaign-init",
-            "phish-plan", "lolbas-catalog", "malleable-init",
-            "purple-report", "receipt-verify", "pattern-*", "gadget-*",
+            "engage-init", "engage-status", "engage-rehash",
+            "operator-token-issue", "operator-token-revoke",
+            "offensive-doctor",
+            "attck-catalog", "attck-map", "opsec-score",
+            "campaign-init", "campaign-status",
+            "phish-plan", "lolbas-catalog",
+            "malleable-init", "malleable-validate",
+            "purple-report", "receipt-verify",
+            "bounty-report", "research-pack-*",
+            "pattern-*", "gadget-*",
             "browser-harness", "exploit-new", "module-list",
             "vz-status", "vz-doctor", "vz-*"
         ],
@@ -257,6 +319,29 @@ mod tests {
     }
 
     #[test]
+    fn isolation_status_uses_the_exhaustive_command_policy_catalog() {
+        let status = isolation_status_json();
+        let forbidden = status["host_forbidden_aop"]
+            .as_array()
+            .expect("forbidden array");
+        assert_eq!(forbidden.len(), 60, "guest-only command count changed");
+        assert!(forbidden.iter().any(|action| action == "recon-hostinfo"));
+        let allowed = status["host_allowed_control_plane"]
+            .as_array()
+            .expect("allowed array");
+        for action in forbidden {
+            assert!(
+                !allowed.contains(action),
+                "action appears both forbidden and allowed: {action}"
+            );
+        }
+        assert_eq!(
+            status["host_forbidden_policy_source"],
+            "Commands::required_vz_action (exhaustive macro table)"
+        );
+    }
+
+    #[test]
     fn host_forbid_message_is_stable_code() {
         // When not in guest, require_vz must fail closed with the stable code.
         // (May pass if this process is genuinely a VZ guest — still asserts code shape.)
@@ -270,5 +355,117 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn host_forbidden_aop_list_is_pinned_and_exhaustive() {
+        let status = isolation_status_json();
+        let forbidden: Vec<&str> = status["host_forbidden_aop"]
+            .as_array()
+            .expect("host_forbidden_aop must be an array")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let expected = [
+            "CollectionKeylogPlan",
+            "CollectionScreenPlan",
+            "InfraC2Guide",
+            "InfraDomainFrontingPlan",
+            "InfraRedirectorPlan",
+            "PayloadCyclic",
+            "PayloadDeliveryPlan",
+            "PayloadOffset",
+            "PayloadShellcodePlan",
+            "PostexCleanup",
+            "PostexPersistencePlan",
+            "ReportAttckCoverage",
+            "agent_generate",
+            "collection_archive_loot",
+            "collection_clipboard",
+            "collection_stage_files",
+            "credential_env_scan",
+            "credential_hash_test",
+            "credential_keychain_plan",
+            "credential_report",
+            "credential_spray_plan",
+            "credential_ssh_key_audit",
+            "discovery_ad_enum",
+            "discovery_cloud_metadata",
+            "discovery_file_discovery",
+            "discovery_network_enum",
+            "discovery_process_enum",
+            "discovery_service_banner",
+            "discovery_system_enum",
+            "evasion_assessment",
+            "evasion_codesign_check",
+            "evasion_security_enum",
+            "exfil_assessment",
+            "exfil_dns_encode",
+            "exfil_http_stage",
+            "exploit-run",
+            "infra_c2_check",
+            "infra_health",
+            "inject-plan",
+            "lateral_smb_plan",
+            "lateral_ssh",
+            "listen",
+            "pack_xor",
+            "payload_encode",
+            "persist-launchagent",
+            "postex_assessment",
+            "postex_persistence_enum",
+            "privesc_cron_enum",
+            "privesc_enum",
+            "privesc_kernel_plan",
+            "privesc_sudo_audit",
+            "privesc_suid_enum",
+            "privesc_writable_path",
+            "recon-hostinfo",
+            "recon_scan",
+            "report_executive_summary",
+            "report_markdown",
+            "report_technical",
+            "string-scramble",
+            "task_queue",
+        ];
+        let mut sorted_forbidden = forbidden.clone();
+        sorted_forbidden.sort();
+        let mut sorted_expected = expected.to_vec();
+        sorted_expected.sort();
+        assert_eq!(
+            sorted_forbidden, sorted_expected,
+            "host_forbidden_aop drifted from the macro-defined command policy"
+        );
+    }
+
+    #[test]
+    fn isolation_status_json_has_required_policy_fields() {
+        let status = isolation_status_json();
+        assert!(
+            status["policy"]["aop_platform_requires_apple_virtualization"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(status["policy"]["all_research_and_fuzz_require_vz"]
+            .as_bool()
+            .unwrap());
+        assert!(!status["host_allowed_control_plane"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "recon-hostinfo"));
+        assert!(status["host_allowed_control_plane"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "bounty-report"));
+        assert!(
+            !status["host_allowed_poc_kit"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "fuzz"),
+            "fuzz must NOT appear in host_allowed — it requires VZ"
+        );
     }
 }

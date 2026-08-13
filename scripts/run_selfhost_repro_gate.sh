@@ -18,10 +18,16 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
+# $1 = seal dir (stage2/stage3 source); $2 = private repro OUT (optional).
+# Previously OUT was hardcoded to $ROOT/out/selfhost_repro_gate with no override, so concurrent
+# agents raced and SEAL_OUT alone could not isolate the gate (Seshat T2).
 SEAL_OUT="${1:-out/selfhost_gate}"
+OUT="${2:-${ANUBIS_REPRO_OUT:-out/selfhost_repro_gate}}"
 if [[ "$SEAL_OUT" != /* ]]; then SEAL_OUT="$ROOT/$SEAL_OUT"; fi
-OUT="$ROOT/out/selfhost_repro_gate"
+if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
+echo "repro_out=$OUT seal_out=$SEAL_OUT" | tee "$OUT/instrument.txt"
 
 pass=0; fail=0
 note() { echo "  $1" | tee -a "$OUT/summary.txt"; }
@@ -199,8 +205,19 @@ PY
 
 {
   echo "selfhost_repro_gate pass=$pass fail=$fail"
-  echo "toolchain: $TC_VER"
 } | tee -a "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "selfhost_repro_gate" "$_cases" "$ROOT/scripts/floors/selfhost_repro_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
+
 
 if [[ "$fail" -gt 0 ]]; then
   echo "SELFHOST_REPRO_GATE: FAIL ($pass pass / $fail fail)"

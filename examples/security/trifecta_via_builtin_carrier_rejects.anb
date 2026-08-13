@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_
+// CHECK fail-open only: native lowering refuses this first-class builtin form.
+// The checker must retain `input`'s taint-source tag when it crosses `go`'s callable parameter.
+fn go(g) uses(net.send) {
+    let u = g();
+    send("h", 80, u);
+}
+
+fn main() uses(net.send) {
+    go(input);
+}

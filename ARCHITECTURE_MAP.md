@@ -22,10 +22,10 @@ Top-level layout (non-generated source tree):
 ├── README.md
 ├── AGENTS.md
 ├── A_PLUS_ACCEPTANCE_CRITERIA.md
-├── ROADMAP_A_PLUS.md
-├── ANUBIS_REALITY_AUDIT.md
-├── ANUBIS_CAPABILITY_CLAIM_MATRIX.md
 ├── MATURITY_CLAIM_MATRIX.md
+├── docs/history/   (2026-07-28: ROADMAP_A_PLUS.md, ANUBIS_REALITY_AUDIT.md,
+│                    ANUBIS_CAPABILITY_CLAIM_MATRIX.md, ANUBIS_BUILD_MISSION.md,
+│                    A_PLUS_FINAL_REPORT.md, A_PLUS_CLOSEOUT.md — archived, none current)
 ├── compiler/
 │   ├── Cargo.toml
 │   ├── CHANGES.md (records canonical edits to compiler/src)
@@ -289,7 +289,7 @@ Many `out/*/ *.anubis` are either committed audit cases or copied during `anubis
 
 ## 7. Known Brittle Points and Dead/Stub Code
 
-**Brittle / partial (from ROADMAP_A_PLUS.md:20, ANUBIS_REALITY_AUDIT.md, code comments):**
+**Brittle / partial (from docs/history/ROADMAP_A_PLUS.md:20, docs/history/ANUBIS_REALITY_AUDIT.md, code comments):**
 - Research assume-bound gate (native/mod.rs:89) is **scoped only to research lowering**; bare/safe tainted-to-sink or declassify-without-assume hit exact gate error ("research lowering requires assume..."). Roadmap Phase 3: "Brittle assume gate scoped/removed for safe taint paths."
 - Taint-to-sink/declassify is **mostly reporting/traces** (populated on recognized patterns) + safe-mode diagnostic. Full policy enforcement incomplete for arbitrary flows (REALITY_AUDIT: "PARTIAL"; traces require the assume+research structure).
 - Z3: optional (falls to FAIL if unavailable); solver checks only for obligations from Assert under assumptions.

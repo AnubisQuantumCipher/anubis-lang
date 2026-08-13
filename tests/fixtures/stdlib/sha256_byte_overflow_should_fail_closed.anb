@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_BYTE_RANGE
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: byte list element 256 (> 255) is rejected to prevent silent
+// truncation of key/nonce/tag material.
+fn main() {
+    print(sha256([0, 256, 1]));
+}

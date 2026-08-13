@@ -13,7 +13,7 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const RECEIPT_SCHEMA: &str = "1";
+pub const RECEIPT_SCHEMA: &str = "2";
 pub const GENESIS_PREV: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +28,11 @@ pub struct ActionReceipt {
     pub payload_sha256: String,
     pub prev_hash: String,
     pub receipt_hash: String,
+    /// HMAC-SHA256 hex over receipt_hash using engagement receipt_mac_key.
+    /// Bound to a secret not derived solely from the chain tip (defeats naive full rewrite
+    /// without the engagement secret). Not an offline Ed25519 non-repudiation proof.
+    #[serde(default)]
+    pub mac: String,
 }
 
 fn now_unix() -> u64 {
@@ -74,6 +79,72 @@ pub fn compute_receipt_hash(
     hex::encode(Sha256::digest(material.as_bytes()))
 }
 
+/// Keyed MAC: SHA-256("anubis-receipt-mac-v1" || key || receipt_hash).
+/// LAB_REAL: requires possession of `mac_key`; not a hardware-backed signature.
+pub fn compute_receipt_mac(mac_key: &str, receipt_hash: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(b"anubis-receipt-mac-v1|");
+    h.update(mac_key.as_bytes());
+    h.update(b"|");
+    h.update(receipt_hash.as_bytes());
+    hex::encode(h.finalize())
+}
+
+fn load_mac_key(engage_dir: &Path) -> Result<String> {
+    // Prefer dedicated key file (not written into public status dumps).
+    let key_path = engage_dir.join("evidence/receipts/mac_key.hex");
+    if let Ok(k) = fs::read_to_string(&key_path) {
+        let k = k.trim().to_string();
+        if !k.is_empty() {
+            return Ok(k);
+        }
+    }
+    // Fallback: engagement.json psk_hex (LAB only).
+    let eng_path = if engage_dir.join("engagement.json").exists() {
+        engage_dir.join("engagement.json")
+    } else {
+        engage_dir.to_path_buf()
+    };
+    if let Ok(raw) = fs::read_to_string(&eng_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(psk) = v.get("psk_hex").and_then(|x| x.as_str()) {
+                if !psk.trim().is_empty() {
+                    return Ok(format!("psk-derived:{}", psk.trim()));
+                }
+            }
+        }
+    }
+    Err(anyhow!(
+        "ANUBIS_RECEIPT_MAC_KEY_MISSING: no evidence/receipts/mac_key.hex and no engagement psk_hex"
+    ))
+}
+
+/// Ensure a random MAC key exists under the engagement (idempotent).
+pub fn ensure_mac_key(engage_dir: &Path) -> Result<String> {
+    let dir = receipts_dir(engage_dir);
+    fs::create_dir_all(&dir)?;
+    let key_path = dir.join("mac_key.hex");
+    if let Ok(k) = fs::read_to_string(&key_path) {
+        let k = k.trim().to_string();
+        if !k.is_empty() {
+            return Ok(k);
+        }
+    }
+    let mut buf = [0u8; 32];
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(&mut buf);
+    let hex_key = hex::encode(buf);
+    fs::write(&key_path, format!("{hex_key}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&key_path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&key_path, perms)?;
+    }
+    Ok(hex_key)
+}
+
 fn load_tip(engage_dir: &Path) -> (u64, String) {
     let p = tip_path(engage_dir);
     if let Ok(raw) = fs::read_to_string(&p) {
@@ -90,7 +161,7 @@ fn load_tip(engage_dir: &Path) -> (u64, String) {
     (0, GENESIS_PREV.to_string())
 }
 
-/// Append a hash-chained action receipt. Returns the sealed receipt.
+/// Append a hash-chained + MAC'd action receipt. Returns the sealed receipt.
 pub fn seal_action(
     engage_dir: &Path,
     engagement_id: &str,
@@ -99,6 +170,7 @@ pub fn seal_action(
     payload: serde_json::Value,
 ) -> Result<ActionReceipt> {
     fs::create_dir_all(receipts_dir(engage_dir))?;
+    let mac_key = ensure_mac_key(engage_dir)?;
     let (last_seq, prev_hash) = load_tip(engage_dir);
     let seq = last_seq + 1;
     let ts_unix = now_unix();
@@ -112,6 +184,7 @@ pub fn seal_action(
         &payload_sha256,
         &prev_hash,
     );
+    let mac = compute_receipt_mac(&mac_key, &receipt_hash);
     let receipt = ActionReceipt {
         schema_version: RECEIPT_SCHEMA.into(),
         seq,
@@ -123,6 +196,7 @@ pub fn seal_action(
         payload_sha256,
         prev_hash,
         receipt_hash: receipt_hash.clone(),
+        mac,
     };
     let mut f = fs::OpenOptions::new()
         .create(true)
@@ -139,7 +213,7 @@ pub fn seal_action(
     Ok(receipt)
 }
 
-/// Recompute the chain; fail closed if any link is broken.
+/// Recompute the chain; fail closed if any link or MAC is broken.
 pub fn verify_chain(engage_dir: &Path) -> Result<serde_json::Value> {
     let path = chain_path(engage_dir);
     if !path.exists() {
@@ -148,13 +222,16 @@ pub fn verify_chain(engage_dir: &Path) -> Result<serde_json::Value> {
             "empty": true,
             "count": 0,
             "tip": GENESIS_PREV,
+            "mac_required": true,
         }));
     }
+    let mac_key = load_mac_key(engage_dir).ok();
     let file = fs::File::open(&path)?;
     let reader = std::io::BufReader::new(file);
     let mut prev = GENESIS_PREV.to_string();
     let mut count = 0u64;
     let mut last_hash = GENESIS_PREV.to_string();
+    let mut mac_checked = 0u64;
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
         if line.trim().is_empty() {
@@ -191,6 +268,25 @@ pub fn verify_chain(engage_dir: &Path) -> Result<serde_json::Value> {
         if expect != r.receipt_hash {
             return Err(anyhow!("ANUBIS_RECEIPT_HASH_MISMATCH: seq {}", r.seq));
         }
+        // Schema v2: MAC required when key present. Legacy v1 rows without mac
+        // are accepted only when mac is empty *and* no mac_key file exists.
+        if let Some(ref key) = mac_key {
+            if r.mac.is_empty() {
+                return Err(anyhow!(
+                    "ANUBIS_RECEIPT_MAC_MISSING: seq {} (mac_key present; re-seal or migrate)",
+                    r.seq
+                ));
+            }
+            let expect_mac = compute_receipt_mac(key, &r.receipt_hash);
+            if expect_mac != r.mac {
+                return Err(anyhow!("ANUBIS_RECEIPT_MAC_MISMATCH: seq {}", r.seq));
+            }
+            mac_checked += 1;
+        } else if !r.mac.is_empty() {
+            return Err(anyhow!(
+                "ANUBIS_RECEIPT_MAC_KEY_MISSING: receipt has mac but no key available"
+            ));
+        }
         prev = r.receipt_hash.clone();
         last_hash = r.receipt_hash;
     }
@@ -207,6 +303,9 @@ pub fn verify_chain(engage_dir: &Path) -> Result<serde_json::Value> {
         "count": count,
         "tip": last_hash,
         "tip_seq": count,
+        "mac_checked": mac_checked,
+        "mac_bound": mac_key.is_some(),
+        "classification": "LAB_REAL_HMAC",
     }))
 }
 
@@ -251,6 +350,37 @@ mod tests {
         lines[0] = serde_json::to_string(&r).unwrap();
         fs::write(&chain, lines.join("\n") + "\n").unwrap();
         assert!(verify_chain(&eng).is_err());
+        let _ = fs::remove_dir_all(&eng);
+    }
+
+    #[test]
+    fn mac_mismatch_detected() {
+        let eng = tmp_eng("mac");
+        seal_action(&eng, "e1", "test_a", "op", json!({"x": 1})).unwrap();
+        let chain = chain_path(&eng);
+        let mut lines: Vec<String> = fs::read_to_string(&chain)
+            .unwrap()
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+        let mut r: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        r["mac"] = json!("00".repeat(32));
+        lines[0] = serde_json::to_string(&r).unwrap();
+        fs::write(&chain, lines.join("\n") + "\n").unwrap();
+        let err = verify_chain(&eng).unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_RECEIPT_MAC_MISMATCH"), "got {err}");
+        let _ = fs::remove_dir_all(&eng);
+    }
+
+    #[test]
+    fn full_chain_rewrite_without_key_fails() {
+        let eng = tmp_eng("rewrite");
+        seal_action(&eng, "e1", "test_a", "op", json!({"x": 1})).unwrap();
+        // Steal chain + tip, wipe key, try to re-verify after forging with a new key elsewhere
+        // fails because we delete mac_key.
+        let _ = fs::remove_file(receipts_dir(&eng).join("mac_key.hex"));
+        let err = verify_chain(&eng).unwrap_err().to_string();
+        assert!(err.contains("MAC") || err.contains("KEY"), "got {err}");
         let _ = fs::remove_dir_all(&eng);
     }
 }

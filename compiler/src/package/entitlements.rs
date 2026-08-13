@@ -28,11 +28,6 @@ pub const ENTITLEMENT_PROFILE_FILENAME: &str = "entitlement_profile.json";
 pub const ENTITLEMENT_PLIST_FILENAME: &str = "program.entitlements";
 pub const ENTITLEMENT_SCHEMA: &str = "anubis.entitlements.v1";
 
-/// The six canonical capabilities, stable order for deterministic JSON.
-const CAPS: [&str; 6] = [
-    "net.send", "fs.read", "fs.write", "shell", "time.now", "rand.gen",
-];
-
 /// One derived entitlement key. `apple_enforced_claim` is always false until a later slice proves
 /// a signed binary actually carries the key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,10 +91,12 @@ pub fn derive_entitlement_profile(
     let ast = parse_source(source).map_err(|e| {
         format!("ANUBIS_ENTITLEMENT_PARSE_FAILED: entitlement derivation parse failed: {e}")
     })?;
-    let (caps, open) = crate::middle::effects::program_capability_set(&ast.items);
-
-    let has = |c: &str| caps.contains(c);
-    let effects_bounded = !open;
+    // Shared IR with confinement / VZ run-capability (research-normalized + legacy projection).
+    let proven = crate::middle::effects::program_proven_effects(&ast.items);
+    let caps_present = proven.legacy_capabilities_present();
+    let has = |c: &str| caps_present.iter().any(|x| x == c);
+    let open = !proven.effects_bounded;
+    let effects_bounded = proven.effects_bounded;
     let uses_ne_caps = source_uses_nonexportable_cap(source);
 
     // Restrictive defaults when unbounded or capability absent.
@@ -185,9 +182,10 @@ pub fn derive_entitlement_profile(
         entitlements.push(EntitlementKey {
             key: "keychain-access-groups".into(),
             enabled: true,
-            reason: "cap_acquire_nonexportable present — runtime may bind NE tokens to Keychain/SE; \
+            reason:
+                "cap_acquire_nonexportable present — runtime may bind NE tokens to Keychain/SE; \
                      access-group must match codesign identity (needs_human)"
-                .into(),
+                    .into(),
             apple_enforced_claim: false,
         });
         entitlements.push(EntitlementKey {
@@ -261,11 +259,7 @@ pub fn derive_entitlement_profile(
         advisory,
     };
 
-    let capabilities_present: Vec<String> = CAPS
-        .iter()
-        .filter(|c| caps.contains(**c))
-        .map(|c| (*c).to_string())
-        .collect();
+    let capabilities_present = caps_present;
 
     let mut notes = vec![
         "This profile reflects the DECLARED + inferred effect surface (checker enforces \

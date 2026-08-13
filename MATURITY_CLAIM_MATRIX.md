@@ -1,13 +1,62 @@
-# Anubis Maturity Claim Matrix (Live)
+# Anubis Maturity Claim Matrix — the append-only tranche ledger
 
-> **Status vocabulary (2026-07-24):** freestanding `REAL` is banned. `under Command` means the claim is only as strong as re-running the **Command** column (and checking **Evidence**). Prefer sealed artifact paths for historical gates. See `docs/CLAIMS.md` session proof log for re-runs on this date.
+## You probably do not need this file
 
-Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status + Evidence path + Command.
+This is an **archive**, not a status page. It records what was claimed, with what evidence, on the
+day each tranche of work landed — every section below is accurate **for its own date and no other**.
+It grows by appending; nothing in it is rewritten when the tree moves on.
+
+| If you want… | Read instead |
+|---|---|
+| **current status** — what is green, what is open right now | [`docs/CLAIMS.md`](docs/CLAIMS.md) § *Known open issues*. It is the single source of truth and it **wins over this file** wherever they disagree. |
+| what the language can do, with honest boundaries | [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) |
+| the phase-by-phase arc | [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md) |
+| to find *any* document | [`docs/README.md`](docs/README.md) |
+
+**The one job this file does that no other file does:** it lets you ask *"what did we claim about X,
+when, and what command backed it?"* — the paper trail behind a claim, not the claim's current truth.
+If you are not asking that question, close this file.
+
+## How to read it without reading all of it
+
+Do not scroll. Index it by command — these stay correct as the file grows:
+
+```bash
+grep -n '^## ' MATURITY_CLAIM_MATRIX.md              # every tranche, newest last, with line numbers
+grep -n '<topic>' MATURITY_CLAIM_MATRIX.md           # jump to a claim by keyword
+awk -F'|' '/^\|/ && NF>=6 {print $3}' MATURITY_CLAIM_MATRIX.md | sort | uniq -c | sort -rn
+```
+
+Every row is `Claim | Status | Evidence | Command | Notes`. **Read the Command column, not the
+Status column** — the status is only as strong as re-running that command against today's tree, and
+for the older sections it will not reproduce.
+
+## Status vocabulary
+
+Freestanding `REAL` is **banned**. A claim is one of: (a) re-runnable with command + observation,
+(b) sealed under a dated artifact path, (c) **partial** with the gap named, or (d) **not claimed**.
+`under Command` means the claim is only as strong as re-running the **Command** column and checking
+**Evidence**. Prefer sealed artifact paths for historical gates.
+
+**Green means no KNOWN defects — not no defects.** Absence of a red row is not evidence of absence.
+
+> **Note on the numbers below.** Fixture and theorem counts written into these rows were correct when
+> the row was appended and are **not** maintained afterwards. For current counts, re-derive:
+> `bash scripts/run_docs_drift_gate.sh`. A previous version of this header carried a snapshot of
+> those counts; it had drifted (security, stdlib and native-corpus figures were all stale) and was
+> removed on 2026-07-28 rather than refreshed — this file is not a status surface and should not
+> carry one.
+
+---
+
+Seeded from the 2026-07-05 C-grade audit + plan baseline. Every row requires Status + Evidence path + Command.
 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|
 | Real compiler stages (parse/HIR/MIR/taint/symbolic) | under Command | compiler/src/{frontend,middle}/ + lib.rs tests | cargo test | Spans, recovery, research blocks, taint traces present |
 | Raw pointer hard reject in safe | under Command | lib.rs: safe_mode_rejects_raw_pointer... + typecheck | cargo test safe_mode_rejects... | Exact error |
+| Program-wide Safe/Research/Exploit aggregation | under Command (2026-07-25) | `program_mode` recursive join; explicit-Safe effective-mode rule; `safe_mode_program_gate.rs`; `formal/Anubis/ModeAggregation.lean` | `cargo test -p anubis --test safe_mode_program_gate`; `cargo test -p anubis --bin anubis program_mode_`; `bash scripts/run_formal_gate.sh` | Highest privilege wins independent of source order and nesting; ordinary run rejects before lowering. Lean proves the abstract lattice only; Rust tests cover the implementation traversal |
+| Rejection evidence has one honest verdict | under Command (2026-07-25) | `build_rejected_evidence_bundle`; rejection integration tests | `cargo test -p anubis --test safe_mode_program_gate` | Failed check auto-emits; requested failed build emits `FAIL`, PCA tier `rejected`, no artifact or proof claim |
 | Evidence bundles + tamper | under Command | compiler/src/evidence + out/audit/evidence-tampered + tests | cargo test evidence... ; anubis verify | MANIFEST.sha256, validate fails on tamper |
 | Z3 FAIL + model with var | under Command | lib.rs z3_solver... + middle SymbolicEngine | cargo test z3_solver... | Model mentions x |
 | Metal hybrid dispatch + fallback | under Command (observable) | hybrid templates + lib.rs hybrid_host... + out/audit/hybrid | cargo test hybrid... ; R0_DISABLE_METAL=1 run | lane=metal / cpu |
@@ -26,7 +75,7 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Interprocedural contract composition (Phase-3 D) | under Command (solver path) | `fn_contracts` + requires@ obligations + ensures assume at `let` call sites | existing contract/solver tests | No separate `ANUBIS_CALLEE_REQUIRES_UNMET` code; unmet requires = failed obligation. |
 | Research lowering requires assume bound from AST | under Command (current gate) | backends/native/mod.rs:94 + lib.rs research_lowering_requires... | cargo test research_lowering_requires... | Brittle gate |
 | Unborn git at start of a+ work | under Command | git rev-parse --verify HEAD (pre-init) | (recorded in plan) | Baseline commit 4a2c462 on a-plus-maturity/20260705-1649 |
-| 649 tests pass, clean fmt/clippy | under Command | `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` + G3 log | `cargo test --all` ; `cargo fmt -- --check` ; `cargo clippy --all-targets -- -D warnings` | Reconciled Friday, July 24, 2026 (A15); RUST_MIN_STACK=16MiB for large clap CLI unit tests |
+| 649 tests pass, clean fmt/clippy | under Command | `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` + G3 log | `cargo test --all` ; `cargo fmt -- --check` ; `cargo clippy --all-targets -- -D warnings` | Reconciled Friday, July 24, 2026 (A15); RUST_MIN_STACK=16MiB for large clap CLI unit tests. **Stale count** — 2026-07-26 recount: 707 compiler tests + 142 CLI tests (~910 workspace total); re-run the Command for the current number rather than trusting either figure. |
 | Full 15 unified gates | under Command | `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` → 15/15 PASS, 0 FAIL, 0 SKIP | `bash scripts/audit_a_plus.sh --out out/a_plus_a15_frontdoor_20260724-154145` | A15 re-seal Friday, July 24, 2026. G14 is VZ-isolated **34/34** (T9 included). Exact verdict in `A_PLUS_FINAL_REPORT.md` + A15 audit dir. |
 | Gate 7 solver faithful semantics (BV, defs, no free vars) | under Command | middle/mod.rs check_obligations + smt build + tests | cargo test solver ; cat smt | Per var widths, derived (= ), BV ops |
 | Gate 7 counterexample replay + hostile failure detection | under Command (fixed 2026-07-11 — was a fabricated attestation) | `replay_counterexample`/`parse_z3_model` (middle/mod.rs) + evidence/mod.rs `solver_replay.json` | `cargo test -p anubis-compiler real_counterexample_replay` ; `anubis check ... --evidence` then `cat */analysis/solver_replay.json` | Was a substring hack (`model.contains("x")`, hardcoded `#x0000000f`/`"15"`) shipping a fake `replay_valid` into every PCA bundle's `solver_replay.json`, with a tautological test. Now: parses z3's concrete witness, pins every variable to it on top of the SAME assumptions+¬assertion the solver decided, and asks z3 to re-decide the fully-ground formula — real model-substitution + re-execution, sound for QF_BV. Verified: prove gate 11/11, PCA gate 13/13 |
@@ -42,7 +91,7 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|
 | Gate 2 real language core (comments/fn/let/primitives/expr/control/structs/calls/builtins/attrs) | PARTIAL | 25 fixtures (20 PASS 5+ FAIL) + parser/AST/HIR/MIR + typecheck + runner + fresh a15 evidence with verdict FAIL for syntax/unknown/type/taint | bash scripts/run_language_fixtures.sh --out out/a15... ; jq . fixture_report.json ; cat */check-summary.json | grep verdict | comments // ; fn main typed params/return; let :u32/u8; arith + - * == < ; if/else ; while planned; struct lit/field; calls (user+builtin symbolic/assume/assert/taint_source/declassify/sink); @safe @research @proof @audit @effect parsed/preserved; no full modules/Result/enums yet |
-| Gate 3 parser/AST/HIR/MIR maturity (spans, no panic, JSON emit, diags) | PARTIAL | --evidence produces *.ast.json *.hir.json *.mir.json ; parse_source_detailed + strict Err on diags; spans in AST/Stmt/Expr; clean diags for bad input | cargo run -- check f --evidence --out d ; find d -name '*.ast.json' ; grep -R ANUBIS_ d/ | never panics (lenient recovery + diags); file/line via spans; AST/ HIR/MIR JSON for ordinary workflows |
+| Gate 3 parser/AST/HIR/MIR maturity (spans, no panic, JSON emit, diags) | PARTIAL | --evidence produces *.ast.json *.hir.json *.mir.json ; parse_source_detailed + strict Err on diags; spans in AST/Stmt/Expr; clean diags for bad input | cargo run -- check f --evidence --out d ; find d -name '*.ast.json' ; grep -R ANUBIS_ d/ | Named malformed-input fixtures complete without panic (not a total parser-panic claim); file/line via spans; AST/HIR/MIR JSON for ordinary workflows |
 | Type checker + ANUBIS_* codes (unknown, mismatch, taint etc) | PARTIAL | ANUBIS_UNKNOWN_VARIABLE, ANUBIS_TYPE_MISMATCH, ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY emitted in check_error + bundle checks; fixtures enforce | cargo run -- check unknown... ; grep -R ANUBIS_ out/... ; same for type/taint/declass_missing | duplicate let / arity / cond type / missing return / field defined in typecheck; taint/declass rules unchanged |
 | Float→integer narrowing rejection (Phase-2 slice 1) | under Command | `ty::assignable`/`ty::is_float` (middle/ty.rs) wired at let-init/assign/arg/return; `ty::compatible` + `ty_parity` oracle unchanged | `cargo test -p anubis-compiler float_does_not_narrow` ; `narrowing_rule_does_not_reject` ; `assignable_rejects` | First rule consuming structured `Ty`. Directional: float→int rejected, int→float widening + width-interop kept. Faithful to runtime: bitwise/shift/`~`→int, float arith→float, if/match float only if every inferable branch float (adversary-verified: false positives on bitwise + mixed-branch found and fixed). Boundary: float via call-return/index/statement-if-in-block infers None → not yet narrowed (safe, documented in UNSUPPORTED.md) |
 | CLI ordinary workflow usable | PARTIAL | anubis check <f> ; build ; prove --backend risc0 ; verify-bundle ; verify-receipt ; doctor ; --evidence --out ; --emit ast,hir,mir | cargo run -- check ... ; cargo run --release -p anubis -- prove ... ; docs/CLI.md | check does not emit native by default; errors readable; doctor covers rust/risc0/metal/git/evidence |
@@ -87,10 +136,10 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|
-| Packing builtins (`p8`/`p16`/`p32`/`p64`, `cyclic`, list concat) | under Command | `examples/security/poc_packing_smoke.anb` → `16/65/65` | `./target/release/anubis run examples/security/poc_packing_smoke.anb --allow-research` | Requires `--allow-research` |
-| Local process harness (`target_run`) | under Command | `examples/security/poc_local_overflow.anb` crashed=1 against `poc_kit/bin/vuln_local` | `bash poc_kit/build_vuln.sh` then `anubis run …/poc_local_overflow.anb --allow-research` | Local FS only; network URLs rejected |
-| Gold local crash PoC | under Command | `poc_kit/vuln_local.c` + PoC fixture | `bash scripts/run_poc_kit_gate.sh` | Intentional lab oracle (abort if len>64) |
-| Mutation process fuzz (real crashes) | under Command | `fuzz_report.json` engine=`mutation-process-v1`, unique_crashes≥1, distinct crash bins | `anubis fuzz --target poc_kit/bin/vuln_local --runs 50` | Mutator unit tests: multi-payload + len>64; not parse/typecheck |
+| Packing builtins (`p8`/`p16`/`p32`/`p64`, `cyclic`, list concat) | under Command | `examples/security/poc_packing_smoke.anb` → `16/65/65` | `bash scripts/run_poc_kit_gate.sh` | Runs inside disposable Tart/VZ guest; requires `--allow-research` there |
+| Local process harness (`target_run`) | under Command | `examples/security/poc_local_overflow.anb` crashed=1 against guest-local `poc_kit/bin/vuln_local` | `anubis vz exploit --base anubis-xcode … --allow-research` | Same harness power, VZ-only; network URLs rejected |
+| Gold local crash PoC | under Command | `poc_kit/vuln_local.c` + PoC fixture | `bash scripts/run_poc_kit_gate.sh` | Host orchestrates disposable guest; intentional lab oracle (abort if len>64) |
+| Mutation process fuzz (real crashes) | under Command | guest `fuzz_report.json` engine=`mutation-process-v1`, unique crash bins | `anubis vz fuzz --base anubis-xcode poc_kit/bin/vuln_local --iterations 50 --allow-research` | Mutator unchanged; crash-capable execution VZ-only |
 | Security fixture runner needle honesty | under Command | EXPECT FAIL + ERROR_CONTAINS requires needle in log; wrong failure ≠ green | `bash scripts/run_security_fixtures.sh` + `security_fixture_matches` unit tests | Fixed inverted-needle false-green |
 | Network targets forbidden | under Command | fuzz/target_run reject `://` | gate fixture `network_forbidden` | Fail-closed dual-use boundary |
 | PoC kit gate | under Command | `out/poc_kit/report.json` / gate script | `bash scripts/run_poc_kit_gate.sh --out out/poc_kit` | 4/4 packing + crash PoC + fuzz + network deny |
@@ -118,8 +167,8 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Exploit modules + PoC kit | under Command | exploit success | exploit-run | crash oracle |
 | Offensive gate | under Command | gate report + isolation | `bash scripts/run_offensive_platform_gate.sh` | VZ-isolated host entrypoint; deeper surfaces gated |
 | Host forbids AOP red-team execution | under Command | `ANUBIS_OFFENSIVE_HOST_FORBIDDEN` | listen/inject/lateral without VZ | Apple Virtualization guest required |
-| PoC kit host gold lab | under Command | packing + target_run + fuzz poc_kit | `run_poc_kit_gate` 4/4 | Prefer `vz exploit\|fuzz` for primary evidence |
-| Fuzz non-poc_kit requires VZ | under Command | `ANUBIS_FUZZ_HOST_FORBIDDEN` | fuzz `/tmp/not_poc` on host | Advance isolation |
+| PoC kit host entry is orchestration-only | under Command | packing + target_run + fuzz run in disposable guest | `run_poc_kit_gate` 4/4 + isolation.json | Gate refuses host crash execution (safety, not adversarial — env markers are user-settable); canonical `vz exploit`/`fuzz` path adds HMAC-validated run capability for defense-in-depth |
+| All fuzz requires VZ | under Command | `ANUBIS_FUZZ_HOST_FORBIDDEN` | any direct host fuzz | No gold-fixture exception |
 | ATT&CK kill-chain catalog (T9) | under Command | `aop-attck-v1` | `anubis attck-catalog --json` | Mapped to AOP surfaces |
 | OPSEC score (T9) | under Command | `aop-opsec-v1` | `anubis opsec-score --engage …` | Elite checklist |
 | Malleable C2 profile (T9) | under Command | profiles/*.json | `malleable-init` / `malleable-validate` | Lab traffic shaping |
@@ -587,7 +636,7 @@ closed and locked in `b2_soundness_fail_closed_regressions`. The unifying defect
 are compile-time only — the transpiler emits NO runtime check for `requires`/`ensures`** (verified: a
 violated `ensures(result == "wrong")` returning `"ok"` was accepted). So a *skipped* contract is
 enforced nowhere; the old "non-integer contracts are left to runtime" claim was false. The fix makes
-the whole class fail closed: an `ensures` is either discharged by the solver or the function is
+the named B2 regression class fail closed: in those fixtures an `ensures` is either discharged by the solver or the function is
 rejected.
 
 | Root cause | Firsthand violation (check ACCEPT → run) | Fix |
@@ -613,9 +662,9 @@ contract, string/list/bool-variable postconditions, floats, truncating casts, an
 solver cannot model are all **rejected** (`ANUBIS_CONTRACT_UNPROVABLE`) — use a runtime `assert` in the
 body for a dynamic check (that IS enforced at runtime). A tail-position direct call
 `fn g()->u32 { helper(x) }` is rejected — bind via `let r = helper(x); return r;` to carry the
-`ensures`. Loop-carried reasoning is B3. The checker is SOUND: a green `anubis check` means every
-declared contract was actually proved — it may decline to certify a contract it cannot model, but it
-never certifies a violable one.
+`ensures`. Loop-carried reasoning is B3. In the named B2 fixture set, a green `anubis check` records
+that each emitted declared-contract obligation was discharged; this historical row does not prove
+that every current AST position emits the obligation it should.
 
 ## Refinement-type foundation — B3 (loop invariants) + control-flow soundness (2026-07-10)
 
@@ -632,8 +681,8 @@ fail-closed (no `old()`); (14) `expr_to_smt_value` modeled a truncating cast as 
 Every defect was firsthand-reproduced (`check` accept + a concrete `anubis run` violation —
 before fixing, and locked with a regression test in `b3_loop_invariants_verify_inductively`,
 `loop_body_assert_not_discharged_against_stale_state`, `solver_modelability_is_function_local_and_shadow_safe`,
-and the B2 contract tests). The inductive-invariant ENGINE proved sound from round ~7 onward; the later
-rounds surfaced pre-existing weaknesses in the general checker's control-flow/state handling that B3's
+and the B2 contract tests). From round ~7 onward, the named inductive-invariant battery found no new
+engine-local counterexample; later rounds surfaced pre-existing weaknesses in the general checker's control-flow/state handling that B3's
 rigor exposed. The twelve closed defects:
 
 | # | Class | Defect (all were `check`-accepted, runtime-violated) | Fix |
@@ -664,9 +713,9 @@ still ACCEPT. **265 compiler tests; 56 tools tests; fixtures 26/26; PCA 13/13; p
 sound not silent); an accumulator invariant needs an explicit overflow bound; an in-body `assert` over
 a loop-carried variable is deferred to the runtime (which enforces `assert`) rather than proved. A
 call's `requires` in pure expression position (`g(bad)+1`) is not yet enforced — but no `ensures` is
-assumed there either, so nothing is laundered (a completeness gap, not a false proof). The checker is
-SOUND for its supported subset: a green `anubis check` over an invariant loop or a contract means it was
-actually proved; anything it cannot model soundly is rejected, never silently accepted.
+assumed there either, so nothing is laundered in the cited fixtures (a completeness gap, not a false
+proof). The B3 gate demonstrates discharge/rejection for its named supported cases; it is not evidence
+that every current or future expression-holding position reaches that engine.
 
 ## A+ Maturity Gaps Closed (2026-07-11)
 
@@ -682,7 +731,7 @@ closed or explicitly marked DEFERRED with precise scope.
 | Offensive platform T1–T9 gate | under Command | `out/a15_offensive_t9_20260724-152746/report.json` + suite G14 | `bash scripts/run_offensive_platform_gate.sh` | **34/34** PASS, `isolation=tart-disposable-guest` |
 | CI runs the real front door (not a weak subset) | under Command | `.github/workflows/ci.yml` execs `scripts/audit_a_plus.sh` on `macos-latest`; guarded by `ci_workflow_enforces_the_real_gate_suite_not_a_weak_subset` | `cargo test -p anubis-compiler ci_workflow_enforces` | Replaced the old 4-command subset (`cargo test` w/o `--all`, `clippy` w/o `--all-targets`, never ran G5-G15). Suite is self-contained on a stock runner: G10 is cold-VERIFY only (no risc0 prover / Metal), so CI is a public off-desk cold-verify witness. **Metal _proving_ in CI still NOT CLAIMED** (needs Apple-Silicon GPU); CI green not yet observed on GitHub from here — verified the runner locally (15/15) |
 | Zero hard-coded author paths in Rust/TOML source | under Command | `grep -rn "sicarii/Desktop" --include="*.rs" --include="*.toml"` → 0 hits | `grep -rn "sicarii/Desktop" --include="*.rs" --include="*.toml" \| grep -v .claude/worktrees/` | All paths use `ANUBIS_RISC0_METAL_REFERENCE` env var |
-| Cargo fmt + clippy + 643 tests green | under Command | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test --all` | `bash scripts/audit_unified.sh` (G1-G3) | Thursday, July 23, 2026 rerun: `G3_test` reported `643 tests passed` |
+| Cargo fmt + clippy + 643 tests green | under Command | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test --all` | `bash scripts/audit_unified.sh` (G1-G3) | Thursday, July 23, 2026 rerun: `G3_test` reported `643 tests passed`. **Stale** — see the 649-test row above (2026-07-24) and the 2026-07-26 recount (707 compiler + 142 CLI); the test count has grown at every subsequent tranche and neither older figure should be cited as current. |
 | PCA cold-verify tolerates tool-version drift (fixes a crown-jewel false-negative) | under Command | `evidence/mod.rs::claim_semantically_matches` + `verify_pca`; committed `tests/fixtures/zk_prove_bundle` (frozen by `anubis 0.2.0`) now cold-verifies under the current tool | `cargo test -p anubis-compiler verify_pca_tolerates_tool_version_drift verify_pca_cold_verifies_the_committed`; `bash scripts/run_prove_gate.sh` → 11/11 | Provenance `tool` version stays recorded + manifest/signature-protected but is excluded from the semantic re-derivation equality; every source/artifact-derived field + the ZK receipt crypto still match, so tamper (wrong receipt/ImageID/claim) still fails closed. Was silently failing G10 |
 | Metal/ZK tests portable (skip when env not set) | under Command | 3 hybrid tests guarded by `ANUBIS_RISC0_METAL_REFERENCE` check | `cargo test --all` on a fresh clone without metal reference → 265 pass, 0 fail | Tests skip cleanly, not fail |
 | Template Cargo.toml uses relative vendor path | under Command | `templates/Cargo.full.toml` → `vendor/risc0-circuit-rv32im` (was absolute) | `cat compiler/src/backends/native/hybrid/templates/Cargo.full.toml` | Emitted projects are portable |

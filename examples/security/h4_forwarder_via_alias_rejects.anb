@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// H4 — `resolve_closure_value` keyed the forwarder registries on the RAW AST callee text, so an alias
+// to a known forwarder missed. `analyze_expr_effect` had already learned to resolve aliases for its
+// `sink_callee` (that was #74); the sibling walker three lines away never did. Classic walker desync.
+// Directional proof: calling `fwd` DIRECTLY with the identical leak is rejected; adding one
+// `let g = fwd;` hop flipped it to accepted.
+fn fwd(f) { return f; }
+fn main() {
+    let k = secret_source("k");
+    let g = fwd;
+    let leaked = g(|x| print(k));
+    leaked(0);
+}

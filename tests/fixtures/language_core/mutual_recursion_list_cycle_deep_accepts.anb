@@ -1,0 +1,41 @@
+// EXPECT: PASS
+// Regression, deep variant: a FIVE-function recursion cycle (a->b->c->d->e->a)
+// returning raw list literals. Guards keyed on self-reference or on a single
+// caller/callee pair miss longer cycles; the depth-threaded fix must hold for
+// any N. Companion to mutual_recursion_list_cycle_accepts.anb.
+
+fn a(node) {
+    if node[0] == "leaf" { return ["done"]; }
+    if node[0] == "b" { return b(node[1]); }
+    return ["a", a(node[1])];
+}
+
+fn b(node) {
+    if node[0] == "leaf" { return ["done"]; }
+    if node[0] == "c" { return c(node[1]); }
+    return ["b", b(node[1])];
+}
+
+fn c(node) {
+    if node[0] == "leaf" { return ["done"]; }
+    if node[0] == "d" { return d(node[1]); }
+    return ["c", c(node[1])];
+}
+
+fn d(node) {
+    if node[0] == "leaf" { return ["done"]; }
+    if node[0] == "e" { return e(node[1]); }
+    return ["d", d(node[1])];
+}
+
+fn e(node) {
+    if node[0] == "leaf" { return ["done"]; }
+    if node[0] == "a" { return a(node[1]); }
+    return ["e", e(node[1])];
+}
+
+fn main() uses(io.print) {
+    let tree = ["b", ["c", ["d", ["e", ["a", ["leaf"]]]]]];
+    let result = a(tree);
+    print(result[0]);
+}

@@ -1,0 +1,19 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_BLOCK_ATTRIBUTE_MISUSE
+// Lead agent 2026-07-27, GROK-THOTH's day-one blocker #4. A one-letter typo in a MODE-ELEVATING
+// attribute used to report `expected : in struct lit` — a diagnostic about struct syntax, naming
+// neither the cause nor a remedy, for a construct the author never wrote.
+//
+// The lexer DROPS `@`, so `@reserach { ... }` reaches the parser as `reserach { ... }`, which looks
+// exactly like a struct literal. Emitting `@` as a token to recover the sigil was tried and
+// REVERTED: it regressed seven fixtures that depend on it being dropped. So the check keys on the
+// shape that survives — a lowercase identifier heading a block whose name near-misses a real block
+// keyword. Struct literals are capitalised by convention, and requiring a near-miss keeps this to
+// the typo case rather than second-guessing every `name { ... }`.
+//
+// HONEST RESIDUAL: a wholly invented name (`@foobar { }`) is indistinguishable from a struct literal
+// once the sigil is gone, and still reports the struct-literal error. Closing that needs the lexer
+// change that regressed the corpus, so it is left open rather than paid for with seven regressions.
+fn main() {
+    reserach { print(1); }
+}

@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// CORPUS-1 2026-07-27. Over-rejection guard for Defect B (added alongside the same risk class as
+// Defect A's accept guards — not explicitly requested but the struct-pattern-binder fix carries the
+// same conservativeness risk): a `secret<T>` field destructured via a struct pattern, then explicitly
+// `declassify()`'d before the sink, must keep passing. Declassify is the sanctioned release and must
+// not be blocked by the binder fix.
+struct V { k: secret<i64> }
+fn main() {
+    let v = V { k: 42 };
+    let V { k } = v;
+    print(declassify(k, "release-policy", "audited"));
+}

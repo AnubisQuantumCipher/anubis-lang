@@ -12,6 +12,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/selfhost_gate}"
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 
@@ -26,9 +27,51 @@ pass_one() { pass=$((pass+1)); note "$1: PASS"; }
 fail_one() { fail=$((fail+1)); note "$1: FAIL"; }
 
 : >"$OUT/summary.txt"
-BIN=./target/release/anubis
-cargo build -q --release -p anubis
-SH_RUN=("$BIN" run selfhost/src/anubis_sh.anb --allow-research --out "$OUT/sh_run" --)
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "SELFHOST_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  cargo build -q --release -p anubis
+  [[ -x "$BIN" ]] || { echo "SELFHOST_GATE: FAIL (no binary at $BIN)"; exit 127; }
+fi
+{
+  echo "instrument: $BIN"
+  stat -f 'mtime=%Sm size=%z' -t '%Y-%m-%dT%H:%M:%S' "$BIN" 2>/dev/null || true
+} | tee "$OUT/instrument.txt"
+# `anubis_sh.anb` (the self-hosted compiler's own source) contains zero
+# `research{}`/`exploit{}` blocks and zero `@research`/`@exploit`/etc
+# attributes (grep confirms this — the `target_run`/`p64`/`cyclic`/`shell`
+# identifiers that DO appear in it are string-literal table entries its own
+# sink/effect classifier uses to recognize those names in PROGRAMS IT
+# COMPILES; anubis_sh.anb never calls them itself). Its inferred
+# `program_mode` (tools/anubis/src/main.rs::program_mode, aggregating
+# compiler/src/frontend/mod.rs::infer_mode per function) is therefore
+# `Mode::Safe`, and `anubis run selfhost/src/anubis_sh.anb` needs no
+# `--allow-research` at all — confirmed empirically: every subcommand below
+# (version/lex/parse/check/compile, including the full self-compile that
+# emits stage1.rs) succeeds on host with the flag OMITTED. `--allow-research`
+# was dropped from SH_RUN for exactly this reason: it was never required by
+# self-host semantics, and keeping it only meant this gate broke the moment
+# commit 5fb7b67 (2026-07-25) made `--allow-research` VZ-guest-only
+# (tools/anubis/src/offensive/isolation.rs::require_research_run_allowed).
+# Removing the flag from a `Mode::Safe` program isn't a workaround — it's the
+# gate correctly matching what `program_mode` already says about this source.
+SH_RUN=("$BIN" run selfhost/src/anubis_sh.anb --out "$OUT/sh_run" --)
+
+# Preflight: fail fast with the raw tool output if SH_RUN can't even print its
+# own version, instead of letting every downstream check fail independently
+# with no shared, up-front explanation.
+preflight_out="$("${SH_RUN[@]}" version 2>&1)" || true
+if ! grep -q "anubis-sh" <<<"$preflight_out"; then
+  {
+    echo "PREFLIGHT FATAL: \`\${SH_RUN[@]} version\` did not print the expected"
+    echo "  'anubis-sh' banner. Every check below depends on SH_RUN working at"
+    echo "  all, so they will likely fail identically. Raw tool output:"
+    echo "  $preflight_out"
+  } | tee -a "$OUT/summary.txt" >&2
+  fail_one "preflight_sh_run_sanity"
+fi
 
 echo "== selfhost unit schema =="
 if cargo test -p anubis-compiler --lib selfhost_schema -- --test-threads=4 >"$OUT/unit.log" 2>&1 \
@@ -60,8 +103,15 @@ echo "== SELFHOST_A lex/parse goldens (stage0 host SH) =="
 a_ok=1
 for f in selfhost/corpus/ok_*.anb; do
   b=$(basename "$f" .anb)
-  if ! "${SH_RUN[@]}" lex "$f" >"$OUT/lex_${b}.json" 2>"$OUT/lex_${b}.err"; then a_ok=0; fi
-  if [[ -f "selfhost/golden/tokens/${b}.json" ]]; then
+  lex_ec=0; "${SH_RUN[@]}" lex "$f" >"$OUT/lex_${b}.json" 2>"$OUT/lex_${b}.err" || lex_ec=$?
+  if [[ $lex_ec -ne 0 ]]; then
+    a_ok=0
+    echo "SH lex FAILED for $b: exit=$lex_ec, tool produced no/partial output — see $OUT/lex_${b}.err" >>"$OUT/a_fail.log"
+    head -3 "$OUT/lex_${b}.err" >>"$OUT/a_fail.log" 2>/dev/null || true
+  elif [[ ! -s "$OUT/lex_${b}.json" ]]; then
+    a_ok=0
+    echo "SH lex for $b produced no output (exit=0, empty stdout)" >>"$OUT/a_fail.log"
+  elif [[ -f "selfhost/golden/tokens/${b}.json" ]]; then
     if ! diff -q "$OUT/lex_${b}.json" "selfhost/golden/tokens/${b}.json" >/dev/null; then
       if ! diff -q <(tr -d '\n' <"$OUT/lex_${b}.json") <(tr -d '\n' <"selfhost/golden/tokens/${b}.json") >/dev/null; then
         echo "token mismatch $b" >>"$OUT/a_fail.log"
@@ -69,9 +119,16 @@ for f in selfhost/corpus/ok_*.anb; do
       fi
     fi
   fi
-  if ! "${SH_RUN[@]}" parse "$f" >"$OUT/ast_${b}.json" 2>"$OUT/ast_${b}.err"; then a_ok=0; fi
-  if [[ -f "selfhost/golden/ast/${b}.json" ]]; then
-    python3 - "$OUT/ast_${b}.json" "selfhost/golden/ast/${b}.json" <<'PY' || a_ok=0
+  parse_ec=0; "${SH_RUN[@]}" parse "$f" >"$OUT/ast_${b}.json" 2>"$OUT/ast_${b}.err" || parse_ec=$?
+  if [[ $parse_ec -ne 0 ]]; then
+    a_ok=0
+    echo "SH parse FAILED for $b: exit=$parse_ec, tool produced no/partial output — see $OUT/ast_${b}.err" >>"$OUT/a_fail.log"
+    head -3 "$OUT/ast_${b}.err" >>"$OUT/a_fail.log" 2>/dev/null || true
+  elif [[ ! -s "$OUT/ast_${b}.json" ]]; then
+    a_ok=0
+    echo "SH parse for $b produced no output (exit=0, empty stdout)" >>"$OUT/a_fail.log"
+  elif [[ -f "selfhost/golden/ast/${b}.json" ]]; then
+    python3 - "$OUT/ast_${b}.json" "selfhost/golden/ast/${b}.json" <<'PY' || { a_ok=0; echo "AST mismatch vs golden for $b" >>"$OUT/a_fail.log"; }
 import json,sys
 a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
 def norm(x):
@@ -111,9 +168,13 @@ if [[ $b_ok -eq 1 ]]; then pass_one "selfhost_b_check"; else fail_one "selfhost_
 
 echo "== SELFHOST_C hello: executable (not payload-viewer) =="
 c_ok=1
-"${SH_RUN[@]}" compile selfhost/corpus/ok_hello.anb -o "$OUT/v1_hello.rs" >"$OUT/c1.log" 2>&1
-"${SH_RUN[@]}" compile selfhost/corpus/ok_hello.anb -o "$OUT/v2_hello.rs" >"$OUT/c2.log" 2>&1
-if ! cmp -s "$OUT/v1_hello.rs" "$OUT/v2_hello.rs"; then
+c1_ec=0; "${SH_RUN[@]}" compile selfhost/corpus/ok_hello.anb -o "$OUT/v1_hello.rs" >"$OUT/c1.log" 2>&1 || c1_ec=$?
+c2_ec=0; "${SH_RUN[@]}" compile selfhost/corpus/ok_hello.anb -o "$OUT/v2_hello.rs" >"$OUT/c2.log" 2>&1 || c2_ec=$?
+if [[ $c1_ec -ne 0 || $c2_ec -ne 0 ]]; then
+  c_ok=0
+  echo "SH compile FAILED for ok_hello: exit1=$c1_ec exit2=$c2_ec, tool produced no/partial output — see $OUT/c1.log $OUT/c2.log" >>"$OUT/c_fail.log"
+fi
+if [[ $c_ok -eq 1 ]] && ! cmp -s "$OUT/v1_hello.rs" "$OUT/v2_hello.rs"; then
   echo "hello emit not deterministic" >>"$OUT/c_fail.log"
   c_ok=0
 fi
@@ -313,6 +374,17 @@ fi
   echo "selfhost_gate pass=$pass fail=$fail"
   echo "bootstrap: stage0(host) → stage1 → stage2 → stage3; seal=cmp(stage2,stage3) + binary fixpoint"
 } | tee -a "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "selfhost_gate" "$_cases" "$ROOT/scripts/floors/selfhost_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
 
 if [[ "$fail" -gt 0 ]]; then
   echo "SELFHOST_GATE: FAIL ($pass pass / $fail fail)"

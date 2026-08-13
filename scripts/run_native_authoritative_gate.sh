@@ -18,9 +18,16 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-BIN=./target/release/anubis
-
-CARGO_BUILD_JOBS=6 cargo build -q --release -p anubis
+source "$ROOT/scripts/lib/gate_common.sh"
+# Seshat: honor seal pin. Never rebuild under ANUBIS_BIN (stale/wrong binary must stay wrong).
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "NATIVE_AUTHORITATIVE_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  CARGO_BUILD_JOBS=6 cargo build -q --release -p anubis
+  [[ -x "$BIN" ]] || { echo "NATIVE_AUTHORITATIVE_GATE: FAIL (no binary at $BIN)"; exit 127; }
+fi
 
 # ---- Certificate path (RUP/LRAT emit + independent checker) ----
 cert_fail=0
@@ -68,6 +75,11 @@ rm -f "$DISAGREE_LOG.cur"
 echo "NATIVE_AUTHORITATIVE equivalence over $n files: mismatches=$mismatches disagreements=$disagreements"
 if [ "$disagreements" -gt 0 ]; then cat "$DISAGREE_LOG"; fi
 rm -f "$DISAGREE_LOG"
+# Hollow PASS guard (Seshat R8): zero files compared is not equivalence.
+if ! require_nonempty_corpus "$n" "examples|tests/fixtures/**/*.anb"; then
+  echo "NATIVE_AUTHORITATIVE_GATE: FAIL (zero files compared - hollow PASS forbidden)"
+  exit 1
+fi
 
 # ---- TCB-drop demo: z3 hidden from PATH ----
 PASS_FIX=tests/fixtures/native_authoritative/int_contract_proves.anb
@@ -79,21 +91,27 @@ demo_fail=0
 set +e
 # Default path is native-authoritative (no env required).
 PATH=/nonexistent "$BIN" check "$PASS_FIX" >/dev/null 2>&1
-[ $? -eq 0 ] || { echo "DEMO FAIL: default native-authoritative could not prove $PASS_FIX without z3"; demo_fail=1; }
+demo_rc=$?
+[ "$demo_rc" -eq 0 ] || { echo "DEMO FAIL: default native-authoritative could not prove $PASS_FIX without z3"; demo_fail=1; }
 PATH=/nonexistent "$BIN" check "$FAIL_FIX" >/dev/null 2>&1
-[ $? -ne 0 ] || { echo "DEMO FAIL: default native-authoritative ACCEPTED the violating $FAIL_FIX without z3"; demo_fail=1; }
+demo_rc=$?
+[ "$demo_rc" -ne 0 ] || { echo "DEMO FAIL: default native-authoritative ACCEPTED the violating $FAIL_FIX without z3"; demo_fail=1; }
 # Explicit =1 must match default.
 PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=1 "$BIN" check "$PASS_FIX" >/dev/null 2>&1
-[ $? -eq 0 ] || { echo "DEMO FAIL: ANUBIS_NATIVE_AUTHORITATIVE=1 could not prove $PASS_FIX without z3"; demo_fail=1; }
+demo_rc=$?
+[ "$demo_rc" -eq 0 ] || { echo "DEMO FAIL: ANUBIS_NATIVE_AUTHORITATIVE=1 could not prove $PASS_FIX without z3"; demo_fail=1; }
 # Control: opt-out restores z3 dependence — z3-less check of the green fixture must FAIL.
 PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=0 "$BIN" check "$PASS_FIX" >/dev/null 2>&1
-[ $? -ne 0 ] || { echo "DEMO FAIL: opt-out ANUBIS_NATIVE_AUTHORITATIVE=0 still passed WITHOUT z3 — opt-out broken"; demo_fail=1; }
+demo_rc=$?
+[ "$demo_rc" -ne 0 ] || { echo "DEMO FAIL: opt-out ANUBIS_NATIVE_AUTHORITATIVE=0 still passed WITHOUT z3 — opt-out broken"; demo_fail=1; }
 # FRAGMENT-GATE SOUNDNESS: the danger fixture's property is TRUE (so it PASSES with z3), but its op is
 # unproven, so z3-free + authoritative it must FAIL CLOSED (native declines, no z3 to defer to).
 "$BIN" check "$DANGER_FIX" >/dev/null 2>&1
-[ $? -eq 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX should PASS with z3 present (property is true)"; demo_fail=1; }
+demo_rc=$?
+[ "$demo_rc" -eq 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX should PASS with z3 present (property is true)"; demo_fail=1; }
 PATH=/nonexistent "$BIN" check "$DANGER_FIX" >/dev/null 2>&1
-[ $? -ne 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX proved z3-free on an UNPROVEN blast — the fragment gate did not fire"; demo_fail=1; }
+demo_rc=$?
+[ "$demo_rc" -ne 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX proved z3-free on an UNPROVEN blast — the fragment gate did not fire"; demo_fail=1; }
 set -e
 
 # ---- Drift check: the Rust allow-list (fragment.rs PROVEN_OP_TAGS) must be backed by live Lean proofs,
@@ -116,6 +134,15 @@ TAGS=$(sed -n '/PROVEN_OP_TAGS/,/];/p' "$FRAG")
 for deferred in Ashr SignExtend Udiv Urem Sdiv Srem; do
   echo "$TAGS" | grep -qw "\"$deferred\"" && { echo "DRIFT: deferred op '$deferred' is listed in PROVEN_OP_TAGS (unproven wiring admitted)"; drift_fail=1; }
 done
+
+# Coverage ratchet on the verdict-equivalence corpus. "0 mismatches over $n files" is only as
+# strong as $n, and nothing else notices if $n falls.
+assert_floor "native_authoritative" "$n" "$ROOT/.gate_floors/native_authoritative.floor"
+_floor_rc=$?
+if [ $_floor_rc -ne 0 ]; then
+  echo "NATIVE_AUTHORITATIVE_GATE: FAIL ($GATE_FLOOR_ERROR)" >&2
+  exit 1
+fi
 
 if [ "$mismatches" = 0 ] && [ "$disagreements" = 0 ] && [ "$demo_fail" = 0 ] && [ "$drift_fail" = 0 ]; then
   echo "NATIVE_AUTHORITATIVE_GATE: PASS (cert suite + fragment/TCB-drop demo + verdict-equivalent on $n files, mismatches=0 disagreements=0; default native z3-hidden proves/rejects; opt-out=0 restores z3 dependence; danger op fails closed; allow-list ↔ Lean; DEFAULT=native-authoritative)"

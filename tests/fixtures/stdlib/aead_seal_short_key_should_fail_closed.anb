@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_AEAD_KEY_LEN
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: ChaCha20-Poly1305 key must be exactly 32 bytes.
+fn main() {
+    print(aead_seal("short", random_bytes(12), "aad", "pt"));
+}

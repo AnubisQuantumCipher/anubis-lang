@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+// The VALUE-POSITION form of the authorization bypass, and the harder half.
+//
+// A function's declared mode is derived by scanning its TOP-LEVEL statements, so a `@research` block
+// hidden inside an expression — here, inside an `if` used as a value — left the function's mode
+// SAFE. The authorization requirement therefore never applied, and the value-position walkers do not
+// descend into these blocks either, so the elevated code was neither authorized nor enforced.
+//
+// Statement position rejected while value position passed: the same program, one syntactic step
+// apart, with opposite verdicts. That is the shape of a mode-confusion bug and it is why the
+// authorization scan now looks for a mode elevator ANYWHERE in a function body, not only at the top
+// level.
+//
+// Note: a bare `{ ... }` in value position parses as a MAP, so the launder needs a real block —
+// `if true { ... }` produces one.
+fn main() {
+    let x = if true { @research { shell("true"); } 1 } else { 0 };
+    print(x);
+}

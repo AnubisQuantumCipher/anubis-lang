@@ -1,6 +1,8 @@
-// Must pass only with explicit policy + reason (GATE 5)
+// Must pass only with explicit policy + reason (GATE 5).
+// Prints one proof-of-life line so `anubis run` is not a silent success.
 fn main() {
     let secret = taint_source("password");
     let public = declassify(secret, "redacted-proof", "only redacted proof may leave boundary");
     sink(public);
+    print("declassify ok");
 }

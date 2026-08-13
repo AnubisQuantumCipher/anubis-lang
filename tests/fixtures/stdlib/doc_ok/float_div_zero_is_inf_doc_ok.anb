@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: inf
+// DOC_OK / IEEE 754 LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// LANGUAGE float model: division by zero on floats yields ±inf (not ANUBIS_DIV_BY_ZERO).
+// Integer 1/0 remains fail-closed (ANUBIS_DIV_BY_ZERO). The next agent must NOT "fix"
+// float /0 as a stdlib defect. See NON_COLLECTION_SURFACE.md § DOC_OK.
+fn main() {
+    print(1.0 / 0.0);
+}

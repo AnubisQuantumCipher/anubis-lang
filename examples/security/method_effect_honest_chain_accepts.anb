@@ -1,0 +1,26 @@
+// EXPECT: PASS
+// Cluster F over-rejection guard. Every frame in the chain declares the capability it transitively
+// reaches — leaf method, intermediate method, and `main`. This is the shape the new inheritance is
+// supposed to ALLOW, and it is the discriminator that proves the fix is directional: the identical
+// call graph with any one declaration removed is rejected (see
+// method_effect_inherit_{1hop,2hop}_rejects.anb).
+// Without this guard the fix could have traded a false accept for a false reject and still looked
+// green on the reject-side fixtures.
+struct Inner { id: u32 }
+impl Inner {
+    fn write_it(self) uses(fs.write) {
+        write_file("cluster_f_honest.txt", "y");
+    }
+}
+struct Outer { id: u32 }
+impl Outer {
+    fn go(self) uses(fs.write) {
+        let i = Inner { id: 1 };
+        i.write_it();
+    }
+}
+fn main() uses(fs.write) {
+    let o = Outer { id: 1 };
+    o.go();
+    print(1);
+}

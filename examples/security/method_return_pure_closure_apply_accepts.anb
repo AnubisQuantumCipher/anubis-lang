@@ -1,0 +1,16 @@
+// EXPECT: PASS
+// Walker-parity H18 over-rejection guard (method-returned pure lambda). Must stay accepted
+// once method→fn_returns_lambda / CallExpr resolve is wired — pure method-returned closures
+// are legitimate HO API surface.
+// TODAY: check PASSES (and must keep passing after the H18 fix).
+struct Factory { id: u32 }
+impl Factory {
+    fn make_add(self) {
+        return |x| x + 1;
+    }
+}
+fn main() {
+    let f = Factory { id: 1 };
+    let g = f.make_add();
+    print(g(40));
+}

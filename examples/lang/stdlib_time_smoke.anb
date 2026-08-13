@@ -1,0 +1,5 @@
+import std.time;
+fn main() uses(time.now) {
+    let t = time::now();
+    print(t);
+}

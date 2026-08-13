@@ -1,22 +1,26 @@
 # VM build isolation — heavy Anubis builds run in a throwaway macOS guest
 
 Heavy Anubis work (workspace build, `cargo test`, the fixture gates, and the
-multi-stage **self-host seal**) is all-core and sustained. Run on the host, it
-twice starved macOS's `WindowServer` past its ~120 s userspace-watchdog check-in,
-which the kernel answers with a deliberate panic + reset — and the reset left the
-internal trackpad driver wedged. The fix is **not** "build gently"; it is to run
-every heavy build inside a macOS guest VM whose **vCPU count is a hard ceiling the
-host scheduler always sits above**.
+multi-stage **self-host seal**) is sustained CPU and memory load. It has starved
+macOS's `WindowServer` past its watchdog check-in and has also collided with
+sleep/power-transition deadlines; dirty resets can leave the internal trackpad
+wedged. Heavy work therefore runs in a capped macOS guest, with a host-side
+circuit breaker that sacrifices the VM/test run before it sacrifices the host.
 
 ## Why these exact numbers (M4 Max, 12 P + 4 E, 48 GiB)
 
-- **8 vCPU** — on Apple Silicon each vCPU is a high-QoS host thread that lands on a
-  P-core and **cannot be demoted** (`nice`/`taskpolicy`/QoS on the VMM do nothing).
-  The vCPU *count* is the only lever. 8 structurally reserves **≥4 P + 4 E** physical
-  cores the guest can never claim → `WindowServer` always checks in → watchdog
-  disarmed. Never raise past 8; treat `--cpu >8` as re-arming the crash.
-- **24 GiB RAM** — clears risc0's ~16 GB build/prove floor with headroom, leaves 24
-  for the host.
+- **8 vCPU hard ceiling** — on Apple Silicon each vCPU is a high-QoS host thread.
+  The vCPU count is the reliable scheduling lever. Never raise past 8.
+- **12 GiB RAM hard ceiling** — 24 GiB was observed at ~21 GiB guest RSS while the
+  host had only 755 MiB free; WindowServer then missed its check-in. The cap is
+  validated before clone creation, not merely supplied as an overridable default.
+- **Guest allocation + 8 GiB admission reserve / 8 GiB runtime breaker** — a VM
+  is refused unless immediately free RAM can cover its full configured allocation
+  and still leave 8 GiB for the host (for example, a 12 GiB guest requires 20 GiB
+  free). A persistent user LaunchAgent checks every five seconds and stops all
+  running Tart VMs if immediately free memory falls below 8 GiB or macOS reports
+  elevated memory pressure. Named VMs are never auto-deleted; only ownerless
+  generated clones are reaped.
 - **`CARGO_BUILD_JOBS=6`** (a second, memory belt), `RAYON_NUM_THREADS=6`,
   `CARGO_INCREMENTAL=0`, `RUST_MIN_STACK=64M`, `ulimit -n 65536`. The risc0 C worker
   threads get their 64 MB stacks from the vendored `risc0-sys` patch (the env var
@@ -50,6 +54,25 @@ It does **not** commit. On PASS it prints the `git` command; you commit on the h
 deliberately (a commit is a human-authored act, and `git commit` is not a heavy
 build, so it is safe on the host).
 
+Guest sync preserves the golden image's warm `target/` cache, then overwrites the selected CLI and
+rebuilds against checksum-compared source; transferred files get current mtimes so Cargo cannot
+mistake changed source for an older cached output. It explicitly removes host-only `out/`, agent-worktree,
+adversary, export, and scratch trees instead of using recursive `--delete-excluded` over the
+48-GiB cache. `vm/pins/` copies only `CURRENT`, that selected immutable binary, and its metadata;
+archived guest pin binaries remain untouched and cannot become current.
+
+Every host-side gate also runs `caffeinate -dimsu -w <gate-pid>` so macOS cannot
+enter idle sleep/standby while the disposable guest is active. The persistent
+guard is installed as `~/Library/LaunchAgents/com.anubis.host-resource-guard.plist`
+and logs actions (not healthy polling noise) to
+`~/Library/Logs/anubis-host-resource-guard.log`. Verify it with:
+
+```sh
+bash scripts/test_host_resource_guard.sh
+bash scripts/lib/host_resource_guard.sh once
+launchctl print "gui/$(id -u)/com.anubis.host-resource-guard"
+```
+
 ## Fixpoint parity
 
 `EXPECTED_FIXPOINT_VM` (currently `a01a1e8b…`; re-baselined on each `anubis_sh.anb`
@@ -71,7 +94,7 @@ which the VM now contains — did.
 ## Re-provisioning the golden from scratch
 
 If `anubis-xcode` is lost, rebuild it: `tart clone ghcr.io/cirruslabs/macos-tahoe-xcode:latest anubis-xcode`
-→ `tart set --cpu 8 --memory 24576 --disk-size 150` → boot headless → install SSH key
+→ `tart set anubis-xcode --cpu 8 --memory 12288 --disk-size 150` → boot headless → install SSH key
 → `rustup` pinned `nightly-2026-05-10` (fetch-to-file then run; a `curl | sh` pipe is
 blocked by the host guard) → `brew install z3 coreutils` (**coreutils is required** — macOS
 ships no GNU `timeout`, which `run_shadow_diff.sh` wraps every check in; without it that gate

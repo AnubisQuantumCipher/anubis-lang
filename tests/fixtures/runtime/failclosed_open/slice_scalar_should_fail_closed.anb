@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: OPEN residual. slice(non-list/str) returns the value unchanged (run.rs other=>other).
+fn main() {
+    print(slice(99, 0, 1));
+}

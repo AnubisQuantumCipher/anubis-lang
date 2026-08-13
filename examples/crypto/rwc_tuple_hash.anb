@@ -1,0 +1,9 @@
+import std.crypto;
+fn main() {
+    let a = crypto::commit_parts("lab", ["ab", "c"]);
+    let b = crypto::commit_parts("lab", ["a", "bc"]);
+    // Must differ (TupleHash spirit)
+    if a == b { print("BAD"); } else { print("OK"); }
+    let n = crypto::aead_nonce_counter(1);
+    print(crypto::bytes_hex(n));
+}

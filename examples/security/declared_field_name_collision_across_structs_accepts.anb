@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// FABLE5 2026-07-27. The keying discriminator for R1, and the reason it is worth its own fixture:
+// bare-name-keyed maps are a FOUR-times-proven defect generator in this compiler
+// (`method_contracts`, `fn_declared_effects`, `fn_effect_rows`, the resolver). A field called `k` is
+// declared `secret<i64>` on `Vault` and plain `i64` on `Public`. Reading `p.k` must PASS.
+// If R1's lookup ever regresses to keying on the bare field name, `Vault`'s declaration would
+// contaminate `Public` and this fixture goes red — which is exactly the alarm we want, because the
+// failure would be silent over-rejection on an unrelated type.
+// The paired reject side is `declared_secret_struct_field_print_rejects`.
+struct Vault { k: secret<i64> }
+struct Public { k: i64 }
+fn main() {
+    let p = Public { k: 7 };
+    print(p.k);
+}

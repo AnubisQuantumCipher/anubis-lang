@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_MISSING_KEY
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// NON_COLLECTION surface: remove(map, missing) returned Int(0) — indistinct from a real value
+// See tests/fixtures/stdlib/NON_COLLECTION_SURFACE.md for the full matrix.
+fn main() {
+    let mut m = {"a": 1};
+    print(remove(m, "nope"));
+}

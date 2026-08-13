@@ -1,8 +1,15 @@
 // EXPECT: PASS
 // Over-rejection guard: a NON-egress function stored in a container, applied with a secret arg, must
 // still compile — only a function with an actual egress/sink summary triggers the interproc check.
+//
+// The third parameter is declared `secret<u64>` deliberately. An earlier version took a public `u64`
+// and passed a `secret<u64>` into it, which is a confidentiality label drop at the call boundary
+// (`ANUBIS_SECRET_TO_PUBLIC`) — and the byte-identical DIRECT call `safe("host", 80, k)` rejects for
+// exactly that reason. That version only passed because storing `safe` in a container hid its
+// identity from the resolver, so the fixture was asserting that a laundering path should stay open.
+// Fixed rather than deleted: the guard it provides is real, and it now tests only what it claims to.
 struct Box { f: u64 }
-fn safe(h: string, p: u32, x: u64) -> u64 { return x; }
+fn safe(h: string, p: u32, x: secret<u64>) -> secret<u64> { return x; }
 fn run(k: secret<u64>) uses(net.send) {
     let b = Box { f: safe };
     let y = b.f("host", 80, k);

@@ -94,3 +94,47 @@ pub fn lateral_smb_plan(eng: &Engagement, host: &str) -> Result<serde_json::Valu
         "note": "SMB/WinRM lateral plan only. macOS lab uses lateral-ssh + UDS. No SMB sockets opened.",
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+
+    #[test]
+    fn lateral_ssh_blocks_destructive_commands() {
+        let mut eng = Engagement::default_lab("lateral-test", "unit test auth");
+        // `assert_lateral_host` calls `assert_host` FIRST, so a lateral target must be in the
+        // general scope AND the lateral allowlist — defence in depth. Populating only the latter
+        // makes the call fail at ANUBIS_SCOPE_DENIED and never reach the command denylist under
+        // test.
+        eng.allowed_hosts.push("10.0.0.1".into());
+        eng.allowed_lateral_hosts.push("10.0.0.1".into());
+        let blocked = [
+            "rm -rf /",
+            "mkfs.ext4",
+            ":(){ :|:&};:",
+            "dd if=/dev/zero",
+            "shutdown now",
+            "reboot",
+        ];
+        for bad in blocked {
+            let result = lateral_ssh(&eng, "10.0.0.1", "root", bad);
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("ANUBIS_LATERAL_CMD_BLOCKED"),
+                "should block `{bad}`: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn lateral_ssh_rejects_empty_command() {
+        let mut eng = Engagement::default_lab("lateral-test2", "unit test auth");
+        eng.allowed_hosts.push("10.0.0.1".into());
+        eng.allowed_lateral_hosts.push("10.0.0.1".into());
+        let err = lateral_ssh(&eng, "10.0.0.1", "root", "  ")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ANUBIS_LATERAL_EMPTY_CMD"), "{err}");
+    }
+}

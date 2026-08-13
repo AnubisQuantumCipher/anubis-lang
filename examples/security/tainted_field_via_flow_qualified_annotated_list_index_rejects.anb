@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// W1 qualifier unwrapping: list<secret<S>> still has nominal element S for declared-field lookup;
+// the whole-element confidentiality label must not hide the field's independent integrity label.
+struct S { k: tainted<i64> }
+
+fn main() {
+    let xs: list<secret<S>> = [S { k: 7 }];
+    sink(xs[0].k);
+}

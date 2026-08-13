@@ -417,7 +417,7 @@ pub fn build_applied(
     };
     let ast = anubis_compiler::parse_source(&src)
         .map_err(|e| anyhow!("ANUBIS_APPLY_PARSE_FAILED: {e}"))?;
-    let mode = crate::first_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
+    let mode = crate::program_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
     anubis_compiler::typecheck(ast, mode).map_err(|e| {
         anyhow!(
             "ANUBIS_APPLY_UNVERIFIED: refuse apply from a program that does not pass check: {e}"

@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: NaN
+// DOC_OK / IEEE 754 LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// acos(2.0) is outside [-1,1] and yields NaN; not a fail-closed defect.
+fn main() {
+    print(acos(2.0));
+}

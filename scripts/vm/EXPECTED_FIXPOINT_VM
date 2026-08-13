@@ -108,4 +108,24 @@
 #     9030e24b…780c (macOS host). VM battery all EXIT=0 (language 244/244, security 123/123,
 #     stdlib 11/11, shadow unexpected=0, seal 9/9, dogfood 3/3, effect/capset/type/taint SH 0-disagreements).
 #     Absolute VM binary digest moved → deliberate re-baseline (not silent drift).
-189ac49618ccf193008ba81648caeb37657a348f7c39d111ffd6aad9a6b95fc8
+#   189ac496…5fc8 -> 46ddce14…ba60  (2026-07-28, Phase 5/6 closeout — first FULLY GREEN battery)
+#     Trigger: the compiler changed across the Phase 5/6 arc (middle/loopctl.rs statement totality +
+#     builtin arity checks in middle/mod.rs, std.math wrap contract, std.testing switched from the
+#     PROOF construct `assert` to the RUNTIME construct `panic`). No anubis_sh.anb edit.
+#
+#     Held back TWICE before being taken. Runs on 2026-07-28 measured this same digest with the
+#     battery at 17/19 and 18/19, and it was NOT written then: this file records the digest a GREEN
+#     battery produces, and re-baselining on a red board puts a number behind the word "sealed" that
+#     no green run ever made. It is written now because the battery is green.
+#
+#     Battery: ALL 20 gates EXIT=0, `gate failures : 0` — the first run in which `formal` executed at
+#     all. It had been exit 127 (TOOLCHAIN ABSENT: the golden image carried no lake/elan), so the 162
+#     Lean theorems were never checked in the guest; elan + Lean v4.32.0 were installed into
+#     anubis-xcode and FORMAL_GATE now PASSes there. language 247/247, security 317/317, stdlib 11/11
+#     (host lane) / 10/10 (guest lane, PoC SKIP — no nested virtualization), stdlib-fc 104/104,
+#     seal stage2==stage3, effect/capset/type/taint SH 0-disagreements, docs-drift, walker, native-auth.
+#
+#     REPRODUCIBLE: the identical digest came out of THREE independent clone→boot→build cycles
+#     (guests .64.7, .64.3, .64.5) before it was written here. A digest seen once is a measurement;
+#     seen three times across throwaway guests, it is a fixpoint.
+46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60

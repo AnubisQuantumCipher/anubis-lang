@@ -4,26 +4,76 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-OUT_ARG="${1:-out/dx_gate}"
-# Absolute so subshells `cd` elsewhere still write logs correctly.
-if [[ "$OUT_ARG" = /* ]]; then
-  OUT="$OUT_ARG"
+source "$ROOT/scripts/lib/gate_common.sh"
+if [[ $# -gt 0 ]]; then
+  OUT_ARG="$1"
+  # Absolute so subshells `cd` elsewhere still write logs correctly.
+  if [[ "$OUT_ARG" = /* ]]; then
+    OUT="$OUT_ARG"
+  else
+    OUT="$ROOT/$OUT_ARG"
+  fi
+  mkdir -p "$OUT"
 else
-  OUT="$ROOT/$OUT_ARG"
+  mkdir -p "$ROOT/out"
+  OUT="$(mktemp -d "$ROOT/out/dx_gate.XXXXXX")"
 fi
-mkdir -p "$OUT"
+OUT_LOCK="$OUT/.anubis-dx.lock"
+if ! mkdir "$OUT_LOCK" 2>/dev/null; then
+  echo "DX_GATE: FAIL (output directory is already in use: $OUT)" >&2
+  exit 2
+fi
+trap 'rmdir "$OUT_LOCK" 2>/dev/null || true' EXIT
+if ! assert_clean_output_dir "$OUT" ".anubis-dx.lock" "DX gate"; then
+  echo "DX_GATE: FAIL ($GATE_OUTPUT_DIR_ERROR)" >&2
+  exit 2
+fi
+echo "dx_out=$OUT"
+: >"$OUT/summary_fail.txt"
 
 pass=0
 fail=0
 detail=()
 note() { detail+=("$1"); }
 
-BIN=./target/release/anubis
-cargo build -q --release -p anubis
+BIN="${ANUBIS_BIN:-}"
+if [[ -z "$BIN" ]]; then
+  if ! scripts/publish_pin.sh --verify >"$OUT/pin_verify.log" 2>&1; then
+    cat "$OUT/pin_verify.log" >&2
+    echo "DX_GATE: FAIL (published pin does not match the live source tree)" >&2
+    exit 127
+  fi
+  BIN="$(scripts/publish_pin.sh --current)" || {
+    echo "DX_GATE: FAIL (no ANUBIS_BIN and no published pin)" >&2
+    exit 127
+  }
+fi
+[[ -x "$BIN" ]] || { echo "DX_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+if ! BIN_SHA="$(shasum -a 256 "$BIN" | awk 'NR == 1 { print $1 }')" \
+  || [[ ! "$BIN_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "DX_GATE: FAIL (could not hash ANUBIS_BIN=$BIN)" >&2
+  exit 127
+fi
+echo "anubis_bin=$BIN sha256=$BIN_SHA"
+CARGO_TERM_COLOR=never
+export CARGO_TERM_COLOR
 
 # 1) Unit: doc / interp / lsp_analysis
-if cargo test -p anubis-compiler --lib -- doc::tests interp::tests lsp_analysis 2>&1 | tee "$OUT/unit.log" | grep -q "test result: ok"; then
-  pass=$((pass+1)); note "unit_dx: PASS"
+run_unit_filter() {
+  local description="$1" filter="$2" log="$3"
+  if ! cargo test -p anubis-compiler --lib "$filter" >"$log" 2>&1; then
+    cat "$log" >&2
+    return 1
+  fi
+  if ! assert_rust_tests_exercised "$log" "$description"; then
+    return 1
+  fi
+  echo "$description tests_exercised=$GATE_RUST_TESTS_PASSED" | tee -a "$OUT/unit_counts.log"
+}
+if run_unit_filter "doc" "doc::tests" "$OUT/unit_doc.log" \
+  && run_unit_filter "interp" "interp::tests" "$OUT/unit_interp.log" \
+  && run_unit_filter "lsp_analysis" "lsp_analysis" "$OUT/unit_lsp.log"; then
+  pass=$((pass+1)); note "unit_dx: PASS (doc/interp/lsp all nonzero)"
 else
   fail=$((fail+1)); note "unit_dx: FAIL"
 fi
@@ -78,11 +128,38 @@ else
 fi
 
 # 7) LSP CLI present + real JSON-RPC roundtrip
-if "$BIN" --help 2>&1 | grep -qi lsp; then
-  if python3 scripts/test_lsp_roundtrip.py >"$OUT/lsp_roundtrip.log" 2>&1; then
+if BIN_HELP="$("$BIN" --help 2>&1)" && grep -qi lsp <<<"$BIN_HELP"; then
+  if python3 scripts/test_lsp_protocol.py >"$OUT/lsp_protocol.log" 2>&1 \
+    && python3 scripts/test_lsp_harness_config.py >"$OUT/lsp_harness_config.log" 2>&1 \
+    && ANUBIS_BIN="$BIN" ANUBIS_LSP_OUT="$OUT/lsp_roundtrip" \
+    python3 scripts/test_lsp_roundtrip.py >"$OUT/lsp_roundtrip.log" 2>&1 \
+    && python3 - "$BIN" "$OUT/lsp_roundtrip/instrument.json" >>"$OUT/lsp_roundtrip.log" 2>&1 <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+binary = pathlib.Path(sys.argv[1]).resolve()
+instrument_path = pathlib.Path(sys.argv[2])
+with instrument_path.open(encoding="utf-8") as handle:
+    instrument = json.load(handle)
+expected = hashlib.sha256(binary.read_bytes()).hexdigest()
+before = instrument.get("before") or {}
+after = instrument.get("after") or {}
+if instrument.get("stable") is not True:
+    raise SystemExit("LSP_INSTRUMENT_UNSTABLE")
+if pathlib.Path(before.get("path", "")).resolve() != binary:
+    raise SystemExit("LSP_INSTRUMENT_PATH_MISMATCH")
+if before.get("sha256") != expected or after.get("sha256") != expected:
+    raise SystemExit("LSP_INSTRUMENT_HASH_MISMATCH")
+print(f"lsp_instrument_sha256={expected}")
+PY
+  then
     pass=$((pass+1)); note "lsp_roundtrip: PASS"
   else
     fail=$((fail+1)); note "lsp_roundtrip: FAIL"
+    cat "$OUT/lsp_protocol.log" >>"$OUT/summary_fail.txt" 2>/dev/null || true
+    cat "$OUT/lsp_harness_config.log" >>"$OUT/summary_fail.txt" 2>/dev/null || true
     cat "$OUT/lsp_roundtrip.log" >>"$OUT/summary_fail.txt" || true
   fi
 else
@@ -158,8 +235,7 @@ if [[ -n "$TS_BIN" ]]; then
     tail -20 "$OUT/ts_test.log" >>"$OUT/summary_fail.txt" 2>/dev/null || true
   fi
 elif [[ -f editors/tree-sitter-anubis/src/parser.c ]]; then
-  # CLI absent but generated parser present from a prior seal
-  pass=$((pass+1)); note "tree_sitter_cli_test: PASS (parser.c present; CLI skipped)"
+  fail=$((fail+1)); note "tree_sitter_cli_test: FAIL (parser.c present but CLI test was not executed)"
 else
   fail=$((fail+1)); note "tree_sitter_cli_test: FAIL (no CLI and no parser.c)"
 fi
@@ -169,7 +245,7 @@ if [[ -f docs/language/TUTORIAL.md ]] \
   && grep -q 'anubis doc' docs/language/TUTORIAL.md \
   && grep -q 'Contracts' docs/language/TUTORIAL.md \
   && grep -q 'Phase 7' docs/language/SPEC.md \
-  && grep -q 'Learn Anubis' README.md; then
+  && grep -q 'docs/language/TUTORIAL.md' README.md; then
   pass=$((pass+1)); note "docs_tutorial_spec: PASS"
 else
   fail=$((fail+1)); note "docs_tutorial_spec: FAIL"
@@ -177,14 +253,14 @@ fi
 
 # 11) Phase 5/6 regression smoke
 if cargo test -p anubis-compiler --lib phase5_ -- --test-threads=4 >"$OUT/p5.log" 2>&1 \
-  && grep -q "test result: ok" "$OUT/p5.log"; then
-  pass=$((pass+1)); note "phase5_regress: PASS"
+  && assert_rust_tests_exercised "$OUT/p5.log" "phase5_"; then
+  pass=$((pass+1)); note "phase5_regress: PASS ($GATE_RUST_TESTS_PASSED tests)"
 else
   fail=$((fail+1)); note "phase5_regress: FAIL"
 fi
 if cargo test -p anubis-compiler --lib phase6_ -- --test-threads=4 >"$OUT/p6.log" 2>&1 \
-  && grep -q "test result: ok" "$OUT/p6.log"; then
-  pass=$((pass+1)); note "phase6_regress: PASS"
+  && assert_rust_tests_exercised "$OUT/p6.log" "phase6_"; then
+  pass=$((pass+1)); note "phase6_regress: PASS ($GATE_RUST_TESTS_PASSED tests)"
 else
   fail=$((fail+1)); note "phase6_regress: FAIL"
 fi
@@ -206,10 +282,12 @@ fi
 mkdir -p "$OUT/testfiles"
 printf '// EXPECT: PASS\nfn main() { print(1); }\n' >"$OUT/testfiles/ok.anb"
 printf '// EXPECT: FAIL\nfn main() { let x: u32 = true; print(x); }\n' >"$OUT/testfiles/bad.anb"
-if "$BIN" test "$OUT/testfiles" >"$OUT/test_runner.log" 2>&1; then
-  pass=$((pass+1)); note "test_runner: PASS"
+if "$BIN" test "$OUT/testfiles" >"$OUT/test_runner.log" 2>&1 \
+  && assert_anubis_tests_exercised "$OUT/test_runner.log" "DX test runner"; then
+  pass=$((pass+1)); note "test_runner: PASS ($GATE_ANUBIS_TESTS_TOTAL fixtures)"
 else
   fail=$((fail+1)); note "test_runner: FAIL"
+  printf '%s\n' "${GATE_ANUBIS_TESTS_ERROR:-anubis test command failed}" >>"$OUT/summary_fail.txt"
   cat "$OUT/test_runner.log" >>"$OUT/summary_fail.txt" || true
 fi
 
@@ -217,6 +295,17 @@ fi
   echo "dx_gate pass=$pass fail=$fail"
   for d in "${detail[@]}"; do echo "  $d"; done
 } | tee "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "dx_gate" "$_cases" "$ROOT/scripts/floors/dx_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
 
 if [[ "$fail" -gt 0 ]]; then
   echo "DX_GATE: FAIL" | tee -a "$OUT/summary.txt"

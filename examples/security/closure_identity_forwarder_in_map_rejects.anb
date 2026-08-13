@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// #72 map-literal twin of closure_identity_forwarder_in_list_rejects.
+fn fwd(f) { return f; }
+fn main() {
+    let k = secret_source("k");
+    let m = { "g": fwd(|x| print(k)) };
+    m["g"](0);
+}

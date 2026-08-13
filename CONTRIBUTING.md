@@ -10,6 +10,12 @@ Anubis is an *evidence-native* language, and the project is built the same way i
 asks you to build programs: every change carries its own proof, and nothing merges
 until the gates that a stranger would run on a fresh clone stay green.
 
+**New here?** [`docs/README.md`](docs/README.md) is the documentation map — it routes by what you
+are trying to do and tells you what you can skip. You do not need to read the audit trail to
+contribute. The two files worth reading before your first change are [`AGENTS.md`](AGENTS.md) (the
+standing rules and the gotchas that cost hours) and [`docs/CLAIMS.md`](docs/CLAIMS.md) (what is
+currently open — the single source of truth for status).
+
 ---
 
 ## The one front door

@@ -115,3 +115,54 @@ pub fn recon_scan_out_of_scope(eng: &Engagement, host: &str) -> Result<Value> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+
+    #[test]
+    fn recon_scan_rejects_out_of_scope_host() {
+        let eng = Engagement::default_lab("recon-test", "lab-auth");
+        let err = recon_scan(&eng, "10.0.0.1", Some(&[80])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SCOPE") || msg.contains("DENIED"),
+            "out-of-scope host must be denied: {msg}"
+        );
+    }
+
+    #[test]
+    fn recon_scan_out_of_scope_helper_returns_denied() {
+        let eng = Engagement::default_lab("recon-test", "lab-auth");
+        let result = recon_scan_out_of_scope(&eng, "192.168.1.1").unwrap();
+        assert_eq!(result["denied"].as_bool(), Some(true));
+        assert_eq!(result["ok"].as_bool(), Some(false));
+        assert_eq!(result["policy"].as_str(), Some("fail_closed_scope"));
+    }
+
+    #[test]
+    fn recon_hostinfo_includes_operator_env() {
+        let eng = Engagement::default_lab("recon-test", "lab-auth");
+        let result = recon_hostinfo(&eng).unwrap();
+        assert_eq!(result["module"].as_str(), Some("recon_hostinfo"));
+        assert!(result["operator_os"].as_str().is_some());
+        assert!(result["operator_arch"].as_str().is_some());
+        assert!(result["allowed_hosts"].as_array().is_some());
+        assert_eq!(result["executed"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn recon_scan_loopback_does_not_error_on_scope() {
+        let eng = Engagement::default_lab("recon-test", "lab-auth");
+        // Use port 1 which is almost certainly closed — we're testing scope, not connectivity
+        let result = recon_scan(&eng, "127.0.0.1", Some(&[1]));
+        assert!(
+            result.is_ok(),
+            "loopback must be in scope: {:?}",
+            result.err()
+        );
+        let v = result.unwrap();
+        assert_eq!(v["host"].as_str(), Some("127.0.0.1"));
+    }
+}

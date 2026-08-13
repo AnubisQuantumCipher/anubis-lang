@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 42
+// DOC_OK / string auto-stringify LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+fn main() {
+    print(upper(42));
+}

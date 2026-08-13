@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// CORPUS-1 2026-07-27. Defect B (declared `secret<T>` struct field lost at a pattern binder), the
+// LET-OF-CALL-RESULT face: `let V { k } = get_v();` destructures a function's RETURN directly,
+// rather than an intermediate local (`struct_pattern_binder_secret_field_rejects` covers the local
+// form). TODAY: already REJECTS correctly (coverage guard, verified by direct run) — the pattern
+// binder's field-type lookup keys off the struct name regardless of whether the scrutinee is a
+// local or a fresh call result.
+struct V { k: secret<i64> }
+fn get_v() -> V { return V { k: 42 }; }
+fn main() { let V { k } = get_v(); print(k); }

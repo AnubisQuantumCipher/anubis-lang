@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+// A mode elevator hidden in a LOOP INVARIANT. Before this fixture's fix the detector did not
+// walk invariant expressions, so no authorization diagnostic was raised — the program was
+// rejected only incidentally, by ANUBIS_LOOP_INVARIANT_UNVERIFIABLE, and evidence mode stayed
+// `safe`. A guarantee that holds only because an unrelated check fails is not a guarantee.
+
+fn main() {
+  while true invariant((|| { @research { let y = 1; } true })()) {
+    break;
+  }
+  print(1);
+}
+

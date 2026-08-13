@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Integrity twin of the nested generic indexed-field confidentiality regression.
+struct Inner { k: tainted<i64> }
+struct Box<T> { inner: Inner, pad: T }
+
+fn main() uses(shell) {
+    let xs: list<Box<i64>> = [Box { inner: Inner { k: 7 }, pad: 0 }];
+    shell(xs[0].inner.k);
+}

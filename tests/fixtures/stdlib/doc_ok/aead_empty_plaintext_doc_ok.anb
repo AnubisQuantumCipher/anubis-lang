@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 16
+// DOC_OK / CRYPTO LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// AEAD with empty plaintext produces a 16-byte tag (Poly1305 MAC only, no ciphertext).
+// This is valid per the ChaCha20-Poly1305 spec.
+fn main() {
+    let key = random_bytes(32);
+    let nonce = random_bytes(12);
+    let ct = aead_seal(key, nonce, "aad", "");
+    print(len(ct));
+    let pt = aead_open(key, nonce, "aad", ct);
+    print(len(pt));
+}

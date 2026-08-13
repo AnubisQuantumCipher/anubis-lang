@@ -1,5 +1,22 @@
 # Anubis RISC0 Backend (Gate 10)
 
+> ## ⚠️ Dated 2026-07-05 — the status in this file is superseded
+>
+> The verdict below ("Fresh receipt: **PARTIAL** … full passing cryptographic receipt limited")
+> describes the tree as it stood on **2026-07-05**. It is no longer current, and it disagrees with
+> newer documents in this repository. Do not read its status lines as today's state.
+>
+> **Current sources, in order of authority:**
+> [`docs/CLAIMS.md`](CLAIMS.md) (the single source of truth) ·
+> [`docs/proof/RISC0_PARAMETERIZED_PROOFS_STATUS.md`](proof/RISC0_PARAMETERIZED_PROOFS_STATUS.md) ·
+> [`docs/proof/RISC0_PARAMETERIZED_INPUT_ABI.md`](proof/RISC0_PARAMETERIZED_INPUT_ABI.md) ·
+> [`docs/CAPABILITIES.md` § Prove](CAPABILITIES.md)
+>
+> Re-derive rather than trust either document: `bash scripts/run_prove_gate.sh`.
+>
+> The **usage and path** sections below are still a useful orientation to the command surface; only
+> the status claims are stale.
+
 ## Usage
 cargo run -- prove examples/risc0_receipt.anb --backend risc0 --evidence --out out/...
 cargo run -- verify-receipt --receipt .../receipt.bin --image-id .../image_id.txt

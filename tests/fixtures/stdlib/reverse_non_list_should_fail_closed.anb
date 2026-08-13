@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// GROK-SEKHMET round5. reverse on a non-list/non-string still returns the value
+// unchanged (anubis_reverse `_ => other`). Discriminator: reverse([1,2]) works;
+// reverse(42) must fail closed, not print 42.
+fn main() {
+    print(reverse(42));
+}

@@ -8,6 +8,10 @@
 use crate::frontend::{Expr, Item, Stmt};
 use anyhow::{anyhow, Result};
 
+type MonoTypeArgs = Vec<(String, String)>;
+type MonoSiteQueue = Vec<(String, MonoTypeArgs)>;
+type MonoSitesByCaller = std::collections::BTreeMap<String, MonoSiteQueue>;
+
 /// Emit-time context threaded through lowering: the research gate plus the set of user function
 /// names, so a call resolves to (in priority order) a user function, a stdlib builtin, or the
 /// application of a closure-valued variable.
@@ -31,6 +35,107 @@ struct EmitCtx<'a> {
     /// (a `Call`/`FieldAccess`/`Index` the checker cannot type) that smuggles the wrong runtime kind.
     struct_field_types:
         &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    /// Static monomorphization dispatch table from the type checker.
+    /// Call sites that pin args to a specialization invoke the mangled clone instead of the
+    /// generic `anb_*` body. Primitive specializations may use an unboxed native ABI.
+    mono: &'a [MonoEmitSpec],
+    /// Free-function parameter type annotations (for mono call matching).
+    fn_param_types: &'a std::collections::BTreeMap<String, Vec<String>>,
+    /// Function currently being emitted (for ordered mono call-site queues).
+    current_fn: Option<&'a str>,
+    /// Per-caller ordered generic call sites: callee name + type_args pairs.
+    mono_sites_by_caller: &'a MonoSitesByCaller,
+    /// Per-caller consumption cursor into `mono_sites_by_caller`.
+    mono_cursors: &'a std::collections::BTreeMap<String, std::cell::Cell<usize>>,
+}
+
+/// One monomorphized specialization ready for emit + call-site rewrite.
+#[derive(Clone, Debug)]
+struct MonoEmitSpec {
+    function: String,
+    type_args: Vec<(String, String)>,
+    rust_name: String,
+    /// Native ABI when every specialized param + return is a primitive.
+    unboxed: Option<MonoUnboxedAbi>,
+}
+
+/// Unboxed monomorphization ABI: native Rust types at the function boundary.
+#[derive(Clone, Debug)]
+struct MonoUnboxedAbi {
+    params: Vec<MonoPrim>,
+    ret: MonoPrim,
+}
+
+/// Primitive kinds eligible for unboxed monomorphized ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MonoPrim {
+    Int,
+    Float,
+    Bool,
+    String,
+}
+
+impl MonoPrim {
+    fn rust_ty(self) -> &'static str {
+        match self {
+            MonoPrim::Int => "i64",
+            MonoPrim::Float => "f64",
+            MonoPrim::Bool => "bool",
+            MonoPrim::String => "String",
+        }
+    }
+
+    /// Wrap an AnubisValue expression into this native type.
+    fn coerce_from_anubis(self, expr: &str) -> String {
+        match self {
+            MonoPrim::Int => format!("({expr}).as_i64()"),
+            MonoPrim::Float => format!("({expr}).as_f64()"),
+            MonoPrim::Bool => format!("({expr}).as_bool()"),
+            MonoPrim::String => format!("({expr}).display_string()"),
+        }
+    }
+
+    /// Wrap a native expression into AnubisValue.
+    fn to_anubis(self, expr: &str) -> String {
+        match self {
+            MonoPrim::Int => format!("AnubisValue::Int({expr})"),
+            MonoPrim::Float => format!("AnubisValue::Float({expr})"),
+            MonoPrim::Bool => format!("AnubisValue::Bool({expr})"),
+            MonoPrim::String => format!("anubis_mk_str({expr})"),
+        }
+    }
+}
+
+/// Classify a specialized type annotation for unboxed ABI eligibility.
+fn mono_prim_of(annotation: &str) -> Option<MonoPrim> {
+    let t = annotation.trim();
+    if t == "bool" {
+        return Some(MonoPrim::Bool);
+    }
+    if t == "string" || t == "str" {
+        return Some(MonoPrim::String);
+    }
+    if crate::middle::ty::is_float(t) || t == "float" || t == "f64" {
+        return Some(MonoPrim::Float);
+    }
+    if crate::middle::ty::is_integer(t) || t == "int" || t == "i64" || t == "i32" {
+        return Some(MonoPrim::Int);
+    }
+    None
+}
+
+/// Build unboxed ABI when every specialized param and the return type are primitives.
+fn mono_unboxed_abi(params: &[(String, String)], ret: Option<&str>) -> Option<MonoUnboxedAbi> {
+    let ret_ann = ret?;
+    let ret = mono_prim_of(ret_ann)?;
+    let mut param_prims = Vec::with_capacity(params.len());
+    for (_, ty) in params {
+        param_prims.push(mono_prim_of(ty)?);
+    }
+    Some(MonoUnboxedAbi {
+        params: param_prims,
+        ret,
+    })
 }
 
 /// Collect every name bound anywhere in a function (params + let/for/match/if-let/while-let/
@@ -215,6 +320,8 @@ struct FnDef<'a> {
     /// Declared return type (`-> T`), or `None`. When it is an integer type, the runtime enforces the
     /// value returned is actually an integer (see the entry guard's RC6/RC7 rationale).
     ret_type: Option<&'a str>,
+    /// Generic type parameters (`fn id<T>(…)` → `["T"]`). Empty for monomorphic functions.
+    generics: &'a [String],
 }
 
 /// The emitted Rust function name for an Anubis function or method.
@@ -238,6 +345,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                 params,
                 body,
                 ret,
+                generics,
                 ..
             } => out.push(FnDef {
                 name: name.as_str(),
@@ -245,6 +353,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                 body: body.as_slice(),
                 impl_type: None,
                 ret_type: ret.as_deref(),
+                generics: generics.as_slice(),
             }),
             Item::Impl {
                 type_name, methods, ..
@@ -255,6 +364,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                         params,
                         body,
                         ret,
+                        generics,
                         ..
                     } = m
                     {
@@ -264,6 +374,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                             body: body.as_slice(),
                             impl_type: Some(type_name.as_str()),
                             ret_type: ret.as_deref(),
+                            generics: generics.as_slice(),
                         });
                     }
                 }
@@ -272,6 +383,427 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
             _ => {}
         }
     }
+}
+
+/// Substitute a free type parameter annotation using monomorphization bindings.
+/// Bare `T` becomes the concrete type; compound annotations are left unchanged (accept-biased).
+fn subst_type_param(
+    annotation: &str,
+    type_args: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let t = annotation.trim();
+    type_args
+        .get(t)
+        .cloned()
+        .unwrap_or_else(|| annotation.to_string())
+}
+
+/// Mangled Rust name for a monomorphized clone: `anb_id__mono__T_u32`.
+fn mono_rust_name(
+    fn_name: &str,
+    type_args: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
+    let mut parts: Vec<String> = type_args.iter().map(|(k, v)| format!("{k}_{v}")).collect();
+    parts.sort();
+    let tag = parts.join("__");
+    Ok(format!(
+        "anb_{}__mono__{}",
+        sanitize_ident(fn_name)?,
+        sanitize_ident(&tag)?
+    ))
+}
+
+/// Whether a source expression is a literal that pins to `expected` annotation at mono dispatch.
+fn mono_literal_matches(arg: &Expr, expected: &str) -> bool {
+    let t = expected.trim();
+    match arg {
+        Expr::Literal(s) => {
+            let s = s.trim();
+            if s == "true" || s == "false" {
+                return t == "bool";
+            }
+            if s.contains('.') {
+                return crate::middle::ty::is_float(t) || t == "float" || t == "f64";
+            }
+            // Decimal / hex integer literal
+            if s.parse::<i64>().is_ok()
+                || s.strip_prefix("0x")
+                    .or_else(|| s.strip_prefix("0X"))
+                    .map(|h| i64::from_str_radix(h, 16).is_ok())
+                    .unwrap_or(false)
+            {
+                return crate::middle::ty::is_integer(t) || t == "int" || t == "i64" || t == "i32";
+            }
+            false
+        }
+        Expr::Unary { op, expr, .. } if op == "-" && matches!(expr.as_ref(), Expr::Literal(_)) => {
+            crate::middle::ty::is_integer(t) || t == "int" || t == "i64" || t == "i32"
+        }
+        Expr::StrLiteral(_) => t == "string" || t == "str",
+        _ => false,
+    }
+}
+
+/// Resolved monomorphized call: rust name + optional unboxed ABI for wrap/unwrap.
+struct MonoCallResolved {
+    rust_name: String,
+    unboxed: Option<MonoUnboxedAbi>,
+}
+
+/// Look up a mono table entry by callee + type_args pairs.
+fn mono_spec_for(
+    callee: &str,
+    pairs: &[(String, String)],
+    ctx: &EmitCtx<'_>,
+) -> Option<MonoCallResolved> {
+    for spec in ctx.mono {
+        if spec.function == callee && spec.type_args.as_slice() == pairs {
+            return Some(MonoCallResolved {
+                rust_name: spec.rust_name.clone(),
+                unboxed: spec.unboxed.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// Pick a monomorphized specialization: prefer ordered checker call-site queue (variable-pinned),
+/// then literal-arg matching as a fallback.
+fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<MonoCallResolved> {
+    // 1) Ordered queue from typecheck (handles `id(x)` when the checker pinned `x`).
+    if let Some(caller) = ctx.current_fn {
+        if let (Some(sites), Some(cursor)) = (
+            ctx.mono_sites_by_caller.get(caller),
+            ctx.mono_cursors.get(caller),
+        ) {
+            let ix = cursor.get();
+            if ix < sites.len() {
+                let (site_callee, pairs) = &sites[ix];
+                if site_callee == callee {
+                    cursor.set(ix + 1);
+                    if !pairs.is_empty() {
+                        if let Some(resolved) = mono_spec_for(callee, pairs, ctx) {
+                            return Some(resolved);
+                        }
+                    }
+                    // Consumed unpinned site — fall through to generic (or literal fallback).
+                    return None;
+                }
+            }
+        }
+    }
+
+    // 2) Literal-arg fallback when queue is absent/mismatched.
+    let param_tys = ctx.fn_param_types.get(callee)?;
+    if param_tys.len() != args.len() {
+        return None;
+    }
+    for spec in ctx.mono {
+        if spec.function != callee {
+            continue;
+        }
+        let map: std::collections::BTreeMap<String, String> =
+            spec.type_args.iter().cloned().collect();
+        if map.is_empty() {
+            continue;
+        }
+        let mut ok = true;
+        let mut pinned = 0usize;
+        for (pty, arg) in param_tys.iter().zip(args.iter()) {
+            let base = pty.trim();
+            if let Some(concrete) = map.get(base) {
+                if !mono_literal_matches(arg, concrete) {
+                    ok = false;
+                    break;
+                }
+                pinned += 1;
+            }
+        }
+        if ok && pinned > 0 {
+            return Some(MonoCallResolved {
+                rust_name: spec.rust_name.clone(),
+                unboxed: spec.unboxed.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// Whether `expr` is a pure expression of live names + literals only (no calls/IO).
+fn mono_expr_is_full_native_eligible(
+    expr: &Expr,
+    live: &std::collections::BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Var(n) => live.contains(n),
+        Expr::Literal(_) | Expr::StrLiteral(_) => true,
+        Expr::Unary { op, expr, .. } if op == "-" || op == "!" || op == "~" => {
+            mono_expr_is_full_native_eligible(expr, live)
+        }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            matches!(
+                op.as_str(),
+                "+" | "-"
+                    | "*"
+                    | "/"
+                    | "%"
+                    | "&"
+                    | "|"
+                    | "^"
+                    | "<<"
+                    | ">>"
+                    | "&&"
+                    | "||"
+                    | "=="
+                    | "!="
+                    | "<"
+                    | "<="
+                    | ">"
+                    | ">="
+            ) && mono_expr_is_full_native_eligible(lhs, live)
+                && mono_expr_is_full_native_eligible(rhs, live)
+        }
+        // Pure if-expression: cond and both arms must be pure.
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            mono_expr_is_full_native_eligible(cond, live)
+                && mono_expr_is_full_native_eligible(then, live)
+                && mono_expr_is_full_native_eligible(else_, live)
+        }
+        // Block expression used as if-branch: only a pure tail (no side-effect stmts).
+        Expr::Block { stmts, tail } => {
+            stmts.is_empty()
+                && tail
+                    .as_ref()
+                    .map(|t| mono_expr_is_full_native_eligible(t, live))
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// Emit a native Rust expression for a full-unbox mono body (params already native-typed).
+fn emit_mono_native_expr(expr: &Expr) -> Result<String> {
+    match expr {
+        Expr::Var(n) => sanitize_ident(n),
+        Expr::Literal(s) => {
+            let s = s.trim();
+            if s == "true" || s == "false" {
+                return Ok(s.to_string());
+            }
+            if s.parse::<i64>().is_ok()
+                || s.strip_prefix("0x")
+                    .or_else(|| s.strip_prefix("0X"))
+                    .map(|h| i64::from_str_radix(h, 16).is_ok())
+                    .unwrap_or(false)
+            {
+                return Ok(s.to_string());
+            }
+            if s.parse::<f64>().is_ok() {
+                return Ok(s.to_string());
+            }
+            Err(anyhow!("mono native: unsupported literal `{s}`"))
+        }
+        Expr::StrLiteral(s) => Ok(format!("{}.to_string()", rust_string_lit(s)?)),
+        Expr::Unary { op, expr, .. } => {
+            let inner = emit_mono_native_expr(expr)?;
+            match op.as_str() {
+                "-" => Ok(format!("-({inner})")),
+                "!" => Ok(format!("!({inner})")),
+                "~" => Ok(format!("!({inner})")),
+                other => Err(anyhow!("mono native: unsupported unary `{other}`")),
+            }
+        }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let l = emit_mono_native_expr(lhs)?;
+            let r = emit_mono_native_expr(rhs)?;
+            match op.as_str() {
+                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||"
+                | "==" | "!=" | "<" | "<=" | ">" | ">=" => Ok(format!("({l} {op} {r})")),
+                other => Err(anyhow!("mono native: unsupported binary `{other}`")),
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            let c = emit_mono_native_expr(cond)?;
+            let t = emit_mono_native_expr(then)?;
+            let e = emit_mono_native_expr(else_)?;
+            Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
+        }
+        Expr::Block { stmts, tail } if stmts.is_empty() => match tail {
+            Some(t) => emit_mono_native_expr(t),
+            None => Err(anyhow!("mono native: empty block")),
+        },
+        _ => Err(anyhow!("mono native: unsupported expression form")),
+    }
+}
+
+/// Extract a pure return expression from a statement block (single return / bare expr only).
+fn mono_block_pure_expr(stmts: &[Stmt]) -> Option<&Expr> {
+    match stmts {
+        [Stmt::ExprStmt(Expr::Call { callee, args })] if callee == "return" => args.first(),
+        [Stmt::ExprStmt(e)] => Some(e),
+        _ => None,
+    }
+}
+
+/// Fully native mono body (no AnubisValue) for pure specializations:
+/// - single return/expr
+/// - `let` chains of pure inits + final return
+/// - trailing pure `if`/`else` (stmt or expr form)
+///
+/// Returns `None` to fall back to the AnubisValue-inner unboxed wrapper.
+fn try_emit_mono_full_native_body(
+    params: &[(String, String)],
+    body: &[Stmt],
+    abi: &MonoUnboxedAbi,
+) -> Result<Option<String>> {
+    if body.is_empty() {
+        return Ok(None);
+    }
+
+    let mut live: std::collections::BTreeSet<String> =
+        params.iter().map(|(n, _)| n.clone()).collect();
+
+    let mut out = String::new();
+    // Preserve u8/u16/u32 range honesty without AnubisValue.
+    for ((p, ty), prim) in params.iter().zip(abi.params.iter()) {
+        if *prim == MonoPrim::Int {
+            if let Some(w) = crate::middle::ty::unsigned_mask_width(ty) {
+                let id = sanitize_ident(p)?;
+                out.push_str(&format!("    let {id} = {id} & ((1i64 << {w}) - 1);\n"));
+            }
+        }
+    }
+
+    let n = body.len();
+    for (i, stmt) in body.iter().enumerate() {
+        let is_last = i + 1 == n;
+        match stmt {
+            // Intermediate pure lets: `let y = x + 1;`
+            Stmt::Let { name, init, .. } if !is_last => {
+                if !mono_expr_is_full_native_eligible(init, &live) {
+                    return Ok(None);
+                }
+                let id = sanitize_ident(name)?;
+                let e = match emit_mono_native_expr(init) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                out.push_str(&format!("    let {id} = {e};\n"));
+                live.insert(name.clone());
+            }
+            // Final pure if-stmt with pure then/else arms.
+            Stmt::If {
+                cond, then, else_, ..
+            } if is_last => {
+                let else_body = match else_ {
+                    Some(e) => e.as_slice(),
+                    None => return Ok(None),
+                };
+                let then_e = match mono_block_pure_expr(then) {
+                    Some(e) => e,
+                    None => return Ok(None),
+                };
+                let else_e = match mono_block_pure_expr(else_body) {
+                    Some(e) => e,
+                    None => return Ok(None),
+                };
+                if !mono_expr_is_full_native_eligible(cond, &live)
+                    || !mono_expr_is_full_native_eligible(then_e, &live)
+                    || !mono_expr_is_full_native_eligible(else_e, &live)
+                {
+                    return Ok(None);
+                }
+                let c = match emit_mono_native_expr(cond) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                let t = match emit_mono_native_expr(then_e) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                let e = match emit_mono_native_expr(else_e) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                out.push_str(&format!("    if {c} {{ {t} }} else {{ {e} }}\n"));
+            }
+            // Final return / bare expression.
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" && is_last => {
+                match args.as_slice() {
+                    [] => {
+                        if matches!(abi.ret, MonoPrim::Int) {
+                            out.push_str("    0\n");
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    [e] => {
+                        if !mono_expr_is_full_native_eligible(e, &live) {
+                            return Ok(None);
+                        }
+                        let expr_src = match emit_mono_native_expr(e) {
+                            Ok(s) => s,
+                            Err(_) => return Ok(None),
+                        };
+                        out.push_str(&format!("    {expr_src}\n"));
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            Stmt::ExprStmt(e) if is_last => {
+                if !mono_expr_is_full_native_eligible(e, &live) {
+                    return Ok(None);
+                }
+                let expr_src = match emit_mono_native_expr(e) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                out.push_str(&format!("    {expr_src}\n"));
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Emit one argument for an unboxed mono call (prefer bare literals; else unwrap AnubisValue).
+fn emit_mono_arg_unboxed(arg: &Expr, prim: MonoPrim, ctx: &EmitCtx<'_>) -> Result<String> {
+    match (arg, prim) {
+        (Expr::Literal(s), MonoPrim::Int) => {
+            let s = s.trim();
+            if s.parse::<i64>().is_ok()
+                || s.strip_prefix("0x")
+                    .or_else(|| s.strip_prefix("0X"))
+                    .map(|h| i64::from_str_radix(h, 16).is_ok())
+                    .unwrap_or(false)
+            {
+                return Ok(s.to_string());
+            }
+        }
+        (Expr::Unary { op, expr, .. }, MonoPrim::Int)
+            if op == "-" && matches!(expr.as_ref(), Expr::Literal(_)) =>
+        {
+            if let Expr::Literal(s) = expr.as_ref() {
+                return Ok(format!("-{}", s.trim()));
+            }
+        }
+        (Expr::Literal(s), MonoPrim::Float) if s.contains('.') || s.parse::<f64>().is_ok() => {
+            return Ok(s.trim().to_string());
+        }
+        (Expr::Literal(s), MonoPrim::Bool) if s == "true" || s == "false" => {
+            return Ok(s.trim().to_string());
+        }
+        (Expr::StrLiteral(s), MonoPrim::String) => {
+            return Ok(format!("{}.to_string()", rust_string_lit(s)?));
+        }
+        _ => {}
+    }
+    let v = safe_run_expr(arg, ctx)?;
+    Ok(prim.coerce_from_anubis(&v))
 }
 
 /// Build the method registry: method name -> `(type, param_count)` for each defining type.
@@ -303,9 +835,33 @@ fn collect_methods(
 /// The trailing `AnubisValue::Int(0)` is the implicit return for functions that
 /// fall off the end without an explicit `return`.
 fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
+    let rust_name = fn_rust_name(def.name, def.impl_type)?;
+    emit_fn_core(
+        def.name,
+        def.params,
+        def.body,
+        def.ret_type,
+        &rust_name,
+        base,
+        None,
+    )
+}
+
+/// Core emitter shared by monomorphic functions and monomorphized clones.
+/// When `unboxed` is set, the function ABI uses native Rust types at the boundary; the body still
+/// runs on `AnubisValue` locals (converted at entry / unwrapped at return).
+fn emit_fn_core(
+    name: &str,
+    params: &[(String, String)],
+    body: &[Stmt],
+    ret_type: Option<&str>,
+    rust_name: &str,
+    base: &EmitCtx,
+    unboxed: Option<&MonoUnboxedAbi>,
+) -> Result<String> {
     // Per-function local scope: params + everything bound in the body. A call to one of these
     // names is a closure application, not a builtin.
-    let locals = collect_local_names(def.params, def.body);
+    let locals = collect_local_names(params, body);
     let ctx = &EmitCtx {
         allow_research: base.allow_research,
         fns: base.fns,
@@ -313,19 +869,26 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
         methods: base.methods,
         locals: &locals,
         struct_field_types: base.struct_field_types,
+        mono: base.mono,
+        fn_param_types: base.fn_param_types,
+        current_fn: base.current_fn,
+        mono_sites_by_caller: base.mono_sites_by_caller,
+        mono_cursors: base.mono_cursors,
     };
+    // Inner body always uses AnubisValue (returns / guards stay valid). Unboxed ABI is an outer
+    // wrapper that converts native params → AnubisValue and unwraps the AnubisValue result.
     let mut sig = Vec::new();
-    for (p, _ty) in def.params {
+    for (p, _ty) in params {
         let id = sanitize_ident(p)?;
         sig.push(format!("{}{}: AnubisValue", mut_prefix(&id), id));
     }
-    let (head, tail) = split_tail_expr(def.body);
+    let (head, tail) = split_tail_expr(body);
     let mut body_src = String::new();
     // RC4 soundness: a parameter the checker models as an integer (u8/u16/u32/u64) is proved over a
     // pure i64. Guard at entry that it actually holds an integer, so a float/string/... argument fails
     // closed (ANUBIS_TYPE_VIOLATION) instead of taking a divergent runtime path that violates the
     // proven contract. Uses the SAME predicate the solver's param-modeling gate uses, so they align.
-    for (p, ty) in def.params {
+    for (p, ty) in params {
         if let Some(w) = crate::middle::ty::unsigned_mask_width(ty) {
             // A1 (task #50): an unsigned fixed-width param (u8/u16/u32) is masked to [0, 2^w) at
             // entry, so the checker's injected range (`0 <= x < 2^w`) is genuinely what the runtime
@@ -361,8 +924,44 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
         Some(expr) => safe_run_expr(expr, ctx)?,
         None => "AnubisValue::Int(0)".to_string(),
     };
-    let rust_name = fn_rust_name(def.name, def.impl_type)?;
     let inner_sig = sig.join(", ");
+
+    // Unboxed monomorphized ABI.
+    if let Some(abi) = unboxed {
+        let mut outer_params = Vec::new();
+        for ((p, _), prim) in params.iter().zip(abi.params.iter()) {
+            let id = sanitize_ident(p)?;
+            outer_params.push(format!("{id}: {}", prim.rust_ty()));
+        }
+        let ret_ty = abi.ret.rust_ty();
+        let outer = outer_params.join(", ");
+
+        // Full native body when the function is a simple pure expression of params/literals
+        // (no AnubisValue inner). Falls back to native outer + AnubisValue inner otherwise.
+        if let Some(native_body) = try_emit_mono_full_native_body(params, body, abi)? {
+            return Ok(format!(
+                "fn {rust_name}({outer}) -> {ret_ty} {{\n    __anb_stack_guard();\n{native_body}}}\n"
+            ));
+        }
+
+        let mut fwd = Vec::new();
+        for ((p, _), prim) in params.iter().zip(abi.params.iter()) {
+            let id = sanitize_ident(p)?;
+            // Convert native arg → AnubisValue for the shared body.
+            fwd.push(match prim {
+                MonoPrim::Int => format!("AnubisValue::Int({id})"),
+                MonoPrim::Float => format!("AnubisValue::Float({id})"),
+                MonoPrim::Bool => format!("AnubisValue::Bool({id})"),
+                MonoPrim::String => format!("anubis_mk_str({id})"),
+            });
+        }
+        let unwrap = abi.ret.coerce_from_anubis("__anb_ret");
+        return Ok(format!(
+            "fn {rust_name}({outer}) -> {ret_ty} {{\n    __anb_stack_guard();\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    let __anb_ret = __anb_body({fwd});\n    {unwrap}\n}}\n",
+            fwd = fwd.join(", "),
+        ));
+    }
+
     // RC6/RC7 soundness: if the function DECLARES an integer return type, the solver may model its
     // result (and a call-site binding of it) as an i64 — but the return type is INERT at runtime, so a
     // body could return a float (`return 2.5` from a `-> u32` fn) or Bool(true) (`return assume(x)`),
@@ -378,7 +977,7 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     // integer spelling — `int`/`i64` normalize to it — so masking returns would silently change every
     // program that returns a negative/overflowing value from a `-> u32` function). So a u32 return uses
     // the plain integer guard `anubis_require_int_ret` (fail-closed on a non-integer, no mask).
-    let ret_guard = def.ret_type.and_then(|t| {
+    let ret_guard = ret_type.and_then(|t| {
         if crate::middle::ty::is_integer(t) {
             Some("anubis_require_int_ret")
         } else if crate::middle::ty::is_float(t) {
@@ -390,20 +989,20 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     if let Some(guard_fn) = ret_guard {
         let mut outer_params = Vec::new();
         let mut fwd = Vec::new();
-        for (p, _ty) in def.params {
+        for (p, _ty) in params {
             let id = sanitize_ident(p)?;
             outer_params.push(format!("{id}: AnubisValue"));
             fwd.push(id);
         }
         Ok(format!(
-            "fn {rust_name}({outer}) -> AnubisValue {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    {guard_fn}(__anb_body({fwd}), {namelit})\n}}\n",
+            "fn {rust_name}({outer}) -> AnubisValue {{\n    __anb_stack_guard();\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    {guard_fn}(__anb_body({fwd}), {namelit})\n}}\n",
             outer = outer_params.join(", "),
             fwd = fwd.join(", "),
-            namelit = rust_string_lit(def.name)?,
+            namelit = rust_string_lit(name)?,
         ))
     } else {
         Ok(format!(
-            "fn {rust_name}({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n}}\n"
+            "fn {rust_name}({inner_sig}) -> AnubisValue {{\n    __anb_stack_guard();\n{body_src}    {tail_src}\n}}\n"
         ))
     }
 }
@@ -484,6 +1083,19 @@ fn block_as_tail_expr(stmts: &[Stmt]) -> Expr {
 /// When `allow_research` is true, the PoC kit surface is enabled: `target_run`, packing
 /// (`p8`/`p16`/`p32`/`p64`), `cyclic`, research/exploit block bodies, and local-only process control.
 pub fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<String> {
+    lower_program_to_rust_with_mono(items, allow_research, &[], &[])
+}
+
+/// Lower with a static monomorphization inventory from typecheck (`TypedIR.mono_specializations`
+/// + ordered `mono_call_sites` for variable-pinned dispatch).
+///
+/// Emits specialized clones and rewrites call sites (literal and variable-pinned) to those clones.
+pub fn lower_program_to_rust_with_mono(
+    items: &[Item],
+    allow_research: bool,
+    mono: &[crate::middle::MonoSpecialization],
+    mono_call_sites: &[crate::middle::MonoCallSite],
+) -> Result<String> {
     // Run the program on a worker thread with a large (1 GiB) stack instead of the OS main-thread
     // stack (8 MiB on macOS), so naturally-recursive Anubis code reaches ~1M frames before
     // overflowing (the native call stack IS the recursion, per the Turing-completeness claim). The
@@ -503,6 +1115,12 @@ pub fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<Str
              if child.join().is_err() { std::process::exit(101); }\n}\n",
         allow_research,
         false,
+        mono,
+        mono_call_sites,
+        // 768 MiB of the 1 GiB worker stack. The 256 MiB left over is deliberate headroom: the
+        // trap must have room to panic, unwind and print, which is the whole point of trapping
+        // before the real ceiling instead of after it.
+        768 * 1024 * 1024,
     )
 }
 
@@ -530,17 +1148,33 @@ pub fn lower_program_to_guest(items: &[Item]) -> Result<String> {
         ),
         false, // no process PoC kit inside zkVM guest
         true,  // inject proof-input runtime for guest
+        &[],   // guest path: no mono inventory yet (safe default)
+        &[],
+        // 0 = guard disabled. The zkVM guest's stack size is not something this file measures, and
+        // a budget picked by guessing would trap correct programs or miss the case it exists for.
+        // Left explicitly unguarded and stated, rather than guarded on an invented number.
+        0,
     )
 }
 
 /// Shared lowering: emit the AnubisValue runtime + every function, framed by a caller-provided
 /// `prelude` (e.g. a guest `use`) and `entry` (the real `fn main`).
+//
+// Eight parameters, one over the lint's threshold. Each is an independent lowering decision made
+// by a different caller — research gating, guest proof inputs, two monomorphisation tables, a
+// stack budget — and there is no cohesive struct hiding among them. Bundling them to satisfy a
+// count would add an indirection at every call site and make it EASIER, not harder, to pass the
+// wrong flag, because the arguments would stop being named at the call.
+#[allow(clippy::too_many_arguments)]
 fn lower_program_with_entry(
     items: &[Item],
     prelude: &str,
     entry: &str,
     allow_research: bool,
     guest_proof_inputs: bool,
+    mono: &[crate::middle::MonoSpecialization],
+    mono_call_sites: &[crate::middle::MonoCallSite],
+    stack_budget_bytes: usize,
 ) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
@@ -563,6 +1197,77 @@ fn lower_program_with_entry(
         .filter(|d| d.impl_type.is_none())
         .map(|d| (d.name.to_string(), d.params.len()))
         .collect();
+    let fn_param_types: std::collections::BTreeMap<String, Vec<String>> = fns
+        .iter()
+        .filter(|d| d.impl_type.is_none())
+        .map(|d| {
+            (
+                d.name.to_string(),
+                d.params.iter().map(|(_, t)| t.clone()).collect(),
+            )
+        })
+        .collect();
+    // Build mono dispatch table (sorted for deterministic emit/match).
+    let mut mono_table: Vec<MonoEmitSpec> = Vec::new();
+    let mut mono_seen = std::collections::BTreeSet::new();
+    for m in mono {
+        if m.type_args.is_empty() {
+            continue;
+        }
+        // Only free functions that exist with generics.
+        let Some(def) = fns
+            .iter()
+            .find(|d| d.name == m.function && d.impl_type.is_none() && !d.generics.is_empty())
+        else {
+            continue;
+        };
+        let pairs: Vec<(String, String)> = m
+            .type_args
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let key = (m.function.clone(), pairs.clone());
+        if !mono_seen.insert(key) {
+            continue;
+        }
+        let rust_name = mono_rust_name(def.name, &m.type_args)?;
+        let params_owned: Vec<(String, String)> = def
+            .params
+            .iter()
+            .map(|(n, t)| (n.clone(), subst_type_param(t, &m.type_args)))
+            .collect();
+        let ret_owned = def.ret_type.map(|t| subst_type_param(t, &m.type_args));
+        let unboxed = mono_unboxed_abi(&params_owned, ret_owned.as_deref());
+        mono_table.push(MonoEmitSpec {
+            function: m.function.clone(),
+            type_args: pairs,
+            rust_name,
+            unboxed,
+        });
+    }
+    mono_table.sort_by(|a, b| {
+        a.function
+            .cmp(&b.function)
+            .then(a.rust_name.cmp(&b.rust_name))
+    });
+    // Ordered mono call sites by enclosing caller (typecheck walk order).
+    let mut mono_sites_by_caller: MonoSitesByCaller = std::collections::BTreeMap::new();
+    for site in mono_call_sites {
+        let pairs: Vec<(String, String)> = site
+            .type_args
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        mono_sites_by_caller
+            .entry(site.caller.clone())
+            .or_default()
+            .push((site.function.clone(), pairs));
+    }
+    let mono_cursors: std::collections::BTreeMap<String, std::cell::Cell<usize>> =
+        mono_sites_by_caller
+            .keys()
+            .map(|k| (k.clone(), std::cell::Cell::new(0)))
+            .collect();
     let mut methods = std::collections::BTreeMap::new();
     collect_methods(items, &mut methods);
     // struct name → (field → declared type), for the construction-boundary numeric-kind coercion.
@@ -579,17 +1284,65 @@ fn lower_program_with_entry(
         }
     }
     let empty_locals = std::collections::BTreeSet::new();
-    let ctx = EmitCtx {
+    let base_ctx = EmitCtx {
         allow_research,
         fns: &fn_names,
         fn_arities: &fn_arities,
         methods: &methods,
         locals: &empty_locals,
         struct_field_types: &struct_field_types,
+        mono: &mono_table,
+        fn_param_types: &fn_param_types,
+        current_fn: None,
+        mono_sites_by_caller: &mono_sites_by_caller,
+        mono_cursors: &mono_cursors,
     };
     let mut functions_src = String::new();
     for def in &fns {
+        let ctx = EmitCtx {
+            current_fn: Some(def.name),
+            ..base_ctx
+        };
         functions_src.push_str(&emit_fn(def, &ctx)?);
+        functions_src.push('\n');
+    }
+    // Monomorphized clones: specialized params/return; primitive sets use unboxed native ABI.
+    // Fresh mono cursors per clone so nested generic calls rewrite the same way as in the
+    // original body (shared cursors would already be exhausted by the generic emit).
+    for spec in &mono_table {
+        let Some(def) = fns
+            .iter()
+            .find(|d| d.name == spec.function && d.impl_type.is_none())
+        else {
+            continue;
+        };
+        let type_args: std::collections::BTreeMap<String, String> =
+            spec.type_args.iter().cloned().collect();
+        let params_owned: Vec<(String, String)> = def
+            .params
+            .iter()
+            .map(|(n, t)| (n.clone(), subst_type_param(t, &type_args)))
+            .collect();
+        let ret_owned = def.ret_type.map(|t| subst_type_param(t, &type_args));
+        let clone_cursors: std::collections::BTreeMap<String, std::cell::Cell<usize>> =
+            mono_sites_by_caller
+                .keys()
+                .map(|k| (k.clone(), std::cell::Cell::new(0)))
+                .collect();
+        let ctx = EmitCtx {
+            current_fn: Some(def.name),
+            mono_cursors: &clone_cursors,
+            ..base_ctx
+        };
+        functions_src.push_str(&emit_fn_core(
+            def.name,
+            &params_owned,
+            def.body,
+            ret_owned.as_deref(),
+            &spec.rust_name,
+            &ctx,
+            spec.unboxed.as_ref(),
+        )?);
         functions_src.push('\n');
     }
     // Packing/cyclic helpers are always available (local data transforms). Process spawn
@@ -631,9 +1384,12 @@ fn anubis_cap_export(cap: AnubisValue, _reason: AnubisValue) -> AnubisValue { ca
     } else {
         ANUBIS_KEYCHAIN_SE_RS.to_string()
     };
+    let header = format!(
+        "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\nconst __ANB_STACK_BUDGET: usize = {stack_budget_bytes};\n"
+    );
     Ok(format!(
         "{header}{prelude}\n{core}\n{keychain}\n{crypto}\n{poc}\n{proof}\n{functions}\n{entry}",
-        header = "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\n",
+        header = header,
         prelude = prelude,
         core = ANUBIS_CORE_RUNTIME_RS,
         keychain = keychain_se,
@@ -952,8 +1708,9 @@ impl AnubisValue {
     }
 
     fn push_val(&mut self, val: AnubisValue) {
-        if let AnubisValue::List(v) = self {
-            std::rc::Rc::make_mut(v).push(val);
+        match self {
+            AnubisValue::List(v) => { std::rc::Rc::make_mut(v).push(val); }
+            other => panic!("ANUBIS_TYPE_ERROR: push expects a list, got {}", other.type_name()),
         }
     }
 
@@ -964,7 +1721,11 @@ impl AnubisValue {
             AnubisValue::Map(m) => AnubisValue::Int(m.len() as i64),
             AnubisValue::Struct { fields, .. } => AnubisValue::Int(fields.len() as i64),
             AnubisValue::Enum { fields, .. } => AnubisValue::Int(fields.len() as i64),
-            _ => AnubisValue::Int(0),
+            // Was `Int(0)` — `len(42)` / `len(true)` silently reported empty (Phase-5 SILENT_WRONG).
+            other => panic!(
+                "ANUBIS_TYPE_ERROR: len expects a list, string, map, struct, or enum, got {}",
+                other.type_name()
+            ),
         }
     }
 
@@ -974,7 +1735,7 @@ impl AnubisValue {
             AnubisValue::Map(m) => anubis_mk_list(
                 m.iter().map(|(k, _)| anubis_mk_str(k.clone())).collect()
             ),
-            _ => anubis_mk_list(vec![]),
+            other => panic!("ANUBIS_TYPE_ERROR: keys expects a map, got {}", other.type_name()),
         }
     }
 }
@@ -1236,7 +1997,22 @@ fn anubis_float(v: AnubisValue) -> AnubisValue { AnubisValue::Float(v.as_f64()) 
 fn anubis_bool_of(v: AnubisValue) -> AnubisValue { AnubisValue::Bool(v.as_bool()) }
 fn anubis_type_of(v: AnubisValue) -> AnubisValue { anubis_mk_str(v.type_name().to_string()) }
 
+/// Fail closed when a math builtin is given a non-numeric value. Soft `as_f64`/`as_i64` would
+/// coerce strings/lists/maps to 0 and let contracts discharge on the wrong input.
+fn anubis_require_numeric(v: &AnubisValue, name: &str) {
+    if !v.is_numeric() {
+        panic!(
+            "ANUBIS_TYPE_ERROR: {} expects a numeric argument, got {}",
+            name,
+            v.type_name()
+        );
+    }
+}
+
 fn anubis_abs(v: AnubisValue) -> AnubisValue {
+    if !v.is_numeric() {
+        panic!("ANUBIS_TYPE_ERROR: abs expects a numeric argument, got {}", v.type_name());
+    }
     if v.is_float() { AnubisValue::Float(v.as_f64().abs()) } else { AnubisValue::Int(v.as_i64().wrapping_abs()) }
 }
 // Ordered via `anubis_value_cmp` — the same comparator `sort`/`min_by` use — so Int/Int compares
@@ -1248,12 +2024,18 @@ fn anubis_seq(items: Vec<AnubisValue>) -> Vec<AnubisValue> {
     items
 }
 fn anubis_min(items: Vec<AnubisValue>) -> AnubisValue {
-    anubis_seq(items).into_iter().reduce(anubis_min2).unwrap_or(AnubisValue::Int(0))
+    anubis_seq(items).into_iter().reduce(anubis_min2).unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: min has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
 }
 fn anubis_max(items: Vec<AnubisValue>) -> AnubisValue {
-    anubis_seq(items).into_iter().reduce(anubis_max2).unwrap_or(AnubisValue::Int(0))
+    anubis_seq(items).into_iter().reduce(anubis_max2).unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: max has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
 }
 fn anubis_pow(base: AnubisValue, exp: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&base, "pow");
+    anubis_require_numeric(&exp, "pow");
     if base.is_float() || exp.is_float() {
         AnubisValue::Float(base.as_f64().powf(exp.as_f64()))
     } else {
@@ -1262,13 +2044,15 @@ fn anubis_pow(base: AnubisValue, exp: AnubisValue) -> AnubisValue {
         else { AnubisValue::Int(base.as_i64().wrapping_pow(e as u32)) }
     }
 }
-fn anubis_sqrt(v: AnubisValue) -> AnubisValue { AnubisValue::Float(v.as_f64().sqrt()) }
+fn anubis_sqrt(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "sqrt"); AnubisValue::Float(v.as_f64().sqrt()) }
 // floor/ceil/round/trunc are the identity on an integer (an i64 has no fractional part, and
 // routing it through f64 would corrupt magnitudes above 2^53). Only floats are rounded.
-fn anubis_floor(v: AnubisValue) -> AnubisValue { match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().floor() as i64) } }
-fn anubis_ceil(v: AnubisValue) -> AnubisValue { match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().ceil() as i64) } }
-fn anubis_round(v: AnubisValue) -> AnubisValue { match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().round() as i64) } }
+fn anubis_floor(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "floor"); match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().floor() as i64) } }
+fn anubis_ceil(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "ceil"); match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().ceil() as i64) } }
+fn anubis_round(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "round"); match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().round() as i64) } }
 fn anubis_gcd(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&a, "gcd");
+    anubis_require_numeric(&b, "gcd");
     let (mut x, mut y) = (a.as_i64().wrapping_abs(), b.as_i64().wrapping_abs());
     while y != 0 { let t = y; y = x % y; x = t; }
     AnubisValue::Int(x)
@@ -1293,7 +2077,10 @@ fn anubis_join(list: AnubisValue, sep: AnubisValue) -> AnubisValue {
         AnubisValue::List(items) => anubis_mk_str(
             items.iter().map(|x| x.display_string()).collect::<Vec<_>>().join(sp.as_str())
         ),
-        other => anubis_mk_str(other.display_string()),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: join expects a list as its first argument, got {}",
+            other.type_name()
+        ),
     }
 }
 fn anubis_contains(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
@@ -1305,7 +2092,10 @@ fn anubis_contains(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
             let n = needle.display_string();
             m.iter().any(|(k, _)| k == &n)
         }
-        _ => false,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: contains expects a list, string, or map, got {}",
+            other.type_name()
+        ),
     };
     AnubisValue::Bool(result)
 }
@@ -1333,17 +2123,31 @@ fn anubis_index_of(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
                 None => AnubisValue::Int(-1),
             }
         }
-        _ => AnubisValue::Int(-1),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: index_of expects a list or string, got {} (do not confuse with not-found which is -1)",
+            other.type_name()
+        ),
     }
 }
 fn anubis_ord(v: AnubisValue) -> AnubisValue {
-    AnubisValue::Int(v.display_string().chars().next().map(|c| c as i64).unwrap_or(0))
+    match v.display_string().chars().next() {
+        Some(c) => AnubisValue::Int(c as i64),
+        None => panic!("ANUBIS_EMPTY_COLLECTION: ord(\"\") — the empty string has no first character"),
+    }
 }
 fn anubis_chr(v: AnubisValue) -> AnubisValue {
-    anubis_mk_str(char::from_u32(v.as_i64() as u32).map(|c| c.to_string()).unwrap_or_default())
+    let n = v.as_i64();
+    match char::from_u32(n as u32) {
+        Some(c) => anubis_mk_str(c.to_string()),
+        None => panic!("ANUBIS_INVALID_CODEPOINT: {} is not a valid Unicode scalar value (surrogate range D800-DFFF, negative, or > 0x10FFFF)", n),
+    }
 }
 fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let count = n.as_i64().max(0) as usize;
+    let count_raw = n.as_i64();
+    if count_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: repeat count must be non-negative, got {}", count_raw);
+    }
+    let count = count_raw as usize;
     match s {
         AnubisValue::List(items) => {
             let mut out = Vec::new();
@@ -1355,8 +2159,17 @@ fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
 }
 fn anubis_substr(s: AnubisValue, start: AnubisValue, len: AnubisValue) -> AnubisValue {
     let chars: Vec<char> = s.display_string().chars().collect();
-    let st = start.as_i64().max(0) as usize;
-    let ln = len.as_i64().max(0) as usize;
+    // Was `.max(0)` — negative start/len silently became empty-prefix (Phase-5 M–Z SILENT_WRONG).
+    let st_raw = start.as_i64();
+    if st_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: substr start must be non-negative, got {}", st_raw);
+    }
+    let ln_raw = len.as_i64();
+    if ln_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: substr length must be non-negative, got {}", ln_raw);
+    }
+    let st = st_raw as usize;
+    let ln = ln_raw as usize;
     anubis_mk_str(chars.into_iter().skip(st).take(ln).collect())
 }
 fn anubis_slice(x: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
@@ -1374,7 +2187,10 @@ fn anubis_slice(x: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
             let (lo, hi) = (bound(ai, n), bound(bi, n));
             anubis_mk_str(if lo <= hi { chars[lo..hi].iter().collect() } else { String::new() })
         }
-        other => other,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: slice expects a list or string, got {}",
+            other.type_name()
+        ),
     }
 }
 fn anubis_parse_int(v: AnubisValue) -> AnubisValue {
@@ -1436,23 +2252,34 @@ fn anubis_parse_float_opt(v: AnubisValue) -> AnubisValue {
 }
 
 fn anubis_range(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&a, "range");
+    anubis_require_numeric(&b, "range");
     let (mut i, hi) = (a.as_i64(), b.as_i64());
     let mut out = Vec::new();
     while i < hi { out.push(AnubisValue::Int(i)); i += 1; }
     anubis_mk_list(out)
 }
 fn anubis_range_step(a: AnubisValue, b: AnubisValue, step: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&a, "range");
+    anubis_require_numeric(&b, "range");
+    anubis_require_numeric(&step, "range");
     let (mut i, hi, st) = (a.as_i64(), b.as_i64(), step.as_i64());
+    if st == 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: range step must be non-zero, got 0");
+    }
     let mut out = Vec::new();
     if st > 0 { while i < hi { out.push(AnubisValue::Int(i)); i += st; } }
-    else if st < 0 { while i > hi { out.push(AnubisValue::Int(i)); i += st; } }
+    else { while i > hi { out.push(AnubisValue::Int(i)); i += st; } }
     anubis_mk_list(out)
 }
 fn anubis_reverse(x: AnubisValue) -> AnubisValue {
     match x {
         AnubisValue::List(items) => { let mut items = anubis_rc_take(items); items.reverse(); anubis_mk_list(items) }
         AnubisValue::Str(s) => anubis_mk_str(s.chars().rev().collect()),
-        other => other,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: reverse expects a list or string, got {}",
+            other.type_name()
+        ),
     }
 }
 fn anubis_sort(x: AnubisValue) -> AnubisValue {
@@ -1462,7 +2289,7 @@ fn anubis_sort(x: AnubisValue) -> AnubisValue {
             items.sort_by(anubis_value_cmp);
             anubis_mk_list(items)
         }
-        other => other,
+        other => panic!("ANUBIS_TYPE_ERROR: sort expects a list, got {}", other.type_name()),
     }
 }
 fn anubis_sum(x: AnubisValue) -> AnubisValue {
@@ -1474,41 +2301,67 @@ fn anubis_sum(x: AnubisValue) -> AnubisValue {
                 AnubisValue::Int(items.iter().map(|v| v.as_i64()).sum())
             }
         }
-        other => other,
+        other => panic!("ANUBIS_TYPE_ERROR: sum expects a list, got {}", other.type_name()),
     }
 }
 fn anubis_keys(m: AnubisValue) -> AnubisValue { m.map_keys() }
 fn anubis_values(m: AnubisValue) -> AnubisValue {
-    match m { AnubisValue::Map(e) => anubis_mk_list(anubis_rc_take(e).into_iter().map(|(_, v)| v).collect()), _ => anubis_mk_list(vec![]) }
+    match m {
+        AnubisValue::Map(e) => anubis_mk_list(anubis_rc_take(e).into_iter().map(|(_, v)| v).collect()),
+        other => panic!("ANUBIS_TYPE_ERROR: values expects a map, got {}", other.type_name()),
+    }
 }
 fn anubis_has_key(m: AnubisValue, k: AnubisValue) -> AnubisValue {
     let key = k.display_string();
-    match m { AnubisValue::Map(e) => AnubisValue::Bool(e.iter().any(|(kk, _)| kk == &key)), _ => AnubisValue::Bool(false) }
+    match m {
+        AnubisValue::Map(e) => AnubisValue::Bool(e.iter().any(|(kk, _)| kk == &key)),
+        other => panic!("ANUBIS_TYPE_ERROR: has_key expects a map, got {}", other.type_name()),
+    }
 }
 
 fn anubis_pop(v: &mut AnubisValue) -> AnubisValue {
-    if let AnubisValue::List(l) = v { std::rc::Rc::make_mut(l).pop().unwrap_or(AnubisValue::Int(0)) } else { AnubisValue::Int(0) }
+    match v {
+        AnubisValue::List(l) => std::rc::Rc::make_mut(l).pop().unwrap_or_else(|| {
+            panic!("ANUBIS_EMPTY_COLLECTION: pop on an empty list (use is_empty(xs) to guard)")
+        }),
+        other => panic!("ANUBIS_TYPE_ERROR: pop expects a list, got {}", other.type_name()),
+    }
 }
 fn anubis_insert(v: &mut AnubisValue, i: AnubisValue, val: AnubisValue) -> AnubisValue {
-    if let AnubisValue::List(l) = v {
-        let raw = i.as_i64();
-        let len = l.len() as i64;
-        // Negative indices count from the end (consistent with element indexing).
-        let idx = if raw < 0 { (raw + len).max(0) } else { raw.min(len) } as usize;
-        std::rc::Rc::make_mut(l).insert(idx, val);
+    match v {
+        AnubisValue::List(l) => {
+            let raw = i.as_i64();
+            let len = l.len() as i64;
+            // Negative indices count from the end (consistent with element indexing).
+            let idx = if raw < 0 { (raw + len).max(0) } else { raw.min(len) } as usize;
+            std::rc::Rc::make_mut(l).insert(idx, val);
+        }
+        other => panic!("ANUBIS_TYPE_ERROR: insert expects a list, got {}", other.type_name()),
     }
     AnubisValue::Int(0)
 }
 fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
     match v {
         AnubisValue::List(l) => {
-            match anubis_norm_index(key.as_i64(), l.len()) { Some(k) => std::rc::Rc::make_mut(l).remove(k), None => AnubisValue::Int(0) }
+            match anubis_norm_index(key.as_i64(), l.len()) {
+                Some(k) => std::rc::Rc::make_mut(l).remove(k),
+                None => panic!(
+                    "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a list of length {} (use get(xs, i, default) for optional access)",
+                    key.as_i64(), l.len()
+                ),
+            }
         }
         AnubisValue::Map(m) => {
             let k = key.display_string();
-            match m.iter().position(|(kk, _)| kk == &k) { Some(pos) => std::rc::Rc::make_mut(m).remove(pos).1, None => AnubisValue::Int(0) }
+            match m.iter().position(|(kk, _)| kk == &k) {
+                Some(pos) => std::rc::Rc::make_mut(m).remove(pos).1,
+                None => panic!(
+                    "ANUBIS_MISSING_KEY: key `{}` is not present in the map (use get(m, k, default) for optional access)",
+                    k
+                ),
+            }
         }
-        _ => AnubisValue::Int(0),
+        other => panic!("ANUBIS_TYPE_ERROR: remove expects a list or map, got {}", other.type_name()),
     }
 }
 
@@ -1532,6 +2385,45 @@ fn anubis_require_int(v: &AnubisValue, name: &str) {
     if !matches!(v, AnubisValue::Int(_)) {
         panic!("ANUBIS_TYPE_VIOLATION: integer parameter `{}` received a non-integer value at runtime; the checker models it as an i64, so a float/string/other argument is fail-closed rather than silently mis-proved", name);
     }
+}
+// Unbounded recursion must fail CLOSED like every other runtime trap, not abort the process.
+//
+// The whole trap design rests on one sentence in `lower_program_to_rust`: a fail-closed trap panics
+// the worker, the hook prints the ANUBIS_* code, `join()` returns Err, we exit non-zero. That is
+// true of panics. It is NOT true of a stack overflow: Rust's overflow handler ABORTS immediately
+// without unwinding, so the process dies with `fatal runtime error: stack overflow` and none of the
+// diagnostic path runs. The one failure that most needs an attributable message is exactly the one
+// that bypasses it -- measured on a mutual-return cycle `check` accepts (CLAIMS item 13).
+//
+// So guard the resource itself. The stack grows DOWN on every target this runs on, so
+// `base - here` is the bytes consumed; comparing against a budget below the real ceiling traps
+// while there is still room to panic, unwind, and print. Guarding BYTES rather than a frame COUNT
+// is what makes this correct regardless of frame size: a function with large locals trips after
+// fewer calls, which is the right answer, and a shallow-frame function still gets its full depth.
+//
+// The base is captured lazily on the first user-function entry rather than injected by the entry
+// stub, so no lowering can silently opt out by forgetting to initialize it.
+thread_local! {
+    static __ANB_STACK_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[inline]
+fn __anb_stack_guard() {
+    if __ANB_STACK_BUDGET == 0 {
+        return;
+    }
+    // `&0u8` would NOT work here: Rust const-promotes it to a 'static reference, so it reports a
+    // rodata address and the guard silently never fires. It must be a real stack local, kept from
+    // being optimized away.
+    let here_marker: u8 = 0;
+    let here = std::hint::black_box(&here_marker) as *const u8 as usize;
+    __ANB_STACK_BASE.with(|b| {
+        let base = b.get();
+        if base == 0 {
+            b.set(here);
+        } else if base.saturating_sub(here) > __ANB_STACK_BUDGET {
+            panic!("ANUBIS_RECURSION_LIMIT: recursion consumed more than {} MiB of stack without returning; `anubis check` does not prove termination, so a non-terminating program can pass the checker and this trap is how it fails closed rather than aborting the process", __ANB_STACK_BUDGET / (1024 * 1024));
+        }
+    });
 }
 // Same guard on a function's RETURN value (the model is only sound if an integer-typed function
 // actually yields an integer). Returns the value through so it can wrap any return path.
@@ -1750,13 +2642,45 @@ fn anubis_http_parse_url(url: &str) -> (bool, String, u16, String) {
 }
 /// HTTPS via host curl — body only on stdout; fail-closed on non-zero exit.
 fn anubis_http_via_curl(method: &str, url: &str, body: Option<&str>) -> AnubisValue {
-    use std::process::Command;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL", "--max-time", "30", "-X", method, url]);
-    if let Some(b) = body {
-        cmd.args(["-H", "Content-Type: application/octet-stream", "--data-binary", b]);
+    // SECURITY (#75): the request body is written to curl's STDIN and referenced by the FIXED literal
+    // `@-`, never passed inline as `--data-binary <body>`. curl interprets a `@`-prefixed data value as
+    // a FILENAME, so an inline body that merely BEGINS with `@` made curl read an arbitrary LOCAL FILE
+    // and transmit it — escalating the `net.send` capability into arbitrary local file read plus
+    // egress, with no fs.read capability and no diagnostic. Because `@-` is a constant, no
+    // program-controlled string can reach curl's filename parser at all.
+    if body.is_some() {
+        cmd.args([
+            "-H",
+            "Content-Type: application/octet-stream",
+            "--data-binary",
+            "@-",
+        ]);
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
     }
-    match cmd.output() {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => panic!(
+            "ANUBIS_IO_ERROR: https requires host `curl` on PATH (system TLS TCB): {}",
+            e
+        ),
+    };
+    if let Some(b) = body {
+        // Dropping the handle closes the pipe so curl sees EOF and stops reading.
+        if let Some(mut si) = child.stdin.take() {
+            if let Err(e) = si.write_all(b.as_bytes()) {
+                panic!("ANUBIS_IO_ERROR: https curl body write failed: {}", e);
+            }
+        }
+    }
+    match child.wait_with_output() {
         Ok(out) if out.status.success() => {
             anubis_mk_str(String::from_utf8_lossy(&out.stdout).into_owned())
         }
@@ -1857,14 +2781,17 @@ fn anubis_reduce(list: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisVal
 }
 // Seedless `reduce(list, closure)`: the FIRST element seeds the accumulator and the closure folds the
 // rest (standard seedless reduce, mirroring the semantics used when no initial value is supplied). An
-// empty list yields `Int(0)` — the additive identity for the common numeric fold — matching the other
-// empty-collection HOF conventions in this file.
+// empty list has no defined seed — fail closed (do not invent Int(0); that is only the additive
+// identity for numeric folds and is wrong for non-numeric reduce). Use reduce(list, closure, seed).
 fn anubis_reduce2(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     if !f.is_closure() {
         panic!("ANUBIS_TYPE_ERROR: reduce(list, closure) expects a closure as the second argument, got {}", f.type_name());
     }
     let mut it = anubis_iter(list).into_iter();
-    let mut acc = match it.next() { Some(x) => x, None => return AnubisValue::Int(0) };
+    let mut acc = match it.next() {
+        Some(x) => x,
+        None => panic!("ANUBIS_EMPTY_COLLECTION: reduce(list, closure) has no seed — the list is empty; use reduce(list, closure, seed) to supply one"),
+    };
     for x in it { acc = f.call_closure(vec![acc, x]); }
     acc
 }
@@ -1874,7 +2801,7 @@ fn anubis_each(list: AnubisValue, f: AnubisValue) -> AnubisValue {
 }
 fn anubis_find(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     for x in anubis_iter(list) { if f.call_closure(vec![x.clone()]).as_bool() { return x; } }
-    AnubisValue::Int(0)
+    panic!("ANUBIS_NO_MATCH: find() — no element satisfies the predicate (guard with any(xs, pred) first, or use position(xs, pred) if you only need the index)")
 }
 fn anubis_any(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     AnubisValue::Bool(anubis_iter(list).into_iter().any(|x| f.call_closure(vec![x]).as_bool()))
@@ -1937,41 +2864,72 @@ fn anubis_iter(v: AnubisValue) -> Vec<AnubisValue> {
         AnubisValue::Closure(_) => panic!(
             "ANUBIS_TYPE_ERROR: a closure is not iterable — check the argument order (the collection must come before the closure)"
         ),
-        other => vec![other],
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: expected a list, string, or map, got {} — check the argument order or that this value is actually a collection",
+            other.type_name()
+        ),
     }
 }
 
 // ---- math ----
-fn anubis_sin(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().sin()) }
-fn anubis_cos(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().cos()) }
-fn anubis_tan(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().tan()) }
-fn anubis_asin(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().asin()) }
-fn anubis_acos(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().acos()) }
-fn anubis_atan(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().atan()) }
-fn anubis_atan2(y: AnubisValue, x: AnubisValue) -> AnubisValue { AnubisValue::Float(y.as_f64().atan2(x.as_f64())) }
-fn anubis_exp(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().exp()) }
-fn anubis_ln(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().ln()) }
-fn anubis_log10(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().log10()) }
-fn anubis_log2(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().log2()) }
-fn anubis_logb(x: AnubisValue, base: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().log(base.as_f64())) }
-fn anubis_cbrt(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().cbrt()) }
-fn anubis_hypot(x: AnubisValue, y: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().hypot(y.as_f64())) }
-fn anubis_trunc(x: AnubisValue) -> AnubisValue { match x { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(x.as_f64().trunc() as i64) } }
-fn anubis_sign(x: AnubisValue) -> AnubisValue { let v = x.as_f64(); AnubisValue::Int(if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }) }
+fn anubis_sin(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "sin"); AnubisValue::Float(x.as_f64().sin()) }
+fn anubis_cos(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "cos"); AnubisValue::Float(x.as_f64().cos()) }
+fn anubis_tan(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "tan"); AnubisValue::Float(x.as_f64().tan()) }
+fn anubis_asin(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "asin"); AnubisValue::Float(x.as_f64().asin()) }
+fn anubis_acos(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "acos"); AnubisValue::Float(x.as_f64().acos()) }
+fn anubis_atan(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "atan"); AnubisValue::Float(x.as_f64().atan()) }
+fn anubis_atan2(y: AnubisValue, x: AnubisValue) -> AnubisValue { anubis_require_numeric(&y, "atan2"); anubis_require_numeric(&x, "atan2"); AnubisValue::Float(y.as_f64().atan2(x.as_f64())) }
+fn anubis_exp(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "exp"); AnubisValue::Float(x.as_f64().exp()) }
+fn anubis_ln(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "ln"); AnubisValue::Float(x.as_f64().ln()) }
+fn anubis_log10(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "log10"); AnubisValue::Float(x.as_f64().log10()) }
+fn anubis_log2(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "log2"); AnubisValue::Float(x.as_f64().log2()) }
+fn anubis_logb(x: AnubisValue, base: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "log"); anubis_require_numeric(&base, "log"); AnubisValue::Float(x.as_f64().log(base.as_f64())) }
+fn anubis_cbrt(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "cbrt"); AnubisValue::Float(x.as_f64().cbrt()) }
+fn anubis_hypot(x: AnubisValue, y: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "hypot"); anubis_require_numeric(&y, "hypot"); AnubisValue::Float(x.as_f64().hypot(y.as_f64())) }
+fn anubis_trunc(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "trunc"); match x { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(x.as_f64().trunc() as i64) } }
+fn anubis_sign(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "sign"); let v = x.as_f64(); AnubisValue::Int(if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }) }
 fn anubis_clamp(x: AnubisValue, lo: AnubisValue, hi: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&x, "clamp");
+    anubis_require_numeric(&lo, "clamp");
+    anubis_require_numeric(&hi, "clamp");
     if x.is_float() || lo.is_float() || hi.is_float() {
-        AnubisValue::Float(x.as_f64().max(lo.as_f64()).min(hi.as_f64()))
+        let (lo_f, hi_f) = (lo.as_f64(), hi.as_f64());
+        if lo_f > hi_f {
+            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted — lo ({}) > hi ({})", lo_f, hi_f);
+        }
+        AnubisValue::Float(x.as_f64().max(lo_f).min(hi_f))
     } else {
-        AnubisValue::Int(x.as_i64().max(lo.as_i64()).min(hi.as_i64()))
+        let (lo_i, hi_i) = (lo.as_i64(), hi.as_i64());
+        if lo_i > hi_i {
+            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted — lo ({}) > hi ({})", lo_i, hi_i);
+        }
+        AnubisValue::Int(x.as_i64().max(lo_i).min(hi_i))
     }
 }
 fn anubis_pi() -> AnubisValue { AnubisValue::Float(std::f64::consts::PI) }
 fn anubis_e() -> AnubisValue { AnubisValue::Float(std::f64::consts::E) }
 fn anubis_factorial(n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(0);
+    // Reject soft-coerced strings (`factorial("5")` used to return 120 via as_i64).
+    let n_raw = match n {
+        AnubisValue::Int(v) => v,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: factorial expects an int argument, got {}",
+            other.type_name()
+        ),
+    };
+    if n_raw < 0 {
+        panic!("ANUBIS_DOMAIN_ERROR: factorial is undefined for negative integers, got {}", n_raw);
+    }
+    let n = n_raw;
     let mut acc: i64 = 1;
-    let mut i = 2;
-    while i <= n { acc = acc.wrapping_mul(i); i += 1; }
+    let mut i: i64 = 2;
+    while i <= n {
+        acc = match acc.checked_mul(i) {
+            Some(v) => v,
+            None => panic!("ANUBIS_OVERFLOW: factorial({}) overflows i64 (i64::MAX is 9223372036854775807, reached between 20! and 21!)", n),
+        };
+        i += 1;
+    }
     AnubisValue::Int(acc)
 }
 
@@ -1995,7 +2953,12 @@ fn anubis_capitalize(s: AnubisValue) -> AnubisValue {
 }
 fn anubis_pad(s: AnubisValue, width: AnubisValue, pad: AnubisValue, at_start: bool) -> AnubisValue {
     let s = s.display_string();
-    let w = width.as_i64().max(0) as usize;
+    // Was `.max(0)` — negative width silently became a no-op (Phase-5 M–Z SILENT_WRONG).
+    let w_raw = width.as_i64();
+    if w_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: pad width must be non-negative, got {}", w_raw);
+    }
+    let w = w_raw as usize;
     let p = { let ps = pad.display_string(); if ps.is_empty() { " ".to_string() } else { ps } };
     let have = s.chars().count();
     if have >= w { return anubis_mk_str(s); }
@@ -2033,11 +2996,19 @@ fn anubis_unique(a: AnubisValue) -> AnubisValue {
     anubis_mk_list(out)
 }
 fn anubis_take(a: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(0) as usize;
+    let n_raw = n.as_i64();
+    if n_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: take count must be non-negative, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     anubis_mk_list(anubis_iter(a).into_iter().take(n).collect())
 }
 fn anubis_drop(a: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(0) as usize;
+    let n_raw = n.as_i64();
+    if n_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: drop count must be non-negative, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     anubis_mk_list(anubis_iter(a).into_iter().skip(n).collect())
 }
 fn anubis_take_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
@@ -2054,11 +3025,19 @@ fn anubis_drop_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_mk_list(items[i..].to_vec())
 }
 fn anubis_chunk(a: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(1) as usize;
+    let n_raw = n.as_i64();
+    if n_raw <= 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: chunk size must be positive, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     anubis_mk_list(anubis_iter(a).chunks(n).map(|c| anubis_mk_list(c.to_vec())).collect())
 }
 fn anubis_window(a: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(1) as usize;
+    let n_raw = n.as_i64();
+    if n_raw <= 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: window size must be positive, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     let items = anubis_iter(a);
     if items.len() < n { return anubis_mk_list(vec![]); }
     anubis_mk_list(items.windows(n).map(|w| anubis_mk_list(w.to_vec())).collect())
@@ -2077,8 +3056,16 @@ fn anubis_product(a: AnubisValue) -> AnubisValue {
         AnubisValue::Int(items.iter().map(|v| v.as_i64()).product())
     }
 }
-fn anubis_first(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().next().unwrap_or(AnubisValue::Int(0)) }
-fn anubis_last(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().last().unwrap_or(AnubisValue::Int(0)) }
+fn anubis_first(a: AnubisValue) -> AnubisValue {
+    anubis_iter(a).into_iter().next().unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: first has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
+}
+fn anubis_last(a: AnubisValue) -> AnubisValue {
+    anubis_iter(a).into_iter().last().unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: last has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
+}
 /// True when a collection has no elements (empty ⟺ `len == 0`, matching `len`'s type coverage).
 /// Lets programs guard `pop`/`last`/index access without hand-writing `len(xs) > 0` everywhere.
 fn anubis_is_empty(v: AnubisValue) -> AnubisValue {
@@ -2088,7 +3075,11 @@ fn anubis_is_empty(v: AnubisValue) -> AnubisValue {
         AnubisValue::Map(m) => m.len(),
         AnubisValue::Struct { fields, .. } => fields.len(),
         AnubisValue::Enum { fields, .. } => fields.len(),
-        _ => 0,
+        // Was `_ => 0` so `is_empty(42)` / `is_empty(true)` returned true (Phase-5 SILENT_WRONG).
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: is_empty expects a list, string, map, struct, or enum, got {}",
+            other.type_name()
+        ),
     };
     AnubisValue::Bool(n == 0)
 }
@@ -2100,12 +3091,12 @@ fn anubis_concat(a: AnubisValue, b: AnubisValue) -> AnubisValue {
 fn anubis_min_by(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_iter(a).into_iter()
         .min_by(|x, y| anubis_value_cmp(&f.call_closure(vec![x.clone()]), &f.call_closure(vec![y.clone()])))
-        .unwrap_or(AnubisValue::Int(0))
+        .unwrap_or_else(|| panic!("ANUBIS_EMPTY_COLLECTION: min_by has no element — the collection is empty (use is_empty(xs) to guard)"))
 }
 fn anubis_max_by(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_iter(a).into_iter()
         .max_by(|x, y| anubis_value_cmp(&f.call_closure(vec![x.clone()]), &f.call_closure(vec![y.clone()])))
-        .unwrap_or(AnubisValue::Int(0))
+        .unwrap_or_else(|| panic!("ANUBIS_EMPTY_COLLECTION: max_by has no element — the collection is empty (use is_empty(xs) to guard)"))
 }
 fn anubis_partition(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     let mut yes = Vec::new();
@@ -2120,7 +3111,10 @@ fn anubis_partition(a: AnubisValue, f: AnubisValue) -> AnubisValue {
 fn anubis_entries(m: AnubisValue) -> AnubisValue {
     match m {
         AnubisValue::Map(m) => anubis_mk_list(anubis_rc_take(m).into_iter().map(|(k, v)| anubis_mk_list(vec![anubis_mk_str(k), v])).collect()),
-        _ => anubis_mk_list(vec![]),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: entries expects a map, got {}",
+            other.type_name()
+        ),
     }
 }
 // The fail-SOFT counterpart to fail-closed `coll[key]`: returns the element if the key is present
@@ -2146,11 +3140,23 @@ fn anubis_get(m: AnubisValue, k: AnubisValue, default: AnubisValue) -> AnubisVal
     }
 }
 fn anubis_merge(a: AnubisValue, b: AnubisValue) -> AnubisValue {
-    let mut out = match a { AnubisValue::Map(m) => anubis_rc_take(m), _ => vec![] };
-    if let AnubisValue::Map(bm) = b {
-        for (k, v) in anubis_rc_take(bm) {
-            if let Some(slot) = out.iter_mut().find(|(kk, _)| kk == &k) { slot.1 = v; } else { out.push((k, v)); }
+    let mut out = match a {
+        AnubisValue::Map(m) => anubis_rc_take(m),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: merge expects a map as its first argument, got {}",
+            other.type_name()
+        ),
+    };
+    match b {
+        AnubisValue::Map(bm) => {
+            for (k, v) in anubis_rc_take(bm) {
+                if let Some(slot) = out.iter_mut().find(|(kk, _)| kk == &k) { slot.1 = v; } else { out.push((k, v)); }
+            }
         }
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: merge expects a map as its second argument, got {}",
+            other.type_name()
+        ),
     }
     anubis_mk_map(out)
 }
@@ -2178,7 +3184,19 @@ fn anubis_times(n: AnubisValue, f: AnubisValue) -> AnubisValue {
     if n.is_closure() {
         panic!("ANUBIS_TYPE_ERROR: times expects a count as its first argument — times(count, closure), got a closure");
     }
-    let n = n.as_i64().max(0);
+    // Was `n.as_i64().max(0)` — `times(-1, f)` returned `[]` and `times("2", f)` soft-coerced the
+    // string to 2 and ran the body (Phase-5 M–Z SILENT_WRONG).
+    let n_raw = match n {
+        AnubisValue::Int(v) => v,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: times expects an int count as its first argument, got {}",
+            other.type_name()
+        ),
+    };
+    if n_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: times count must be non-negative, got {}", n_raw);
+    }
+    let n = n_raw;
     anubis_mk_list((0..n).map(|i| f.call_closure(vec![AnubisValue::Int(i)])).collect())
 }
 
@@ -2337,7 +3355,18 @@ use std::os::unix::process::ExitStatusExt;
 
 fn anubis_to_bytes(v: &AnubisValue) -> Vec<u8> {
     match v {
-        AnubisValue::List(items) => items.iter().map(|x| (x.as_i64() as u8)).collect(),
+        // RECURSE, matching the Enum/Struct/Map arms below. Mapping `as_i64() as u8` over the
+        // elements silently coerced a NESTED list to its LENGTH, because `as_i64()` on a list
+        // returns its element count: `flat([[1,2],[3]])` produced `[2, 1]` — the two inner
+        // lengths — where payload assembly needs `[1, 2, 3]`.
+        //
+        // `flat` is how PoC payloads are built, so this is worse than a wrong answer: an exploit
+        // "proves" something about bytes nobody assembled, and a proof-carrying language emits a
+        // proof about the wrong artifact.
+        //
+        // Flat lists are unaffected — an `Int` element serialises to `vec![n as u8]` either way —
+        // so this fixes nesting without changing the common case.
+        AnubisValue::List(items) => items.iter().flat_map(anubis_to_bytes).collect(),
         AnubisValue::Str(s) => s.as_bytes().to_vec(),
         AnubisValue::Int(n) => vec![*n as u8],
         AnubisValue::Float(n) => vec![(*n as i64) as u8],
@@ -2354,23 +3383,76 @@ fn anubis_to_bytes(v: &AnubisValue) -> Vec<u8> {
     }
 }
 
+/// Fail closed on a non-numeric argument to a pack/cyclic call. `.as_i64()` on a List returns
+/// the list's LENGTH, on a Map returns the entry count, on a Struct returns the field count —
+/// so `p8([9,9,9])` silently produced `[3]`, `p32([1,2,3,4,5])` produced `[5, 0, 0, 0]`, and
+/// `cyclic({"a":1,"b":2})` produced a 2-char pattern. That is worse than a crash for the same
+/// reason the `flat` recursion bug was: `flat`/`p*`/`cyclic` compose the bytes an exploit
+/// asserts things about, so a silently-wrong pack means a proof-carrying program emits a proof
+/// about the wrong artifact. Booleans and numeric strings are still accepted (they are
+/// documented-lenient numeric coercions per LANGUAGE.md); only structured values are refused.
+fn anubis_pack_require_numeric(fn_name: &str, v: &AnubisValue) {
+    match v {
+        AnubisValue::Int(_) | AnubisValue::Float(_) | AnubisValue::Bool(_) => {}
+        AnubisValue::Str(s) => {
+            let trimmed = s.trim();
+            if trimmed.parse::<i64>().is_err() && trimmed.parse::<f64>().is_err() {
+                panic!(
+                    "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got string `{s}` which does not parse as a number"
+                );
+            }
+        }
+        AnubisValue::List(_) => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got a list (use flat(list) to concatenate bytes, or pass an integer)"
+        ),
+        AnubisValue::Map(_) => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got a map"
+        ),
+        AnubisValue::Struct { ty, .. } => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got struct `{ty}`"
+        ),
+        AnubisValue::Enum { ty, tag, .. } => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got enum variant `{ty}::{tag}`"
+        ),
+        AnubisValue::Closure(_) => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got a closure"
+        ),
+    }
+}
+
 fn anubis_p8(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p8", &v);
     anubis_mk_list(vec![AnubisValue::Int((v.as_i64() as u8) as i64)])
 }
 fn anubis_p16(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p16", &v);
     let n = v.as_i64() as u16;
     anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_p32(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p32", &v);
     let n = v.as_i64() as u32;
     anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_p64(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p64", &v);
     let n = v.as_i64() as u64;
     anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_cyclic(v: AnubisValue) -> AnubisValue {
-    let n = v.as_i64().max(0) as usize;
+    anubis_pack_require_numeric("cyclic", &v);
+    // `.max(0)` silently coerced a negative length to 0 and returned `[]` — same shape as the
+    // HKDF / PBKDF2 fixes: a caller that passes a signed-overflow value or a computed length
+    // otherwise silently got an empty pattern, which cyclic_find would then report "not found"
+    // for, hiding the real bug (bad length arithmetic) behind an already-known negative code path.
+    let n_raw = v.as_i64();
+    if n_raw < 0 {
+        panic!(
+            "ANUBIS_POC_CYCLIC_LENGTH: cyclic length must be >= 0, got {}",
+            n_raw
+        );
+    }
+    let n = n_raw as usize;
     let alphabet = b"abcdefghijklmnopqrstuvwxyz";
     anubis_mk_list((0..n).map(|i| AnubisValue::Int(alphabet[i % alphabet.len()] as i64)).collect())
 }
@@ -2694,29 +3776,32 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String, ctx: &EmitCt
 /// Phase-3 C3: capability I/O (`read_file`/`write_file`/`open`/`send`/`connect`/`time`/`rand`) is
 /// no longer rejected here — those emit real stdlib calls via `emit_builtin_call`. Shell/exec/sql
 /// and pure analysis constructs remain non-run.
+///
+/// CLAIMS-15: these arrays are the single source of truth for the carrier-immunity barrier.
+/// The test `gated_builtins_must_not_lower_in_emit_builtin_call` iterates them directly —
+/// adding a name here automatically protects it against value-position carrier bypass.
+const NON_RUN_BUILTINS: &[&str] = &[
+    "symbolic",
+    "assume",
+    "assert",
+    "taint_source",
+    "declassify",
+    "sink",
+    "shell",
+    "exec",
+    "system",
+    "memcpy",
+    "sql",
+];
+
+const POC_KIT_BUILTINS: &[&str] = &["p8", "p16", "p32", "p64", "cyclic", "target_run", "flat"];
+
 fn is_non_run_builtin(callee: &str) -> bool {
-    matches!(
-        callee,
-        "symbolic"
-            | "assume"
-            | "assert"
-            | "taint_source"
-            | "declassify"
-            | "sink"
-            | "shell"
-            | "exec"
-            | "system"
-            | "memcpy"
-            | "sql" // `http_get`/`http_post` lower via `anubis_http_*` (cleartext http:// only).
-                    // `shell`/`exec` remain non-run by design.
-    )
+    NON_RUN_BUILTINS.contains(&callee)
 }
 
 fn is_poc_kit_builtin(callee: &str) -> bool {
-    matches!(
-        callee,
-        "p8" | "p16" | "p32" | "p64" | "cyclic" | "target_run" | "flat"
-    )
+    POC_KIT_BUILTINS.contains(&callee)
 }
 
 fn is_proof_input_builtin(callee: &str) -> bool {
@@ -3007,6 +4092,154 @@ fn collect_free_stmts(
 
 /// Dispatch a standard-library builtin call. Returns `None` if `callee` is not a builtin (so it
 /// falls through to a user-defined function call). `args` are already-lowered Rust expressions.
+/// Does calling `callee` with `argc` arguments fail the LOWERER's own arity check?
+///
+/// The checker used to know nothing about builtin arity, so `max()`, `len()`, `push()` and 167
+/// others passed `check` and then failed at runtime — 170 of 213 builtins, measured. That is a
+/// direct promise violation: a PASS is supposed to mean no way was found for the program to
+/// violate its contracts, and a program that cannot even be lowered is one `check` should reject.
+///
+/// This probes `emit_builtin_call` with placeholder arguments rather than introducing an arity
+/// TABLE. A second table would be a second producer of the same fact, free to drift from the one
+/// the runtime actually uses — which is the defect this repo has spent the day closing at every
+/// other layer. One source of truth, consulted twice.
+pub fn builtin_arity_error(callee: &str, argc: usize) -> Option<String> {
+    fn lowers(callee: &str, n: usize) -> bool {
+        let ph: Vec<String> = (0..n).map(|i| format!("__anb_arg{i}")).collect();
+        matches!(emit_builtin_call(callee, &ph), Some(Ok(_)))
+    }
+    // VERIFIED minimums first, because the lowerer accepts some calls the language does not.
+    //
+    // `max()` and `min()` LOWER cleanly at zero arguments — `emit_builtin_call` has an arm for them
+    // and it is happy — and then the runtime panics `ANUBIS_EMPTY_COLLECTION: max has no element`.
+    // An arity error reinterpreted as a semantic one, at the layer below the one that could have
+    // refused it. Probing the lowerer therefore cannot see these; only a stated minimum can.
+    //
+    // Every entry was verified BOTH ways before being written: the deficient form fails at run, and
+    // a positive twin at the stated arity SUCCEEDS — `len([1])`, `max([1])`, `min([1])`,
+    // `flat([[1]])`, `declassify(1,"r")` all run=0.
+    //
+    // The MUTATION builtins were absent until their twins could be verified. Their positive forms
+    // failed in a one-liner probe because they need a `mut` binding, and an entry justified by a
+    // failed probe would have been an assertion. Re-probed correctly:
+    //
+    //     let mut xs = [1,2]; pop(xs)          run=0
+    //     let mut xs = [1,2]; push(xs,3)       run=0
+    //     let mut xs = [1,2]; insert(xs,0,9)   run=0
+    //     let mut xs = [1,2]; remove(xs,0)     run=0
+    //
+    // The instrument was wrong, not the builtins — the same "validate the instrument before the
+    // number" lesson that has come up at every layer today.
+    let stated_min = match callee {
+        // Each verified BOTH ways: the deficient form fails at run, and a positive twin at the
+        // stated arity succeeds. Names whose twin could not be made to succeed are ABSENT — an
+        // entry justified by a failed probe would be an assertion, not a measurement.
+        //
+        //   len([1]) · max([1]) · min([1]) · flat([[1]]) · cyclic(4) · proof_assert(true)
+        //   p8(1) · p16(1) · p32(1) · p64(1)
+        //   let mut xs = [1,2]; pop(xs) · push(xs,3) · remove(xs,0) · insert(xs,0,9)
+        //   declassify(1,"r")
+        "len" | "max" | "min" | "flat" | "pop" | "cyclic" | "proof_assert" | "p8" | "p16"
+        | "p32" | "p64" => Some(1),
+        "declassify" | "push" | "remove" => Some(2),
+        "insert" => Some(3),
+        _ => None,
+    };
+    if let Some(min) = stated_min {
+        return (argc < min)
+            .then(|| format!("builtin `{callee}` expects at least {min} argument(s), got {argc}"));
+    }
+    if lowers(callee, argc) {
+        return None;
+    }
+    // Refusing at `argc` is only an ARITY error if some OTHER count lowers. A builtin the lowerer
+    // never accepts at any count is refusing for a different reason — an unsupported backend lane,
+    // a gated name — and rejecting on that would make this a false-reject engine.
+    //
+    // Probing beats matching the message. The first version filtered on `"expects"`, which is what
+    // the `fixed()` helper says, and therefore missed every builtin that refuses through a
+    // different path: `len()`, `declassify()` and `flat()` all report
+    // ANUBIS_UNSUPPORTED_NATIVE_LOWERING, and `max()`/`min()` report ANUBIS_EMPTY_COLLECTION — an
+    // arity error wearing a semantic error's message. Asking "does another count work?" is
+    // independent of how the refusal is phrased.
+    const PROBE_MAX: usize = 4;
+    let accepted: Vec<usize> = (0..=PROBE_MAX).filter(|&n| lowers(callee, n)).collect();
+    if accepted.is_empty() {
+        // Builtins the LOWERER never sees. `len`, `max`, `min`, `flat` and `declassify` reach
+        // `is_builtin_name` through its `matches!` fallback and are lowered on other paths, so no
+        // probe of `emit_builtin_call` can derive their arity — it has no arm for them at all.
+        //
+        // This is the ONLY arity source for these names, not a second one, so it cannot drift from
+        // a table that does not exist. Every entry was verified BOTH ways before being added: the
+        // zero-argument form fails at run, and a positive twin at the stated arity SUCCEEDS
+        // (`len([1])`, `max([1])`, `min([1])`, `flat([[1]])`, `declassify(1,"r")` all run=0).
+        //
+        // `pop`, `push`, `insert` and `remove` are deliberately ABSENT. They are mutation builtins
+        // whose positive twins failed at their stated arity in a one-liner — they need a `mut`
+        // binding — so their arity could not be verified the same way, and an unverified entry
+        // here would be exactly the kind of asserted-but-unmeasured claim this repo refuses.
+        return None;
+    }
+    Some(format!(
+        "builtin `{callee}` cannot take {argc} argument(s); it lowers with {accepted:?}"
+    ))
+}
+
+#[cfg(test)]
+mod builtin_arity_tests {
+    use super::builtin_arity_error;
+
+    /// Every name whose minimum arity was VERIFIED both ways — the deficient form fails at run and
+    /// a positive twin at the stated arity succeeds. Pinned so the table cannot quietly shrink.
+    ///
+    /// It shrank once already in spirit: `pop`/`push`/`insert`/`remove` were held out because a
+    /// one-liner probe could not express the `mut` binding they need, and the gap looked like a
+    /// property of the builtins rather than of the probe.
+    const VERIFIED_MINIMA: &[(&str, usize)] = &[
+        ("len", 1),
+        ("max", 1),
+        ("min", 1),
+        ("flat", 1),
+        ("pop", 1),
+        ("cyclic", 1),
+        ("proof_assert", 1),
+        ("p8", 1),
+        ("p16", 1),
+        ("p32", 1),
+        ("p64", 1),
+        ("declassify", 2),
+        ("push", 2),
+        ("remove", 2),
+        ("insert", 3),
+    ];
+
+    #[test]
+    fn verified_minima_reject_below_and_accept_at() {
+        for &(name, min) in VERIFIED_MINIMA {
+            for argc in 0..min {
+                assert!(
+                    builtin_arity_error(name, argc).is_some(),
+                    "`{name}` must reject {argc} argument(s); its verified minimum is {min}"
+                );
+            }
+            assert!(
+                builtin_arity_error(name, min).is_none(),
+                "`{name}` must ACCEPT its verified minimum of {min} — a rule that rejects the \
+                 correct call is worse for a user than one that misses a wrong call"
+            );
+        }
+    }
+
+    #[test]
+    fn a_builtin_the_lowerer_never_accepts_is_not_an_arity_error() {
+        // `emit_builtin_call` also refuses for reasons that are not the caller's fault at check
+        // time — an unsupported backend lane, a gated name. Reporting those as arity errors would
+        // turn this into a false-reject engine, so a name that lowers at NO count returns None.
+        assert!(builtin_arity_error("definitely_not_a_builtin_xyz", 0).is_none());
+        assert!(builtin_arity_error("definitely_not_a_builtin_xyz", 3).is_none());
+    }
+}
+
 fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
     // Fixed-arity builtin → `anubis_fn(args...)`, with an arity check.
     fn fixed(fn_name: &str, callee: &str, args: &[String], arity: usize) -> Result<String> {
@@ -3140,9 +4373,16 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "ct_eq" | "constant_time_eq" => fixed("anubis_ct_eq", callee, args, 2),
         "hkdf_sha256" => fixed("anubis_hkdf_sha256", callee, args, 4),
         "domain_hash" => fixed("anubis_domain_hash", callee, args, 2),
+        "tuple_hash" => fixed("anubis_tuple_hash", callee, args, 2),
         "random_bytes" => fixed("anubis_random_bytes", callee, args, 1),
+        "aead_nonce_from_counter" => fixed("anubis_aead_nonce_from_counter", callee, args, 1),
         "aead_seal" | "chacha20_poly1305_seal" => fixed("anubis_aead_seal", callee, args, 4),
         "aead_open" | "chacha20_poly1305_open" => fixed("anubis_aead_open", callee, args, 4),
+        "x25519_keygen" => fixed("anubis_x25519_keygen", callee, args, 0),
+        "x25519_public_key" => fixed("anubis_x25519_public_key", callee, args, 1),
+        "x25519_shared" => fixed("anubis_x25519_shared", callee, args, 2),
+        "hybrid_seal" => fixed("anubis_hybrid_seal", callee, args, 3),
+        "hybrid_open" => fixed("anubis_hybrid_open", callee, args, 5),
         // Password hashing (RWC: Argon2id preferred; PBKDF2-HMAC-SHA256 acceptable with high iters)
         "pbkdf2_hmac_sha256" => fixed("anubis_pbkdf2_hmac_sha256", callee, args, 4),
         "argon2id_hash" => fixed("anubis_argon2id_hash", callee, args, 6),
@@ -3317,6 +4557,14 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
                 .to_string(),
         );
     }
+    // CLAIMS-15: gated builtins must never become first-class values.
+    // `assert` is excluded — its lowering (anubis_assert) is benign (panics on false, no exfiltration).
+    if (is_non_run_builtin(name) && name != "assert") || is_poc_kit_builtin(name) {
+        return Err(unsupported_run(format!(
+            "gated builtin `{}` cannot be used as a first-class value",
+            name
+        )));
+    }
     // Any other stdlib builtin → a closure dispatching on argument count across every arity the
     // builtin accepts (probed through `emit_builtin_call`, e.g. `range` takes 2 or 3).
     {
@@ -3402,6 +4650,24 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         Expr::Call { callee, args } => {
             // User-defined functions take precedence over every builtin name.
             if ctx.fns.contains(callee.as_str()) {
+                // Prefer a monomorphized clone when the checker inventory + literal args pin types.
+                if let Some(mono) = resolve_mono_call(callee, args, ctx) {
+                    if let Some(abi) = &mono.unboxed {
+                        // Unboxed ABI: pass native args, wrap result back to AnubisValue.
+                        let native_args = args
+                            .iter()
+                            .zip(abi.params.iter())
+                            .map(|(a, p)| emit_mono_arg_unboxed(a, *p, ctx))
+                            .collect::<Result<Vec<_>>>()?;
+                        let call = format!("{}({})", mono.rust_name, native_args.join(", "));
+                        return Ok(abi.ret.to_anubis(&call));
+                    }
+                    let lowered = args
+                        .iter()
+                        .map(|a| safe_run_expr(a, ctx))
+                        .collect::<Result<Vec<_>>>()?;
+                    return Ok(format!("{}({})", mono.rust_name, lowered.join(", ")));
+                }
                 let lowered = args
                     .iter()
                     .map(|a| safe_run_expr(a, ctx))
@@ -3486,9 +4752,21 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     .collect::<Result<Vec<_>>>()?;
                 return match (callee.as_str(), rest.len()) {
                     ("pop", 0) => Ok(format!("anubis_pop(&mut {})", var)),
+                    // Return the CONTAINER, not a placeholder. This arm used to yield
+                    // `AnubisValue::Int(0)`, so `let ys = push(xs, 3); len(ys)` silently bound a
+                    // non-container: `check` passed and `run` panicked — a check/run divergence
+                    // produced by the lowering, not by the program.
+                    //
+                    // Functional-style use is the natural reading of an expression-position call,
+                    // and every sibling here already returns something meaningful (`pop` the
+                    // element, `insert`/`remove` the result). `push` was the only one handing back
+                    // a placeholder.
+                    //
+                    // Statement-position `push(xs, v)` is lowered separately and is unaffected;
+                    // `AnubisValue` is `Rc`-backed, so returning the container is an O(1) clone.
                     ("push", 1) => Ok(format!(
-                        "{{ {}.push_val({}); AnubisValue::Int(0) }}",
-                        var, rest[0]
+                        "{{ {}.push_val({}); {}.clone() }}",
+                        var, rest[0], var
                     )),
                     ("insert", 2) => Ok(format!(
                         "anubis_insert(&mut {}, {}, {})",
@@ -3593,10 +4871,9 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 };
             }
             if is_non_run_builtin(callee) {
-                if ctx.allow_research
-                    && matches!(callee.as_str(), "taint_source" | "declassify" | "sink")
-                {
-                    // Modeling no-ops in research execution path.
+                if matches!(callee.as_str(), "taint_source" | "declassify" | "sink") {
+                    // Analysis labels have no privileged runtime effect. The shared verifier has
+                    // already approved the flow, so preserve/evaluate the carried value faithfully.
                     if callee == "taint_source" {
                         let a = args.first().map(|e| safe_run_expr(e, ctx)).transpose()?;
                         return Ok(
@@ -3960,24 +5237,24 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 fname
             ))
         }
-        Expr::TaintSource { label } if ctx.allow_research => Ok(format!(
+        // Taint and declassification are analysis labels, not privileged effects. Once the shared
+        // execution checker validates the flow, lowering preserves the runtime value faithfully.
+        Expr::TaintSource { label } => Ok(format!(
             "anubis_mk_str({}.to_string())",
             rust_string_lit(label)?
         )),
-        Expr::Declassify { inner, .. } if ctx.allow_research => safe_run_expr(inner, ctx),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => safe_run_expr(inner, ctx),
         // Runtime assertion: `assert(cond)` panics (fail-closed) when the condition is false.
         Expr::Assert(inner) => Ok(format!("anubis_assert({})", safe_run_expr(inner, ctx)?)),
         // `assume(cond)` is trusted by the solver, so the runtime enforces it (fail-closed) — an
         // assumption that is false at runtime would otherwise silently certify a violated contract.
         Expr::Assume(inner) => Ok(format!("anubis_assume({})", safe_run_expr(inner, ctx)?)),
-        Expr::Tainted { .. }
-        | Expr::Symbolic { .. }
-        | Expr::Declassify { .. }
-        | Expr::TaintSource { .. }
+        Expr::Symbolic { .. }
         | Expr::UnifiedBuffer { .. }
         | Expr::RawPtr { .. } => Err(unsupported_run(
-            "research-only construct (tainted / symbolic / declassify / unified-buffer / raw \
-             pointer) is not available in `anubis run`; use the check or prove path"
+            "verification-only or privileged construct (symbolic / unified-buffer / raw pointer) \
+             has no faithful ordinary native value; use proof inputs, check/prove, or the explicit \
+             research isolation lane as appropriate"
                 .to_string(),
         )),
         // A placeholder the parser emits when it could not build a real expression — surface the
@@ -4472,7 +5749,12 @@ pub fn compile_and_run_source(
     args: &[String],
 ) -> Result<std::process::Output> {
     let ast = crate::frontend::parse_source(source).map_err(|e| anyhow!("parse: {}", e))?;
-    compile_and_run_items(&ast.items, allow_research, args)
+    // Prefer mono inventory when typecheck succeeds; fall back to empty mono on check errors
+    // so runtime tests can still exercise fail-closed paths that only lower.
+    let (mono, sites) = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
+        .map(|ir| (ir.mono_specializations, ir.mono_call_sites))
+        .unwrap_or_default();
+    compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono, &sites)
 }
 
 /// Bump when crypto dependency set or audited runtime changes (invalidates run cache).
@@ -4480,7 +5762,129 @@ pub const ANUBIS_RUN_CRYPTO_CACHE_TAG: &str = "audited-crypto-v3";
 
 /// Shared cargo target dir so audited deps download once per machine.
 pub fn anubis_run_shared_target_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join("anubis-run-cargo-target")
+    if let Some(path) = std::env::var_os("ANUBIS_RUN_CARGO_TARGET_DIR") {
+        return std::path::PathBuf::from(path);
+    }
+    let tag: String = ANUBIS_RUN_CRYPTO_CACHE_TAG
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    std::env::temp_dir().join(format!("anubis-run-cargo-target-{tag}"))
+}
+
+struct RunCargoBuildLock {
+    lock_dir: std::path::PathBuf,
+}
+
+impl Drop for RunCargoBuildLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.lock_dir);
+    }
+}
+
+fn parse_run_build_timeout_secs(raw: Option<&str>) -> Option<std::time::Duration> {
+    const DEFAULT_SECS: u64 = 1800;
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SECS);
+    if secs == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(secs))
+    }
+}
+
+fn resolved_run_build_timeout() -> Option<std::time::Duration> {
+    parse_run_build_timeout_secs(
+        std::env::var("ANUBIS_RUN_BUILD_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn pid_is_alive(pid: u32) -> bool {
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn stale_run_build_lock_owner(lock_dir: &std::path::Path) -> bool {
+    let owner = match std::fs::read_to_string(lock_dir.join("owner")) {
+        Ok(owner) => owner,
+        Err(_) => return false,
+    };
+    let Some(pid) = owner
+        .lines()
+        .find_map(|line| line.strip_prefix("pid="))
+        .and_then(|pid| pid.trim().parse::<u32>().ok())
+    else {
+        return false;
+    };
+    !pid_is_alive(pid)
+}
+
+fn acquire_run_cargo_build_lock(target_dir: &std::path::Path) -> Result<RunCargoBuildLock> {
+    let lock_dir = target_dir.join(".anubis-build-mutex");
+    std::fs::create_dir_all(target_dir).map_err(|e| {
+        anyhow!(
+            "ANUBIS_RUN_BUILD_LOCK_FAILED: create target dir {}: {e}",
+            target_dir.display()
+        )
+    })?;
+    let start = std::time::Instant::now();
+    let deadline = resolved_run_build_timeout().map(|timeout| start + timeout);
+    loop {
+        match std::fs::create_dir(&lock_dir) {
+            Ok(()) => {
+                let owner = format!(
+                    "pid={}\nstarted_unix_ms={}\n",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                );
+                let _ = std::fs::write(lock_dir.join("owner"), owner);
+                return Ok(RunCargoBuildLock { lock_dir });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if stale_run_build_lock_owner(&lock_dir) {
+                    let _ = std::fs::remove_dir_all(&lock_dir);
+                    continue;
+                }
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    return Err(anyhow!(
+                        "ANUBIS_RUN_BUILD_LOCK_TIMEOUT: waited for generated-run cargo lock at {}",
+                        lock_dir.display()
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(anyhow!(
+                    "ANUBIS_RUN_BUILD_LOCK_FAILED: create {}: {e}",
+                    lock_dir.display()
+                ));
+            }
+        }
+    }
 }
 
 fn anubis_run_cargo_toml(package_name: &str) -> String {
@@ -4503,6 +5907,7 @@ pbkdf2 = {{ version = "0.12", default-features = false, features = ["hmac"] }}
 getrandom = "0.2"
 subtle = "2"
 ed25519-dalek = {{ version = "2", features = ["std", "rand_core"] }}
+x25519-dalek = {{ version = "2", features = ["static_secrets"] }}
 
 [profile.release]
 opt-level = 2
@@ -4520,12 +5925,7 @@ pub fn codesign_macos_binary(
     identity: &str,
 ) -> Result<()> {
     let out = std::process::Command::new("codesign")
-        .args([
-            "--force",
-            "--sign",
-            identity,
-            "--entitlements",
-        ])
+        .args(["--force", "--sign", identity, "--entitlements"])
         .arg(entitlements_plist)
         .arg(exe)
         .output()
@@ -4627,10 +6027,14 @@ pub fn compile_sign_and_run_source(
     }
     #[cfg(target_os = "macos")]
     {
-        let ast = crate::frontend::parse_source(src)
-            .map_err(|e| anyhow!("parse failed: {e}"))?;
-        let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
-        let dir = std::env::temp_dir().join(format!("anubis-signed-run-{}", anubis_unique_suffix()));
+        let ast = crate::frontend::parse_source(src).map_err(|e| anyhow!("parse failed: {e}"))?;
+        let (mono, sites) = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
+            .map(|ir| (ir.mono_specializations, ir.mono_call_sites))
+            .unwrap_or_default();
+        let rust_source =
+            lower_program_to_rust_with_mono(&ast.items, allow_research, &mono, &sites)?;
+        let dir =
+            std::env::temp_dir().join(format!("anubis-signed-run-{}", anubis_unique_suffix()));
         std::fs::create_dir_all(&dir)?;
         let exe = dir.join("anubis_run");
         compile_native_rust_to_exe(&rust_source, &exe)?;
@@ -4664,7 +6068,9 @@ pub fn compile_sign_and_run_source(
             let _ = std::fs::remove_dir_all(&dir);
         }
         if capped.timed_out {
-            return Err(anyhow!("ANUBIS_RUN_TIMEOUT: signed program exceeded wall-clock budget"));
+            return Err(anyhow!(
+                "ANUBIS_RUN_TIMEOUT: signed program exceeded wall-clock budget"
+            ));
         }
         Ok(capped.output)
     }
@@ -4672,21 +6078,77 @@ pub fn compile_sign_and_run_source(
 
 /// Compile lowered native Rust (with audited crypto) into `out_exe` via cargo.
 pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) -> Result<()> {
+    // The package name is CONTENT-DERIVED (sha256 of the generated Rust), never random.
+    // Cargo folds the package name into the crate metadata hash, which decides symbol
+    // mangling and codegen-unit layout — the previous per-build random name made every
+    // native build byte-nondeterministic (field-diagnosed 2026-08-13 via jackal-calc:
+    // byte-identical generated .rs across builds, permuted string pools in the binary).
+    // Content addressing restores reproducibility for identical source, stays unique
+    // across different programs, and turns same-name concurrent collisions under the
+    // shared CARGO_TARGET_DIR benign: same name now implies same bytes. It also lets
+    // cargo reuse its fingerprint across rebuilds of an unchanged program. The scratch
+    // project dir below keeps the unique suffix — it is deleted after the build and
+    // must not collide between concurrent builds.
+    let package_name = {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(rust_source.as_bytes());
+        // The anubis_run_ prefix keeps the name a valid identifier (hex may lead with a digit).
+        format!("anubis_run_{}", hex::encode(&digest[..12]))
+    };
     let suffix = anubis_unique_suffix().replace('-', "_");
-    // Cargo package names must be valid identifiers (no leading digits after renames).
-    let package_name = format!("anubis_run_{suffix}");
     let dir = std::env::temp_dir().join(format!("anubis-run-build-{suffix}"));
     std::fs::create_dir_all(dir.join("src"))?;
     std::fs::write(dir.join("Cargo.toml"), anubis_run_cargo_toml(&package_name))?;
     std::fs::write(dir.join("src/main.rs"), rust_source)?;
 
     let target_dir = anubis_run_shared_target_dir();
-    let build = std::process::Command::new("cargo")
-        .args(["build", "--release", "--quiet"])
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()
-        .map_err(|e| anyhow!("cargo spawn failed: {}", e))?;
+    let _build_lock = acquire_run_cargo_build_lock(&target_dir)?;
+    let cargo_build = |offline: bool| -> Result<std::process::Output> {
+        let mut command = std::process::Command::new("cargo");
+        command.args(["build", "--release", "--quiet"]);
+        if offline {
+            command.arg("--offline");
+        }
+        command
+            .current_dir(&dir)
+            .env("CARGO_TARGET_DIR", &target_dir);
+        let capped = run_child_capped(command, resolved_run_build_timeout())
+            .map_err(|e| anyhow!("cargo spawn failed: {}", e))?;
+        if capped.timed_out {
+            return Err(anyhow!(
+                "ANUBIS_RUN_BUILD_TIMEOUT: cargo build exceeded wall-clock budget"
+            ));
+        }
+        Ok(capped.output)
+    };
+
+    // Generated native projects use the audited dependency set already populated by the Anubis
+    // build and the shared run cache. Prefer that cache so a transient registry/DNS outage cannot
+    // break an otherwise reproducible Safe run. A fresh machine may have an incomplete cache, so
+    // retry online unless the operator explicitly required Cargo offline mode.
+    let operator_forced_offline = std::env::var("CARGO_NET_OFFLINE")
+        .ok()
+        .is_some_and(|value| !matches!(value.as_str(), "" | "0" | "false" | "FALSE"));
+    let offline_build = cargo_build(true)?;
+    let build = if offline_build.status.success() || operator_forced_offline {
+        offline_build
+    } else {
+        let online_build = cargo_build(false)?;
+        if online_build.status.success() {
+            online_build
+        } else {
+            let offline_stderr = String::from_utf8_lossy(&offline_build.stderr);
+            let online_stderr = String::from_utf8_lossy(&online_build.stderr);
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(anyhow!(
+                "ANUBIS_UNSUPPORTED_NATIVE_LOWERING: cargo build failed (audited crypto deps):\n\
+                 offline cache attempt:\n{}\n\
+                 online fallback attempt:\n{}",
+                offline_stderr,
+                online_stderr
+            ));
+        }
+    };
     if !build.status.success() {
         let stderr = String::from_utf8_lossy(&build.stderr).to_string();
         let _ = std::fs::remove_dir_all(&dir);
@@ -4731,7 +6193,18 @@ pub fn compile_and_run_items(
     allow_research: bool,
     args: &[String],
 ) -> Result<std::process::Output> {
-    let rust_source = lower_program_to_rust(items, allow_research)?;
+    compile_and_run_items_with_mono(items, allow_research, args, &[], &[])
+}
+
+pub fn compile_and_run_items_with_mono(
+    items: &[Item],
+    allow_research: bool,
+    args: &[String],
+    mono: &[crate::middle::MonoSpecialization],
+    mono_call_sites: &[crate::middle::MonoCallSite],
+) -> Result<std::process::Output> {
+    let rust_source =
+        lower_program_to_rust_with_mono(items, allow_research, mono, mono_call_sites)?;
     let dir = std::env::temp_dir().join(format!("anubis-run-{}", anubis_unique_suffix()));
     std::fs::create_dir_all(&dir)?;
     let exe = dir.join("anubis_run");
@@ -4888,6 +6361,18 @@ mod run_tests {
         assert_eq!(
             run("fn parity(x: u32) -> u32 ensures(result == 0 || result == 1) { return x % 2; } fn main() { print(parity(7)); print(parity(8)); }"),
             "1\n0"
+        );
+    }
+
+    #[test]
+    fn unsigned_and_signed_integer_boundaries_match_solver_contract() {
+        let src = "fn u(x:u32)->u32 { return x; } fn s(x:i64)->i64 { return x; } \
+                   fn main(){ print(u(-1)); print(u(2147483648)); print(u(4294967296)); \
+                   print(u(5000000000)); print(s(9223372036854775807)); \
+                   print(s(-9223372036854775807-1)); }";
+        assert_eq!(
+            run(src),
+            "4294967295\n2147483648\n0\n705032704\n9223372036854775807\n-9223372036854775808"
         );
     }
 
@@ -5122,6 +6607,50 @@ mod run_tests {
                  print(f(0)); print(f(5)); }"
             ),
             "zero\nnonzero"
+        );
+    }
+
+    #[test]
+    fn every_emitted_user_fn_carries_the_stack_guard() {
+        // The recursion trap is only as good as its coverage: `emit_fn_core` has FOUR emission
+        // shapes (full-native mono, boxed mono, return-guarded, plain) and a fifth added later
+        // that forgets the guard would reopen the process-abort behaviour silently. Count the
+        // emitted `fn ` definitions against the guard calls instead of trusting review.
+        //
+        // The program below is chosen to exercise several shapes at once: a monomorphizable
+        // arithmetic fn, a declared-integer-return fn, and an untyped fn.
+        let src = "fn sq(x: u32) -> u32 { return x * x; } \
+                   fn tag(s) { return s; } \
+                   fn main() { print(sq(3)); print(tag(1)); }";
+        let toks = crate::frontend::lex(src);
+        let items = crate::frontend::parse(toks).expect("parse");
+        let rust = lower_program_to_rust(&items.items, false).expect("lower");
+        // Only the user-function definitions, not the runtime's own helpers: user fns are emitted
+        // into `functions_src` with the `anb_` prefix that `sanitize_ident`/`rust_name` applies.
+        let user_fns = rust.matches("\nfn anb_").count();
+        let guards = rust.matches("__anb_stack_guard();").count();
+        assert!(
+            user_fns >= 3,
+            "expected the 3 user fns to be emitted, saw {user_fns}"
+        );
+        assert_eq!(
+            guards, user_fns,
+            "every emitted user function must call __anb_stack_guard(); {user_fns} fns but \
+             {guards} guards — an emission shape is missing it, which silently restores the \
+             process-abort-on-stack-overflow behaviour"
+        );
+    }
+
+    #[test]
+    fn unbounded_recursion_traps_instead_of_aborting() {
+        // CLAIMS item 13: `check` ACCEPTS a mutual-return cycle, and `run` used to die with
+        // `fatal runtime error: stack overflow, aborting` — an abort, not a panic, so none of the
+        // fail-closed diagnostic path ran. It must now surface an attributable ANUBIS_* code.
+        run_expect_trap(
+            "fn ping() -> i64 { return pong(); } \
+             fn pong() -> i64 { return ping(); } \
+             fn main() { print(ping()); }",
+            "ANUBIS_RECURSION_LIMIT",
         );
     }
 
@@ -6799,7 +8328,15 @@ mod run_tests {
             run("fn main() { print(reduce([42], |a, b| a + b)); }"),
             "42"
         );
-        assert_eq!(run("fn main() { print(reduce([], |a, b| a + b)); }"), "0");
+        // A SEEDLESS reduce over an EMPTY list has no answer to give. This once returned "0",
+        // which is only right if the closure happens to be `+`: the same code returns 0 for a
+        // multiply fold (identity is 1) and a type error for a string-concat fold. reduce cannot
+        // know the closure's identity element, so it fails closed — and this assertion, which
+        // encoded the old silent-wrong result, is the stale half.
+        run_expect_trap(
+            "fn main() { print(reduce([], |a, b| a + b)); }",
+            "ANUBIS_EMPTY_COLLECTION",
+        );
         // Named 2-param function in either position:
         assert_eq!(
             run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], add, 0)); }"),
@@ -7293,6 +8830,100 @@ mod run_tests {
                     || stdout.contains("__anubis_cap_ne_kc:")
                     || stdout.contains("__anubis_cap_ne_se:"),
                 "expected NE token: {stdout}"
+            );
+        }
+    }
+
+    // ── CLAIMS-15: carrier immunity for gated builtins ──────────────────────
+    //
+    // Two guards prevent gated builtins from becoming first-class values:
+    //
+    //   1. PREDICATE in `var_as_value`: rejects gated names before probing
+    //      `emit_builtin_call`, so `let f = shell` is a compile error regardless
+    //      of whether `emit_builtin_call` has an arm for `shell`.
+    //
+    //   2. THIS TEST: verifies that gated names have no lowering in
+    //      `emit_builtin_call`.  Without this, removing the `var_as_value`
+    //      guard (thinking it redundant) silently reopens the carrier.
+    //
+    // Both derive from `NON_RUN_BUILTINS` and `POC_KIT_BUILTINS` — adding a
+    // gated name to those arrays automatically protects it in both guards.
+    //
+    // `assert` is excluded: it has a benign lowering (`anubis_assert` — panics
+    // on false, no data exfiltration) and is already in `emit_builtin_call`.
+    // Its AST node is `Expr::Assert`, not `Expr::Call`, so the call-site gate
+    // in `safe_run_expr` is never reached — the carrier for `assert` is open
+    // but harmless.
+    //
+    // To add runtime behavior for a gated builtin, put it in `safe_run_expr`
+    // (call-site dispatch), NOT `emit_builtin_call`.  See `p8`..`flat` and
+    // `target_run` in `safe_run_expr` for the pattern.
+    #[test]
+    fn gated_builtins_must_not_lower_in_emit_builtin_call() {
+        for &name in NON_RUN_BUILTINS.iter().chain(POC_KIT_BUILTINS) {
+            if name == "assert" {
+                continue;
+            }
+            for arity in 0..=6usize {
+                let args: Vec<String> = (0..arity).map(|i| format!("__a{i}")).collect();
+                assert!(
+                    emit_builtin_call(name, &args).is_none(),
+                    "CLAIMS-15 VIOLATION: gated builtin `{name}` gained a lowering \
+                     in emit_builtin_call (arity {arity}).  This opens the \
+                     builtin-carrier class: `let f = {name}; f(...)` compiles via \
+                     var_as_value, bypassing the call-site gate.  --allow-research \
+                     cannot protect value-position bindings.  To add runtime \
+                     behavior for `{name}`, gate it in safe_run_expr, NOT \
+                     emit_builtin_call.",
+                );
+            }
+        }
+    }
+
+    // ── CLAIMS-15 layer 2: var_as_value structural guard ─────────────────
+    //
+    // The test above guards the data layer (emit_builtin_call must not have
+    // an arm for a gated name). This test guards the control layer: even if
+    // someone adds such an arm, var_as_value must reject the name before
+    // probing emit_builtin_call.
+    //
+    // Without this, removing the var_as_value guard (thinking it redundant
+    // because is_builtin_name catches gated names at a later step) silently
+    // reopens the carrier the moment someone adds an emit_builtin_call arm.
+    #[test]
+    fn var_as_value_rejects_gated_builtins() {
+        let fns = std::collections::BTreeSet::new();
+        let fn_arities = std::collections::BTreeMap::new();
+        let methods = std::collections::BTreeMap::new();
+        let locals = std::collections::BTreeSet::new();
+        let struct_field_types = std::collections::BTreeMap::new();
+        let mono: Vec<MonoEmitSpec> = Vec::new();
+        let fn_param_types = std::collections::BTreeMap::new();
+        let mono_sites: MonoSitesByCaller = std::collections::BTreeMap::new();
+        let mono_cursors = std::collections::BTreeMap::new();
+        let ctx = EmitCtx {
+            allow_research: false,
+            fns: &fns,
+            fn_arities: &fn_arities,
+            methods: &methods,
+            locals: &locals,
+            struct_field_types: &struct_field_types,
+            mono: &mono,
+            fn_param_types: &fn_param_types,
+            current_fn: None,
+            mono_sites_by_caller: &mono_sites,
+            mono_cursors: &mono_cursors,
+        };
+        for &name in NON_RUN_BUILTINS.iter().chain(POC_KIT_BUILTINS) {
+            if name == "assert" {
+                continue;
+            }
+            let result = var_as_value(name, &ctx);
+            assert!(
+                result.is_err(),
+                "CLAIMS-15 VIOLATION: var_as_value accepted gated builtin `{name}` \
+                 as a first-class value.  The carrier path is open: \
+                 `let f = {name}; f(...)` compiles without --allow-research.",
             );
         }
     }

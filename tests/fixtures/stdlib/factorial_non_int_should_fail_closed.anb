@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `factorial("5")` printed `120`
+// via soft `as_i64` coerce. Negative/overflow domains already sealed; wrong-type must join them.
+fn main() {
+    print(factorial("5"));
+}

@@ -20,6 +20,10 @@ pub use backends::native::lower_to_native;
 pub use backends::run::{compile_native_rust_to_exe, ANUBIS_RUN_CRYPTO_CACHE_TAG};
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
 pub use frontend::{lex, parse, parse_source, Mode, AST};
+pub use middle::research_profile;
+pub use middle::research_profile::{
+    proven_effects_from_source, proven_effects_via_typecheck, ProvenEffectSet,
+};
 pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
 pub use project::{AnubisManifest, ProjectLayout};
 
@@ -380,7 +384,7 @@ mod tests {
             .expect_err("float into u32 annotation must be rejected");
         assert!(err.contains("ANUBIS_TYPE_MISMATCH"), "got: {err}");
         // tainted wrapper must not hide it (research mode where tainted is legal).
-        let src = "fn main() { research { let x: tainted<u32> = 3.14; sink(x); } }";
+        let src = "@research(authorization: \"unit-test\", scope: \"lib-test\", reason: \"compiler regression fixture\", non_destructive: true) fn main() { research { let x: tainted<u32> = 3.14; sink(x); } }";
         let parsed = frontend::parse_source_detailed(src);
         let res = typecheck(parsed.ast, frontend::Mode::Research);
         assert!(
@@ -705,6 +709,7 @@ mod tests {
     #[test]
     fn parses_research_with_tainted_and_symbolic() {
         let src = r#"
+        @research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
         fn poc() {
             research {
                 // intent: "demo overflow"
@@ -811,6 +816,7 @@ mod tests {
         // Real safe-mode enforcement (raw pointers, tainted sinks) still lives in `typecheck`,
         // upstream of lowering, so nothing is weakened.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn trigger() {
     research {
         let x: tainted<u32> = symbolic();
@@ -841,6 +847,7 @@ fn trigger() {
     #[test]
     fn research_constraints_include_nested_assume_and_assert() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn trigger() {
     research {
         let y: tainted<u32> = symbolic();
@@ -879,6 +886,7 @@ fn trigger() {
         // marker whose runtime summary reports the taint analysis, instead of the retired template
         // that faked a "wrote at idx N" memory op.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn trigger() {
     research {
         let y: tainted<u32> = symbolic();
@@ -997,6 +1005,7 @@ fn trigger() {
 import bounty.net;
 
 module poc {
+    @research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
     fn entry(input: tainted<u32>) {
         research {
             let x: tainted<u32> = symbolic();
@@ -1059,6 +1068,7 @@ module poc {
     #[test]
     fn taint_tracks_sink_and_declassify_traces() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn report() {
     research {
         let raw: tainted<u32> = symbolic();
@@ -1094,6 +1104,7 @@ fn report() {
     #[test]
     fn z3_solver_reports_counterexample_for_failed_assertion() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -1126,6 +1137,7 @@ fn bad() {
     #[test]
     fn solver_keeps_literal_widths_per_symbolic_variable() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn poc() {
     research {
         let buf: *mut u8 = 0 as *mut u8;
@@ -1246,12 +1258,10 @@ fn main() {
             proved("fn main(){ let a=3000000000; let b=2000000000; assert(a + b > a); }"),
             "3e9+2e9 must not wrap"
         );
-        // A `u32` annotation is INERT at runtime (a value holds any i64; no width clamp), so the
-        // solver must NOT fabricate a `[0, 2^32-1]` range for it. A symbolic u32 whose only claimed
-        // bound comes from the (nonexistent) range is therefore left unmodeled, never proved from a
-        // range that does not exist at runtime — see the contract-level guard in
-        // `b2_contracts_verify_postconditions` (unbounded `x + 1 > x` must be DISPROVED, not proved).
-        // Soundness preserved: a genuinely-false assertion is still disproved.
+        // Parameter annotations are handled separately: u8/u16/u32 parameters are masked at native
+        // entry and receive the matching solver range, while i64 stays signed and unmasked. This
+        // straight-line control has no typed parameter; a genuinely-false i64 assertion must still
+        // be disproved.
         let ast = parse_source("fn main(){ let x=3; assert(x > 20); }").expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
         assert!(
@@ -1275,9 +1285,9 @@ fn main() {
                     .all(|c| c.status != "FAIL"),
                 Err(_) => false,
             };
-        // Provable postconditions. NOTE the upper `requires` bound: a `u32` annotation is inert at
-        // runtime (values are i64), so a contract that needs no-overflow must STATE the bound. With
-        // `x < 1_000_000`, `x + 1` and `x + x` cannot wrap, so the postcondition is discharged.
+        // Provable postconditions. These explicit upper bounds keep the arithmetic far below i64
+        // wrap. The following unbounded controls separately prove that u32 parameter masking alone
+        // is sufficient for simple +1/doubling.
         assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; }"), "bounded x => x+1>x");
         assert!(discharged("fn dbl(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result >= x) { return x + x; }"), "bounded x => x+x >= x");
         assert!(discharged("fn f(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result > 0) { return x + 1; }"), "bounded x => x+1>0");
@@ -2845,6 +2855,17 @@ fn main() {
             discharged("fn a(x: u16) -> u16 ensures(result >= 0) ensures(result < 65536) { return x; } fn main() { let r = a(5); }"),
             "u16 proves [0,65536)"
         );
+        // Exact boundary agreement: composed contracts must apply the same low-32-bit mask as the
+        // native parameter entry for negative, sign-bit, 2^32, and above-u32::MAX arguments.
+        assert!(
+            discharged("fn b(x:u32)->u32 ensures(result==x) { return x; } fn main(){ let a=b(-1); let c=b(2147483648); let d=b(4294967296); let e=b(5000000000); assert(a==4294967295); assert(c==2147483648); assert(d==0); assert(e==705032704); }"),
+            "checker must match native u32 masking at -1, 2^31, 2^32, and above u32::MAX"
+        );
+        // Signed i64 is never masked; both extrema remain exact 64-bit values.
+        assert!(
+            discharged("fn b(x:i64)->i64 ensures(result==x) { return x; } fn main(){ let hi=b(9223372036854775807); let lo=b(-9223372036854775807-1); assert(hi==9223372036854775807); assert(lo==-9223372036854775807-1); }"),
+            "checker must preserve i64::MIN and i64::MAX exactly"
+        );
         // Straight-line unsigned arithmetic proves without the manual `>= 0` bound (bounded so no wrap).
         assert!(
             discharged("fn s(x: u32) -> u32 requires(x < 1000) ensures(result == 3*x) { return 3*x; } fn main() { let r = s(5); }"),
@@ -3063,6 +3084,7 @@ fn main() {
         // `assumptions ∧ ¬assertion`. Real replay: independently re-verify z3's OWN model
         // against the SAME query it decided, rather than trusting the model text.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -3093,6 +3115,7 @@ fn bad() {
         // replay must reject it because it re-derives the answer from the query itself — it
         // does not depend on which value is forged.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -3392,6 +3415,35 @@ fn mul(x: i64, y: i64) -> i64
         );
     }
 
+    /// Exact modeled let bindings are bounds too. The offline free×free path must use their
+    /// equality assumptions instead of treating the names as unconstrained and inventing a risk.
+    #[test]
+    fn wrap_safety_free_mul_proves_from_exact_let_bindings() {
+        let src = r#"
+fn main() {
+    let a = 65536;
+    let b = 65536;
+    assert(a * b != 0);
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let wrap: Vec<_> = ir
+            .solver_obligations
+            .iter()
+            .filter(|o| o.name.starts_with("wrap-safety:") && o.name.contains("*"))
+            .collect();
+        assert!(
+            wrap.is_empty(),
+            "exact let-bound factors must offline-prove safe: {wrap:?}"
+        );
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks.iter().all(|c| c.status != "FAIL"),
+            "safe exact product must prove without WRAP_RISK: {checks:?}"
+        );
+    }
+
     /// variable × constant: wrap-safety uses a cheap range and must CEX when unbounded.
     #[test]
     fn wrap_safety_mul_by_const_flags_unbounded() {
@@ -3526,6 +3578,7 @@ fn main() { f(3.0); }
         // Force a sat path then forge — unit-level on SolverCheck detail after check_obligations
         // already tags genuine models as "(replayed)".
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -5299,6 +5352,47 @@ fn main() {
         );
     }
 
+    /// RWC Ch2 TupleHash spirit + Ch5–6 hybrid envelope (shipped path, not reimplemented in-test).
+    #[test]
+    fn rwc_tuple_hash_and_hybrid_envelope_roundtrip() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("rwc-hybrid-tuple");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    let a = crypto::commit_parts("lab", ["ab", "c"]);
+    let b = crypto::commit_parts("lab", ["a", "bc"]);
+    if a == b { print("TUPLE_BAD"); } else { print("TUPLE_OK"); }
+    let pair = crypto::ecdh_keygen();
+    let env = crypto::hybrid_encrypt(pair[1], "aad", "hello-rwc");
+    let pt = crypto::hybrid_decrypt(pair[0], env[0], "aad", env[1], env[2]);
+    print(len(pt));
+    print(crypto::bytes_hex(crypto::aead_nonce_counter(1)));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(lines[0], "TUPLE_OK");
+        assert_eq!(lines[1], "9"); // hello-rwc
+        assert_eq!(lines[2], "000000000000000000000001");
+    }
+
     #[test]
     fn phase5_crypto_aead_wrong_aad_fail_closed() {
         use backends::run::compile_and_run_items;
@@ -5522,6 +5616,395 @@ fn main() {
         assert!(!out.status.success());
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains("ANUBIS_CRYPTO_BYTE_RANGE"), "got: {err}");
+    }
+
+    /// Extract one `fn name(...) { ... }` block from lowered Rust (brace-balanced).
+    fn extract_rust_fn(src: &str, name: &str) -> String {
+        let needle = format!("fn {name}");
+        let start = src.find(&needle).expect("fn not found");
+        let after = &src[start..];
+        let brace = after.find('{').expect("opening brace");
+        let mut depth = 0i32;
+        let mut end = brace;
+        for (i, ch) in after[brace..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = brace + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        after[..end].to_string()
+    }
+
+    #[test]
+    fn typecheck_records_static_monomorphization_inventory() {
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let a = id(1);
+    let b = id("hi");
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, Mode::Safe).expect("typecheck");
+        assert!(
+            !ir.mono_specializations.is_empty(),
+            "expected monomorphization instances for id, got {:?}",
+            ir.mono_specializations
+        );
+        assert!(
+            ir.mono_specializations.iter().any(|m| m.function == "id"),
+            "missing id specialization: {:?}",
+            ir.mono_specializations
+        );
+        // At least one concrete binding should be present for pinned args.
+        let has_concrete = ir
+            .mono_specializations
+            .iter()
+            .any(|m| m.function == "id" && m.type_args.values().any(|v| !v.is_empty()));
+        assert!(
+            has_concrete,
+            "expected concrete type_args on id mono instances: {:?}",
+            ir.mono_specializations
+        );
+    }
+
+    #[test]
+    fn mono_codegen_emits_specialized_clones_and_rewrites_literal_calls() {
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let a = id(1);
+    let b = id("hi");
+    print(a);
+    print(b);
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        assert!(
+            ir.mono_specializations.len() >= 2,
+            "need two mono instances: {:?}",
+            ir.mono_specializations
+        );
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower with mono");
+        assert!(
+            rust.contains("anb_id__mono__"),
+            "expected monomorphized clone names in lowered Rust:\n{rust}"
+        );
+        // Call sites should prefer specialized clones over generic anb_id for literals.
+        assert!(
+            rust.contains("anb_id__mono__T_u32") && rust.contains("anb_id__mono__T_string"),
+            "expected mono mangled clones for id: find anb_id__mono in:\n{}",
+            rust.lines()
+                .filter(|l| l.contains("anb_id") || l.contains("mono"))
+                .take(40)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        // Unboxed primitive ABI: native i64 / String at the clone boundary.
+        assert!(
+            rust.contains("fn anb_id__mono__T_u32(x: i64) -> i64")
+                || rust.contains("fn anb_id__mono__T_u32(mut x: i64) -> i64"),
+            "expected unboxed i64 ABI for T=u32 clone"
+        );
+        assert!(
+            rust.contains("fn anb_id__mono__T_string(x: String) -> String")
+                || rust.contains("fn anb_id__mono__T_string(mut x: String) -> String"),
+            "expected unboxed String ABI for T=string clone"
+        );
+        // Full native body for identity: no AnubisValue / __anb_body in the mono clones.
+        let u32_fn = extract_rust_fn(&rust, "anb_id__mono__T_u32");
+        let str_fn = extract_rust_fn(&rust, "anb_id__mono__T_string");
+        assert!(
+            !u32_fn.contains("AnubisValue") && !u32_fn.contains("__anb_body"),
+            "expected fully native u32 mono body, got:\n{u32_fn}"
+        );
+        assert!(
+            !str_fn.contains("AnubisValue") && !str_fn.contains("__anb_body"),
+            "expected fully native string mono body, got:\n{str_fn}"
+        );
+        // Runtime still works through mono path.
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains('1') && stdout.contains("hi"),
+            "unexpected stdout: {stdout}"
+        );
+    }
+
+    #[test]
+    fn mono_codegen_full_native_let_chain() {
+        let src = r#"
+fn scale<T>(x: T) -> T {
+    let y = x + 1;
+    let z = y * 2;
+    return z;
+}
+fn main() {
+    print(scale(5));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        let mono_name = rust
+            .lines()
+            .find_map(|l| {
+                let t = l.trim();
+                if t.starts_with("fn anb_scale__mono__") {
+                    Some(t.split('(').next()?.strip_prefix("fn ")?.to_string())
+                } else {
+                    None
+                }
+            })
+            .expect("mono scale fn");
+        let body = extract_rust_fn(&rust, &mono_name);
+        assert!(
+            !body.contains("AnubisValue")
+                && !body.contains("__anb_body")
+                && body.contains("let y")
+                && body.contains("let z"),
+            "expected full native let-chain body:\n{body}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("12"), "unexpected stdout: {stdout}");
+    }
+
+    #[test]
+    fn mono_codegen_full_native_if_else() {
+        let src = r#"
+fn absv<T>(x: T) -> T {
+    if x < 0 {
+        return 0 - x;
+    } else {
+        return x;
+    }
+}
+fn main() {
+    print(absv(0 - 7));
+    print(absv(3));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        let mono_name = rust
+            .lines()
+            .find_map(|l| {
+                let t = l.trim();
+                if t.starts_with("fn anb_absv__mono__") {
+                    Some(t.split('(').next()?.strip_prefix("fn ")?.to_string())
+                } else {
+                    None
+                }
+            })
+            .expect("mono absv fn");
+        let body = extract_rust_fn(&rust, &mono_name);
+        assert!(
+            !body.contains("AnubisValue") && !body.contains("__anb_body") && body.contains("if "),
+            "expected full native if body:\n{body}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains('7') && stdout.contains('3'),
+            "unexpected stdout: {stdout}"
+        );
+    }
+
+    #[test]
+    fn mono_codegen_full_native_body_for_simple_arith() {
+        let src = r#"
+fn add1<T>(x: T) -> T { return x + 1; }
+fn main() {
+    print(add1(10));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        assert!(
+            rust.contains("anb_add1__mono__"),
+            "expected mono clone for add1"
+        );
+        // Find any mono add1 and ensure full native (x + 1) without AnubisValue body.
+        let mono_name = rust
+            .lines()
+            .find_map(|l| {
+                let t = l.trim();
+                if t.starts_with("fn anb_add1__mono__") {
+                    Some(t.split('(').next()?.strip_prefix("fn ")?.to_string())
+                } else {
+                    None
+                }
+            })
+            .expect("mono add1 fn line");
+        let body = extract_rust_fn(&rust, &mono_name);
+        assert!(
+            !body.contains("AnubisValue") && !body.contains("__anb_body") && body.contains('+'),
+            "expected full native arith body:\n{body}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("11"), "unexpected stdout: {stdout}");
+    }
+
+    #[test]
+    fn mono_codegen_variable_pinned_call_sites() {
+        // Checker pins T from the typed binding of `x` / `s`; emit consumes ordered mono_call_sites.
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let x = 7;
+    let s = "var";
+    print(id(x));
+    print(id(s));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        assert!(
+            ir.mono_call_sites.len() >= 2,
+            "expected ordered mono call sites, got {:?}",
+            ir.mono_call_sites
+        );
+        assert!(
+            ir.mono_call_sites
+                .iter()
+                .any(|s| { s.caller == "main" && s.function == "id" && !s.type_args.is_empty() }),
+            "expected pinned id call sites under main: {:?}",
+            ir.mono_call_sites
+        );
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        assert!(
+            rust.contains("anb_id__mono__"),
+            "variable-pinned mono should still emit clones: {}",
+            rust.lines()
+                .filter(|l| l.contains("anb_id") || l.contains("mono"))
+                .take(30)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        // Calls should use mono clones, not only generic anb_id(...) for id(x)/id(s).
+        let mono_calls = rust.matches("anb_id__mono__").count();
+        assert!(
+            mono_calls >= 2,
+            "expected mono clone references for both variable-pinned calls, got {mono_calls}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains('7') && stdout.contains("var"),
+            "unexpected stdout: {stdout}"
+        );
+    }
+
+    #[test]
+    fn rwc_crypto_misuse_rejects_raw_ecdh_as_aead_key() {
+        let err = tc_ok(
+            r#"fn main() {
+                let k = x25519_keygen();
+                // Intentionally wrong: raw shared as AEAD key (RWC Ch5 forbids).
+                let _ = aead_seal(x25519_shared(k[0], k[1]), aead_nonce(), "aad", "pt");
+            }"#,
+        )
+        .expect_err("raw ecdh as aead key must be CRYPTO_MISUSE");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
+        assert!(
+            err.contains("x25519_shared") || err.contains("HKDF") || err.contains("hybrid"),
+            "message should cite ECDH/HKDF path: {err}"
+        );
+    }
+
+    #[test]
+    fn rwc_crypto_misuse_rejects_std_crypto_ecdh_as_aead_key() {
+        let dir = unique_test_dir("rwc-std-ecdh-aead");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("m.anb");
+        std::fs::write(
+            &f,
+            r#"
+import std.crypto;
+fn main() {
+    let k = crypto::ecdh_keygen();
+    let _ = crypto::aead_encrypt(crypto::ecdh_shared(k[0], k[1]), crypto::aead_nonce(), "aad", "pt");
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&f).expect("combine");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("std.crypto ecdh→aead must be CRYPTO_MISUSE");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
     }
 
     #[test]
@@ -5763,6 +6246,7 @@ fn main() {
         let artifact_path = out_dir.join("artifact-input");
         std::fs::write(&artifact_path, b"reference artifact").unwrap();
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn report() {
     research {
         let raw: tainted<u32> = symbolic();
@@ -5938,6 +6422,7 @@ fn report() {
         let artifact_path = out_dir.join("artifact-input");
         std::fs::write(&artifact_path, b"solver artifact").unwrap();
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -5966,6 +6451,62 @@ fn bad() {
             bundle.dir.join("analysis/solver_replay.json").exists(),
             "solver replay sidecar must be written into analysis/"
         );
+
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn evidence_bundle_writes_mono_specializations_sidecar() {
+        let out_dir = unique_test_dir("mono-specializations-sidecar");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let a = id(1);
+    let b = id("hi");
+}
+"#;
+        let bundle = build_evidence_bundle(
+            src,
+            "safe",
+            None,
+            vec!["mono inventory evidence".into()],
+            &out_dir,
+            Some("safe-check"),
+            None,
+        )
+        .expect("bundle");
+
+        let mono_path = bundle.dir.join("mono_specializations.json");
+        assert!(
+            mono_path.exists(),
+            "mono_specializations.json must be written into evidence bundle"
+        );
+        let mono_text = std::fs::read_to_string(&mono_path).expect("read mono");
+        let mono_val: serde_json::Value =
+            serde_json::from_str(&mono_text).expect("parse mono json");
+        let arr = mono_val
+            .as_array()
+            .expect("mono_specializations.json must be a JSON array");
+        assert!(
+            !arr.is_empty(),
+            "expected at least one mono specialization for id, got {mono_text}"
+        );
+        assert!(
+            mono_text.contains("id"),
+            "mono inventory should name function id: {mono_text}"
+        );
+        let mono_check = bundle
+            .manifest
+            .checks
+            .iter()
+            .find(|c| c.name == "monomorphization");
+        assert!(
+            mono_check.is_some(),
+            "evidence checks must include monomorphization: {:?}",
+            bundle.manifest.checks
+        );
+        assert_eq!(mono_check.unwrap().status, "PASS");
 
         let _ = std::fs::remove_dir_all(&out_dir);
     }
@@ -6031,16 +6572,54 @@ fn bad() {
     }
 
     #[test]
-    fn unified_gate_suite_is_fail_closed() {
-        // The one command a stranger runs must exit non-zero on any gate FAIL — a green
-        // exit over a red gate is the category error the whole project exists to prevent.
+    fn unified_gate_profiles_have_honest_exit_semantics() {
+        // The full profile may say PASS only at an exact 15/15 seal. The hosted profile has a
+        // different, explicit verdict because it cannot execute G9 without Tart/VZ. Neither may
+        // turn a red gate into a green claim.
         let script = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/audit_unified.sh"),
         )
         .expect("scripts/audit_unified.sh must exist");
+        // The full seal's boundary, expressed by NAME rather than by count.
+        //
+        // This used to assert `pass -eq 15` / `total -eq 15`. Those literals were replaced by the
+        // EXPECTED_GATES check, which keeps the property (no gate may silently vanish) AND reports
+        // WHICH gate went missing — something the arithmetic could never do. Asserting the old
+        // literals here would have frozen the suite at fifteen gates forever; six the board
+        // publishes were never added for exactly that reason.
+        //
+        // What must NOT be lost is the boundary itself, so each marker below is the named form of
+        // a property the counts used to enforce.
+        for exact_full_marker in [
+            "EXPECTED_GATES=",         // the gate list is explicit
+            "ANUBIS_AUDIT_INCOMPLETE", // a vanished gate is named, not absorbed
+            "fail -eq 0",
+            "skip -eq 0",
+            "external -eq 0", // a full seal tolerates no EXTERNAL gate
+        ] {
+            assert!(
+                script.contains(exact_full_marker),
+                "full seal lost its boundary: {exact_full_marker}"
+            );
+        }
+        for hosted_marker in [
+            r#"VERDICT="HOSTED_PASS""#,
+            "ALLOWED_EXTERNAL", // replaces `external -eq 1`: WHICH, not how many
+            "ANUBIS_AUDIT_EXTERNAL_NOT_ALLOWED",
+            r#"gate "G9_poc_kit" "EXTERNAL""#,
+            "ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1",
+            "full 34-check battery requires VZ",
+        ] {
+            assert!(
+                script.contains(hosted_marker),
+                "hosted witness lost its explicit boundary: {hosted_marker}"
+            );
+        }
+        // `external -eq 1` pinned that EXACTLY ONE gate could be external under `hosted`. The
+        // named replacement must still SAY which ones, or any number could degrade silently.
         assert!(
-            script.contains("fail -gt 0"),
-            "unified suite verdict must key off the failing-gate count"
+            script.contains("hosted) ALLOWED_EXTERNAL=\"G9_poc_kit"),
+            "hosted profile must name the gates permitted to be EXTERNAL"
         );
         assert!(
             script.contains(r#"VERDICT="FAIL""#),
@@ -6053,23 +6632,116 @@ fn bad() {
     }
 
     #[test]
-    fn ci_workflow_enforces_the_real_gate_suite_not_a_weak_subset() {
-        // Regression guard for the "CI green over a red gate" seam: CI must enforce the
-        // SAME front door a stranger runs on a fresh clone (audit_a_plus.sh -> the 15-gate
-        // audit_unified.sh), not a hand-picked handful of cargo commands. Before this was
-        // fixed, CI ran `cargo test` (missing --all, so the tools crate's tests never ran)
-        // and never invoked gates G5-G15 at all — a push could be green in CI while the
-        // language/PCA/prove/offensive gates were red.
+    fn poc_kit_gate_requires_disposable_vz_without_host_fallback() {
+        // The PoC gate launches a crashing target and a mutation fuzzer. Its host entrypoint must
+        // therefore be orchestration-only: a missing Tart/golden-image prerequisite is a hard
+        // failure, never permission to execute the same battery on bare metal.
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/run_poc_kit_gate.sh"),
+        )
+        .expect("scripts/run_poc_kit_gate.sh must exist");
+        for marker in [
+            "ANUBIS_POC_KIT_IN_GUEST",
+            "tart-disposable-guest",
+            "anubis-xcode",
+            "ANUBIS_POC_KIT_VZ_REQUIRED",
+            "host_resource_guard.sh",
+            "anubis_guard_sync_tree",
+            "anubis_guard_teardown_guest",
+            "anubis_guard_require_torn_down",
+        ] {
+            assert!(
+                script.contains(marker),
+                "PoC gate must preserve mandatory disposable-VZ marker {marker:?}"
+            );
+        }
+        let sync_policy = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../scripts/lib/host_resource_guard.sh"),
+        )
+        .expect("scripts/lib/host_resource_guard.sh must exist");
+        for marker in [
+            "--no-specials",
+            "--checksum",
+            "--no-times",
+            "ANUBIS_HOST_GUARD_SYNC_CLEANUP",
+            "Preserve target/ as the sole excluded guest cache",
+            "vm/pins/$current_pin_name",
+            "implementer/a_plus_audit_run/",
+        ] {
+            assert!(
+                sync_policy.contains(marker),
+                "shared guest-sync policy lost required marker {marker:?}"
+            );
+        }
+        assert!(
+            script.contains("if [[ \"${ANUBIS_POC_KIT_IN_GUEST:-0}\" != \"1\" ]]")
+                && script.contains("run_in_disposable_guest \"$OUT\""),
+            "host PoC entry must delegate to the disposable guest before any crash-capable step"
+        );
+        assert!(
+            !script.contains("host-lab-gold-poc_kit"),
+            "PoC evidence must never be labeled as an accepted host crash lane"
+        );
+    }
+
+    #[test]
+    fn guest_gates_sync_hash_verified_binary_without_network_rebuild() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for relative in [
+            "scripts/run_poc_kit_gate.sh",
+            "scripts/run_offensive_platform_gate.sh",
+        ] {
+            let script = std::fs::read_to_string(root.join(relative))
+                .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+            for marker in [
+                "binary_sha256",
+                "host-built-arm64-hash-verified",
+                "shasum -a 256",
+            ] {
+                assert!(
+                    script.contains(marker),
+                    "{relative} lost hash-verified binary transport marker {marker:?}"
+                );
+            }
+            assert!(
+                !script
+                    .lines()
+                    .any(|line| line.trim() == "cargo build --release -p anubis"),
+                "{relative} must not make guest execution depend on crates.io"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_workflow_separates_hosted_witness_from_full_vz_seal() {
+        // A stock GitHub runner cannot execute the Tart/VZ gate. Push/PR CI must say
+        // HOSTED_PASS with G9 external, while the separately dispatched self-hosted job owns
+        // the unchanged full 15-gate front door.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
             .expect(".github/workflows/ci.yml must exist");
-        // (1) CI must invoke the real front door.
-        assert!(
-            ci.contains("scripts/audit_a_plus.sh") || ci.contains("scripts/audit_unified.sh"),
-            "CI must run the real sealed gate suite (audit_a_plus.sh / audit_unified.sh), not a weak subset"
-        );
-        // (2) The suite CI points at must actually be the full 15-gate runner — guard against
-        // CI running a runner that has been hollowed out to fewer gates.
+        for hosted_marker in [
+            "hosted-gate-witness",
+            "scripts/audit_unified.sh --profile hosted",
+            "hosted-gate-report",
+        ] {
+            assert!(
+                ci.contains(hosted_marker),
+                "CI lost explicit hosted-witness marker {hosted_marker:?}"
+            );
+        }
+        for full_marker in [
+            "sealed-vz-gate-suite",
+            "self-hosted, macOS, ARM64, tart-vz",
+            "scripts/audit_a_plus.sh",
+            "sealed-vz-gate-report",
+        ] {
+            assert!(
+                ci.contains(full_marker),
+                "CI lost dedicated full-seal marker {full_marker:?}"
+            );
+        }
         let runner = std::fs::read_to_string(root.join("scripts/audit_unified.sh"))
             .expect("scripts/audit_unified.sh must exist");
         for g in 1..=15 {
@@ -6270,6 +6942,102 @@ fn main() {
             "unexpected safe taint error: {}",
             err
         );
+    }
+
+    #[test]
+    fn explicit_safe_function_remains_safe_inside_research_program() {
+        let src = r#"
+@research(authorization: "authorized-lab")
+fn research_helper() {}
+
+@safe
+fn main() {
+    let secret: tainted<u32> = symbolic();
+    sink(secret);
+}
+"#;
+        let ast = parse_source(src).expect("mixed-mode source must parse");
+        let err = typecheck(ast, frontend::Mode::Research)
+            .expect_err("explicit @safe enclave must retain Safe taint enforcement");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "unexpected explicit Safe enclave error: {err}"
+        );
+    }
+
+    /// Compat F2: impl methods share Gate-15 research authorization policy with free functions.
+    #[test]
+    fn research_method_missing_authorization_is_rejected() {
+        let src = r#"
+struct S {}
+impl S {
+    @research
+    fn probe(self) {}
+}
+fn main() {}
+"#;
+        let ast = parse_source(src).expect("research method source must parse");
+        let err = typecheck(ast, frontend::Mode::Safe)
+            .expect_err("research method without authorization metadata must fail closed");
+        assert!(
+            err.contains("ANUBIS_RESEARCH_MISSING_AUTHORIZATION"),
+            "unexpected research-method error: {err}"
+        );
+    }
+
+    /// Dual: free-fn policy still applies after factoring the shared helper.
+    #[test]
+    fn research_free_fn_missing_authorization_is_rejected() {
+        let src = r#"
+@research
+fn probe() {}
+fn main() {}
+"#;
+        let ast = parse_source(src).expect("research free fn must parse");
+        let err = typecheck(ast, frontend::Mode::Safe)
+            .expect_err("research free fn without authorization must fail closed");
+        assert!(
+            err.contains("ANUBIS_RESEARCH_MISSING_AUTHORIZATION"),
+            "unexpected free-fn research error: {err}"
+        );
+    }
+
+    /// Dual: authorized research method is not rejected for missing metadata alone.
+    #[test]
+    fn research_method_with_authorization_is_not_rejected_for_missing_auth() {
+        let src = r#"
+struct S {}
+impl S {
+    @research(authorization: "authorized-static-regression")
+    fn probe(self) {}
+}
+fn main() {}
+"#;
+        let ast = parse_source(src).expect("authorized research method must parse");
+        let res = typecheck(ast, frontend::Mode::Safe);
+        if let Err(err) = res {
+            assert!(
+                !err.contains("ANUBIS_RESEARCH_MISSING_AUTHORIZATION"),
+                "authorized research method must not fail Gate 15: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unannotated_function_can_inherit_requested_research_mode() {
+        let src = r#"
+fn helper() {
+    let value: tainted<u32> = symbolic();
+    sink(value);
+}
+
+fn main() {
+    helper();
+}
+"#;
+        let ast = parse_source(src).expect("unannotated source must parse");
+        typecheck(ast, frontend::Mode::Research)
+            .expect("unannotated functions retain program-level Research compatibility");
     }
 
     #[test]
@@ -7024,6 +7792,123 @@ fn main() {
         .expect("clean push method must accept");
     }
 
+    /// Phase-1 close-out (adversary R3): identity forwarders, return-join Block/method producers,
+    /// and integrity container-as-arg must not launder secret/taint. Drives the real `tc_ok`
+    /// typecheck path — not a reimplementation of the walkers.
+    #[test]
+    fn phase1_fn_value_identity_and_return_join_parity() {
+        // #1 builtin identity of a secret-returning free fn, then apply → reject
+        let err_id = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn main() { let f = identity(key); print(f()); }"#,
+        )
+        .expect_err("identity(key) then apply must reject");
+        assert!(
+            err_id.contains("ANUBIS_SECRET_EXFILTRATION") || err_id.contains("secret"),
+            "identity: expected secret diagnostic, got: {err_id}"
+        );
+        // pure twin
+        tc_ok(
+            r#"fn safe() -> i64 { return 7; }
+               fn main() { let f = identity(safe); print(f()); }"#,
+        )
+        .expect("identity(safe) then apply must accept");
+
+        // #2 param-forwarding identity
+        let err_fwd = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn id(x) { return x; }
+               fn main() { let f = id(key); print(f()); }"#,
+        )
+        .expect_err("id(key) then apply must reject");
+        assert!(
+            err_fwd.contains("ANUBIS_SECRET_EXFILTRATION") || err_fwd.contains("secret"),
+            "param-fwd: expected secret diagnostic, got: {err_fwd}"
+        );
+        tc_ok(
+            r#"fn safe() -> i64 { return 8; }
+               fn id(x) { return x; }
+               fn main() { let f = id(safe); print(f()); }"#,
+        )
+        .expect("id(safe) then apply must accept");
+
+        // R3-A nested braced return-if (Block of Stmt::If)
+        let err_nest = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn safe() -> i64 { return 0; }
+               fn get(c, d) {
+                   return if c {
+                       if d { key } else { safe }
+                   } else {
+                       safe
+                   };
+               }
+               fn main() { let f = get(true, true); print(f()); }"#,
+        )
+        .expect_err("nested braced return-if with secret arm must reject");
+        assert!(
+            err_nest.contains("ANUBIS_SECRET_EXFILTRATION") || err_nest.contains("secret"),
+            "nested return-if: expected secret diagnostic, got: {err_nest}"
+        );
+
+        // R3-B method return-if (both orders covered by one secret arm)
+        let err_meth = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn safe() -> i64 { return 0; }
+               struct S { x: i64 }
+               impl S {
+                   fn get(self, c) {
+                       return if c { key } else { safe };
+                   }
+               }
+               fn main() {
+                   let s = S { x: 0 };
+                   let f = s.get(true);
+                   print(f());
+               }"#,
+        )
+        .expect_err("method return-if with secret arm must reject");
+        assert!(
+            err_meth.contains("ANUBIS_SECRET_EXFILTRATION") || err_meth.contains("secret"),
+            "method return-if: expected secret diagnostic, got: {err_meth}"
+        );
+        tc_ok(
+            r#"fn a() -> i64 { return 1; }
+               fn b() -> i64 { return 2; }
+               struct S { x: i64 }
+               impl S {
+                   fn get(self, c) {
+                       return if c { a } else { b };
+                   }
+               }
+               fn main() {
+                   let s = S { x: 0 };
+                   let f = s.get(true);
+                   print(f());
+               }"#,
+        )
+        .expect("method return-if both pure arms must accept");
+
+        // Integrity container-as-arg: list of bare tainting fn applied into shell
+        let err_list = tc_ok(
+            r#"fn key() -> tainted<i64> { return 42; }
+               fn app(fs) uses(shell) { shell(fs[0]()); }
+               fn main() uses(shell) { app([key]); }"#,
+        )
+        .expect_err("list-as-arg of tainting fn to shell must reject");
+        assert!(
+            err_list.contains("ANUBIS_INTERPROC_SINK")
+                || err_list.contains("TAINTED")
+                || err_list.contains("taint"),
+            "list-as-arg integrity: expected taint/sink diagnostic, got: {err_list}"
+        );
+        tc_ok(
+            r#"fn a() -> i64 { return 1; }
+               fn app(fs) { print(fs[0]()); }
+               fn main() { app([a]); }"#,
+        )
+        .expect("pure list-as-arg applied must accept");
+    }
 
     #[test]
     fn map_entry_closure_application_is_enforced() {

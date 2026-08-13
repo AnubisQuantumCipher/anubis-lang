@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Twin of first_empty_should_fail_closed.anb (wrong-type case).
+fn main() {
+    print(first(42));
+}

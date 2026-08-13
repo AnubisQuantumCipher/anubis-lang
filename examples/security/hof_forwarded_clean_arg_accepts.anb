@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Over-rejection guard for the higher-order forwarded-argument fix. The closure params are bound to
+// a conservative JOIN over the call's other arguments, so a call whose arguments are all CLEAN must
+// stay clean. If this goes red, the join is charging on the mere presence of a closure argument
+// rather than on what the sibling arguments actually carry, and the fix has become a wall.
+fn apply(f, v) { f(v); }
+fn main() {
+    let k = 42;
+    apply(|v| { print(v); }, k);
+}

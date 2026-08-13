@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_PBKDF2_LENGTH
+// RUNTIME: exercise via `anubis run` (this is a runtime panic; `anubis check` still passes,
+// this is a *runtime* fail-closed gate).
+// SILENT_WRONG closed: `anubis_pbkdf2_hmac_sha256` previously coerced `length <= 0` to 0 via
+// `.max(0)` and returned an empty byte list. Same shape as HKDF: a downstream length-32 check
+// would fail later with a confusing error, or worse, a caller might feed the empty result to
+// an AEAD key check that panics inside crypto internals. Fail-closed at the KDF boundary.
+fn main() {
+    print(pbkdf2_hmac_sha256("password", "salt", 100, 0));
+}

@@ -63,11 +63,15 @@ type        = "bool" | "u8" | "u16" | "u32" | "u64" | "string"
 
 struct_decl = "struct" ident "{" { ident ":" type ";" } "}" ;
 
-import_item = "import" string ";" ;
+import_item = "import" ident { "." ident } ";" ;   (* dotted path, NOT a quoted string *)
 module_item = "module" ident block ;
 ```
 
 **Notes for this slice:**
-- `while_stmt`, full struct decl in grammar above are aspirational for fixtures; actual parser may accept subset.
+- `import` takes a **dotted path** (`import std.math;`, `import bounty.net;`) — the quoted-string form
+  (`import "std/math";`) does NOT parse and fails with `unexpected token in import path`
+  (`compiler/src/frontend/mod.rs::parse_import`). Verified 2026-07-26.
+- `while_stmt` and the full struct decl above are **implemented**, not aspirational — both parse and run
+  today (`examples/tour/` exercises each). This note previously under-claimed the parser.
 - Attributes parsed as leading `@ident` or via mode inference from blocks.
 - Error productions produce diagnostics, never panic for the fixture set.

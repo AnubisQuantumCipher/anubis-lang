@@ -83,3 +83,32 @@ pub fn catalog_json() -> Value {
         ]
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_is_plan_only() {
+        let c = catalog_json();
+        assert_eq!(c["status"], "PLAN_ONLY");
+        assert_eq!(c["executed"], false);
+    }
+
+    #[test]
+    fn catalog_has_correct_attck_refs() {
+        let c = catalog_json();
+        let attck = c["attck"].as_array().unwrap();
+        let ids: Vec<&str> = attck.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(ids.contains(&"T1218"));
+        assert!(ids.contains(&"T1059"));
+    }
+
+    #[test]
+    fn catalog_has_expected_os_counts() {
+        let c = catalog_json();
+        assert_eq!(c["macos"].as_array().unwrap().len(), 5);
+        assert_eq!(c["linux"].as_array().unwrap().len(), 3);
+        assert_eq!(c["windows_plan_only"].as_array().unwrap().len(), 4);
+    }
+}

@@ -1,0 +1,25 @@
+=== ANUBIS UNIFIED GATE SUITE ===
+Timestamp: 20260726-004220
+Profile: full
+Working directory: /Users/sicarii/anubis-lang
+
+PASS   G1_fmt                                   no formatting diffs
+PASS   G2_clippy                                zero warnings/errors
+PASS   G3_test                                  828 tests passed
+PASS   G4_build_release                         release binary built
+PASS   G5_language_fixtures                     Overall: PASS (244/244)
+PASS   G6_turing_core                           Overall: PASS (13/13)
+PASS   G7_pca                                   Overall: PASS (13/13)
+PASS   G8_security_fixtures                     Overall: PASS
+PASS   G9_poc_kit                               Overall: PASS (4/4)
+PASS   G10_prove                                Overall: PASS (11/11)
+PASS   G11_enum_match                           enum/match gate clean
+PASS   G12_for_in                               for-in gate clean
+PASS   G13_lang_trio                            lang trio gate clean
+PASS   G14_offensive                            Overall: PASS (34/34)
+PASS   G15_dogfood_feel                         8/8 programs ran
+
+========================================
+Overall: PASS (15/15 passed, 0 failed, 0 skipped, 0 external)
+Report: implementer/a_plus_audit_run/20260726T050000Z/full_vz_seal/gate_report.json
+Log: implementer/a_plus_audit_run/20260726T050000Z/full_vz_seal/gate_log.txt

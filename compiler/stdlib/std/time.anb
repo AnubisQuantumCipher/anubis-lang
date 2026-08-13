@@ -1,0 +1,16 @@
+// std.time — pure-ish time helpers over host builtins (capability: time.now).
+// Wall clock is non-deterministic: contracts must not assume fixed now().
+
+pub fn now() uses(time.now) {
+    return time_now();
+}
+
+// Elapsed milliseconds between two epoch-ms timestamps (non-negative if end >= start).
+pub fn elapsed_ms(start_ms, end_ms) {
+    if end_ms < start_ms {
+        return 0;
+    }
+    return end_ms - start_ms;
+}
+
+// Sleep is intentionally NOT provided here — research/host policy varies; use platform APIs.

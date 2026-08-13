@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// H2 + H3, the CAPABILITY face — this is GROK-SEKHMET's independently-found residual: a method that
+// RETURNS a lambda performing a gated effect was accepted with no `uses(...)` on the method or on
+// `main`, while the isomorphic free-function shape (`fn mk() { return |p| write_file(p, ".."); }`) was
+// correctly rejected. `anubis run` really created the file.
+//
+// Same root cause as the secret face: the returned lambda was unresolvable through a method call, so
+// its body was never walked and its `write_file` never charged to anyone. Note this is NOT a failure of
+// Cluster F's inheritance helper — the method declares nothing to inherit; the lambda's effect simply
+// went uncounted.
+struct W { id: u32 }
+impl W {
+    fn mk(self) { return |p| write_file(p, "PWNED"); }
+}
+fn main() {
+    let w = W { id: 1 };
+    let f = w.mk();
+    f("h2h3_gated_lambda.txt");
+}

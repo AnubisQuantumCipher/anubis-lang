@@ -1,0 +1,41 @@
+// EXPECT: PASS
+// Regression: two mutually-recursive functions returning raw list literals.
+//
+// Before the fix in compiler/src/middle/mod.rs, the interprocedural identity
+// walker followed d -> dp -> d -> ... through each function's returned
+// expression with no effective cycle guard: `returned_is_recursive` only
+// detects SELF-reference by string-matching the callee's own name, so mutual
+// pairs sail past the bounded branch, and `collect_container_fn_identities`'s
+// fallthrough into the `fn_identities_of` wrapper reset the depth counter
+// that `fn_identities_of_d` was carrying. The result was
+// `fatal runtime error: stack overflow, aborting` (SIGABRT) on `anubis check`.
+//
+// The fix threads FN_ALIAS_MAX_DEPTH across the whole identity-resolution
+// family (fn_identities_of_d, fn_identities_carried_by_value_d,
+// collect_container_fn_identities_d). The bound is a deferral, never an
+// assertion: reaching MAX_DEPTH yields FnIdentitySet::Unknown, which can only
+// FAIL to resolve an identity and therefore only FAIL to reject; it cannot
+// invent one (same argument as fn_alias_of_d's docstring).
+//
+// Discovered building jackal-calc's symbolic differentiator (2026-08-12).
+
+fn d(node) {
+    if node[0] == "leaf" {
+        return ["zero"];
+    }
+    if node[0] == "pow" {
+        return dp(node[1], node[2]);
+    }
+    return ["add", d(node[1]), d(node[2])];
+}
+
+fn dp(base, e) {
+    let du = d(base);
+    return ["mul", ["pow", base, e], du];
+}
+
+fn main() uses(io.print) {
+    let ast = ["pow", ["leaf"], ["leaf"]];
+    let derived = d(ast);
+    print(derived[0]);
+}

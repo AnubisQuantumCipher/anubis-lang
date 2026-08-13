@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: -1
+// DOC_OK / sentinel LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// position(xs, predicate) returns -1 when no element matches.
+// NOTE: position([1,2], 9) TYPE_ERRORs (expects closure) — docs-vs-arity, not this case.
+fn main() {
+    print(position([1, 2], |x| x == 9));
+}

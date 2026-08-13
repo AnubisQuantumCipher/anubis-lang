@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INDEX_OUT_OF_BOUNDS
+// MUST_NOT_EXIST: should_never_appear.txt
+// RUNTIME control: list index OOB is already fail-closed; no side file written.
+fn main() {
+    let xs = [1, 2, 3];
+    print(xs[99]);
+}

@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNKNOWN_ATTRIBUTE
+// Lead agent 2026-07-27, from GROK-THOTH's day-one stranger pass. An unrecognized attribute used to
+// be accepted SILENTLY, which is the worst failure mode a proof-carrying language has.
+//
+// `#[verifed]` is one letter off `verified`. It checked GREEN while the program silently lost its
+// verification lane — the author believes they have a guarantee they do not have. `#[totally_made_up]`
+// was equally welcome. An authority mark that does nothing is worse than no mark at all.
+//
+// The diagnostic names the closest known attribute, because a typo in an authority mark is exactly
+// the case this exists for, and "unknown attribute" without a remedy would trade a silent failure
+// for an unhelpful wall.
+#[verifed]
+fn f() -> i64 { return 1; }
+fn main() { print(f()); }

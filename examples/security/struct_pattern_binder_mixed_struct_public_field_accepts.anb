@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// CORPUS-1 2026-07-27. Over-rejection guard for Defect B: a struct with BOTH a `secret<T>` field and
+// a plain field, destructured to bind ONLY the public field. The bound name `z` must not inherit a
+// taint from its sibling field `k` merely by co-existing in the same struct — the binder fix must key
+// per-field, not per-struct.
+struct V { k: secret<i64>, z: i64 }
+fn main() {
+    let v = V { k: 42, z: 7 };
+    let V { z } = v;
+    print(z);
+}

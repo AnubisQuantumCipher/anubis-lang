@@ -1,0 +1,7 @@
+// std.net is content-locked and importable. Live HTTP/connect needs uses(net.send)
+// and a real endpoint — see compiler builtins http_get / connect / send.
+import std.net;
+
+fn main() {
+    print("std.net_ok");
+}

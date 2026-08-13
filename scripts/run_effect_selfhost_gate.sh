@@ -7,7 +7,7 @@
 # Two engines, one program each:
 #   (A) Rust  : `anubis check <f>`  — compiler/src/middle/effects.rs compute_fn_effect_rows fixpoint
 #               + the mod.rs ANUBIS_UNDECLARED_EFFECT enforcing check (default lane).
-#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- effects <f>` — the
+#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb -- effects <f>` — the
 #               self-hosted eff_check port (eff_compute_rows + row ⊆ declared).
 #
 # PRIMARY ORACLE (0-disagreement invariant): the two independently-derived undeclared-effect
@@ -30,11 +30,18 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-BIN=./target/release/anubis
+source "$ROOT/scripts/lib/gate_common.sh"
 SH=selfhost/src/anubis_sh.anb
 CORPUS=tests/fixtures/effects_selfhost
 
-cargo build -q --release -p anubis
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "EFFECT_SELFHOST_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  cargo build -q --release -p anubis
+  [[ -x "$BIN" ]] || { echo "EFFECT_SELFHOST_GATE: FAIL (no binary at $BIN)"; exit 127; }
+fi
 
 # Extract the undeclared-effect (function, cap) PAIR set from a diagnostic stream — anchored to the
 # unique "function `F` uses effect `X`" phrasing (isolates from the Safe-mode + taint lanes), emitted
@@ -50,12 +57,21 @@ for f in "$CORPUS"/*.anb; do
   [ -e "$f" ] || continue
   n=$((n+1))
   name=$(basename "$f")
-  exp=$( { grep -m1 '// EXPECT:' "$f" || true; } | sed 's|.*EXPECT: *||' | tr -d '[:space:]')
+  if parse_expectation "$f" "${name%.anb}" none; then
+    exp="$GATE_EXPECT"
+  else
+    exp="MALFORMED"
+    echo "  $name MALFORMED ($GATE_MALFORMED)"
+  fi
 
   rust_caps=$( { "$BIN" check "$f" 2>&1 || true; } | extract_caps | tr '\n' ',')
 
   set +e
-  anb_out=$("$BIN" run "$SH" --allow-research -- effects "$f" 2>&1)
+  # `anubis_sh.anb` has no research{}/exploit{} blocks or @research/@exploit attrs
+  # -> program_mode = Mode::Safe -> this `run` needs no --allow-research. Passing it
+  # would now FAIL on host with ANUBIS_RESEARCH_HOST_FORBIDDEN (commit 5fb7b67 made
+  # `run --allow-research` VZ-guest-only). See scripts/run_selfhost_gate.sh.
+  anb_out=$("$BIN" run "$SH" -- effects "$f" 2>&1)
   anb_rc=$?
   set -e
   anb_caps=$(printf '%s\n' "$anb_out" | extract_caps | tr '\n' ',')
@@ -67,7 +83,7 @@ for f in "$CORPUS"/*.anb; do
   fi
 
   anb_verdict="PASS"; [ "$anb_rc" -ne 0 ] && anb_verdict="FAIL"
-  if [ "$anb_verdict" = "$exp" ]; then
+  if score_fixture "$exp" "$anb_verdict"; then
     expect_ok=$((expect_ok+1)); em="ok"
   else
     expect_bad=$((expect_bad+1)); em="EXPECT-MISMATCH($anb_verdict!=$exp)"
@@ -79,7 +95,23 @@ done
 echo ""
 echo "EFFECT_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree | EXPECT ok=$expect_ok mismatch=$expect_bad"
 
-if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ]; then
+set +e
+finalize "$n" "$expect_ok" "$expect_bad" 0
+expect_rc=$?
+finalize "$n" "$agree" "$disagree" 0
+
+# Coverage ratchet. `finalize` proves the fixtures that RAN agreed; it cannot notice that fewer
+# ran than last time. A self-host comparison over a shrinking corpus reports "0 disagreements"
+# with perfect confidence about less and less.
+assert_floor "effect_selfhost" "$n" "$ROOT/.gate_floors/effect_selfhost.floor"
+_floor_rc=$?
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "EFFECT_SELFHOST_GATE: FAIL ($GATE_FLOOR_ERROR)" >&2
+  exit 1
+fi
+diff_rc=$?
+set -e
+if [ "$expect_rc" -ne 0 ] || [ "$diff_rc" -ne 0 ]; then
   echo "EFFECT_SELFHOST_GATE: FAIL"
   exit 1
 fi

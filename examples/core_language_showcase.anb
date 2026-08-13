@@ -1,0 +1,93 @@
+// Core Anubis language showcase.
+// Demonstrates: SMT-checked contracts, structs, enum matching, mutable while
+// loops, native recursion, and string interpolation.
+//
+// Expected stdout:
+// LAUNCH Amun: 4/4 stages; readiness=8; signal=8; factorial=120
+
+struct Expedition {
+    commander: string,
+    planned_stages: i64,
+    supplies: i64,
+}
+
+enum Dispatch {
+    Launch { manifest: string, readiness: i64 },
+    Hold { manifest: string, held_at_stage: i64 },
+}
+
+// The checker can prove this postcondition from the precondition and body.
+fn proven_double(value: i64) -> i64
+    requires(value >= 0)
+    requires(value < 4611686018427387904)
+    ensures(result == value + value)
+{
+    return value + value;
+}
+
+fn proven_increment(value: i64) -> i64
+    requires(value >= 0)
+    requires(value < 9223372036854775807)
+    ensures(result == value + 1)
+{
+    return value + 1;
+}
+
+// Mutable state in a native while loop counts completed stages.
+fn count_completed_stages(planned: i64) -> i64
+    requires(planned >= 0)
+    requires(planned <= 1000)
+{
+    let stage = 0;
+    let completed = 0;
+    while stage < planned {
+        completed = completed + 1;
+        stage = stage + 1;
+    }
+    return completed;
+}
+
+// Native recursion supplies a simple deterministic checksum.
+fn factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn decide(expedition: Expedition, completed: i64) -> Dispatch {
+    let manifest = "${expedition.commander}: ${completed}/${expedition.planned_stages} stages";
+    if completed == expedition.planned_stages && expedition.supplies >= 12 {
+        return Dispatch::Launch {
+            manifest: manifest,
+            readiness: proven_double(completed),
+        };
+    }
+    return Dispatch::Hold {
+        manifest: manifest,
+        held_at_stage: completed,
+    };
+}
+
+fn main() {
+    let expedition = Expedition {
+        commander: "Amun",
+        planned_stages: 4,
+        supplies: 12,
+    };
+    let completed = count_completed_stages(expedition.planned_stages);
+    let recursive_checksum = factorial(5);
+    let safety_signal = proven_increment(7);
+    let dispatch = decide(expedition, completed);
+
+    match dispatch {
+        Dispatch::Launch { manifest: manifest, readiness: readiness } => {
+            print("LAUNCH ${manifest}; readiness=${readiness}; signal=${safety_signal}; factorial=${recursive_checksum}");
+        },
+        Dispatch::Hold { manifest: manifest, held_at_stage: held_at_stage } => {
+            print("HOLD ${manifest}; held_at_stage=${held_at_stage}; signal=${safety_signal}; factorial=${recursive_checksum}");
+        },
+    }
+
+    return recursive_checksum;
+}

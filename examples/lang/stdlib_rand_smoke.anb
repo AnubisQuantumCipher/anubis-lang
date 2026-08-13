@@ -1,0 +1,6 @@
+import std.rand;
+
+fn main() uses(rand.gen) {
+    let n = rand::gen();
+    print(n);
+}

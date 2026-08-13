@@ -22,23 +22,25 @@ From the repo root:
 
 ```bash
 cargo build --release -p anubis
-export PATH="$PWD/target/release:$PATH"
-anubis --version
+# Always invoke the release binary by path (or put target/release first on PATH).
+# On some hosts `anubis` is a shell alias for a different tool — do not trust bare `anubis`.
+./target/release/anubis --version
 ```
 
-Hello world (fixture `tests/fixtures/dx/hello.anb`):
+Hello world — repo example `examples/hello.anb` (and fixture `tests/fixtures/dx/hello.anb`):
 
 ```anubis
 fn main() {
-    print("hello, anubis");
+    print("hello from anubis");
 }
 ```
 
-Always **check before run**:
+Always **check before run** (and expect stdout when the program calls `print`):
 
 ```bash
-anubis check tests/fixtures/dx/hello.anb
-anubis run tests/fixtures/dx/hello.anb
+./target/release/anubis check examples/hello.anb
+./target/release/anubis run   examples/hello.anb
+# → hello from anubis
 ```
 
 `check` typechecks, tracks taint in Safe mode, and discharges solver obligations when
@@ -47,19 +49,59 @@ research path with `--allow-research`).
 
 ---
 
-## 2. Modes and taint (Safe by default)
+## 2. Modes, taint, and secrets (Safe by default)
 
 Anubis is dual-mode:
 
 - **Safe (default):** `tainted` data must not reach sinks without an explicit
-  `declassify(policy, reason)`. Leak fixtures fail closed.
+  `declassify(value, policy, reason)`. Confidential `secret<T>` values must not reach
+egress without the same. The tutorial's paired leak fixtures reject; this is not a total IFC claim.
 - **Research / exploit:** intentional dual-use surface for authorized lab work;
   requires `--allow-research` on CLI paths that execute research constructs.
 
 ```bash
 # expected FAIL — demonstrates Safe-mode taint enforcement
-anubis check tests/fixtures/stdlib/io_leak.anb
+./target/release/anubis check tests/fixtures/stdlib/io_leak.anb
 ```
+
+### Constructing a secret (do not call `secret(42)`)
+
+There is **no** function named `secret`. Confidentiality is a **type qualifier**
+`secret<T>`. The natural guess `secret(42)` is rejected as `ANUBIS_UNKNOWN_FUNCTION`.
+
+**Correct forms:**
+
+```anubis
+// 1) Annotated value (literal or expression) — preferred for values you author
+let held: secret<i64> = 42;
+
+// 2) Explicit confidentiality source
+let minted = secret_source(7);
+
+// Release to a public sink only with a non-empty policy AND reason
+let public = declassify(held, "tutorial", "demo only");
+print(public);
+```
+
+Runnable day-one sample: `examples/secret_declassify_hello.anb`.
+
+```bash
+./target/release/anubis check examples/secret_declassify_hello.anb
+./target/release/anubis run   examples/secret_declassify_hello.anb
+# → 49
+```
+
+**Wrong → right:**
+
+| You wrote | What happens | Write instead |
+|---|---|---|
+| `secret(42)` | `ANUBIS_UNKNOWN_FUNCTION` | `let s: secret<i64> = 42;` or `secret_source(42)` |
+| `print(s)` with `s: secret<_>` | `ANUBIS_SECRET_EXFILTRATION` | `print(declassify(s, policy, reason))` |
+| `declassify(s, "", "")` | still secret (empty policy is a no-op) | non-empty `policy` and `reason` strings |
+
+Full model: [`INFORMATION_FLOW.md`](INFORMATION_FLOW.md). Effects/capabilities (e.g. file write)
+need `uses(fs.write)` on the function — see the capability section in
+[`BUILTINS.md`](BUILTINS.md).
 
 If you are writing ordinary applications, stay in Safe mode. If you are building a
 local PoC kit, read `POC_KIT.md` and the offensive-platform docs — never run research
@@ -157,7 +199,8 @@ See `docs/language/PACKAGES.md`. Gate: `bash scripts/run_package_gate.sh`.
 
 ## 7. REPL
 
-The REPL is **check-first**: every entry is parsed, typechecked, and obligation-checked
+The REPL is **check-first**: entries accepted by the current REPL grammar pass through parse,
+type, and obligation checks
 before evaluation.
 
 ```bash
@@ -177,7 +220,7 @@ anubis repl --exact --eval '2 + 3'
 - **Default:** fast AST interpreter (`compiler/src/interp`) for snappy exploration.
 - **`--exact`:** incremental compile through `anubis run` lowering when you need
   production fidelity (lists of structs, full native builtins, etc.).
-- Type errors fail closed (non-zero exit on `--eval`):
+- The listed type-error examples reject with a non-zero exit on `--eval`:
 
 ```bash
 anubis repl --eval 'let x: u32 = true'   # fails

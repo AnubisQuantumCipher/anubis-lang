@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Precision guard: the same nested generic indexed path remains printable when the leaf field is public.
+struct Inner { k: i64 }
+struct Box<T> { inner: Inner, pad: T }
+
+fn main() {
+    let xs: list<Box<i64>> = [Box { inner: Inner { k: 7 }, pad: 0 }];
+    print(xs[0].inner.k);
+}

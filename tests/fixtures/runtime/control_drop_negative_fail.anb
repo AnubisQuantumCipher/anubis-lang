@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_ARGUMENT
+// MUST_NOT_EXIST: after_drop_negative.txt
+fn main() {
+    print(drop([1, 2, 3], -5));
+}

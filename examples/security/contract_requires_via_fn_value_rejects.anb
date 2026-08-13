@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_
+// A `requires` contract is not discharged when the function is called through a FN-VALUE carrier.
+// Runtime witness: `check` passes and `run` PRINTS -1 from a function declared `requires(x > 0)`.
+//
+// Discriminator — the direct and alias forms both reject today:
+//   f(-1)                    REJECT
+//   let n = -1; f(n)         REJECT
+//   app(f) with g(-1)        ACCEPT + run prints -1   <- this fixture
+//
+// Same carrier disease closed twelve times in the information-flow lane, now in the CONTRACTS
+// pillar. Held out of the corpus until fixed.
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn app(g) { print(g(-1)); }
+fn main() { app(f); }

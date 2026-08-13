@@ -11,11 +11,18 @@
 pub mod agent;
 pub mod attck;
 pub mod campaign;
+pub mod collection;
 pub mod console;
+pub mod credential;
 pub mod crypto;
+pub mod discovery;
 pub mod dns_codec;
+pub mod domain_packs;
 pub mod engagement;
+pub mod evasion;
+pub mod exfil;
 pub mod exploit;
+pub mod infrastructure;
 pub mod isolation;
 pub mod lateral;
 pub mod listener;
@@ -24,18 +31,24 @@ pub mod malleable;
 pub mod modules;
 pub mod opsec;
 pub mod packer;
+pub mod payloads;
 pub mod persistence;
 pub mod phish;
+pub mod postex;
 pub mod protocol;
 pub mod purple;
 pub mod receipts;
 pub mod recon;
+pub mod reporting;
 pub mod rop;
+pub mod run_capability;
 pub mod scope;
+pub mod privesc;
 pub mod vz;
 
 pub use engagement::{
     engage_init, engage_status, load_engagement, operator_token_issue, operator_token_revoke,
+    rehash_engagement_file,
 };
 pub use isolation::{in_vz_guest, require_vz_offensive};
 pub use receipts::{seal_action, verify_chain};

@@ -188,7 +188,7 @@ pub(crate) fn compute_leg2_fns(
 
 /// Whether a bare-name call is an untrusted taint source OTHER than the private file read.
 /// `read_file`/`open` are leg 1 (private data), never leg 2 — the steering channel must be distinct.
-fn is_leg2_source(callee: &str) -> bool {
+pub(super) fn is_leg2_source(callee: &str) -> bool {
     super::is_io_taint_source(callee) && callee != "read_file" && callee != "open"
 }
 

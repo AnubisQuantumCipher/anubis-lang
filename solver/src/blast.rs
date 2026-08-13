@@ -2,11 +2,32 @@
 //! `Vec<Lit>` (LSB first), each predicate a single `Lit`, and the whole formula is asserted true.
 //!
 //! The gate semantics MUST match the runtime (and z3): the ripple-carry adder is `i64::wrapping_add`,
-//! the comparators are the signed/unsigned orders of `formal/Anubis/Encoding.lean`. Slice 1 supports
-//! the ops that dominate contract obligations — const/var, and/or/xor/not, neg, add/sub, all six
-//! signed+unsigned comparisons, eq, extract/concat/{zero,sign}_extend, ite, and CONSTANT shifts.
-//! Anything else (mul, div/rem, variable shifts) returns `None`, so the caller defers to z3 — never a
-//! wrong answer.
+//! the comparators are the signed/unsigned orders of `formal/Anubis/Encoding.lean`. Supported ops are
+//! const/var, and/or/xor/not, neg, add/sub, mul (const and var×var), all six signed+unsigned
+//! comparisons, eq, extract/concat/{zero,sign}_extend, ite, and both constant and variable shifts.
+//! Anything else (div/rem) returns `None`, so the caller defers to z3 — never a wrong answer.
+//!
+//! # Structural hashing and constant folding (2026-07-26)
+//!
+//! Every gate goes through a **structural-hashing cache**: `and2`/`or2`/`xor2`/`mux` on inputs already
+//! seen return the EXISTING output literal instead of allocating a fresh variable and a fresh copy of
+//! the defining clauses. Because a Tseitin definition `c ↔ f(a,b)` is asserted unconditionally and
+//! globally, returning the same `c` for the same `(f, a, b)` is exact — the reuse changes the CNF's
+//! SIZE, never its meaning. Gates are also **constant-folded** against the forced-true literal (`x ∧ 0
+//! = 0`, `x ⊕ x = 0`, `ite(1, a, b) = a`, …), which are ordinary boolean identities.
+//!
+//! Both are pure size optimizations, but they are load-bearing for TERMINATION. Without sharing,
+//! `(not (= (bvmul a b) (bvmul a b)))` — the shape `ensures(result == a * b)` lowers to, and exactly
+//! what `compiler/stdlib/std/math.anb::math_mul` carries — blasts TWO independent 64×64 schoolbook
+//! multipliers and asks CDCL to prove them equal. That is a *multiplier miter*, the canonical
+//! resolution-hard instance: it measured 50,688 vars / 168,643 clauses and was still undecided after
+//! 100,000 conflicts (15.3 s), so the 2,000,000-conflict budget read as an infinite hang. With
+//! sharing, the second multiplier reuses the first's gates, the equality becomes a literal compared
+//! with itself, folding collapses it to the constant `true`, and the obligation is decided in
+//! microseconds.
+//!
+//! Sharing alone does not BOUND anything (a genuinely different-but-equal pair such as `a*b == b*a`
+//! still needs search), so it is paired with the deterministic bounds in `lib.rs` / `sat.rs`.
 
 use crate::bv::{Formula, Pred, Term};
 use crate::sat::{Cnf, Lit, Var};
@@ -14,6 +35,139 @@ use std::collections::HashMap;
 
 pub fn blast(f: &Formula, cnf: &mut Cnf) -> Option<()> {
     blast_with_map(f, cnf).map(|_| ())
+}
+
+/// Which gate a cache entry belongs to. Distinguishes the four Tseitin families so `and2(a,b)` and
+/// `xor2(a,b)` never collide on the same key.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum GateKind {
+    And,
+    Or,
+    Xor,
+    Mux,
+}
+
+/// Canonical operand order for a commutative gate, so `f(a,b)` and `f(b,a)` share one cache slot.
+#[inline]
+fn ord2(a: Lit, b: Lit) -> (usize, usize) {
+    let (x, y) = (a.key(), b.key());
+    if x <= y {
+        (x, y)
+    } else {
+        (y, x)
+    }
+}
+
+// ---- Pre-blast cost estimate ----
+//
+// A cheap, allocation-free, TOTAL walk returning an UPPER BOUND on the Tseitin gates
+// `blast_with_map` would emit for a formula. `lib.rs` consults it BEFORE blasting so a pathological
+// obligation is declined without allocating anything: quadratic-per-multiply nesting (`((a*b)*c)*d`
+// at 64 bits) otherwise builds a CNF measured in hundreds of megabytes before the search even
+// begins, and a bound applied only inside the SAT loop arrives far too late to prevent that.
+//
+// It is an over-approximation on purpose: constant folding and structural hashing can only make the
+// real blast SMALLER, so `gate_cost(f) <= ceiling` genuinely bounds the emitted CNF. Arithmetic
+// saturates, so a formula whose cost overflows `u64` reads as `u64::MAX` and is declined.
+//
+// Per-construct costs mirror the gate bodies above exactly:
+//   full adder = 5 gates (2 xor, 2 and, 1 or) ⇒ an add/sub/neg at width w costs 5w
+//   bitwise and/or/xor at width w            ⇒ w
+//   ite at width w                           ⇒ w muxes
+//   const shift                              ⇒ 0 (pure rewiring); variable shift ⇒ w layers × w muxes
+//   const mul by c                           ⇒ one 5w add per SET BIT of c
+//   var×var mul at width w                   ⇒ w × (w ands + one 5w add) = 6w²
+//   comparators (all eight, via sub_carry)   ⇒ 5w;   equality ⇒ w xors + (w−1) ands ≤ 2w
+//   not / extract / concat / {zero,sign}_extend ⇒ 0 (literal negation or rewiring)
+
+/// Upper bound on the gates `blast_with_map` would emit for `f`. Saturating; never panics.
+pub fn gate_cost(f: &Formula) -> u64 {
+    f.asserts
+        .iter()
+        .fold(0u64, |acc, p| acc.saturating_add(pred_cost(p)))
+}
+
+fn pred_cost(p: &Pred) -> u64 {
+    // Comparator/equality cost is driven by the OPERAND width. A malformed pair has no width, and
+    // `blast_term` bails on it before emitting anything, so 0 is a correct bound there.
+    let cmp = |a: &Term, b: &Term, per_bit: u64| -> u64 {
+        let w = a.width().unwrap_or(0) as u64;
+        w.saturating_mul(per_bit)
+            .saturating_add(term_cost(a))
+            .saturating_add(term_cost(b))
+    };
+    match p {
+        Pred::Const(_) | Pred::BoolVar(_) => 0,
+        Pred::Not(q) => pred_cost(q),
+        // `and_all` / the or-fold chain n literals into one with n−1 gates.
+        Pred::And(qs) | Pred::Or(qs) => {
+            qs.iter().fold(qs.len().saturating_sub(1) as u64, |acc, q| {
+                acc.saturating_add(pred_cost(q))
+            })
+        }
+        Pred::Eq(a, b) => cmp(a, b, 2),
+        Pred::Ult(a, b)
+        | Pred::Ule(a, b)
+        | Pred::Ugt(a, b)
+        | Pred::Uge(a, b)
+        | Pred::Slt(a, b)
+        | Pred::Sle(a, b)
+        | Pred::Sgt(a, b)
+        | Pred::Sge(a, b) => cmp(a, b, 5),
+    }
+}
+
+fn term_cost(t: &Term) -> u64 {
+    let w = t.width().unwrap_or(0) as u64;
+    let bin = |a: &Term, b: &Term, own: u64| -> u64 {
+        own.saturating_add(term_cost(a))
+            .saturating_add(term_cost(b))
+    };
+    match t {
+        Term::Var(..) | Term::Const(..) => 0,
+        // Literal negation / pure rewiring — no gates of their own.
+        Term::Not(a) | Term::Extract(_, _, a) | Term::ZeroExtend(_, a) | Term::SignExtend(_, a) => {
+            term_cost(a)
+        }
+        Term::Concat(a, b) => bin(a, b, 0),
+        Term::And(a, b) | Term::Or(a, b) | Term::Xor(a, b) => bin(a, b, w),
+        Term::Add(a, b) | Term::Sub(a, b) => bin(a, b, w.saturating_mul(5)),
+        Term::Neg(a) => w.saturating_mul(5).saturating_add(term_cost(a)),
+        Term::Ite(p, a, b) => bin(a, b, w).saturating_add(pred_cost(p)),
+        // A constant amount is rewiring; a variable amount is a w-layer barrel of w muxes each.
+        Term::Shl(a, b) | Term::Lshr(a, b) | Term::Ashr(a, b) => {
+            let own = if matches!(**b, Term::Const(..)) {
+                0
+            } else {
+                w.saturating_mul(w)
+            };
+            bin(a, b, own)
+        }
+        Term::Mul(a, b) => {
+            // `const_mul` is preferred and emits one 5w add per set bit of the constant; only a
+            // variable×variable product falls through to the 6w² schoolbook array.
+            let own = match (&**a, &**b) {
+                (_, Term::Const(c, cw)) | (Term::Const(c, cw), _) => {
+                    let bits = (c & mask_u128(*cw)).count_ones() as u64;
+                    bits.saturating_mul(w.saturating_mul(5))
+                }
+                _ => w.saturating_mul(w).saturating_mul(6),
+            };
+            bin(a, b, own)
+        }
+        // Never blasted (the blaster returns None) — no gates.
+        Term::Udiv(..) | Term::Urem(..) | Term::Sdiv(..) | Term::Srem(..) => 0,
+    }
+}
+
+/// Low-`w`-bit mask, matching how `Term::Const` values are interpreted.
+#[inline]
+fn mask_u128(w: u32) -> u128 {
+    if w >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << w) - 1
+    }
 }
 
 /// The variable→literal correspondence produced by a successful blast: which CNF literal carries each
@@ -39,6 +193,12 @@ pub fn blast_with_map(f: &Formula, cnf: &mut Cnf) -> Option<BlastMap> {
         let l = b.blast_pred(p)?;
         b.cnf.add_clause(vec![l]);
     }
+    // A clause-limit overrun means the CNF on hand is a TRUNCATED (weaker) formula, not the one we
+    // were asked about. Refuse it — the caller defers. `Cnf::solve_limited` re-checks the same flag,
+    // so an instance that overflows can never be decided even if a caller forgets to look here.
+    if b.cnf.overflowed() {
+        return None;
+    }
     Some(BlastMap {
         bv: b.vars,
         bools: b.bool_vars,
@@ -51,6 +211,9 @@ struct Blaster<'a> {
     bool_vars: HashMap<String, Lit>,
     /// A literal forced TRUE (its negation is the constant FALSE), for constant bits.
     ctrue: Lit,
+    /// Structural-hashing cache: `(kind, operand keys) → the output literal already defined for it`.
+    /// Commutative kinds store their two operands sorted, so `and2(a,b)` and `and2(b,a)` hit.
+    gates: HashMap<(GateKind, usize, usize, usize), Lit>,
 }
 
 impl<'a> Blaster<'a> {
@@ -63,6 +226,7 @@ impl<'a> Blaster<'a> {
             vars: HashMap::new(),
             bool_vars: HashMap::new(),
             ctrue,
+            gates: HashMap::new(),
         }
     }
 
@@ -76,26 +240,86 @@ impl<'a> Blaster<'a> {
     }
 
     // ---- Tseitin gates: fresh output literal constrained to the gate's function ----
+    //
+    // Each gate first CONSTANT-FOLDS (ordinary boolean identities against the forced-true literal and
+    // against equal/complementary operands), then consults the structural-hashing cache. Only a
+    // genuinely new `(kind, operands)` triple allocates a variable and emits clauses.
 
     fn and2(&mut self, a: Lit, b: Lit) -> Lit {
+        // Folding: x ∧ 0 = 0, x ∧ 1 = x, x ∧ x = x, x ∧ ¬x = 0.
+        let (tt, ff) = (self.tt(), self.ff());
+        if a == ff || b == ff || a == b.negate() {
+            return ff;
+        }
+        if a == tt || a == b {
+            return b;
+        }
+        if b == tt {
+            return a;
+        }
+        let (lo, hi) = ord2(a, b);
+        if let Some(&c) = self.gates.get(&(GateKind::And, lo, hi, 0)) {
+            return c;
+        }
         let c = Lit::pos(self.cnf.new_var());
         // c ↔ (a ∧ b)
         self.cnf.add_clause(vec![c.negate(), a]);
         self.cnf.add_clause(vec![c.negate(), b]);
         self.cnf.add_clause(vec![c, a.negate(), b.negate()]);
+        self.gates.insert((GateKind::And, lo, hi, 0), c);
         c
     }
 
     fn or2(&mut self, a: Lit, b: Lit) -> Lit {
+        // Folding: x ∨ 1 = 1, x ∨ 0 = x, x ∨ x = x, x ∨ ¬x = 1.
+        let (tt, ff) = (self.tt(), self.ff());
+        if a == tt || b == tt || a == b.negate() {
+            return tt;
+        }
+        if a == ff || a == b {
+            return b;
+        }
+        if b == ff {
+            return a;
+        }
+        let (lo, hi) = ord2(a, b);
+        if let Some(&c) = self.gates.get(&(GateKind::Or, lo, hi, 0)) {
+            return c;
+        }
         let c = Lit::pos(self.cnf.new_var());
         // c ↔ (a ∨ b)
         self.cnf.add_clause(vec![c, a.negate()]);
         self.cnf.add_clause(vec![c, b.negate()]);
         self.cnf.add_clause(vec![c.negate(), a, b]);
+        self.gates.insert((GateKind::Or, lo, hi, 0), c);
         c
     }
 
     fn xor2(&mut self, a: Lit, b: Lit) -> Lit {
+        // Folding: x ⊕ 0 = x, x ⊕ 1 = ¬x, x ⊕ x = 0, x ⊕ ¬x = 1.
+        let (tt, ff) = (self.tt(), self.ff());
+        if a == ff {
+            return b;
+        }
+        if b == ff {
+            return a;
+        }
+        if a == tt {
+            return b.negate();
+        }
+        if b == tt {
+            return a.negate();
+        }
+        if a == b {
+            return ff;
+        }
+        if a == b.negate() {
+            return tt;
+        }
+        let (lo, hi) = ord2(a, b);
+        if let Some(&c) = self.gates.get(&(GateKind::Xor, lo, hi, 0)) {
+            return c;
+        }
         let c = Lit::pos(self.cnf.new_var());
         // c ↔ (a ⊕ b)
         self.cnf.add_clause(vec![c.negate(), a, b]);
@@ -103,17 +327,31 @@ impl<'a> Blaster<'a> {
             .add_clause(vec![c.negate(), a.negate(), b.negate()]);
         self.cnf.add_clause(vec![c, a.negate(), b]);
         self.cnf.add_clause(vec![c, a, b.negate()]);
+        self.gates.insert((GateKind::Xor, lo, hi, 0), c);
         c
     }
 
     /// `sel ? a : b`.
     fn mux(&mut self, sel: Lit, a: Lit, b: Lit) -> Lit {
+        // Folding: a constant selector picks a branch outright; identical branches need no gate.
+        let (tt, ff) = (self.tt(), self.ff());
+        if sel == tt || a == b {
+            return a;
+        }
+        if sel == ff {
+            return b;
+        }
+        let key = (GateKind::Mux, sel.key(), a.key(), b.key());
+        if let Some(&c) = self.gates.get(&key) {
+            return c;
+        }
         let c = Lit::pos(self.cnf.new_var());
         // sel → (c ↔ a) ; ¬sel → (c ↔ b)
         self.cnf.add_clause(vec![sel.negate(), c.negate(), a]);
         self.cnf.add_clause(vec![sel.negate(), c, a.negate()]);
         self.cnf.add_clause(vec![sel, c.negate(), b]);
         self.cnf.add_clause(vec![sel, c, b.negate()]);
+        self.gates.insert(key, c);
         c
     }
 
@@ -244,6 +482,12 @@ impl<'a> Blaster<'a> {
     // ---- Terms → bit literals (LSB first) ----
 
     fn blast_term(&mut self, t: &Term) -> Option<Vec<Lit>> {
+        // Clause-limit backstop: once the CNF has refused a clause, everything downstream would be
+        // built on a truncated formula. Abort the walk (the caller defers to z3). The pre-blast cost
+        // estimate in `lib.rs` normally prevents ever getting here.
+        if self.cnf.overflowed() {
+            return None;
+        }
         let w = t.width()?;
         match t {
             Term::Var(name, _) => self.vars.get(name).cloned(),
@@ -433,6 +677,9 @@ impl<'a> Blaster<'a> {
     // ---- Predicates → one literal (true iff the predicate holds) ----
 
     fn blast_pred(&mut self, p: &Pred) -> Option<Lit> {
+        if self.cnf.overflowed() {
+            return None;
+        }
         match p {
             Pred::Const(true) => Some(self.tt()),
             Pred::Const(false) => Some(self.ff()),

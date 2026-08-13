@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 0.0
+// DOC_OK / LANGUAGE.md:518 — parse_float soft-parse failure yields 0.0.
+fn main() {
+    print(parse_float("xx"));
+}

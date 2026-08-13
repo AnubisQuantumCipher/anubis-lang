@@ -172,14 +172,20 @@ impl Engagement {
                 "ANUBIS_ENGAGE_NO_AUTHORIZATION: engagement.authorization is required"
             ));
         }
-        if let Ok(kill) = chrono::NaiveDate::parse_from_str(&self.kill_date, "%Y-%m-%d") {
-            let today = Utc::now().date_naive();
-            if today > kill {
-                return Err(anyhow!(
-                    "ANUBIS_ENGAGE_KILL_DATE: engagement expired on {}",
+        // Malformed kill dates hard-fail (no silent ignore).
+        let kill =
+            chrono::NaiveDate::parse_from_str(&self.kill_date, "%Y-%m-%d").map_err(|_| {
+                anyhow!(
+                    "ANUBIS_ENGAGE_KILL_DATE_INVALID: expected YYYY-MM-DD, got `{}`",
                     self.kill_date
-                ));
-            }
+                )
+            })?;
+        let today = Utc::now().date_naive();
+        if today > kill {
+            return Err(anyhow!(
+                "ANUBIS_ENGAGE_KILL_DATE: engagement expired on {}",
+                self.kill_date
+            ));
         }
         if self.encrypt_beacons && self.psk_hex.trim().is_empty() {
             return Err(anyhow!(
@@ -191,6 +197,25 @@ impl Engagement {
             self.allow_non_loopback_bind && self.network_egress,
             &self.allowed_hosts,
         )?;
+        Ok(())
+    }
+
+    /// Recompute content hash of all fields except `content_hash` and compare to stored.
+    pub fn verify_content_hash(&self) -> Result<()> {
+        if self.content_hash.trim().is_empty() {
+            return Err(anyhow!(
+                "ANUBIS_ENGAGE_HASH_MISSING: engagement.json has empty content_hash; re-init or run engage rehash (no silent migrate)"
+            ));
+        }
+        let mut clone = self.clone();
+        clone.content_hash.clear();
+        let body = serde_json::to_vec(&clone).map_err(|e| anyhow!("ANUBIS_ENGAGE_HASH: {e}"))?;
+        let recomputed = hex::encode(Sha256::digest(&body));
+        if recomputed != self.content_hash {
+            return Err(anyhow!(
+                "ANUBIS_ENGAGE_HASH_MISMATCH: stored content_hash does not match engagement body (tamper or edit without rehash)"
+            ));
+        }
         Ok(())
     }
 
@@ -400,6 +425,8 @@ pub fn engage_init(dir: &Path, name: &str, authorization: &str) -> Result<PathBu
     ] {
         fs::create_dir_all(dir.join(sub))?;
     }
+    // Receipt MAC key (LAB_REAL HMAC; mode 0600). Not printed in engage-status.
+    let _ = super::receipts::ensure_mac_key(dir);
     let readme = format!(
         "# Anubis Engagement: {}\n\nID: `{}`\nAuth: {}\nPSK: (see engagement.json psk_hex)\nC2: `{}`\nTransport: {}\nProtocol: aop-2 encrypted\nmTLS certs: {}\nKill: {}\n",
         eng.name,
@@ -422,13 +449,37 @@ pub fn load_engagement(path: &Path) -> Result<Engagement> {
     };
     let raw = fs::read_to_string(&p)
         .map_err(|e| anyhow!("ANUBIS_ENGAGE_LOAD: {}: {}", p.display(), e))?;
+    let eng: Engagement =
+        serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_ENGAGE_PARSE: {}", e))?;
+    // No silent migrate: missing PSK / hash must be fixed explicitly (re-init or rehash).
+    if eng.psk_hex.trim().is_empty() {
+        return Err(anyhow!(
+            "ANUBIS_ENGAGE_NO_PSK: engagement missing psk_hex; re-init engagement (silent PSK generation removed)"
+        ));
+    }
+    eng.verify_content_hash()?;
+    eng.validate_live()?;
+    Ok(eng)
+}
+
+/// Recompute and persist `content_hash` after intentional engagement edits
+/// (e.g. gate scripts adjusting dns_bind). Does not validate live kill-date
+/// first so operators can rehash before fixing other fields.
+pub fn rehash_engagement_file(path: &Path) -> Result<Engagement> {
+    let p = if path.is_dir() {
+        path.join("engagement.json")
+    } else {
+        path.to_path_buf()
+    };
+    let raw = fs::read_to_string(&p)
+        .map_err(|e| anyhow!("ANUBIS_ENGAGE_LOAD: {}: {}", p.display(), e))?;
     let mut eng: Engagement =
         serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_ENGAGE_PARSE: {}", e))?;
-    // migrate v1 engagements missing fields
-    if eng.psk_hex.is_empty() {
-        eng.psk_hex = crypto::generate_psk_hex();
-    }
-    eng.validate_live()?;
+    eng.rehash();
+    fs::write(&p, serde_json::to_string_pretty(&eng)?)
+        .map_err(|e| anyhow!("ANUBIS_ENGAGE_WRITE: {}: {e}", p.display()))?;
+    // Confirm the sealed hash verifies.
+    eng.verify_content_hash()?;
     Ok(eng)
 }
 
@@ -478,4 +529,72 @@ pub fn engage_status(path: &Path) -> Result<serde_json::Value> {
             "error": e.to_string(),
         })),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kill_date_malformed_fails() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.kill_date = "not-a-date".into();
+        eng.rehash();
+        let err = eng.validate_live().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_KILL_DATE_INVALID"), "got {err}");
+    }
+
+    #[test]
+    fn kill_date_expired_fails() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.kill_date = "2000-01-01".into();
+        eng.rehash();
+        let err = eng.validate_live().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_KILL_DATE"), "got {err}");
+    }
+
+    #[test]
+    fn content_hash_mismatch_detected() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.rehash();
+        eng.name = "tampered".into(); // body changed without rehash
+        let err = eng.verify_content_hash().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_HASH_MISMATCH"), "got {err}");
+    }
+
+    #[test]
+    fn content_hash_empty_fails() {
+        let eng = Engagement::default_lab("t", "auth-ok");
+        // default_lab leaves content_hash empty until rehash
+        let err = eng.verify_content_hash().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_HASH_MISSING"), "got {err}");
+    }
+
+    #[test]
+    fn content_hash_ok_after_rehash() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.rehash();
+        eng.verify_content_hash().unwrap();
+        eng.validate_live().unwrap();
+    }
+
+    #[test]
+    fn rehash_file_after_edit_restores_verify() {
+        let dir = std::env::temp_dir().join(format!("anubis-rehash-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut eng = Engagement::default_lab("rehash", "auth-ok");
+        eng.rehash();
+        let path = dir.join("engagement.json");
+        fs::write(&path, serde_json::to_string_pretty(&eng).unwrap()).unwrap();
+        // Mutate without rehash (simulates gate script edits).
+        let mut d: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        d["dns_bind"] = serde_json::json!("127.0.0.1:55353");
+        fs::write(&path, serde_json::to_string_pretty(&d).unwrap()).unwrap();
+        assert!(load_engagement(&dir).is_err());
+        rehash_engagement_file(&dir).unwrap();
+        load_engagement(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

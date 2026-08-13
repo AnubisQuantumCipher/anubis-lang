@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: true
+// DOC_OK / CRYPTO LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// HMAC-SHA256 with an empty key is valid per RFC 2104 (any key length is accepted).
+// The verify roundtrip must hold.
+fn main() {
+    let tag = hmac_sha256("", "message");
+    print(hmac_sha256_verify("", "message", tag));
+}

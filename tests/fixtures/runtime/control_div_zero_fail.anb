@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_DIV_BY_ZERO
+// MUST_NOT_EXIST: after_divzero.txt
+fn main() {
+    print(1 / 0);
+}

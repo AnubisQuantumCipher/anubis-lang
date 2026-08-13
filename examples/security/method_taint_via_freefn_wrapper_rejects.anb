@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// #71 integrity dual of method_secret_via_freefn_wrapper_rejects: a free fn relaying a METHOD's
+// tainted return. The staged summaries missed the free-fn <- method direction.
+struct R { n: u32 }
+impl R {
+    fn tag(self) { return input(); }
+}
+fn relay(r) { return r.tag(); }
+fn main() uses(net.send) {
+    let r = R { n: 1 };
+    send("host", 80, relay(r));
+}

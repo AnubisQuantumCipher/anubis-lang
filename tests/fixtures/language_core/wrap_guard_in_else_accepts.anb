@@ -1,0 +1,23 @@
+// EXPECT: PASS
+//
+// The ENCLOSING-if form, pinned separately from the early-return form. Wrap-safety already refined
+// then/else arms before the fall-through change; this fixture keeps that path alive so a future
+// refactor of the fall-through logic cannot quietly regress the case that always worked.
+//
+// Every branch is explicit rather than relying on fall-through, so this fixture isolates the
+// enclosing-if refinement and nothing else.
+fn abs_else(x: i64) -> i64
+    ensures(result >= 0)
+{
+    if x == 0 - 9223372036854775807 - 1 {
+        return 9223372036854775807;
+    } else {
+        if x < 0 {
+            return 0 - x;
+        } else {
+            return x;
+        }
+    }
+}
+
+fn main() { print(abs_else(0 - 3)); }

@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// Application under a conditional. A capability is charged if the call is REACHABLE, not only
+// if it is unconditional — a branch is not a laundering construct.
+fn leak(p: string, x: string) uses(fs.write) { write_file(p, x); }
+fn app(xs: any, b: bool) { if b { xs[0]("/tmp/branch.txt", "x"); } }
+fn main() { app([leak], true); }

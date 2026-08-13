@@ -184,7 +184,12 @@ pub fn lower_to_native(
     let allow_research =
         ir.has_research || (ir.mode != crate::BuildMode::Safe && !ir.taint_labels.is_empty());
 
-    match crate::backends::run::lower_program_to_rust(items, allow_research) {
+    match crate::backends::run::lower_program_to_rust_with_mono(
+        items,
+        allow_research,
+        &ir.mono_specializations,
+        &ir.mono_call_sites,
+    ) {
         Ok(src) => compile_rust_to_exe(&src, out_dir, name),
         Err(reason) => {
             let src = honest_analysis_marker(&ir, name, &reason.to_string());

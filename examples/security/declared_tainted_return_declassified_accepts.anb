@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Integrity-side over-rejection guard, the dual of `declared_secret_return_declassified_accepts`.
+// A declared `-> tainted<T>` result that has been explicitly sanitized may reach a sink; the seed
+// must not remove the sanctioned release path.
+fn get() -> tainted<i64> {
+    return 42;
+}
+fn main() uses(shell) {
+    shell(declassify(get(), "sanitize", "validated"));
+}

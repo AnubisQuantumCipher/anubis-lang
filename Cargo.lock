@@ -165,6 +165,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bincode",
+ "block2",
  "chrono",
  "clap",
  "hex",

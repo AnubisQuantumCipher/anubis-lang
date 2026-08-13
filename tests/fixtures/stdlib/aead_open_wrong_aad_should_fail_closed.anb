@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_AEAD_OPEN_FAILED
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: AEAD tag mismatch when AAD differs between seal and open.
+fn main() {
+    let key = random_bytes(32);
+    let nonce = random_bytes(12);
+    let ct = aead_seal(key, nonce, "correct-aad", "payload");
+    print(aead_open(key, nonce, "WRONG-aad", ct));
+}

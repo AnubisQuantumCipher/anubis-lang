@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 0
+// DOC_OK / empty sum monoid identity — sum([]) is 0, not a defect.
+fn main() {
+    print(sum([]));
+}

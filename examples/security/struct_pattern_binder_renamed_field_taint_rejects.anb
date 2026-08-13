@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// CORPUS-1 2026-07-27. Integrity dual of `struct_pattern_binder_renamed_field_rejects`: a
+// `tainted<i64>` field bound to a renamed local (`let V { k: renamed } = v;`), reaching a `shell`
+// sink. TODAY: already REJECTS correctly (coverage guard, verified by direct run; check-side only).
+struct V { k: tainted<i64> }
+fn main() uses(shell) {
+    let v = V { k: 42 };
+    let V { k: renamed } = v;
+    shell(renamed);
+}

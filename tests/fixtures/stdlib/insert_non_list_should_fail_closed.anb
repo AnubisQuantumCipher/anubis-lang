@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
+// failing closed (compiler/src/backends/run.rs::anubis_insert, ~line 2229, whose
+// `if let AnubisValue::List(l) = v { ... }` has no else — mutator on the wrong shape is
+// dropped on the floor, same class as the already-identified `push` non-list bug).
+// Found during the SONNET5-B / GROK-PTAH stdlib patch reconciliation, 2026-07-26 —
+// independently verified real by both agents. See scratchpad/fleet_20260726/stdlib_merged_package.md.
+fn main() {
+    let s = "hi";
+    insert(s, 0, "x");
+    print(s);
+}

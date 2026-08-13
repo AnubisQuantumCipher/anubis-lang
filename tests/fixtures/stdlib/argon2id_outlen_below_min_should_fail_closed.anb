@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_ARGON2_OUTLEN
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: Argon2id output length must be >= 4.
+fn main() {
+    print(argon2id_hash("password", "saltsaltsalt1234", 32, 1, 1, 3));
+}

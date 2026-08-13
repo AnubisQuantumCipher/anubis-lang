@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP
+//
+// `break` with no loop to break out of. The runtime already refused this with
+// ANUBIS_UNSUPPORTED_NATIVE_LOWERING, so nothing unsound happened -- but there is no loop, and no
+// input makes one appear, so deciding it at run time decides it in the one place the answer cannot
+// help. `check` now rejects it.
+fn main() {
+    break;
+}

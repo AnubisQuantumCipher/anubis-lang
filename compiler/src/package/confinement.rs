@@ -3,12 +3,12 @@
 //!
 //! Schema `anubis.confinement.v1`. The checker already PROVES a whole-program capability set (the six
 //! canonical caps in `middle::effects` — `fs.read`, `fs.write`, `net.send`, `shell`, `time.now`,
-//! `rand.gen`) via the transitive effect fixpoint unioned with declared `uses(...)`. Until now that
-//! proof was consumed for diagnostics and discarded. This module turns the SAME proven set into a
-//! deterministic, source-only-re-derivable manifest that maps each capability to a concrete Apple
-//! Virtualization (tart) hypervisor grant — a real SECOND, independent boundary whose grant is
-//! consistent-by-construction with what `anubis check` proved, and re-derived + byte-compared on
-//! verify so a grant that contradicts the proven effect set fails closed.
+//! `rand.gen`) via the transitive effect fixpoint unioned with declared `uses(...)`. This module
+//! turns that set into a deterministic, source-only-re-derivable manifest via the shared
+//! [`crate::middle::research_profile::ProvenEffectSet`] IR (research-normalized names also
+//! recorded as `research_effects` for VZ run-capability alignment). Grants map each capability to
+//! a concrete Apple Virtualization (tart) hypervisor grant — a SECOND boundary consistent-by-
+//! construction with `anubis check`, re-derived + compared on verify so a forged grant fails closed.
 //!
 //! HONESTY (the load-bearing property). The manifest reflects the DECLARED + inferred effect surface
 //! (the checker enforces `inferred ⊆ declared`). The effect fixpoint may under-approximate
@@ -65,8 +65,12 @@ pub struct ConfinementManifest {
     /// False when the effect fixpoint's `open` bit was set (a closure / parameter / unknown callee).
     /// When false the grants default to the MOST restrictive posture (fail-closed).
     pub effects_bounded: bool,
-    /// The subset of the six capabilities the checker proved present, sorted.
+    /// The subset of the six capabilities the checker proved present, sorted (legacy checker ids).
     pub capabilities_present: Vec<String>,
+    /// Research-normalized effect IR (`net.connect`, `process.spawn`, …) shared with VZ run caps.
+    /// Empty in pre-slice-3 seals; re-derived from `capabilities_present` on verify migration.
+    #[serde(default)]
+    pub research_effects: Vec<String>,
     pub grants: Vec<CapabilityGrant>,
     pub notes: Vec<String>,
 }
@@ -82,25 +86,27 @@ pub fn derive_confinement(
     let ast = parse_source(source).map_err(|e| {
         format!("ANUBIS_CONFINE_PARSE_FAILED: confinement derivation parse failed: {e}")
     })?;
-    let (caps, open) = crate::middle::effects::program_capability_set(&ast.items);
-
-    let has = |c: &str| caps.contains(c);
-    let effects_bounded = !open;
+    // Shared IR: checker fixpoint → ProvenEffectSet (research-normalized + legacy projection).
+    let proven = crate::middle::effects::program_proven_effects(&ast.items);
+    let effects_bounded = proven.effects_bounded;
+    let open = !effects_bounded;
+    let caps_present = proven.legacy_capabilities_present();
+    let has = |c: &str| caps_present.iter().any(|x| x == c);
 
     // Network posture. MUST-FIX #3: an UNBOUNDED effect set (`open`) confines MOST restrictively —
     // host-only, never the permissive NAT default. Otherwise: a proven-net-free program is confined to
     // host-only; a program that declares net.send gets the (permissive, honest) NAT default, whose
     // tightening to an allow-list is engagement-side (slice-2 applied manifest).
-    let net_present = has("net.send");
+    let net_present = proven.has_net();
     let network_host_only = open || !net_present;
 
     // Filesystem posture. Unbounded => none. Else fs.write => read-write, fs.read => read-only, else
     // none. The actual host PATHS are engagement-supplied (applied manifest); the core records posture.
     let mount_posture = if open {
         "none"
-    } else if has("fs.write") {
+    } else if proven.has_fs_write() {
         "read-write"
-    } else if has("fs.read") {
+    } else if proven.has_fs_read() {
         "read-only"
     } else {
         "none"
@@ -226,11 +232,8 @@ pub fn derive_confinement(
         );
     }
 
-    let capabilities_present: Vec<String> = CAPS
-        .iter()
-        .filter(|c| caps.contains(**c))
-        .map(|c| c.to_string())
-        .collect();
+    let capabilities_present = caps_present;
+    let research_effects = proven.research_effect_names();
 
     Ok(ConfinementManifest {
         schema: CONFINEMENT_SCHEMA.into(),
@@ -239,6 +242,7 @@ pub fn derive_confinement(
         source_merkle,
         effects_bounded,
         capabilities_present,
+        research_effects,
         grants,
         notes,
     })
@@ -263,17 +267,34 @@ pub fn verify_confinement_matches_source(
     sealed: &ConfinementManifest,
 ) -> Result<(), String> {
     let fresh = derive_confinement(&sealed.package, &sealed.version, source)?;
-    if fresh == *sealed {
+    // Migration: pre-slice-3 seals omit `research_effects` (serde default empty). Project them
+    // from capabilities_present so honest old seals still re-verify.
+    let mut sealed_norm = sealed.clone();
+    if sealed_norm.research_effects.is_empty() && !sealed_norm.capabilities_present.is_empty() {
+        sealed_norm.research_effects =
+            crate::middle::research_profile::ProvenEffectSet::from_legacy_capabilities_present(
+                &sealed_norm.capabilities_present,
+                sealed_norm.effects_bounded,
+            )
+            .research_effect_names();
+    }
+    // Also accept empty research_effects on both sides when no caps were proven.
+    if sealed_norm.research_effects.is_empty() && fresh.research_effects.is_empty() {
+        // ok
+    }
+    if fresh == sealed_norm {
         Ok(())
     } else {
         Err(format!(
             "ANUBIS_CONFINE_DRIFT: sealed confinement_manifest.json does not match the grant re-derived \
              from source (a forged or source-swapped grant). effects_bounded sealed={} fresh={}; \
-             capabilities sealed={:?} fresh={:?}",
+             capabilities sealed={:?} fresh={:?}; research_effects sealed={:?} fresh={:?}",
             sealed.effects_bounded,
             fresh.effects_bounded,
             sealed.capabilities_present,
             fresh.capabilities_present,
+            sealed_norm.research_effects,
+            fresh.research_effects,
         ))
     }
 }
@@ -364,6 +385,39 @@ mod tests {
         assert!(
             verify_confinement_matches_source(src, &forged).is_err(),
             "a forged host-only grant over a net.send source must fail closed"
+        );
+    }
+
+    #[test]
+    fn research_effects_align_with_shared_ir() {
+        let src = "fn beacon() uses(net.send) { http_post(\"http://x/y\", \"z\"); }\nfn main() uses(net.send) { beacon(); }\n";
+        let m = derive_confinement("pkg", "0.0.0", src).unwrap();
+        assert!(
+            m.research_effects.iter().any(|e| e == "net.connect"),
+            "research IR must use net.connect not only net.send: {:?}",
+            m.research_effects
+        );
+        assert!(m.capabilities_present.contains(&"net.send".to_string()));
+    }
+
+    #[test]
+    fn legacy_seal_without_research_effects_still_verifies() {
+        let src =
+            "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
+        let mut sealed = derive_confinement("pkg", "0.0.0", src).unwrap();
+        sealed.research_effects.clear(); // simulate pre-slice-3 seal
+        verify_confinement_matches_source(src, &sealed).expect("legacy empty research_effects");
+    }
+
+    #[test]
+    fn shell_program_research_effect_is_process_spawn() {
+        let src = "fn go() uses(shell) { shell(\"true\"); }\nfn main() uses(shell) { go(); }\n";
+        let m = derive_confinement("pkg", "0.0.0", src).unwrap();
+        assert!(m.capabilities_present.contains(&"shell".to_string()));
+        assert!(
+            m.research_effects.iter().any(|e| e == "process.spawn"),
+            "shell must normalize to process.spawn: {:?}",
+            m.research_effects
         );
     }
 }

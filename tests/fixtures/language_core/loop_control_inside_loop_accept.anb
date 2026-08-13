@@ -1,0 +1,16 @@
+// EXPECT: PASS
+//
+// The over-rejection guard for ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP. Every loop form appears here,
+// because a new loop form that the checker fails to recognise would reject working programs -- the
+// expensive direction of this mistake.
+fn main() {
+    let mut i = 0;
+    while i < 5 {
+        i = i + 1;
+        if i == 2 { continue; }
+        if i == 4 { break; }
+    }
+    for x in [1, 2, 3] {
+        if x == 2 { break; }
+    }
+}

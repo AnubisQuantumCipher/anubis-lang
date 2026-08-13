@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EXECUTION_CHECK_FAILED
+fn main() uses(fs.read) {
+    print(read_file(""));
+}

@@ -1,0 +1,4 @@
+// EXPECT: PASS
+fn f(x) { return x; }
+fn app(g) { print(g(-1)); }
+fn main() { app(f); }

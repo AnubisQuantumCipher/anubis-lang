@@ -1,4 +1,10 @@
 // Bounty-style research POC example (buffer trigger shape)
+//
+// The research lane requires an explicit authorization record on the enclosing function. This
+// example predates that requirement and stopped type-checking when it landed; carrying the record
+// here is what the rule asks of every real engagement, so the example should demonstrate it rather
+// than be exempt from it.
+@research(authorization: "example-only", scope: "local-example", reason: "documentation example of the research POC shape", non_destructive: true)
 fn trigger() {
     research {
         // intent: "simple overflow trigger for demo - not for prod use"

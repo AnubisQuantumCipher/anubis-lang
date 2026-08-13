@@ -1,0 +1,9 @@
+{
+  "isolation": "tart-disposable-guest",
+  "base": "anubis-xcode",
+  "guest": "anubis-poc-kit-gate-98280",
+  "ip": "192.168.64.4",
+  "guest_out": "out/poc_kit_guest",
+  "binary_transport": "host-built-arm64-hash-verified",
+  "binary_sha256": "758636722a6ed4c75f35220c6697c19542fa4ca825314a0127f3849b9f4c922e"
+}

@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// GROK-SEKHMET attack2. Twin of h5_return_if_expr_same_param_rejects for match-expr.
+// `return match n { 0 => f _ => f }` is a single return of Match, not two Var returns.
+// Discriminator: match-stmt arms `match n { 0 => { return f; } _ => { return f; } }` rejects.
+// TODAY (Tier-1 binary): check PASSES and run writes — known false accept.
+fn pick(n: i64, f) {
+    return match n {
+        0 => f
+        _ => f
+    };
+}
+fn main() {
+    let leaked = pick(0, || write_file("h5_return_match_expr_same.txt", "y"));
+    leaked();
+    print(1);
+}

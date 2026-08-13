@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// CORPUS-1 2026-07-27. Defect B, the WHILE-LET face. A struct pattern is irrefutable, so the loop
+// body must `break` explicitly; this exercises `qualified_pattern_binders` reached through
+// `Stmt::WhileLet` rather than a plain `let`, mirroring the enum-payload while-let gap already closed
+// elsewhere (`declared_secret_enum_payload_whilelet_rejects`) but for a struct field. TODAY: already
+// REJECTS correctly (coverage guard, verified by direct run).
+struct V { k: secret<i64> }
+fn main() {
+    let v = V { k: 42 };
+    while let V { k } = v {
+        print(k);
+        break;
+    }
+}

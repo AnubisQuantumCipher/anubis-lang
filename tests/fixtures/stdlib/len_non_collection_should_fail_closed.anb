@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `len(42)` printed `0` (rc=0).
+// That is indistinguishable from an empty collection and can discharge `requires len(xs)==0`
+// for the wrong reason. Must fail closed.
+fn main() {
+    print(len(42));
+}

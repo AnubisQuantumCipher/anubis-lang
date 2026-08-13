@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// D5 (HORUS residual, CLAIMS "Open — load-bearing" item 1): a GENERIC struct field whose secrecy
+// arrives only by INSTANTIATION. `Box<T>` declares no qualifier; `Box<secret<i64>>` supplies it, so
+// the field row must be instantiated for `b.v` to be known secret. The value itself is a plain
+// literal, so nothing but the instantiated declaration can make this a leak.
+struct Box<T> { v: T }
+fn main() {
+    let b: Box<secret<i64>> = Box { v: 42 };
+    print(b.v);
+}

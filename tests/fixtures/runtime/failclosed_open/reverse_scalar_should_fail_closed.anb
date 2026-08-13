@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: OPEN residual (post-stdlib-27). reverse(non-list) is other=>other silent passthrough
+// (run.rs anubis_reverse). Same shape as pre-fix sort(scalar). Gate must stay red until fixed.
+fn main() {
+    print(reverse(42));
+}

@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_POC_CYCLIC_LENGTH
+// RUNTIME: exercise via `anubis run`.
+// SILENT_WRONG closed: `anubis_cyclic` had `.max(0) as usize`, so a negative length silently
+// became 0 and returned `[]`. A caller computing `cyclic(computed_len)` from broken arithmetic
+// would see empty output and cyclic_find would report "not found", hiding the real bug behind
+// a plausible-looking negative-space code path. Same shape as HKDF / PBKDF2 length fixes.
+fn main() {
+    print(cyclic(-5));
+}

@@ -1,0 +1,28 @@
+// EXPECT: PASS
+//
+// A var×var multiplication obligation must be DISCHARGED — this fixture pins the ACCEPT, not the
+// engine that produced it.
+//
+// `solver/README.md` said var×var mul "stays deferred by design" while `PROVEN_OP_TAGS` in
+// solver/src/fragment.rs carried `MulVar` (TIER-1 via `mulVar_correct`). Both halves were partly
+// right, and the fixture is deliberately written to assert only the part that survives measurement:
+//
+//   admission — `MulVar` IS in the authoritative fragment, so a native verdict may ride
+//   decision  — native BLASTS it (22,334 vars / 74,730 clauses at u8) and then DECLINES:
+//               `declined_budget_or_cert` at the 20k conflict budget, and `declined_cert_work`
+//               with the budget raised. It defers to z3.
+//
+// So a fixture asserting "native decides var×var" would be false, and one asserting "var×var is
+// deferred" would contradict the admission list. What is true, and what this checks, is that the
+// obligation is proven rather than fail-closed.
+fn mul_commutes(a: i64, b: i64) -> i64
+    requires(a >= 0 && a <= 1000000)
+    requires(b >= 0 && b <= 1000000)
+    ensures(result == b * a)
+{
+    return a * b;
+}
+
+fn main() {
+    print(mul_commutes(6, 7));
+}

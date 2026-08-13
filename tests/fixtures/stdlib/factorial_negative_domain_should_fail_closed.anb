@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_DOMAIN_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
+// for negative integers — unlike the overflow case in
+// factorial_overflow_should_fail_closed.anb, this is a pure domain error, not a
+// wrapping-arithmetic tension, and should fail closed unconditionally.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(factorial(-1));
+}

@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// #74 fs.write twin: declares only time.now, aliases write_file, writes to the filesystem at runtime.
+fn main() uses(time.now) {
+    let w = write_file;
+    w("/tmp/anubis_fixture_74.txt", "y");
+    print(1);
+}

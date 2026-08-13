@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Cluster F guard, third axis: the pre-existing `field_closures` descent must keep firing. A closure
+// stored in a struct field that performs a gated effect is applied via `b.act(...)` — the same
+// `Expr::CallExpr { callee: FieldAccess }` node the new method-capability lookup hooks into.
+// This is the "did the new lookup shadow the old descent" test: the new code returns early only when
+// `method_declared_effects` has the bare name, and a stored closure never appears in that map, so the
+// descent below it must still walk the lambda body and charge the write to this undeclared caller.
+struct Holder { act: i64 }
+fn main() {
+    let b = Holder { act: |p| write_file(p, "y") };
+    b.act("cluster_f_field_closure.txt");
+    print(1);
+}

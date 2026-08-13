@@ -1,3 +1,4 @@
+// EXPECT: PASS
 // hermes_poc_threshold.anb
 // Original authorized local PoC: prove length-gated crash on gold oracle.
 // Short payload stable; long cyclic crashes. Network never used.

@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Over-rejection guard for D6: construction-inside-a-join of a struct with a PUBLIC field must
+// still compile.
+struct P { k: i64 }
+fn main() {
+    let p = if true { P { k: 42 } } else { P { k: 0 } };
+    print(p.k);
+}

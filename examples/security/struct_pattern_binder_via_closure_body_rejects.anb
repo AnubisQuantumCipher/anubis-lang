@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// CORPUS-1 2026-07-27. Defect B, the CLOSURE-BODY face. This language's lambda params are plain
+// identifiers only (no destructuring in the parameter list itself — confirmed against the parser),
+// so this exercises the realistic composition: the struct arrives as an ordinary closure param and is
+// destructured via `let` in the closure's own body/scope. TODAY: already REJECTS correctly (coverage
+// guard, verified by direct run).
+struct V { k: secret<i64> }
+fn main() {
+    let v = V { k: 42 };
+    let f = |x| { let V { k } = x; print(k); };
+    f(v);
+}

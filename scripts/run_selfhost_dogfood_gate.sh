@@ -7,15 +7,40 @@
 #   G1 structural : the compiler's own AST contains the load-bearing enums/match/if-expr
 #   G2 semantic   : (delegated) run_selfhost_gate.sh fixpoint + run_selfhost_fulllang_gate.sh
 #   G3 ablation   : neuter a match arm -> the self-build must break (removal breaks output)
-set -uo pipefail
+# Fail-closed: set -e so a failed cargo build / missing python cannot fall through to PASS.
+# (Previously set -uo without -e + bare `cargo build` let unbuilt HEAD print PASS.)
+set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/selfhost_dogfood_gate}"
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
-BIN=./target/release/anubis
 SELF=selfhost/src/anubis_sh.anb
-cargo build -q --release -p anubis
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "SELFHOST_DOGFOOD_GATE: FAIL (python3 required for G1/G3 oracles)"; exit 127
+fi
+# If ANUBIS_BIN is set, use it exclusively — never fall back to rebuilding target/release
+# (a deliberate-break negative test must stay broken; a pin must stay pinned).
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  if [[ ! -x "$BIN" ]]; then
+    echo "SELFHOST_DOGFOOD_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127
+  fi
+else
+  BIN=./target/release/anubis
+  if [[ ! -x "$BIN" ]]; then
+    echo "== cargo build --release -p anubis (binary missing at $BIN) =="
+    cargo build -q --release -p anubis
+  fi
+  if [[ ! -x "$BIN" ]]; then
+    echo "SELFHOST_DOGFOOD_GATE: FAIL (no anubis binary after build)"; exit 127
+  fi
+fi
+{
+  echo "instrument: $BIN"
+  stat -f 'mtime=%Sm size=%z' -t '%Y-%m-%dT%H:%M:%S' "$BIN" 2>/dev/null || stat -c 'mtime=%y size=%s' "$BIN" 2>/dev/null || true
+} | tee "$OUT/instrument.txt"
 pass=0; fail=0
 note() { echo "  $1" | tee -a "$OUT/summary.txt"; }
 : >"$OUT/summary.txt"
@@ -23,7 +48,12 @@ note() { echo "  $1" | tee -a "$OUT/summary.txt"; }
 # Build a fast BOOT compiler once (host emits stage1, rustc compiles it). BOOT compiles
 # the (possibly ablated) source in ~1s each thereafter.
 echo "== building BOOT compiler =="
-"$BIN" run "$SELF" --allow-research -- compile "$SELF" -o "$OUT/boot.rs" >"$OUT/boot_emit.log" 2>&1
+# anubis_sh.anb has no research{}/exploit{} blocks or @research/@exploit attrs
+# -> program_mode = Mode::Safe -> --allow-research is not needed (confirmed
+# empirically; see scripts/run_selfhost_gate.sh for the full mechanism note).
+if ! "$BIN" run "$SELF" -- compile "$SELF" -o "$OUT/boot.rs" >"$OUT/boot_emit.log" 2>&1; then
+  echo "SELFHOST_DOGFOOD_GATE: FAIL (host could not emit BOOT from $SELF)"; exit 1
+fi
 if ! rustc -O "$OUT/boot.rs" -o "$OUT/boot" 2>"$OUT/boot_rustc.err"; then
   echo "SELFHOST_DOGFOOD_GATE: FAIL (could not build BOOT)"; exit 1
 fi
@@ -40,7 +70,14 @@ fi
 # ---- G3 ablation (neuter a load-bearing arm -> build must break) ----
 # Probe program + its true (host) output. Uses variables and let-bindings.
 PROBE=examples/for_in_list.anb
+set +e
 HOST_OUT=$("$BIN" run "$PROBE" 2>/dev/null)
+host_rc=$?
+set -e
+if [[ $host_rc -ne 0 ]]; then
+  echo "SELFHOST_DOGFOOD_GATE: FAIL (host probe $PROBE exited $host_rc — cannot oracle G3)"
+  exit 1
+fi
 echo "== G3 ablation (host $PROBE = [$HOST_OUT]) =="
 ablate_breaks() {
   local target="$1"
@@ -77,8 +114,22 @@ done
 
 note "G2_semantic: DELEGATED -> run_selfhost_gate.sh (fixpoint+binary) + run_selfhost_fulllang_gate.sh"
 echo "dogfood_gate pass=$pass fail=$fail" | tee -a "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49): case total must not silently shrink.
+_cases=$((pass + fail))
+set +e
+assert_floor "selfhost_dogfood_gate" "$_cases" "$ROOT/scripts/floors/selfhost_dogfood_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
 if [[ "$fail" -gt 0 ]]; then
   echo "SELFHOST_DOGFOOD_GATE: FAIL ($pass pass / $fail fail)"; exit 1
+fi
+if [[ "$pass" -eq 0 ]]; then
+  echo "SELFHOST_DOGFOOD_GATE: FAIL (zero passing checks — hollow PASS forbidden)"; exit 1
 fi
 echo "SELFHOST_DOGFOOD_GATE: PASS ($pass/$pass)"
 exit 0

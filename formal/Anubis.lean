@@ -11,6 +11,7 @@ import Anubis.CompareUnary
 import Anubis.DeclassifyWellFormed
 import Anubis.EffectSoundness
 import Anubis.IntSigned
+import Anubis.ModeAggregation
 import Anubis.NonInterference
 import Anubis.StringEncoding
 import Anubis.UnsignedMask

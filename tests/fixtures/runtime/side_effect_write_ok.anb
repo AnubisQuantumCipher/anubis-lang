@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// MUST_EXIST: ok.txt
+// STDOUT_CONTAINS: 1
+// RUNTIME control: intentional write under workdir must leave the file.
+fn main() uses(fs.write, io.print) {
+    write_file("ok.txt", "sealed\n");
+    print(1);
+}

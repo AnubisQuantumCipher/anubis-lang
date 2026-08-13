@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_ARGON2_SALT
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: Argon2id salt must be >= 8 bytes (RFC 9106).
+fn main() {
+    print(argon2id_hash("password", "short", 32, 3, 1, 32));
+}

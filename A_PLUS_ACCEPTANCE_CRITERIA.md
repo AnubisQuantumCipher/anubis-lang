@@ -2,6 +2,19 @@
 
 Anubis is **A+ only** when **all mandatory gates** below pass with reproducible artifacts and A15 hostile audit produces no mandatory failures.
 
+> **Coverage note (2026-07-28).** This file specifies **GATE 1–15**. The runner now executes **22**
+> gates — `scripts/audit_unified.sh` declares `G1_fmt … G22_fixture_preflight` — so G16–G22
+> (docs-drift, stdlib fail-closed, native-authoritative, walker-completeness, gate-common adoption,
+> formal, fixture-preflight) are enforced in CI **without** being specified here. Treat the runner as
+> the operative list and this document as the written contract for the first fifteen:
+>
+> ```bash
+> grep -o 'EXPECTED_GATES="[^"]*"' scripts/audit_unified.sh   # the gates actually required
+> ```
+>
+> Also note **GATE 2** below is frozen text describing the 2026-07-06 minimum-language-core slice,
+> which the executable core has long since passed.
+
 ## GATE 1 — Clean build
 ```bash
 cargo fmt --check
@@ -60,14 +73,14 @@ fn main() {
 - Evidence records research mode + reason when used.
 
 ## GATE 7 — Solver correctness
-Every symbolic assertion:
+Every symbolic assertion in the currently declared solver fragment:
 - SMT encodes actual program relationships
 - counterexamples execute or are replayable against source semantics
 - no free variables pretending to be program values
 - bitvector widths and overflow explicit
 
 ## GATE 8 — Evidence schema
-Every build (success or fail) produces bundle with:
+Every build path exercised by the current evidence gate (success and deliberate failure) produces a bundle with:
 - manifest.json
 - MANIFEST.sha256
 - source copy + hash
@@ -125,4 +138,13 @@ A+ requires **no mandatory gate failures**.
 
 ---
 
-Run `bash scripts/audit_a_plus.sh` to execute the full sealed gate suite. It runs the repo safety check and delegates to the canonical runner `scripts/audit_unified.sh`, which executes every gate (G1–G15) and writes an honest PASS/FAIL/SKIP verdict plus `gate_report.json` to `out/unified_gate/<STAMP>/`, exiting non-zero if any gate fails.
+Run `bash scripts/audit_a_plus.sh` to execute the declared sealed gate suite. It runs the repo safety check and delegates to the canonical runner `scripts/audit_unified.sh`, which executes the enumerated G1–G15 set and writes a PASS/FAIL/SKIP verdict plus `gate_report.json` to `out/unified_gate/<STAMP>/`, exiting non-zero if a declared gate fails.
+
+The default/full profile is sealed only at exactly 15/15 with zero failures, skips, or external
+gates. Stock GitHub macOS runners cannot provide nested Apple virtualization, the canonical
+`anubis-xcode` Tart image, or the operator SSH key. Push/PR CI therefore runs the explicit
+`scripts/audit_unified.sh --profile hosted` witness: 14 host-verifiable gates plus
+`G9_poc_kit=EXTERNAL`, with G14 pinned to its non-executing 5-check host isolation witness. It
+yields `HOSTED_PASS` rather than a false full-seal claim. A manually dispatched
+`sealed-vz-gate-suite` on labels `self-hosted, macOS, ARM64, tart-vz` runs the unchanged full front
+door, including the G9 PoC execution and full 34-check G14 offensive battery.

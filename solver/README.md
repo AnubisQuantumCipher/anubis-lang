@@ -81,7 +81,27 @@ replay. Anything else is `None`.
   `scripts/run_native_authoritative_gate.sh`.
 - **Opt out:** `ANUBIS_NATIVE_AUTHORITATIVE=0` restores z3-only authority (pre-flip).
 - **`ANUBIS_NATIVE_SHADOW=1`:** still available for explicit shadow logging / disagreement hunts.
-- **Division and var×var mul stay deferred by design.**
+- **Division stays deferred by design. Var×var mul is ADMITTED to the fragment but usually
+  DECLINES on cost** — and those are two different facts this README used to collapse into one.
+
+  *Admission:* `MulVar` is in `PROVEN_OP_TAGS` (`solver/src/fragment.rs`), TIER-1 via
+  `mulVar_correct` (`formal/Anubis/BitBlast.lean:691`). A var×var product is inside the Lean-proven
+  blast family, so a native verdict on one **may ride as authoritative**.
+
+  *Decision:* native still has to afford it. Measured on the commutativity miter `a*b == b*a` at
+  **u8**, with z3 hidden so nothing could mask the result:
+
+  | budget | vars | clauses | conflicts | outcome |
+  |---|---:|---:|---:|---|
+  | default (20k) | 22,334 | 74,730 | 20,001 | `declined_budget_or_cert` |
+  | raised to 2M | 22,334 | 74,730 | 120,163 | `declined_cert_work` (7.4M) |
+
+  So it blasts fine and then declines — first on the conflict budget, and with that lifted, on
+  certificate work. In practice a var×var obligation **defers to z3**.
+
+  Saying only "deferred by design" hid the admission; saying only "admitted" (which this README
+  briefly did, before the numbers above were measured) implies native decides it, and it does not.
+  Trust-boundary prose has to survive someone hiding z3 and re-running.
 
 ## How we know it's correct (and why it can't cause a false accept)
 
@@ -110,7 +130,9 @@ replay. Anything else is `None`.
 
 **Certificate residual (closed):** CDCL Unsat emits RUP and is independently verified.
 **Default flip (done 2026-07-25):** compiler defaults to native-authoritative; opt out with `=0`.
-Division / var×var mul remain deferred forever-or-until-proven.
+Division remains deferred forever-or-until-proven. Var×var mul is PROVEN (`mulVar_correct`) and
+admitted to the fragment (2026-07-25), but declines on cost for miter shapes and defers to z3 in
+practice — admission and decision are separate; see the measured table above.
 
 ## Status / next
 
@@ -120,4 +142,7 @@ Division / var×var mul remain deferred forever-or-until-proven.
 - ✅ **RUP Unsat certificates** (LRAT-shaped, no deletions) + independent pure checker (`lrat.rs`);
   Unsat fail-closed without a verifying cert.
 - ✅ **Default flip (2026-07-25):** native-authoritative by default; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`.
-- ⬜ division / var×var mul remain deferred by design; float arithmetic / non-eq string ops still z3.
+- ⬜ division remains deferred by design; float arithmetic / non-eq string ops still z3.
+- ✅ **var×var mul admitted to the fragment (2026-07-25):** TIER-1 via `mulVar_correct`. Native
+  still declines the miter shape on cost and defers to z3 — gated by
+  `tests/fixtures/language_core/var_mul_obligation_discharged.anb`.

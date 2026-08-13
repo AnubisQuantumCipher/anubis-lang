@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: NaN
+// DOC_OK / IEEE 754 LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// sqrt of a negative float is NaN. This is the documented float model, not a silent bug.
+// See NON_COLLECTION_SURFACE.md § DOC_OK.
+fn main() {
+    print(sqrt(-1.0));
+}

@@ -1,0 +1,18 @@
+// EXPECT: PASS
+// `push` in EXPRESSION position returns the container. It used to return `AnubisValue::Int(0)`, a
+// placeholder, so `let ys = push(xs, 3); len(ys)` bound a non-container — `check` passed and `run`
+// panicked. A check/run divergence manufactured by the lowering rather than by the program.
+//
+// Statement-position `push(xs, v)` is lowered separately and is unaffected; this fixture pins both
+// so neither can regress into the other's behaviour.
+fn main() {
+    let mut xs = [1, 2];
+    let ys = push(xs, 3);
+    assert(len(ys) == 3);
+
+    let mut out = [];
+    push(out, 1);
+    push(out, 2);
+    assert(len(out) == 2);
+    print("ok");
+}

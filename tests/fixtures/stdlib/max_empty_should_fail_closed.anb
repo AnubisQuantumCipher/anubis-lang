@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EMPTY_COLLECTION
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+fn main() {
+    print(max([]));
+}

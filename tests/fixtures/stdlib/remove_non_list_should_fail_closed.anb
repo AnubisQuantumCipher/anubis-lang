@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Twin of remove_oob (wrong-type target).
+fn main() {
+    let mut s = "abc";
+    print(remove(s, 0));
+    print(s);
+}

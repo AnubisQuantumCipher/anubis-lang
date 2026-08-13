@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_
+// Control: the same shape with USER functions as the secret and taint sources is correctly rejected.
+// This is what proves the bare-builtin variant is a builtin-identity gap rather than a hole in the
+// carrier machinery — the trifecta detector resolves user-function identity through carriers fine.
+fn secret_read() -> secret<i64> { return 42; }
+fn dirty() -> tainted<i64> { return 7; }
+fn go(f, g) uses(net.send) { let s = f(); let u = g(); send("h", 80, u); }
+fn main() uses(net.send) { go(secret_read, dirty); }

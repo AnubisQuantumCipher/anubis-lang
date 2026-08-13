@@ -136,3 +136,32 @@ pub fn role_can_admin(eng: &Engagement, operator: &str) -> Result<(), String> {
     eng.assert_role(operator, Role::Admin)
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+
+    #[test]
+    fn console_html_contains_engagement_fields() {
+        let eng = Engagement::default_lab("console-test", "unit test auth");
+        let html = console_html(&eng);
+        assert!(html.contains(&eng.engagement_id), "missing engagement_id");
+        assert!(html.contains("aop-2"), "missing protocol tag");
+        assert!(html.contains("Dashboard"), "missing Dashboard nav");
+        assert!(html.contains("Agents"), "missing Agents nav");
+        assert!(html.contains("Results"), "missing Results nav");
+    }
+
+    #[test]
+    fn role_can_queue_accepts_default_operator() {
+        let eng = Engagement::default_lab("rbac-test", "unit test auth");
+        assert!(role_can_queue(&eng, "operator").is_ok());
+    }
+
+    #[test]
+    fn role_can_queue_rejects_unknown_operator() {
+        let eng = Engagement::default_lab("rbac-test2", "unit test auth");
+        assert!(role_can_queue(&eng, "nobody").is_err());
+    }
+}

@@ -1,0 +1,18 @@
+step	status	evidence
+phase0	PASS	release doctor ready; rustc nightly; Z3 4.15.4; Metal ready; Tart available
+safe_mode_aggregation	PASS	Rust traversal tests plus formal/Anubis/ModeAggregation.lean
+contract_command_matrix	PASS	check run test build fail closed; valid program passes all four
+unverified_bypass	PASS	integrity-valid UNVERIFIED envelope; no proof claim
+rejection_evidence	PASS	FAIL verdict; rejected PCA; no artifact; nonzero command exit
+integer_boundary	PASS	i64/u32 solver and native boundary regressions
+taint_secret_lowering	PASS	approved flows run; undeclassified flows reject
+formatter_preservation	PASS	comments policy annotations and research authorization round-trip
+resolved_import_evidence	PASS	resolved source sealed and cold-verified
+formal_gate	PASS	Lean 4.32.0; 18 jobs; prohibited proof shortcuts absent
+native_authoritative	PASS	569 files; zero mismatches; zero disagreements
+security_fixtures	PASS	149/149
+maat_dogfood	PASS	check run build plus seven hostile companion controls
+sealed_a_plus_audit	PASS	15/15 gates; 827 Rust tests; 244/244 language fixtures
+vz_poc_gate	PASS	disposable guest anubis-poc-kit-gate-54712; 4/4
+vz_offensive_gate	PASS	disposable guest anubis-offensive-gate-57758; 34/34
+independent_a15	PENDING	primary implementer reproduction only; draft PR must receive independent review

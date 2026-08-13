@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Integrity dual: tainted-returning function reaching a `shell` sink through a MAP value.
+fn t() -> tainted<i64> { return 42; }
+fn app(m) uses(shell) { shell(m["k"]()); }
+fn main() uses(shell) { app({ "k": t }); }

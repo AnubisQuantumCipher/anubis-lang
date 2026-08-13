@@ -1,0 +1,22 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Cluster F (#17) — the most severe variant found. An UNDECLARED free-function forwarder wraps a
+// method that correctly declares its capability. Before the fix: three call frames, zero
+// authorization anywhere above the leaf, `check passed`, and `anubis run` reached a real syscall.
+// This is the shape that made the already-fixed #74 (alias-resolved capability gate) hollow: a
+// correctly alias-gated privileged call was one `impl` wrapper away from bypassing Safe mode through
+// a completely different code path.
+struct Net { id: u32 }
+impl Net {
+    fn ship(self) uses(net.send) {
+        net_send("127.0.0.1", 65500, "payload");
+    }
+}
+fn forward() {
+    let n = Net { id: 1 };
+    n.ship();
+}
+fn main() {
+    forward();
+    print(1);
+}

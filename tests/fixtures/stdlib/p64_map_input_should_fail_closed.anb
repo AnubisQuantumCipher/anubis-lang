@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_POC_PACK_TYPE
+// RUNTIME: exercise via `anubis run`.
+// Companion of p8_list_input_should_fail_closed.anb: p64 on a map returned LE-packed entry
+// count. `p64({"a":1,"b":2})` produced `[2, 0, 0, 0, 0, 0, 0, 0]`.
+fn main() {
+    print(p64({"a": 1, "b": 2, "c": 3}));
+}

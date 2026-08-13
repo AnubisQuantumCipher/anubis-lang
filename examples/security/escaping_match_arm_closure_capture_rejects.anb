@@ -1,0 +1,24 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Lead agent 2026-07-27, from GROK-SEKHMET round 9. A closure built INSIDE a match arm, capturing
+// the arm's binder, and returned OUT of the match.
+//
+// This file justifies treating a lambda as opaque at its definition with one premise: "safe only if
+// EVERY application site descends." An escaping closure breaks that premise directly — the arm's
+// bindings are gone by the time `f()` runs, so the application-site descent walks the body in a
+// scope where the captured binder does not exist and sees nothing at all. The arm scope labelled `x`
+// correctly; the label simply had nowhere to go.
+//
+// When a closure escapes the scope that gave its captures meaning, the definition site is the ONLY
+// place it can be judged, so the descent happens there. That over-approximates — it charges even if
+// the closure is never applied — which is the fail-closed direction and the same trade the
+// container-closure lanes already make. Verified at zero cost on the corpus: 241/241 and 244/244
+// with no fixture moving.
+enum E { Box(secret<i64>) }
+fn main() {
+    let e = E::Box(42);
+    let f = match e {
+        E::Box(x) => || { print(x); 0 },
+    };
+    f();
+}

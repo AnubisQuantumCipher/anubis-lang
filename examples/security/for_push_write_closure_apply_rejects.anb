@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// GROK-SEKHMET attack2. Sibling of for_write_closure_apply_rejects + RC1 push:
+// push a write-lambda, then for-apply the loop var. Combines container mutation
+// with ForSource loop-var blind spot. Discriminator: local lambda apply rejects.
+// TODAY (Tier-1 binary): check PASSES and run writes — known false accept.
+fn main() {
+    let mut xs = [];
+    push(xs, || write_file("for_push_write_closure_apply.txt", "y"));
+    for f in xs {
+        f();
+    }
+    print(1);
+}

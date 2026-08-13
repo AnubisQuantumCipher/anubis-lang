@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// FABLE5 2026-07-27. Integrity face of R1, the dual of `declared_secret_struct_field_print_rejects`.
+// W6 `expr_taint_source_m`'s `Expr::FieldAccess` arm has the same blindness as W7's: it walks the
+// base only, so a field declared `tainted<i64>` — a field whose type announces that it holds
+// untrusted data — reaches a sink unlabelled. TODAY: check PASSES.
+// Both faces must be closed by the same mechanism; closing one lane and not the other is how a form
+// the other lane already rejects becomes a launder path.
+struct V { k: tainted<i64> }
+fn main() uses(shell) {
+    let v = V { k: 42 };
+    shell(v.k);
+}

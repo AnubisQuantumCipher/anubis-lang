@@ -1,0 +1,19 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Cluster F (#16). The method-effect gap composed with a closure wrapper: the gated call sits inside
+// a lambda body, and the lambda is applied in a `main` that declares nothing.
+// No closure-specific handling was needed to close this — `analyze_expr_effect` already walks lambda
+// bodies, so making the `Expr::CallExpr` arm inherit declared method capabilities covers it. That is
+// the point of fixing the mechanism rather than the shape.
+struct Net { id: u32 }
+impl Net {
+    fn ship(self) uses(net.send) {
+        net_send("127.0.0.1", 65500, "payload");
+    }
+}
+fn main() {
+    let n = Net { id: 1 };
+    let f = || n.ship();
+    f();
+    print(1);
+}

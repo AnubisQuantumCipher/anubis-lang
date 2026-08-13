@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// Over-rejection guard for D4. An enum payload with NO qualifier must stay clean through a match
+// binder — the payload lookup must label on the declared TYPE, not on the mere presence of a
+// binding. If this goes red, D4 has started charging every enum binder and the fix is a wall.
+enum E { A(i64), B }
+fn main() {
+    let e = E::A(42);
+    match e {
+        E::A(x) => { print(x); }
+        E::B => { print(0); }
+    }
+}

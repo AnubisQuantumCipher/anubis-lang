@@ -1,0 +1,13 @@
+{
+  "binary": "target/release/anubis",
+  "fixtures": [
+    {"name":"packing_smoke","status":"PASS","detail":"stdout matches 16/65/65"},
+    {"name":"poc_local_overflow","status":"PASS","detail":"target crashed (crashed=1)"},
+    {"name":"process_fuzz","status":"PASS","detail":"unique_crashes=57 total_crashes=58"},
+    {"name":"network_forbidden","status":"PASS","detail":"network target rejected"}
+  ],
+  "total": 4, "passed": 4, "failed": 0,
+  "isolation": "tart-disposable-guest",
+  "execution_boundary": "mandatory disposable anubis-xcode guest; no host fallback",
+  "overall_verdict": "PASS"
+}

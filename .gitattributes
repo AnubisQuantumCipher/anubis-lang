@@ -1,0 +1,37 @@
+# Normalise line endings so a diff is a real diff, not a platform artifact.
+* text=auto eol=lf
+
+# Rust / shell / docs are text.
+*.rs      text diff=rust
+*.sh      text eol=lf
+*.md      text
+*.toml    text
+*.yml     text
+*.yaml    text
+*.json    text
+
+# Anubis source.
+*.anb     text
+
+# Lean.
+*.lean    text
+
+# Metal shaders.
+*.metal   text
+
+# Generated / vendored trees are excluded from language statistics so the repo's
+# reported language mix describes what we wrote, not what we vendored.
+vendor/**            linguist-vendored
+target/**            linguist-generated
+target-public/**     linguist-generated
+out/**               linguist-generated
+
+# Sealed artefacts are binary: never merge them, never show a textual diff.
+vm/pins/**           binary
+vm/exports/**        binary
+*.metallib           binary
+*.pk                 binary
+*.vk                 binary
+
+# Lockfiles: keep them, but do not blow up review diffs.
+Cargo.lock           text merge=binary linguist-generated

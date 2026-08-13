@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Over-rejection guard for the unknown-attribute check. Every attribute the compiler gives meaning
+// to must keep working — the recognized set is the UNION of what the compiler acts on and what the
+// corpus already uses, so failing closed rejects typos and inventions without breaking a working
+// program. If this goes red, the whitelist has become the wall.
+#[verified]
+fn f() -> i64 { return 1; }
+fn main() { print(f()); }

@@ -1,6 +1,26 @@
 # Anubis Unsupported / PLANNED Surface (Gate 2/3 Truth)
 
-**Rule:** Anything not implemented in this slice **must** be listed here and reflected in MATURITY_CLAIM_MATRIX.md + A_PLUS_ACCEPTANCE_CRITERIA.md. No over-claiming "general-purpose language complete".
+> ## How to read this file — it is a changelog, not a gap list
+>
+> Despite the title, most of this file records features that **were** unsupported and have since
+> landed: it opens with a long `NOW REAL (previously planned)` section and grows by appending. If you
+> came here to answer *"can Anubis do X today?"*, this is the slowest way to find out.
+>
+> | To find… | Do this instead |
+> |---|---|
+> | whether a feature exists today | [`docs/CAPABILITIES.md`](../CAPABILITIES.md), or search the builtin inventory in [`BUILTINS.md`](BUILTINS.md) |
+> | what is currently **open or broken** | [`docs/CLAIMS.md`](../CLAIMS.md) § *Known open issues* — the single source of truth |
+> | what is frozen for 1.0, with residuals | [`SPEC_1_0_FREEZE.md`](SPEC_1_0_FREEZE.md) |
+> | the genuinely-still-missing entries **in this file** | `grep -n -i 'DEFERRED\|not implemented\|not supported' docs/language/UNSUPPORTED.md` |
+>
+> **Anything marked `NOW REAL` is shipped** — those entries are kept as a record of when the gap
+> closed, not as a warning. Anything still phrased as a limitation is the part worth reading, and
+> even then [`docs/CLAIMS.md`](../CLAIMS.md) wins on any disagreement.
+
+**Rule:** Anything not implemented in this slice **must** be listed here. The status authority is
+[`docs/CLAIMS.md`](../CLAIMS.md); `MATURITY_CLAIM_MATRIX.md` is the dated tranche ledger and
+`A_PLUS_ACCEPTANCE_CRITERIA.md` specifies GATE 1–15 of the 22 the runner now executes. No
+over-claiming "general-purpose language complete".
 
 ## NOW REAL (previously planned — implemented 2026-07-09, see TURING_COMPLETENESS.md)
 

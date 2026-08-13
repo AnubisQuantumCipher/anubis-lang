@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run`.
+// Phase-5 M-Z SILENT_WRONG: pin anubis-106d335d0f64, sqrt("x") -> 0.0
+// Distinct from DOC_OK IEEE sqrt(-1.0) -> NaN.
+fn main() {
+    print(sqrt("x"));
+}

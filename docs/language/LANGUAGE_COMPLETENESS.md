@@ -1,0 +1,64 @@
+# Anubis language completeness map (honest)
+
+Anubis is already a **real programming language** on a frozen 1.0 Safe surface
+([`SPEC_1_0_FREEZE.md`](SPEC_1_0_FREEZE.md)). This document maps “complete language”
+expectations to **what is shipped** vs **what remains specialized residual**.
+
+## Feature map
+
+| Expectation | Status | Where |
+|-------------|--------|--------|
+| Bidirectional inference / structured `Ty` | **REAL** (enforcing assignability, generics conflict/arity, trait bounds) | `middle/ty.rs`, `middle/mod.rs` |
+| Generics + traits/impl | **REAL** (parse + check); codegen **value-erased** | SPEC freeze §2 |
+| **Static monomorphization inventory** | **REAL** (checker records concrete `T=…` at call sites on `TypedIR.mono_specializations`) | `typecheck` → `MonoSpecialization` |
+| Mono inventory in evidence / check dumps | **REAL** — `mono_specializations.json` in evidence bundles; `anubis check` writes `<stem>.mono.json` + prints count | `evidence/mod.rs`, `tools/anubis` |
+| Monomorphized **code** clones (literal-pinned calls) | **REAL** — `lower_program_to_rust_with_mono` emits `anb_*__mono__*` clones; rewrites literal call sites | `backends/run.rs`, `anubis run` |
+| Unboxed mono ABI for primitives | **REAL** for int/float/bool/string specializations — outer `fn …(x: i64) -> i64` (etc.); body still AnubisValue via inner fn | `backends/run.rs` |
+| Variable-pinned mono call sites | **REAL** — ordered `TypedIR.mono_call_sites` (per caller) drives clone selection for `id(x)` when the checker pins `x` | `middle/mod.rs`, `backends/run.rs` |
+| Fully unboxed mono **bodies** (simple pure) | **REAL** for identity, pure arith, **let-chains**, pure **if/else** (stmt or expr) — no AnubisValue / `__anb_body` | `backends/run.rs` `try_emit_mono_full_native_body` |
+| Complex mono bodies / non-primitive types | **PARTIAL** — loops, calls, match, structs fall back to AnubisValue-inner unboxed ABI | residual |
+| Effect system (transitive rows + linear caps) | **REAL** | `effects.rs`, `capability.rs`, `--verified` |
+| Float comparison / QF_FP lane | **REAL** | contract solver float path |
+| String equality / QF_S lane | **REAL** | contract solver string path |
+| Multi-file imports + `import std.*` | **REAL** | `resolve`, `stdlib/` |
+| Packages / lock / trust | **REAL** | `package/` |
+| Stdlib modules | **REAL** (13 modules): collections, iter, option, result, str, math, testing, io, pwn, crypto, time, net, **rand** | `compiler/stdlib/std/` |
+| Crypto (RWC-aligned) | **REAL** host audited crates | `CRYPTO.md`, `RWC_LANGUAGE_MAP.md` |
+| Research / VZ / evidence | **REAL** ops + IR; full research **grammar** residual | `SECURITY_RESEARCH_PROFILE.md` |
+| Production 1.0 Safe surface | **FROZEN** | `SPEC_1_0_FREEZE.md` |
+
+## What “complete” does **not** mean here
+
+- Rust feature parity (async/await, const generics, borrow checker, …)
+- Infinite stdlib (OS APIs, GUI, browser, …)
+- DIY TLS/Noise/PQ as language core
+- Claiming every residual closed forever
+
+## How to inspect monomorphization
+
+```anubis
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let a = id(1);
+    let b = id("hi");
+}
+```
+
+After `typecheck`, `TypedIR.mono_specializations` contains two instances of `id`
+with concrete type arguments when the checker can pin them.
+
+```bash
+# Evidence path (sealed sidecar)
+anubis check examples/lang/mono_id_smoke.anb --evidence --out out/mono_ev
+# → out/mono_ev/evidence-*/mono_specializations.json
+# → checks include name=monomorphization status=PASS
+
+# Local dump next to other IR
+anubis check examples/lang/mono_id_smoke.anb --out out/mono_check
+# → out/mono_check/mono_id_smoke.mono.json + console: "static monomorphization: N …"
+```
+
+## Production 1.0
+
+Use `anubis check` / `run` / `build --evidence` / `package` / `vz confine` on the
+frozen surface. Expand via MINOR promotions, not silent “everything is done.”

@@ -24,9 +24,16 @@ anubis prove ... --backend risc0
 anubis doctor
 
 Behavior:
-- `check`: type/taint/policy/solver only; does not emit native by default. With --evidence emits full bundle + *.ast.json etc.
-- `build`: emits artifact (native) + optional evidence.
-- `run`: executes ordinary safe Anubis programs through the native safe subset. Current subset: `let`, literals, variables, numeric `+ - *`, comparisons, string literals, string concatenation with `+`, `print(expr)`, `if/else`, and `return(expr)`. Unsupported constructs fail with `ANUBIS_UNSUPPORTED_NATIVE_LOWERING`.
+- `check`: type/taint/policy/solver only; never emits a native artifact. A rejected check emits a
+  timestamped `FAIL` evidence bundle automatically, even without `--evidence`; `--evidence` also
+  requests a bundle for successful checks. Rejection PCAs use tier `rejected`, verdict `FAIL`, and
+  carry the diagnostic—never a proof claim.
+- `build`: verifies contracts by default, then emits a native artifact and optional evidence.
+  `build --evidence` failures emit an artifact-free `FAIL` rejection bundle. `--no-verify` is an
+  explicit escape hatch and emits only clearly marked `UNVERIFIED` evidence.
+- `run`: verifies the same contracts as `check`/default `build` before native lowering, then executes
+  ordinary Safe Anubis programs. Unsupported constructs fail with
+  `ANUBIS_UNSUPPORTED_NATIVE_LOWERING`.
 - `prove --backend risc0`: RISC0 receipt path (fresh, journal via verify-receipt).
 - `doctor`: reports binary version, git, rustc, RISC0 versions, patched `risc0-circuit-rv32im` path + existence + Metal HAL, `R0_DISABLE_METAL` status, Apple Silicon, Tier-2, smoke checks, evidence scripts/schemas. Supports `--require-risc0`, `--require-metal`, `--metal-reference`, `--evidence`, `--json`.
 - `capabilities --apple-native`: emits the machine-readable Apple-native capability matrix. It separates ready RISC0/Metal proof lanes from the plan-emitter-ready UMPG surface and planned CoreML/Neural Engine control-plane lanes.
@@ -97,7 +104,7 @@ CoW, booted, fed the code, and discarded (unless `--keep`):
 
 ```bash
 anubis vz exploit poc.anb --allow-research           # clone → boot → sync → `anubis run --allow-research` → discard
-anubis vz fuzz target.anb --iterations 100000 --allow-research
+anubis vz fuzz poc_kit/bin/vuln_local --iterations 100000 --allow-research   # TARGET is a BINARY, not a .anb
 ```
 
 - Backend: **tart** (Cirrus Labs' Virtualization.framework wrapper) — the same VZ layer the repo's
@@ -108,8 +115,11 @@ anubis vz fuzz target.anb --iterations 100000 --allow-research
 
 ## Gate 15 + Bounty-Grade PoC Kit
 
-- `anubis run <poc.anb> --allow-research` : Execute packing + `target_run` local harness (see `docs/language/POC_KIT.md`).
-- `anubis fuzz --target <local-binary> --runs N [--max-len L] [--seed S] --out DIR` : **Real** mutation process fuzz; writes `fuzz_report.json` + `crashes/*.bin`. Network targets forbidden. Optional harness `.anb` for auth metadata only.
+- `anubis vz exploit <poc.anb> --allow-research` executes packing + `target_run` in a disposable
+  guest (see `docs/language/POC_KIT.md`); host `anubis run --allow-research` is refused.
+- `anubis vz fuzz <local-binary> --iterations N --allow-research` runs the mutation process in a
+  disposable guest; host `anubis fuzz` is refused. Guest evidence includes `fuzz_report.json` and
+  `crashes/*.bin`; network targets remain forbidden.
 - `anubis bounty-report <bundle> --out DIR` or `anubis report <bundle>` : Bounty evidence report from a bundle.
 - PoC kit gate: `bash scripts/run_poc_kit_gate.sh --out out/poc_kit`
 - Gold lab target: `bash poc_kit/build_vuln.sh` → `poc_kit/bin/vuln_local`
@@ -133,6 +143,12 @@ See `docs/language/OFFENSIVE_PLATFORM.md`.
 
 All require proper `@` attributes with authorization for non-safe modes. Dangerous effects forbidden in `@safe`.
 
+Mode classification is program-wide and source-order independent:
+`Safe < Research < Exploit`. Any Research/Exploit function—including one nested in a module or
+impl—elevates the command/evidence mode and makes ordinary `run` refuse before lowering.
+An explicit `@safe` function inside that mixed program remains Safe and keeps all Safe-mode checks;
+only unannotated functions inherit the aggregate program mode.
+
 Run security fixtures:
 bash scripts/run_security_fixtures.sh --out out/gate15_security_fixtures
 
@@ -153,14 +169,14 @@ This writes `run-summary.json`, `stdout.txt`, `stderr.txt`, `RUN.md`, and
 
 ### Safe check + taint rejection
 ```bash
-cargo run --release -p anubis -- check examples/safe_hello.anb
+cargo run --release -p anubis -- check examples/safe_hello.anubis
 cargo run --release -p anubis -- check examples/taint_reject.anb --evidence --out out/taint_reject
 # expect ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY in diagnostics / bundle
 ```
 
 ### Declassify with policy
 ```bash
-cargo run --release -p anubis -- check examples/declassify_policy_pass.anb --evidence
+cargo run --release -p anubis -- check examples/policy_declassify_report.anb --evidence
 ```
 
 ### Symbolic
@@ -245,6 +261,30 @@ jq . out/gate11/parity_report.json
 ```bash
 cargo run --release -p anubis -- verify out/.../evidence-*   # (alias: validate)
 ```
+
+### Independent portable evidence verify (host-side, no VZ)
+```bash
+# PCA bundle, engagement content_hash, receipt HMAC chain, run-cap MAC, confinement re-derive
+anubis evidence-verify <path> [--json] [--pubkey HEX] [--run-cap-key KEY] [--strict]
+# path may be: evidence bundle dir | engagement dir | run_capability.json
+```
+Honest labels: PCA re-derive `LAB_REAL`; receipt/run-cap MAC `LAB_REAL_HMAC` (not Ed25519).
+
+### Security research domain packs
+```bash
+anubis research-pack list [--json]
+anubis research-pack show poc|fuzz|crypto_research|bounty|emulation [--json]
+anubis research-pack scaffold <id> --out DIR [--engagement-id ID]
+anubis research-pack validate <id> --source program.anb [--json]
+```
+Per-capability honesty: `LAB_REAL` / `LAB_REAL_HMAC` / `PLAN_ONLY` / `PARTIAL` / `NOT_IMPLEMENTED`.  
+Validate fails closed if proven effects are outside the pack allow-list.
+
+### Crypto doctor (RWC surface inventory)
+```bash
+anubis crypto-doctor [--json]
+```
+Honest host-vs-guest backend table + non-claims (CAVP, PQ DIY, TLS/Noise). See `docs/language/RWC_LANGUAGE_MAP.md`.
 
 ## Config (portable)
 - `--metal-reference PATH`

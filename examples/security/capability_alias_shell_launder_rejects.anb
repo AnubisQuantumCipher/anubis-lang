@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// #74. The Safe-mode capability gates keyed on the RAW callee while the function-value alias
+// resolution was computed ~70 lines later and served only the taint/secret lanes. Aliasing a
+// privileged builtin therefore laundered its capability outright.
+fn main() {
+    let g = shell;
+    g("id");
+}

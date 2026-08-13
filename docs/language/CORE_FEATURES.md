@@ -61,18 +61,25 @@ This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **P
 - See `POC_KIT.md`
 
 ## PARTIAL
-- Single-file `module { … }` grouping works (flat call namespace); **multi-file** import resolution does not
 - Column-perfect diagnostics everywhere (line:col + caret exist; not every path is column-perfect)
 - **Return-type checking** — a *literal* return of an unambiguously wrong type is now rejected
   (`fn f() -> u32 { "s" }` → `ANUBIS_RETURN_TYPE_MISMATCH`). Dynamic returns (variables, calls,
-  if/match) are still unchecked (the value type is only known at runtime) — full flow-typed return
-  checking is the T1 arc, not done.
+  if/match) are still unchecked at full flow depth — residual of the structured-type arc
+- **Monomorphized + unboxed + variable-pinned + full-native pure bodies** — `anb_*__mono__*` with
+  native ABI; identity/arith/let-chains/if-else clones have no AnubisValue inner; residual: loops/calls/match
+
+## REAL (modules / stdlib / packages — do not claim “planned”)
+- Multi-file `import a.b;` resolve + `import std.*` content-locked stdlib (13 modules)
+- Packages / lock / trust spine — `docs/language/PACKAGES.md`
+- Network / time builtins + `std.net` / `std.time` wrappers (effects: `net.send`, `time.now`)
 
 ## PLANNED (not claimed)
 - Array/list slicing **sugar** `xs[1..3]` (use explicit list builtins today)
-- Multi-file modules + an Anubis-level standard library (`stdlib/` is empty; builtins are baked in)
-- Async, networking language surface, LSP, packaging
+- Unboxed monomorphized native codegen (inventory already real)
+- Async language surface, full LSP product surface
 - Automatic remote exploit chains / ROP (explicitly out of scope for PoC kit)
+
+Authoritative completeness map: `docs/language/LANGUAGE_COMPLETENESS.md`.
 
 ## Gates
 | Gate | Command |

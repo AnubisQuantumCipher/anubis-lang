@@ -1,0 +1,21 @@
+// EXPECT: PASS
+// FABLE5 2026-07-27. The disqualification guard for identity-let alias normalization.
+//
+// `a` is an identity alias of `f` at its binding and then REASSIGNED to `g`, so `return a` does not
+// forward `f`. The alias map must refuse to admit any name that is an assignment target anywhere in
+// the body — registering `f` here would attribute one parameter's effects to a return that yields a
+// different one, which is a false attribution in the direction of over-rejection.
+//
+// Both closures here are pure, so this fixture PASSES today for the ordinary reason. Its value is as
+// a canary: it is the shape that goes wrong first if the reassignment rule is ever dropped or if the
+// map is rebuilt from per-function state that is empty at registration time. Paired with
+// `h5_return_alias_chain_rejects`, which must stay red-side.
+fn pick(c: bool, f, g) {
+    let mut a = f;
+    a = g;
+    return a;
+}
+fn main() {
+    let h = pick(true, || print(1), || print(2));
+    h();
+}

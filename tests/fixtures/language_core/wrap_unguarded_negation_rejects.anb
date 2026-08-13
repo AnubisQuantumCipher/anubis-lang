@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_WRAP_RISK
+//
+// The negative twin of wrap_guarded_negation_accepts. Same negation, NO guard — so `l = i64::MIN`
+// really does wrap and the checker must refuse. Without this fixture the accept case could pass by
+// the analysis having been switched off rather than by the guard being understood.
+fn neg_unguarded(l: i64) -> i64
+    ensures(result == 0 - l)
+{
+    return 0 - l;
+}
+
+fn main() { print(neg_unguarded(5)); }

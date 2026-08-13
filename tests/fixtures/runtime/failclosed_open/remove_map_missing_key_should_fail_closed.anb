@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_MISSING_KEY
+// RUNTIME: OPEN residual. remove(map, missing_key) returns Int(0) — indistinct from a real 0 value.
+// Prefer ANUBIS_MISSING_KEY (same family as m[k] missing). Map missing-key was deliberately left
+// out of the 27-site land.
+fn main() {
+    let mut m = {"a": 1};
+    print(remove(m, "nope"));
+}

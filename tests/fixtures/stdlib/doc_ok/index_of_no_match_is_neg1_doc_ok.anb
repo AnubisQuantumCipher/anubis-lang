@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: -1
+// DOC_OK / sentinel LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// index_of / position return -1 when the element is absent (documented; not a defect).
+// Twin: position no-match is also DOC_OK per NON_COLLECTION_SURFACE.md.
+fn main() {
+    print(index_of([1, 2], 9));
+}

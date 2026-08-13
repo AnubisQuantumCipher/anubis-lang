@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Must-stay-ACCEPT twin of callable_extracted_from_param_then_applied_rejects.
+fn pure_fn(p: string, x: string) { }
+fn app(xs: any) { let f = xs[0]; f("/tmp/letidx.txt", "x"); }
+fn main() { app([pure_fn]); }

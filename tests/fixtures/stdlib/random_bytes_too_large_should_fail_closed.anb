@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_RANDOM_TOO_LARGE
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: random_bytes is capped at 1 MiB per call.
+fn main() {
+    print(random_bytes(2000000));
+}

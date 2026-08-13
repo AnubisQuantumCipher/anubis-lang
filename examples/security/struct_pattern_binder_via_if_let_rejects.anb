@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// CORPUS-1 2026-07-27. Defect B, the IF-LET face. Exercises `qualified_pattern_binders` reached
+// through `Expr::IfLet` rather than a plain `let` or `match`. TODAY: already REJECTS correctly
+// (coverage guard, verified by direct run).
+struct V { k: secret<i64> }
+fn main() {
+    let v = V { k: 42 };
+    if let V { k } = v {
+        print(k);
+    }
+}

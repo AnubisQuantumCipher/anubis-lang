@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_HKDF_LENGTH
+// RUNTIME: exercise via `anubis run` (this is a runtime panic; `anubis check` still passes,
+// this is a *runtime* fail-closed gate).
+// SILENT_WRONG closed: `anubis_hkdf_sha256` previously coerced `L <= 0` to 0 via `.max(0)`
+// and returned an empty byte list. A downstream `ensures(len(key) == 32)` could then hold
+// "for the wrong reason" — the caller sees an empty vec and never checks. Per RFC 5869 §2.3
+// L must be in [1, 255*HashLen]; fail closed on non-positive length instead of laundering.
+fn main() {
+    print(hkdf_sha256("ikm", "salt", "info", 0));
+}

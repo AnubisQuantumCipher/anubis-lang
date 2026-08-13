@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Walker-parity H15 (GROK-SEKHMET 2026-07-26). W16 container-closure collection does not
+// recover a write-lambda stored in a struct field returned by a free-fn factory, so
+// `b.act()` after `make()` never charges the gated body. Discriminator: the identical
+// `Holder { act: || write_file(...) }` constructed *inline* is already rejected
+// (method_effect_field_closure_gated_rejects.anb / direct field form).
+// TODAY (pre-fix binary): check PASSES and `anubis run` writes the file — known false
+// accept; fixture is red until OPUS5 seeds field_closures through factory returns.
+struct Holder { act: i64 }
+fn make() {
+    return Holder { act: || write_file("h15_factory_write.txt", "y") };
+}
+fn main() {
+    let b = make();
+    b.act();
+    print(1);
+}

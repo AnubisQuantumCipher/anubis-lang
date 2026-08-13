@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_POC_PACK_TYPE
+// RUNTIME: exercise via `anubis run`.
+// `cyclic(list)` used to return a pattern of length = list.len(), silently reinterpreting the
+// list as its element count. Fail closed at the type boundary.
+fn main() {
+    print(cyclic([1, 2, 3]));
+}

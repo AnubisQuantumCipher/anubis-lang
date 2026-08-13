@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EXECUTION_CHECK_FAILED
+//
+// IO error paths, enumerated. A missing file must REFUSE rather than yield an empty string —
+// an invented empty read is indistinguishable from a real empty file at every later use.
+fn main() uses(fs.read) {
+    print(read_file("/nonexistent/path/xyz"));
+}

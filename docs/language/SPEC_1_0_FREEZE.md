@@ -1,7 +1,8 @@
 # Anubis Language — 1.0 Frozen Surface
 
 **Freeze date:** 2026-07-22  
-**Sealed commit at freeze:** see git tag intent `v1.0.0` on branch `a-plus-maturity/20260705-1649`  
+**Historical freeze pointer:** tag intent `v1.0.0` on branch `a-plus-maturity/20260705-1649`.
+This is not a sealed commit identifier; use a dated artifact path plus digest for any seal claim.
 **Normative companions:** [`SPEC.md`](SPEC.md), [`LANGUAGE.md`](../../LANGUAGE.md), [`SEMVER_1_0_POLICY.md`](SEMVER_1_0_POLICY.md)
 
 This document freezes the **production 1.0 claim surface** — what you may treat as stable.
@@ -9,13 +10,13 @@ Anything not listed here is experimental / research unless later promoted by MIN
 
 ## 1. Toolchain commands (stable)
 
-| Command | 1.0 guarantee |
+| Command | Declared 1.0 behavior |
 |---------|----------------|
-| `anubis check` | Safe mode types, taint, secrets, effects, contracts (SMT) |
+| `anubis check` | Invokes the current Safe type, information-flow, effect, and contract pipelines; scope and residuals live in `docs/CLAIMS.md` |
 | `anubis check --verified` | Linear capability authorization for privileged effects |
 | `anubis run` | Native execution of the Safe run subset + crypto builtins |
-| `anubis build` / `build --evidence` | Fail-closed on unproven contracts; PCA bundle |
-| `anubis verify` / `report` | Re-derive claims; tamper detection |
+| `anubis build` / `build --evidence` | Without `--no-verify`, the named unproven-contract controls reject; requested rejection evidence is `FAIL`/artifact-free. Whole-language completeness is not claimed |
+| `anubis verify` / `report` | Re-derive the declared bundle schema; named source/claim tamper controls reject |
 | `anubis package` / lock / verify | Dependency trust surface (see package gate) |
 | `anubis vz confine` | Confinement manifest from proven effects |
 | `anubis doctor` / `fmt` / LSP / `repl` / `doc` | DX gate surfaces |
@@ -32,12 +33,20 @@ Anything not listed here is experimental / research unless later promoted by MIN
 - I/O builtins: `read_file`/`write_file`/`append_file`/`delete_file`/`open`/`args`/`env`/print family
 - Crypto builtins: as in [`CRYPTO.md`](CRYPTO.md) (Argon2id, AEAD, HMAC, HKDF, Ed25519, …)
 - Modules: multi-file `import` + embedded `import std.*`
+- Program mode is the highest privilege found anywhere in the resolved program:
+`Safe < Research < Exploit`. The named source-order, nested-module, and impl fixtures reject attempts to hide a later
+  Research/Exploit function behind an earlier Safe function.
+- In a mixed-mode program, an explicit `@safe` function remains a Safe enclave: program-level
+  Research/Exploit selection does not weaken its taint, secret, or effect rules. Unannotated
+  functions retain the program-level mode for compatibility.
+- `run` refuses a program containing any Research/Exploit function unless the authorized research
+  lane is explicitly selected; crash-capable research execution remains subject to the VZ boundary.
 
 ## 3. Trust spine (stable gates)
 
 | Gate | Script | 1.0 status |
 |------|--------|------------|
-| Self-host fixpoint | `scripts/run_selfhost_gate.sh` | PASS 9/9 |
+| Self-host differential gate | `scripts/run_selfhost_gate.sh` | Historical PASS 9/9; not a current fixpoint seal without a content-addressed pin path + digest |
 | External repro | `scripts/run_selfhost_repro_gate.sh` | PASS 6/6 (Docker) |
 | DDC | `scripts/run_selfhost_ddc_gate.sh` | PASS 34/34 |
 | Formal | `scripts/run_formal_gate.sh` | PASS (no sorry/admit/axiom) |
@@ -68,7 +77,7 @@ Anything not listed here is experimental / research unless later promoted by MIN
 
 ## 6. Definition of “production-grade” for 1.0
 
-Anubis 1.0 is production-grade for **Safe-mode verified systems programming** on the frozen
-surface above: check/run/build/evidence/package/confine with independent reproduction and
-dual-toolchain DDC. It is **not** a claim of universal general-purpose language completeness
-or infinite multi-party audit forever.
+Anubis 1.0 freezes the declared Safe-mode systems-programming interfaces above:
+check/run/build/evidence/package/confine plus the cited reproduction and DDC gates. Production
+suitability remains deployment-specific. This is **not** a claim of universal general-purpose
+language completeness or infinite multi-party audit coverage.

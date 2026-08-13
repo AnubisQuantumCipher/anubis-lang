@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Walker-parity H18 over-rejection guard (match-expr arm). Pure lambda from match then apply.
+// TODAY: check PASSES (and must keep passing after the H18 fix).
+fn main() {
+    let f = match 1 {
+        0 => { |x| x }
+        _ => { |x| x + 1 }
+    };
+    print(f(40));
+}

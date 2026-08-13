@@ -111,3 +111,134 @@ window.addEventListener('error', e => console.error('harness error', e.message))
     fs::write(&path, html)?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn pattern_create_correct_length() {
+        assert_eq!(pattern_create(0).len(), 0);
+        assert_eq!(pattern_create(1).len(), 1);
+        assert_eq!(pattern_create(100).len(), 100);
+        assert_eq!(pattern_create(5000).len(), 5000);
+    }
+
+    #[test]
+    fn pattern_create_deterministic() {
+        let a = pattern_create(256);
+        let b = pattern_create(256);
+        assert_eq!(a, b, "pattern_create must be deterministic");
+    }
+
+    #[test]
+    fn pattern_create_uses_only_alpha() {
+        let p = pattern_create(1000);
+        assert!(
+            p.chars().all(|c| c.is_ascii_lowercase()),
+            "pattern must be lowercase alpha only"
+        );
+    }
+
+    #[test]
+    fn pattern_offset_finds_ascii_needle() {
+        let r = pattern_offset(1000, "abc").unwrap();
+        assert_eq!(r["found"], true);
+        assert_eq!(r["offset"], 0, "abc should be at offset 0");
+
+        let r = pattern_offset(1000, "bcd").unwrap();
+        assert_eq!(r["found"], true);
+        assert_eq!(r["offset"], 1);
+    }
+
+    #[test]
+    fn pattern_offset_hex_needle() {
+        let r = pattern_offset(1000, "0x616263").unwrap();
+        assert_eq!(r["found"], true);
+        assert_eq!(r["offset"], 0, "0x616263 is 'abc' at offset 0");
+    }
+
+    #[test]
+    fn pattern_offset_not_found() {
+        let r = pattern_offset(26, "ZZZZ").unwrap();
+        assert_eq!(r["found"], false);
+        assert!(r["offset"].is_null());
+    }
+
+    #[test]
+    fn gadget_search_missing_file() {
+        let err = gadget_search(Path::new("/nonexistent/gadgets.txt"), "ret").unwrap_err();
+        assert!(
+            err.to_string().contains("ANUBIS_ROP_GADGET_FILE_MISSING"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn gadget_search_finds_matching_lines() {
+        let dir = std::env::temp_dir().join(format!("anubis-rop-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gf = dir.join("gadgets.txt");
+        let mut f = std::fs::File::create(&gf).unwrap();
+        writeln!(f, "0x1000 libfoo+0x10 ; pop rdi ; ret").unwrap();
+        writeln!(f, "0x1004 libfoo+0x14 ; mov rax, rbx ; nop").unwrap();
+        writeln!(f, "0x1008 libfoo+0x18 ; pop rsi ; ret").unwrap();
+        drop(f);
+
+        let r = gadget_search(&gf, "ret").unwrap();
+        assert_eq!(r["count"], 2, "should find 2 gadgets with 'ret'");
+
+        let r = gadget_search(&gf, "POP").unwrap();
+        assert_eq!(r["count"], 2, "case-insensitive: POP matches pop");
+
+        let r = gadget_search(&gf, "syscall").unwrap();
+        assert_eq!(r["count"], 0, "no syscall gadgets");
+
+        let r = gadget_search(&gf, "").unwrap();
+        assert_eq!(r["count"], 3, "empty query matches all");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gadget_search_caps_at_50() {
+        let dir = std::env::temp_dir().join(format!("anubis-rop-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gf = dir.join("big.txt");
+        let mut f = std::fs::File::create(&gf).unwrap();
+        for i in 0..200 {
+            writeln!(f, "0x{:04x} lib+{:x} ; ret", i, i).unwrap();
+        }
+        drop(f);
+
+        let r = gadget_search(&gf, "ret").unwrap();
+        assert_eq!(r["count"], 50, "should cap at 50 hits");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn browser_harness_rejects_remote_url() {
+        let dir = std::env::temp_dir().join(format!("anubis-harness-{}", std::process::id()));
+        let err = browser_harness_scaffold(&dir, "https://evil.example.com").unwrap_err();
+        assert!(
+            err.to_string().contains("ANUBIS_BROWSER_HARNESS_SCOPE"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn browser_harness_allows_localhost() {
+        let dir = std::env::temp_dir().join(format!("anubis-harness-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = browser_harness_scaffold(&dir, "http://127.0.0.1:8080/target").unwrap();
+        assert!(path.exists());
+        let html = std::fs::read_to_string(&path).unwrap();
+        assert!(html.contains("127.0.0.1:8080/target"));
+        assert!(html.contains("<iframe"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

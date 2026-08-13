@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Over-rejection guard for the integrity duals: an UNTAINTED function reaching the same sink through
+// the same container must still compile. If the taint wire ever marks every function-valued
+// container element, this catches it.
+fn plain() -> i64 { return 42; }
+fn app(fs) uses(shell) { shell(fs[0]()); }
+fn main() uses(shell) { app([plain]); }

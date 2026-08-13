@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// The over-rejection guard for the block-authorization requirement, and the fixture that proves the
+// dual-use surface still works.
+//
+// A `@research { ... }` block inside a function that IS authorized must keep elevating exactly as
+// documented. If this goes red, the fix has closed the research lane rather than the authorization
+// bypass, and it is wrong even though the reject side looks right.
+@research(authorization: "engagement-1", scope: "lab", reason: "regression fixture", non_destructive: true)
+fn probe() {
+    @research { shell("true"); }
+}
+fn main() { probe(); }

@@ -1,0 +1,5 @@
+pin:    vm/pins/anubis-82dfc0961af2
+sha256: 82dfc0961af2d55deefa5c44c25dd5aaf5302896661ae679080e3785c213a2e1
+source: target/release/anubis
+head:   8441e36
+utc:    2026-07-27T18:35:16Z

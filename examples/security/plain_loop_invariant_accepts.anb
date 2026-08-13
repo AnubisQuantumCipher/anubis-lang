@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Over-rejection guard: an ordinary loop invariant with no elevator must still verify and compile.
+// If walking invariants for elevators ever starts flagging normal predicates, this catches it.
+fn main() {
+    let mut i = 0;
+    while i < 3 invariant(i >= 0) { i = i + 1; }
+    print(i);
+}

@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EMPTY_COLLECTION
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Adjacent same-class as min_by empty; not in original 24-claim list.
+fn main() {
+    print(min([]));
+}

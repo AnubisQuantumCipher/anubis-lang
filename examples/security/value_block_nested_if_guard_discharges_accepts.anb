@@ -1,0 +1,31 @@
+// EXPECT: PASS
+// FABLE5 2026-07-27. The over-rejection guard for M3, and the fixture that proves the branch guard
+// is LOAD-BEARING rather than decorative.
+//
+// M3 made `discharge_calls_in_expr` descend into a statement-position `if` inside a value block, so
+// a contracted call buried there finally has its `requires` proven (see
+// `value_block_nested_if_requires_discharge_rejects`, which has the identical shape with `a = 0`
+// and must FAIL). The danger in that change is the opposite error: discharging `g(a)` WITHOUT the
+// enclosing `a > 0` in scope would fail to prove this perfectly correct program.
+//
+// So this fixture must PASS for the right reason — the guard `a > 0` is pushed as a path condition
+// and is what discharges `requires(x > 0)`. If M3 ever descends without pushing the guard, this
+// goes red while the reject fixture stays green, which is precisely the signal that a false-accept
+// fix has been traded for a false reject.
+fn g(x: i64) -> i64 requires(x > 0) {
+    return x;
+}
+fn main() {
+    let a = 5;
+    let z = if true {
+        if a > 0 {
+            g(a);
+        } else {
+            0;
+        }
+        1
+    } else {
+        0
+    };
+    print(z);
+}

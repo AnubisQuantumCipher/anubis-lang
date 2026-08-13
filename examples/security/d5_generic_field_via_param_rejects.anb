@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// D5 across a call boundary: the instantiation lives in the PARAMETER's declared type, so the
+// callee must read secrecy from its own signature rather than from the argument's construction.
+struct Box<T> { v: T }
+fn leak(b: Box<secret<i64>>) { print(b.v); }
+fn main() {
+    let b = Box { v: 42 };
+    leak(b);
+}

@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// GROK-SEKHMET attack2. ForSource / loop-var binding never seeds `closure_lambda`
+// from collection elements, so applying the loop variable after iterating a
+// list of write-lambdas charges nothing. Discriminator: local
+// `let f = || write_file(...); f()` rejects.
+// TODAY (Tier-1 binary): check PASSES and run writes — known false accept.
+fn main() {
+    let xs = [|| write_file("for_write_closure_apply.txt", "y")];
+    for f in xs {
+        f();
+    }
+    print(1);
+}

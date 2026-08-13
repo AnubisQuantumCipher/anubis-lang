@@ -142,6 +142,54 @@ fn anubis_ed25519_verify(_pk: AnubisValue, _msg: AnubisValue, _sig: AnubisValue)
 fn anubis_password_hash_phc(_password: AnubisValue) -> AnubisValue {
     panic!("ANUBIS_CRYPTO_PHC_HOST_ONLY: PHC password hashing uses argon2 crate (native run/build)");
 }
+fn anubis_x25519_keygen() -> AnubisValue {
+    panic!("ANUBIS_CRYPTO_X25519_HOST_ONLY: X25519 requires audited x25519-dalek (native run/build)");
+}
+fn anubis_x25519_public_key(_sk: AnubisValue) -> AnubisValue {
+    panic!("ANUBIS_CRYPTO_X25519_HOST_ONLY");
+}
+fn anubis_x25519_shared(_sk: AnubisValue, _pk: AnubisValue) -> AnubisValue {
+    panic!("ANUBIS_CRYPTO_X25519_HOST_ONLY");
+}
+fn anubis_hybrid_seal(_pk: AnubisValue, _aad: AnubisValue, _pt: AnubisValue) -> AnubisValue {
+    panic!("ANUBIS_CRYPTO_HYBRID_HOST_ONLY: hybrid envelope requires X25519+AEAD audited crates");
+}
+fn anubis_hybrid_open(
+    _sk: AnubisValue,
+    _eph: AnubisValue,
+    _aad: AnubisValue,
+    _n: AnubisValue,
+    _ct: AnubisValue,
+) -> AnubisValue {
+    panic!("ANUBIS_CRYPTO_HYBRID_HOST_ONLY");
+}
+fn anubis_tuple_hash(label: AnubisValue, parts: AnubisValue) -> AnubisValue {
+    // Length-prefixed multi-part hash works on pure path (SHA-256 only).
+    let lab = anubis_crypto_bytes(&label);
+    let AnubisValue::List(items) = parts else {
+        panic!("ANUBIS_CRYPTO_TUPLE_HASH: parts must be a list");
+    };
+    let mut msg = Vec::new();
+    msg.push(0x02);
+    msg.extend_from_slice(&(lab.len() as u32).to_be_bytes());
+    msg.extend_from_slice(&lab);
+    msg.extend_from_slice(&(items.len() as u32).to_be_bytes());
+    for p in items.iter() {
+        let b = anubis_crypto_bytes(p);
+        msg.extend_from_slice(&(b.len() as u32).to_be_bytes());
+        msg.extend_from_slice(&b);
+    }
+    anubis_mk_str(anubis_hex_encode(&anubis_sha256_bytes(msg)))
+}
+fn anubis_aead_nonce_from_counter(counter: AnubisValue) -> AnubisValue {
+    let c = counter.as_i64();
+    if c < 0 {
+        panic!("ANUBIS_CRYPTO_NONCE_COUNTER: counter must be >= 0");
+    }
+    let mut n = [0u8; 12];
+    n[4..12].copy_from_slice(&(c as u64).to_be_bytes());
+    anubis_bytes_list(&n)
+}
 
 fn anubis_bytes_list(bytes: &[u8]) -> AnubisValue {
     anubis_mk_list(bytes.iter().map(|b| AnubisValue::Int(*b as i64)).collect())
@@ -255,10 +303,17 @@ fn anubis_hkdf_sha256(
         salt_b = vec![0u8; 32];
     }
     let info_b = anubis_crypto_bytes(&info);
-    let n = length.as_i64().max(0) as usize;
-    if n == 0 {
-        return anubis_mk_list(vec![]);
+    // RFC 5869 §2.3: L ∈ [1, 255*HashLen]. Prior code silently coerced negative L to 0 via
+    // `.max(0)` and returned an empty byte list — a SILENT_WRONG that would feed a downstream
+    // `ensures(len(key) == 32)` and let a contract hold "for the wrong reason" (the caller
+    // sees an empty vec and never checks). Fail closed on non-positive length, matching
+    // `anubis_random_bytes`'s posture. NEGATIVE inputs are honestly reported so a signed
+    // overflow at the call site is caught rather than laundered.
+    let n_raw = length.as_i64();
+    if n_raw < 1 {
+        panic!("ANUBIS_CRYPTO_HKDF_LENGTH: L must be >= 1 (RFC 5869), got {}", n_raw);
     }
+    let n = n_raw as usize;
     if n > 255 * 32 {
         panic!("ANUBIS_CRYPTO_HKDF_TOO_LONG: requested {} bytes (max {})", n, 255 * 32);
     }
@@ -302,7 +357,11 @@ fn anubis_domain_hash(label: AnubisValue, data: AnubisValue) -> AnubisValue {
 /// CSPRNG (RWC Ch8): /dev/urandom — never SystemTime-seeded PRNG for secrets.
 fn anubis_random_bytes(n: AnubisValue) -> AnubisValue {
     use std::io::Read;
-    let n = n.as_i64().max(0) as usize;
+    let n_raw = n.as_i64();
+    if n_raw < 0 {
+        panic!("ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH: byte count must be non-negative, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     if n > 1 << 20 {
         panic!("ANUBIS_CRYPTO_RANDOM_TOO_LARGE: max 1MiB per call");
     }

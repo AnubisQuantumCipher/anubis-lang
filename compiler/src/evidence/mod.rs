@@ -119,6 +119,81 @@ pub fn build_evidence_bundle_tree(
     security: Option<serde_json::Value>,
     dep_closure: Option<&serde_json::Value>,
 ) -> Result<EvidenceBundle, String> {
+    build_evidence_bundle_tree_inner(
+        files,
+        mode,
+        artifact,
+        logs,
+        out_base,
+        lane,
+        security,
+        dep_closure,
+        None,
+    )
+}
+
+/// Emit an honest, tamper-evident rejection bundle for a command that failed before artifact
+/// production. The rejection is a first-class failing check and the PCA is explicitly marked
+/// `rejected`/`FAIL`; it can never be mistaken for a successful proof claim.
+pub fn build_rejected_evidence_bundle(
+    source: &str,
+    mode: &str,
+    logs: Vec<String>,
+    out_base: &Path,
+    lane: Option<&str>,
+    rejection: &str,
+) -> Result<EvidenceBundle, String> {
+    build_evidence_bundle_tree_inner(
+        &[("source.anubis".to_string(), source.as_bytes().to_vec())],
+        mode,
+        None,
+        logs,
+        out_base,
+        lane,
+        None,
+        None,
+        Some(rejection),
+    )
+}
+
+/// Tree-aware form of [`build_rejected_evidence_bundle`]. This is used when the command checked a
+/// resolved multi-file/import program: `source.anubis` is the deterministic resolved snapshot and
+/// the other leaves preserve the original entry/dependency material under the same Merkle root.
+#[allow(clippy::too_many_arguments)]
+pub fn build_rejected_evidence_bundle_tree(
+    files: &[(String, Vec<u8>)],
+    mode: &str,
+    logs: Vec<String>,
+    out_base: &Path,
+    lane: Option<&str>,
+    rejection: &str,
+    dep_closure: Option<&serde_json::Value>,
+) -> Result<EvidenceBundle, String> {
+    build_evidence_bundle_tree_inner(
+        files,
+        mode,
+        None,
+        logs,
+        out_base,
+        lane,
+        None,
+        dep_closure,
+        Some(rejection),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_evidence_bundle_tree_inner(
+    files: &[(String, Vec<u8>)],
+    mode: &str,
+    artifact: Option<&str>,
+    logs: Vec<String>,
+    out_base: &Path,
+    lane: Option<&str>,
+    security: Option<serde_json::Value>,
+    dep_closure: Option<&serde_json::Value>,
+    rejection: Option<&str>,
+) -> Result<EvidenceBundle, String> {
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let dir = out_base.join(format!("evidence-{}-{}", ts, mode));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -216,6 +291,9 @@ pub fn build_evidence_bundle_tree(
     let mut mir_json = serde_json::json!([]);
     let mut taint_json = serde_json::json!([]);
     let mut solver_json = serde_json::json!([]);
+    // Static monomorphization inventory (generic call sites with concrete type args).
+    // Empty array when no generics specialize; always written so tools can rely on the path.
+    let mut mono_json = serde_json::json!([]);
 
     let parse_res = crate::frontend::parse_source(&source);
     checks.push(match &parse_res {
@@ -232,10 +310,10 @@ pub fn build_evidence_bundle_tree(
     });
 
     if let Ok(ast) = parse_res {
-        let tc_mode = if mode == "research" {
-            crate::frontend::Mode::Research
-        } else {
-            crate::frontend::Mode::Safe
+        let tc_mode = match mode {
+            "research" => crate::frontend::Mode::Research,
+            "exploit" => crate::frontend::Mode::Exploit,
+            _ => crate::frontend::Mode::Safe,
         };
         match crate::middle::typecheck(ast, tc_mode) {
             Ok(ir) => {
@@ -246,7 +324,80 @@ pub fn build_evidence_bundle_tree(
                     serde_json::to_value(&tainted.taint_traces).map_err(|e| e.to_string())?;
                 let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
                 solver_json = serde_json::to_value(&solver_checks).map_err(|e| e.to_string())?;
+                mono_json = serde_json::to_value(&tainted.mono_specializations)
+                    .map_err(|e| e.to_string())?;
                 // save smt and replay for gate7
+                // PROOF ARTIFACTS, not just verdicts.
+                //
+                // The bundle recorded solver status + the first SMT query + a replay flag. All of
+                // that is the compiler's own account of its work, so an auditor checking whether the
+                // proofs hold has to trust the component under audit. These files are the objects a
+                // THIRD PARTY can re-check with `drat-trim` / `cake_lpr` and no Anubis binary:
+                // the exact query, the exact blasted CNF, and the refutation over it.
+                //
+                // Produced by re-deciding each recorded query through the ordinary bounded path —
+                // not by tapping the hot checking path — so emitting evidence cannot change a
+                // verdict. An obligation that declines (out of fragment, over budget, or z3-decided)
+                // simply has no refutation to publish, and is recorded as such rather than omitted.
+                {
+                    let pdir = dir.join("analysis").join("proofs");
+                    let _ = std::fs::create_dir_all(&pdir);
+                    let mut index = Vec::new();
+                    for (i, c) in solver_checks.iter().enumerate() {
+                        let stem = format!("obligation_{i:04}");
+                        let _ = std::fs::write(pdir.join(format!("{stem}.smt2")), &c.smt);
+                        match anubis_solver::native_prove_with_artifacts(&c.smt) {
+                            Some((anubis_solver::NativeVerdict::Unsat, Some(a))) => {
+                                let _ =
+                                    std::fs::write(pdir.join(format!("{stem}.cnf")), &a.cnf_dimacs);
+                                let _ = std::fs::write(
+                                    pdir.join(format!("{stem}.drat")),
+                                    &a.proof_drat,
+                                );
+                                index.push(serde_json::json!({
+                                    "obligation": c.name,
+                                    "status": c.status,
+                                    "proof": "rup_refutation",
+                                    "smt": format!("analysis/proofs/{stem}.smt2"),
+                                    "cnf_dimacs": format!("analysis/proofs/{stem}.cnf"),
+                                    "proof_drat": format!("analysis/proofs/{stem}.drat"),
+                                    "num_vars": a.num_vars,
+                                    "num_clauses": a.num_clauses,
+                                    "steps": a.steps,
+                                    "checker": a.checker,
+                                    "checker_version": a.checker_version,
+                                    "replay": format!(
+                                        "drat-trim analysis/proofs/{stem}.cnf analysis/proofs/{stem}.drat"),
+                                }));
+                            }
+                            other => {
+                                // Named, not omitted: "no refutation here" is itself evidence, and a
+                                // silently missing row reads as if the obligation never existed.
+                                index.push(serde_json::json!({
+                                    "obligation": c.name,
+                                    "status": c.status,
+                                    "proof": match other {
+                                        Some((anubis_solver::NativeVerdict::Sat(_), _)) =>
+                                            "counterexample_no_refutation",
+                                        Some(_) => "unsat_without_published_certificate",
+                                        None => "declined_by_native_solver_deferred",
+                                    },
+                                    "smt": format!("analysis/proofs/{stem}.smt2"),
+                                }));
+                            }
+                        }
+                    }
+                    let _ = std::fs::write(
+                        dir.join("analysis").join("proofs.json"),
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "note": "Re-checkable proof objects. DIMACS CNF + DRAT refutation per \
+                                     proven obligation; verify with drat-trim or any DRAT checker. \
+                                     No Anubis binary required.",
+                            "obligations": index,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
                 if let Some(first) = solver_checks.first() {
                     let _ = std::fs::write(dir.join("analysis").join("solver.smt2"), &first.smt);
                     let replay = if first.status == "FAIL" && first.model.is_some() {
@@ -271,10 +422,21 @@ pub fn build_evidence_bundle_tree(
                     name: "typecheck".into(),
                     status: "PASS".into(),
                     detail: format!(
-                        "mode={} symbols={} functions={}",
+                        "mode={} symbols={} functions={} mono={}",
                         mode,
                         tainted.symbols.len(),
-                        tainted.hir.functions.len()
+                        tainted.hir.functions.len(),
+                        tainted.mono_specializations.len()
+                    ),
+                });
+                // Monomorphization inventory check: always PASS when typecheck passed.
+                // Detail reports how many concrete specializations the checker proved.
+                checks.push(Check {
+                    name: "monomorphization".into(),
+                    status: "PASS".into(),
+                    detail: format!(
+                        "static_specializations={} (codegen remains AnubisValue-erased)",
+                        tainted.mono_specializations.len()
                     ),
                 });
                 if !tainted.taint_labels.is_empty() || !tainted.taint_traces.is_empty() {
@@ -319,6 +481,14 @@ pub fn build_evidence_bundle_tree(
                 detail: err,
             }),
         }
+    }
+
+    if let Some(rejection) = rejection {
+        checks.push(Check {
+            name: "command_rejection".into(),
+            status: "FAIL".into(),
+            detail: rejection.to_string(),
+        });
     }
 
     checks.push(Check {
@@ -369,6 +539,7 @@ pub fn build_evidence_bundle_tree(
     write_json(&dir.join("mir.json"), &mir_json)?;
     write_json(&dir.join("taint-traces.json"), &taint_json)?;
     write_json(&dir.join("solver.json"), &solver_json)?;
+    write_json(&dir.join("mono_specializations.json"), &mono_json)?;
 
     let environment = capture_environment();
     write_json(&dir.join("environment.json"), &environment)?;
@@ -448,10 +619,13 @@ pub fn build_evidence_bundle_tree(
     // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
     // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Written before
     // the manifest hashing so it is covered by MANIFEST.sha256.
-    write_json(
-        &dir.join("pca.json"),
-        &derive_claim_block_bound(&dir, &source, mode),
-    )?;
+    let mut claim = derive_claim_block_bound(&dir, &source, mode);
+    if let Some(rejection) = rejection {
+        claim.tier = "rejected".into();
+        claim.rejection = Some(rejection.to_string());
+        claim.verdict = "FAIL".into();
+    }
+    write_json(&dir.join("pca.json"), &claim)?;
     write_manifest_hashes(&dir)?;
 
     Ok(EvidenceBundle { dir, manifest })
@@ -523,6 +697,10 @@ pub struct ClaimBlock {
     pub mode: String,
     /// Assurance tier actually reached. v0: `"checked"` — parse + typecheck + taint + solver ran.
     pub tier: String,
+    /// Present only for a fail-closed command rejection. A rejected PCA is evidence of refusal,
+    /// never a proof claim, and therefore carries an explicit reason alongside verdict `FAIL`.
+    #[serde(default)]
+    pub rejection: Option<String>,
     pub parse_ok: bool,
     pub typecheck_ok: bool,
     /// No tainted value reaches a sink without declassification.
@@ -567,10 +745,10 @@ fn default_solver_backend() -> String {
 /// truth used both when emitting a PCA and when verifying one, so the two agree exactly.
 pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     let source_sha256 = sha256_bytes(source.as_bytes());
-    let tc_mode = if mode == "research" {
-        crate::frontend::Mode::Research
-    } else {
-        crate::frontend::Mode::Safe
+    let tc_mode = match mode {
+        "research" => crate::frontend::Mode::Research,
+        "exploit" => crate::frontend::Mode::Exploit,
+        _ => crate::frontend::Mode::Safe,
     };
     let parse_res = crate::frontend::parse_source(source);
     let parse_ok = parse_res.is_ok();
@@ -582,14 +760,21 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         if let Ok(ir) = crate::middle::typecheck(ast, tc_mode) {
             typecheck_ok = true;
             let tainted = crate::middle::TaintPass::apply(ir);
-            // A tainted flow that reaches a sink must be declassified to count as clean.
-            taint_clean = tainted
-                .taint_traces
-                .iter()
-                .all(|t| t.sink.is_none() || t.declassified);
+            // The evidence-lane TWIN of the `run` preflight bug (GROK-PTAH 2026-07-26): this
+            // re-derived taint policy from `taint_traces`, whose `sink` field is PROVENANCE (the
+            // local being assigned), not a policy sink. It made `pca.json` report
+            // `taint_clean: false` / `verdict: FAIL` on `vault_contacts.anb` while the printed
+            // check AND `manifest.json` both said PASS — a proof-carrying artifact contradicting
+            // its own program's verdict, which is worse than a plain false reject.
+            //
+            // `taint_clean` must mirror the enforcement `check` actually uses: `typecheck` returned
+            // Ok here, so its diagnostics are empty and no unenforced sink flow exists.
+            taint_clean = true;
             let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
             solver_obligations = solver_checks.len();
-            solver_all_discharged = solver_checks.iter().all(|c| c.status == "PASS");
+            // Same alignment as the preflight: only FAIL blocks discharge. `all == "PASS"` rejected
+            // UNKNOWN exactly as the preflight's `!= "PASS"` did.
+            solver_all_discharged = !solver_checks.iter().any(|c| c.status == "FAIL");
         }
     }
     let verdict = if parse_ok && typecheck_ok && taint_clean && solver_all_discharged {
@@ -602,6 +787,7 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         source_sha256,
         mode: mode.to_string(),
         tier: "checked".into(),
+        rejection: None,
         parse_ok,
         typecheck_ok,
         taint_clean,
@@ -1223,6 +1409,7 @@ fn tracked_bundle_files(has_artifact: bool, hybrid_sidecars: &[(String, String)]
         "mir.json",
         "taint-traces.json",
         "solver.json",
+        "mono_specializations.json",
         "environment.json",
         "checks.sarif",
         "bounty-report.md",

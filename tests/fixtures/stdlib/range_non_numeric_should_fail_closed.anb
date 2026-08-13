@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run`.
+// Phase-5 M-Z SILENT_WRONG: pin anubis-106d335d0f64, range("0", 3) -> [0, 1, 2]
+fn main() {
+    print(range("0", 3));
+}

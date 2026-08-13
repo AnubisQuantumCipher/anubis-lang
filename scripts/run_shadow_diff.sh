@@ -21,8 +21,19 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 BIN="${ANUBIS_BIN:-./target/release/anubis}"
-OUT="${1:-out/shadow_diff}"
+OUT="out/shadow_diff"
+SEARCH_DIRS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) OUT="$2"; shift 2 ;;
+    --dir) SEARCH_DIRS+=("$2"); shift 2 ;;
+    *)
+      if [[ "$OUT" == "out/shadow_diff" ]]; then OUT="$1"; shift; else echo "unknown arg: $1" >&2; exit 2; fi
+      ;;
+  esac
+done
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -33,8 +44,16 @@ fi
 # Corpus: every .anb the checker can see, excluding worktree copies and build scratch.
 # (while-read, not mapfile — macOS ships bash 3.2 which lacks mapfile.)
 FILES=()
-while IFS= read -r _f; do FILES+=("$_f"); done < <(find examples tests/fixtures selfhost/corpus selfhost/src compiler/stdlib \
+if [[ ${#SEARCH_DIRS[@]} -eq 0 ]]; then
+  SEARCH_DIRS=(examples tests/fixtures selfhost/corpus selfhost/src compiler/stdlib)
+fi
+while IFS= read -r _f; do FILES+=("$_f"); done < <(find "${SEARCH_DIRS[@]}" \
   -name '*.anb' -not -path '*/.claude/*' -not -path '*/out/*' 2>/dev/null | sort)
+
+if ! require_nonempty_corpus "${#FILES[@]}" "${SEARCH_DIRS[*]}/*.anb"; then
+  echo "SHADOW_DIFF: FAIL (empty corpus)"
+  exit 1
+fi
 
 total_shadow=0
 expected=0
@@ -78,5 +97,23 @@ if [[ $unexpected -gt 0 ]]; then
   sed 's/^/    /' "$OUT/unexpected.txt" | head -20
   exit 1
 fi
-echo "SHADOW_DIFF: PASS (unexpected=0 — safe to promote any check that fired only on EXPECT:FAIL fixtures)"
+# Distinguish a VACUOUS pass from a substantive one.
+#
+# This gate is a PROMOTION tool: it only has input while some check is emitting with
+# `shadow_gated=true` (compiler/src/middle/mod.rs:2518). Between promotions every call site passes
+# `false`, nothing reaches `shadow_diags`, and the harvest is legitimately empty — that is the
+# correct resting state, not a defect, and failing here would break every VM slice on which nobody
+# happens to be promoting a check.
+#
+# What was wrong is the SENTENCE. "PASS (unexpected=0 — safe to promote ...)" reads as though a
+# corpus diff was performed and came back clean. With zero diagnostics harvested nothing was
+# compared, and this gate runs on every VM slice, where a reader — and the seal — take that line as
+# evidence. A gate must not describe work it did not do.
+if [[ $total_shadow -eq 0 ]]; then
+  echo "SHADOW_DIFF: PASS (VACUOUS — ${#FILES[@]} programs scanned, 0 shadow diagnostics harvested)"
+  echo "  No check is currently shadow-gated, so NOTHING WAS DIFFED. This is the expected resting"
+  echo "  state between promotions; it is not evidence that any check is safe to promote."
+  exit 0
+fi
+echo "SHADOW_DIFF: PASS ($total_shadow harvested, unexpected=0 — safe to promote any check that fired only on EXPECT:FAIL fixtures)"
 exit 0

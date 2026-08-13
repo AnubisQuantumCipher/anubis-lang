@@ -9,7 +9,16 @@ pub fn math_sub(a: u32, b: u32) -> u32 ensures(result == a - b) {
     return a - b;
 }
 
-pub fn math_mul(a: u32, b: u32) -> u32 ensures(result == a * b) {
+// Two u32 factors can product past i64: 4294967295^2 is about 1.8e19 against an i64 ceiling of
+// 9.2e18, so an unbounded `a * b` wraps. The checker demanded a bound rather than assuming one, and
+// these are its own counterexample-derived factors: 3037000499 is floor(sqrt(2^63 - 1)), so the
+// product of two bounded factors still fits. Stated on the signature because a caller is entitled to
+// know the domain from the declaration rather than from a wrap at run time.
+pub fn math_mul(a: u32, b: u32) -> u32
+    requires(a <= 3037000499)
+    requires(b <= 3037000499)
+    ensures(result == a * b)
+{
     return a * b;
 }
 

@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// D6 (HORUS residual, CLAIMS "Open — load-bearing" item 1): the struct is CONSTRUCTED inside an
+// `if` used as a value. Both arms carry a plain literal, so the qualifier comes only from the
+// declared field type surviving the construction-inside-a-join.
+struct S { k: secret<i64> }
+fn main() {
+    let s = if true { S { k: 42 } } else { S { k: 0 } };
+    print(s.k);
+}

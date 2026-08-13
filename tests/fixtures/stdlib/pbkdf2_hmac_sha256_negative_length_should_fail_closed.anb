@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_PBKDF2_LENGTH
+// RUNTIME: exercise via `anubis run` (this is a runtime panic; `anubis check` still passes,
+// this is a *runtime* fail-closed gate).
+// Companion of pbkdf2_hmac_sha256_zero_length_should_fail_closed.anb: negative dkLen was
+// silently coerced to 0 by `.max(0)` — now honestly reported so a signed-overflow at the
+// call site is caught rather than laundered.
+fn main() {
+    print(pbkdf2_hmac_sha256("password", "salt", 100, -1));
+}
