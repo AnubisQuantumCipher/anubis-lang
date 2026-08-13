@@ -2636,22 +2636,24 @@ fn any_capturing_field_closure(
                 inner.remove(p);
             }
             seed_body_local_lambdas(body, &mut inner);
-            let captures = expr_secret_source_m(
+            let captures = expr_source(
                 body,
                 &inner,
                 &ctx.secret_fns,
                 &ctx.param_return_taint,
                 &ctx.method_secret_fns,
                 &ctx.place_types(),
+                SourceLane::Secret,
             )
             .is_some()
-                || expr_taint_source_m(
+                || expr_source(
                     body,
                     &inner,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 )
                 .is_some();
             if captures {
@@ -2730,22 +2732,24 @@ fn lambda_expr_captures_secret_or_taint(
         inner.remove(p);
     }
     seed_body_local_lambdas(body, &mut inner);
-    expr_secret_source_m(
+    expr_source(
         body,
         &inner,
         &ctx.secret_fns,
         &ctx.param_return_taint,
         &ctx.method_secret_fns,
         &ctx.place_types(),
+        SourceLane::Secret,
     )
     .is_some()
-        || expr_taint_source_m(
+        || expr_source(
             body,
             &inner,
             &ctx.tainting_fns,
             &ctx.param_return_taint,
             &ctx.method_tainting_fns,
             &ctx.place_types(),
+            SourceLane::Taint,
         )
         .is_some()
 }
@@ -8732,7 +8736,7 @@ fn apply_container_mutation_taint(
     // itself carries the label — the sound rule for VALUES, but a bare reference to a top-level
     // `secret<T>`- / `tainted<T>`-returning function has no local binding at all, so those
     // predicates read the pushed element clean and the container never gets its `.secret` /
-    // `.tainted` mutation. Downstream, `expr_secret_source_m(Var("fs"))` at the interproc egress
+    // `.tainted` mutation. Downstream, `expr_source(Var("fs"), SourceLane::Secret)` at the interproc egress
     // check reads `fs.secret == false` and the leak accepted:
     //
     //     fn key() -> secret<i64> { return 42; }
@@ -8971,24 +8975,26 @@ fn analyze_stmts(
                     _ => {}
                 }
 
-                let init_taint = expr_taint_source_m(
+                let init_taint = expr_source(
                     init,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 );
                 // CONFIDENTIALITY seed (dual of `init_taint`): the secret label the initializer carries.
                 // `expr_secret_source`'s Declassify arm already clears a released value, so no separate
                 // declassify gate is needed here (unlike the taint side's `declass_source`).
-                let init_secret = expr_secret_source_m(
+                let init_secret = expr_source(
                     init,
                     scope,
                     &ctx.secret_fns,
                     &ctx.param_return_taint,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    SourceLane::Secret,
                 );
                 let declass_source = declassify_source(
                     init,
@@ -9655,13 +9661,14 @@ fn analyze_stmts(
                 // secret cleared by the walker's own Declassify arm → None). Whole-value over-approx: a
                 // clean sibling of a labelled destructure is conservatively labelled too (fail-closed).
                 let taint = {
-                    let it = expr_taint_source_m(
+                    let it = expr_source(
                         init,
                         scope,
                         &ctx.tainting_fns,
                         &ctx.param_return_taint,
                         &ctx.method_tainting_fns,
                         &ctx.place_types(),
+                        SourceLane::Taint,
                     );
                     let declassified = declassify_source(
                         init,
@@ -9677,13 +9684,14 @@ fn analyze_stmts(
                         it
                     }
                 };
-                let secret = expr_secret_source_m(
+                let secret = expr_source(
                     init,
                     scope,
                     &ctx.secret_fns,
                     &ctx.param_return_taint,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    SourceLane::Secret,
                 )
                 .is_some();
                 seed_effect_pattern(
@@ -9956,21 +9964,23 @@ fn analyze_stmts(
                 },
             ) => {
                 analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-                let st = expr_taint_source_m(
+                let st = expr_source(
                     scrutinee,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 );
-                let ss = expr_secret_source_m(
+                let ss = expr_source(
                     scrutinee,
                     scope,
                     &ctx.secret_fns,
                     &ctx.param_return_taint,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    SourceLane::Secret,
                 )
                 .is_some();
                 // Implicit-flow: secret scrutinee + public assign in any arm body.
@@ -10059,21 +10069,23 @@ fn analyze_stmts(
                 },
             ) => {
                 analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-                let st = expr_taint_source_m(
+                let st = expr_source(
                     scrutinee,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 );
-                let ss = expr_secret_source_m(
+                let ss = expr_source(
                     scrutinee,
                     scope,
                     &ctx.secret_fns,
                     &ctx.param_return_taint,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    SourceLane::Secret,
                 )
                 .is_some();
                 // Implicit-flow: secret scrutinee + public assign in then/else.
@@ -10174,13 +10186,14 @@ fn analyze_stmts(
                 // discharge calls in it too.
                 discharge_calls_in_expr(ctx, assumptions, scope, value);
                 discharge_calls_in_expr(ctx, assumptions, scope, target);
-                let value_taint = expr_taint_source_m(
+                let value_taint = expr_source(
                     value,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 );
                 if let (Some(source), Expr::Var(name)) = (&value_taint, target) {
                     ctx.taint_traces.push(TaintTrace {
@@ -10226,13 +10239,14 @@ fn analyze_stmts(
                 // clean/declassified. The branch/loop merge (`merge_taint_over`) refines it across
                 // control flow, exactly as for taint.
                 if let Expr::Var(name) = target {
-                    let value_secret = expr_secret_source_m(
+                    let value_secret = expr_source(
                         value,
                         scope,
                         &ctx.secret_fns,
                         &ctx.param_return_taint,
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
+                        SourceLane::Secret,
                     )
                     .is_some();
                     // Safe-mode: secret RHS into a public-typed annotated binding is laundering.
@@ -10259,13 +10273,14 @@ fn analyze_stmts(
                     // Confidentiality dual: a non-`Var` place-assignment of a SECRET value MAY-labels the
                     // root container secret (set-only), so egressing the container is caught. Without it,
                     // `a[0] = k; send(host, port, a)` laundered the secret past ANUBIS_SECRET_EXFILTRATION.
-                    let value_secret = expr_secret_source_m(
+                    let value_secret = expr_source(
                         value,
                         scope,
                         &ctx.secret_fns,
                         &ctx.param_return_taint,
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
+                        SourceLane::Secret,
                     )
                     .is_some();
                     // Safe-mode: secret into a public-typed annotated root (`b.n = secret`, `a[0] = secret`
@@ -10987,21 +11002,23 @@ fn analyze_stmts(
                 // (analyze_expr_effect via `expr_taint_source_m` + seed_effect_pattern); the `while let`
                 // binder was inserted `tainted: false`, so `let o = Some(input()); while let Some(v) = o {
                 // write_file(v) }` laundered untrusted stdin to disk (the isomorphic `if let` was caught).
-                let wl_taint = expr_taint_source_m(
+                let wl_taint = expr_source(
                     expr,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 );
-                let wl_secret = expr_secret_source_m(
+                let wl_secret = expr_source(
                     expr,
                     scope,
                     &ctx.secret_fns,
                     &ctx.param_return_taint,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    SourceLane::Secret,
                 )
                 .is_some();
                 // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
@@ -11370,41 +11387,45 @@ fn analyze_stmts(
                     }
                 }
                 let taint_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => expr_taint_source_m(
+                    crate::frontend::ForSource::Range { start, .. } => expr_source(
                         start,
                         scope,
                         &ctx.tainting_fns,
                         &ctx.param_return_taint,
                         &ctx.method_tainting_fns,
                         &ctx.place_types(),
+                        SourceLane::Taint,
                     ),
-                    crate::frontend::ForSource::Collection { expr } => expr_taint_source_m(
+                    crate::frontend::ForSource::Collection { expr } => expr_source(
                         expr,
                         scope,
                         &ctx.tainting_fns,
                         &ctx.param_return_taint,
                         &ctx.method_tainting_fns,
                         &ctx.place_types(),
+                        SourceLane::Taint,
                     ),
                 };
                 // Confidentiality dual: iterating a secret collection binds a secret element.
                 let secret_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => expr_secret_source_m(
+                    crate::frontend::ForSource::Range { start, .. } => expr_source(
                         start,
                         scope,
                         &ctx.secret_fns,
                         &ctx.param_return_taint,
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
+                        SourceLane::Secret,
                     )
                     .is_some(),
-                    crate::frontend::ForSource::Collection { expr } => expr_secret_source_m(
+                    crate::frontend::ForSource::Collection { expr } => expr_source(
                         expr,
                         scope,
                         &ctx.secret_fns,
                         &ctx.param_return_taint,
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
+                        SourceLane::Secret,
                     )
                     .is_some(),
                 };
@@ -11595,7 +11616,7 @@ fn expr_is_password_secret_call(e: &Expr) -> bool {
 /// when the callee APPLIES-and-egresses/sinks a formal (per `param_egress`/`param_sinks`, made
 /// aware of applied params by `expr_param_flow`), a closure passed there leaks iff its BODY reads a
 /// secret/tainted capture — the arg VALUE itself is a plain closure (never a secret source), so the
-/// existing `expr_secret_source_m(arg, struct_fields)` check reads clean and the leak needs this body inspection
+/// existing `expr_source(arg, struct_fields, SourceLane::Secret)` check reads clean and the leak needs this body inspection
 /// (soundness hunt2 [06,07]). Returns cloned data so the caller can build a params-shadowed scope.
 /// #72: derive `fn_returns_param` from `fn_sole_return` by a monotone fixpoint.
 ///
@@ -12342,13 +12363,14 @@ fn analyze_expr_effect(
                         if mode == Mode::Safe
                             && !expected.is_empty()
                             && !is_secret_type(Some(expected))
-                            && expr_secret_source_m(
+                            && expr_source(
                                 arg,
                                 scope,
                                 &ctx.secret_fns,
                                 &ctx.param_return_taint,
                                 &ctx.method_secret_fns,
                                 &ctx.place_types(),
+                                SourceLane::Secret,
                             )
                             .is_some()
                         {
@@ -12531,13 +12553,14 @@ fn analyze_expr_effect(
             {
                 effects.push(format!("sink:{}", sink_callee));
                 for arg in args {
-                    if let Some(source) = expr_taint_source_m(
+                    if let Some(source) = expr_source(
                         arg,
                         scope,
                         &ctx.tainting_fns,
                         &ctx.param_return_taint,
                         &ctx.method_tainting_fns,
                         &ctx.place_types(),
+                        SourceLane::Taint,
                     ) {
                         let declassified = expr_is_declassified(arg, scope);
                         ctx.taint_traces.push(TaintTrace {
@@ -12573,13 +12596,14 @@ fn analyze_expr_effect(
                         .is_some_and(|tags| tags.contains(&BuiltinGateTag::EgressSink)))
             {
                 for arg in args {
-                    if let Some(source) = expr_secret_source_m(
+                    if let Some(source) = expr_source(
                         arg,
                         scope,
                         &ctx.secret_fns,
                         &ctx.param_return_taint,
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
+                        SourceLane::Secret,
                     ) {
                         ctx.emit(
                             SemanticDiagnostic {
@@ -12616,13 +12640,14 @@ fn analyze_expr_effect(
                         let builtin_source = builtin_gate_tags_of(arg, scope, ctx)
                             .contains(&BuiltinGateTag::TaintSource)
                             .then(|| "return value of a taint-source builtin".to_string());
-                        if let Some(source) = expr_taint_source_m(
+                        if let Some(source) = expr_source(
                             arg,
                             scope,
                             &ctx.tainting_fns,
                             &ctx.param_return_taint,
                             &ctx.method_tainting_fns,
                             &ctx.place_types(),
+                            SourceLane::Taint,
                         )
                         .or(builtin_source)
                         {
@@ -12661,13 +12686,14 @@ fn analyze_expr_effect(
                             // params-shadowed caller scope so a captured `t` is seen but the formal `x`
                             // is not.
                             let local = scope_with_closure_params(scope, &params);
-                            if let Some(source) = expr_taint_source_m(
+                            if let Some(source) = expr_source(
                                 &body,
                                 &local,
                                 &ctx.tainting_fns,
                                 &ctx.param_return_taint,
                                 &ctx.method_tainting_fns,
                                 &ctx.place_types(),
+                                SourceLane::Taint,
                             ) {
                                 let declassified = expr_is_declassified(&body, &local);
                                 ctx.taint_traces.push(TaintTrace {
@@ -12750,13 +12776,14 @@ fn analyze_expr_effect(
                             let ident_secret = fn_alias_of(arg, scope, ctx)
                                 .filter(|n| ctx.secret_fns.contains(n))
                                 .map(|n| format!("return value of `{n}`"));
-                            if let Some(source) = expr_secret_source_m(
+                            if let Some(source) = expr_source(
                                 arg,
                                 scope,
                                 &ctx.secret_fns,
                                 &ctx.param_return_taint,
                                 &ctx.method_secret_fns,
                                 &ctx.place_types(),
+                                SourceLane::Secret,
                             )
                             .or(ident_secret)
                             {
@@ -12784,13 +12811,14 @@ fn analyze_expr_effect(
                                 // secret capture. The arg VALUE is a plain closure (no secret source)
                                 // — inspect the body under a params-shadowed caller scope.
                                 let local = scope_with_closure_params(scope, &params);
-                                if let Some(source) = expr_secret_source_m(
+                                if let Some(source) = expr_source(
                                     &body,
                                     &local,
                                     &ctx.secret_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_secret_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Secret,
                                 ) {
                                     ctx.emit(
                                         SemanticDiagnostic {
@@ -12842,22 +12870,24 @@ fn analyze_expr_effect(
                         elem_callable_ids =
                             elem_callable_ids.union(fn_identities_carried_by_value(a, scope, ctx));
                         if elem_taint.is_none() {
-                            elem_taint = expr_taint_source_m(
+                            elem_taint = expr_source(
                                 a,
                                 scope,
                                 &ctx.tainting_fns,
                                 &ctx.param_return_taint,
                                 &ctx.method_tainting_fns,
                                 &ctx.place_types(),
+                                SourceLane::Taint,
                             );
                         }
-                        if expr_secret_source_m(
+                        if expr_source(
                             a,
                             scope,
                             &ctx.secret_fns,
                             &ctx.param_return_taint,
                             &ctx.method_secret_fns,
                             &ctx.place_types(),
+                            SourceLane::Secret,
                         )
                         .is_some()
                         {
@@ -12962,21 +12992,23 @@ fn analyze_expr_effect(
                     for (j, p) in params.iter().enumerate() {
                         let (pt, ps) = match args.get(j) {
                             Some(a) => (
-                                expr_taint_source_m(
+                                expr_source(
                                     a,
                                     scope,
                                     &ctx.tainting_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_tainting_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Taint,
                                 ),
-                                expr_secret_source_m(
+                                expr_source(
                                     a,
                                     scope,
                                     &ctx.secret_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_secret_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Secret,
                                 )
                                 .is_some(),
                             ),
@@ -13122,23 +13154,25 @@ fn analyze_expr_effect(
                                 continue;
                             }
                             if arg_taint.is_none() {
-                                arg_taint = expr_taint_source_m(
+                                arg_taint = expr_source(
                                     a,
                                     scope,
                                     &ctx.tainting_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_tainting_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Taint,
                                 );
                             }
                             arg_secret = arg_secret
-                                || expr_secret_source_m(
+                                || expr_source(
                                     a,
                                     scope,
                                     &ctx.secret_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_secret_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Secret,
                                 )
                                 .is_some();
                         }
@@ -13245,21 +13279,23 @@ fn analyze_expr_effect(
             scrutinee, arms, ..
         } => {
             analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-            let st = expr_taint_source_m(
+            let st = expr_source(
                 scrutinee,
                 scope,
                 &ctx.tainting_fns,
                 &ctx.param_return_taint,
                 &ctx.method_tainting_fns,
                 &ctx.place_types(),
+                SourceLane::Taint,
             );
-            let ss = expr_secret_source_m(
+            let ss = expr_source(
                 scrutinee,
                 scope,
                 &ctx.secret_fns,
                 &ctx.param_return_taint,
                 &ctx.method_secret_fns,
                 &ctx.place_types(),
+                SourceLane::Secret,
             )
             .is_some();
             // Value-position dual: secret scrutinee + assign in arm; also secret *guard* as PC.
@@ -13331,21 +13367,23 @@ fn analyze_expr_effect(
             ..
         } => {
             analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-            let st = expr_taint_source_m(
+            let st = expr_source(
                 scrutinee,
                 scope,
                 &ctx.tainting_fns,
                 &ctx.param_return_taint,
                 &ctx.method_tainting_fns,
                 &ctx.place_types(),
+                SourceLane::Taint,
             );
-            let ss = expr_secret_source_m(
+            let ss = expr_source(
                 scrutinee,
                 scope,
                 &ctx.secret_fns,
                 &ctx.param_return_taint,
                 &ctx.method_secret_fns,
                 &ctx.place_types(),
+                SourceLane::Secret,
             )
             .is_some();
             // Value-position dual of statement-position if-let.
@@ -13427,13 +13465,14 @@ fn analyze_expr_effect(
                     if let Some(egress_params) = ctx.param_egress.get(&fname).cloned() {
                         for i in egress_params {
                             if let Some(arg) = args.get(i) {
-                                if let Some(source) = expr_secret_source_m(
+                                if let Some(source) = expr_source(
                                     arg,
                                     scope,
                                     &ctx.secret_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_secret_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Secret,
                                 ) {
                                     ctx.emit(
                                         SemanticDiagnostic {
@@ -13453,13 +13492,14 @@ fn analyze_expr_effect(
                 if let Some(sink_params) = ctx.param_sinks.get(&fname).cloned() {
                     for i in sink_params {
                         if let Some(arg) = args.get(i) {
-                            if let Some(source) = expr_taint_source_m(
+                            if let Some(source) = expr_source(
                                 arg,
                                 scope,
                                 &ctx.tainting_fns,
                                 &ctx.param_return_taint,
                                 &ctx.method_tainting_fns,
                                 &ctx.place_types(),
+                                SourceLane::Taint,
                             ) {
                                 let declassified = expr_is_declassified(arg, scope);
                                 if mode == Mode::Safe && !declassified {
@@ -13510,21 +13550,23 @@ fn analyze_expr_effect(
                         for (j, p) in params.iter().enumerate() {
                             let (pt, ps) = match args.get(j) {
                                 Some(a) => (
-                                    expr_taint_source_m(
+                                    expr_source(
                                         a,
                                         scope,
                                         &ctx.tainting_fns,
                                         &ctx.param_return_taint,
                                         &ctx.method_tainting_fns,
                                         &ctx.place_types(),
+                                        SourceLane::Taint,
                                     ),
-                                    expr_secret_source_m(
+                                    expr_source(
                                         a,
                                         scope,
                                         &ctx.secret_fns,
                                         &ctx.param_return_taint,
                                         &ctx.method_secret_fns,
                                         &ctx.place_types(),
+                                        SourceLane::Secret,
                                     )
                                     .is_some(),
                                 ),
@@ -13616,13 +13658,14 @@ fn analyze_expr_effect(
                             let expected = param_tys.get(i + 1).map(|s| s.as_str()).unwrap_or("");
                             if !expected.is_empty()
                                 && !is_secret_type(Some(expected))
-                                && expr_secret_source_m(
+                                && expr_source(
                                     arg,
                                     scope,
                                     &ctx.secret_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_secret_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Secret,
                                 )
                                 .is_some()
                             {
@@ -13658,21 +13701,23 @@ fn analyze_expr_effect(
                             for (j, p) in params.iter().enumerate() {
                                 let (pt, ps) = match args.get(j) {
                                     Some(a) => (
-                                        expr_taint_source_m(
+                                        expr_source(
                                             a,
                                             scope,
                                             &ctx.tainting_fns,
                                             &ctx.param_return_taint,
                                             &ctx.method_tainting_fns,
                                             &ctx.place_types(),
+                                            SourceLane::Taint,
                                         ),
-                                        expr_secret_source_m(
+                                        expr_source(
                                             a,
                                             scope,
                                             &ctx.secret_fns,
                                             &ctx.param_return_taint,
                                             &ctx.method_secret_fns,
                                             &ctx.place_types(),
+                                            SourceLane::Secret,
                                         )
                                         .is_some(),
                                     ),
@@ -13699,13 +13744,14 @@ fn analyze_expr_effect(
                             args.get(i - 1)
                         };
                         if let Some(arg) = arg_opt {
-                            if let Some(source) = expr_taint_source_m(
+                            if let Some(source) = expr_source(
                                 arg,
                                 scope,
                                 &ctx.tainting_fns,
                                 &ctx.param_return_taint,
                                 &ctx.method_tainting_fns,
                                 &ctx.place_types(),
+                                SourceLane::Taint,
                             ) {
                                 let declassified = expr_is_declassified(arg, scope);
                                 ctx.taint_traces.push(TaintTrace {
@@ -13774,13 +13820,14 @@ fn analyze_expr_effect(
                                 args.get(i - 1)
                             };
                             if let Some(arg) = arg_opt {
-                                if let Some(source) = expr_secret_source_m(
+                                if let Some(source) = expr_source(
                                     arg,
                                     scope,
                                     &ctx.secret_fns,
                                     &ctx.param_return_taint,
                                     &ctx.method_secret_fns,
                                     &ctx.place_types(),
+                                    SourceLane::Secret,
                                 ) {
                                     ctx.emit(
                                         SemanticDiagnostic {
@@ -14216,21 +14263,23 @@ fn walk_block_effects(
             }
             Stmt::LetPattern { pattern, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
-                let t = expr_taint_source_m(
+                let t = expr_source(
                     init,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 );
-                let s = expr_secret_source_m(
+                let s = expr_source(
                     init,
                     scope,
                     &ctx.secret_fns,
                     &ctx.param_return_taint,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    SourceLane::Secret,
                 )
                 .is_some();
                 seed_effect_pattern(scope, pattern, init, &t, s, &ctx.place_types(), ctx);
@@ -14240,21 +14289,23 @@ fn walk_block_effects(
                 value,
             } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
-                let t = expr_taint_source_m(
+                let t = expr_source(
                     value,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.param_return_taint,
                     &ctx.method_tainting_fns,
                     &ctx.place_types(),
+                    SourceLane::Taint,
                 );
-                let s = expr_secret_source_m(
+                let s = expr_source(
                     value,
                     scope,
                     &ctx.secret_fns,
                     &ctx.param_return_taint,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    SourceLane::Secret,
                 )
                 .is_some();
                 if let Some(b) = scope.get_mut(name) {
@@ -19436,13 +19487,14 @@ fn reject_secret_pc_public_return(
         enum_payloads: &ept,
     };
     let val_is_secret = |val: &Expr, scope: &BTreeMap<String, ScopeBinding>| {
-        expr_secret_source_m(
+        expr_source(
             val,
             scope,
             &secret_fns,
             &param_return_taint,
             &method_secret_fns,
             &struct_fields,
+            SourceLane::Secret,
         )
         .is_some()
     };
@@ -19619,13 +19671,14 @@ fn reject_secret_scrutinee_returns_in_expr(
         enum_payloads: &ept,
     };
     let val_is_secret = |val: &Expr| {
-        expr_secret_source_m(
+        expr_source(
             val,
             scope,
             &secret_fns,
             &param_return_taint,
             &method_secret_fns,
             &struct_fields,
+            SourceLane::Secret,
         )
         .is_some()
     };
@@ -19749,13 +19802,14 @@ fn expr_is_secret_pc(
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) -> bool {
-    expr_secret_source_m(
+    expr_source(
         cond,
         scope,
         &ctx.secret_fns,
         &ctx.param_return_taint,
         &ctx.method_secret_fns,
         &ctx.place_types(),
+        SourceLane::Secret,
     )
     .is_some()
 }
@@ -22640,25 +22694,27 @@ impl BlockLabelDomain<'_> {
                 sources,
                 param_returns,
                 method_sources,
-            } => expr_taint_source_m(
+            } => expr_source(
                 expr,
                 scope,
                 sources,
                 param_returns,
                 method_sources,
                 struct_fields,
+                SourceLane::Taint,
             ),
             Self::Secret {
                 sources,
                 param_returns,
                 method_sources,
-            } => expr_secret_source_m(
+            } => expr_source(
                 expr,
                 scope,
                 sources,
                 param_returns,
                 method_sources,
                 struct_fields,
+                SourceLane::Secret,
             ),
         }
     }
@@ -23034,13 +23090,14 @@ fn expr_taint_source(
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     struct_fields: &PlaceTypes<'_>,
 ) -> Option<String> {
-    expr_taint_source_m(
+    expr_source(
         expr,
         scope,
         tainting_fns,
         param_return_taint,
         &BTreeSet::new(),
         struct_fields,
+        SourceLane::Taint,
     )
 }
 
@@ -23073,21 +23130,23 @@ fn stmt_value_taint(
 ) -> Option<String> {
     let last = list.last()?;
     match last {
-        Stmt::ExprStmt(expr) => expr_taint_source_m(
+        Stmt::ExprStmt(expr) => expr_source(
             expr,
             local,
             tainting_fns,
             param_return_taint,
             method_tainting_fns,
             struct_fields,
+            SourceLane::Taint,
         ),
-        Stmt::If { cond, then, else_ } => expr_taint_source_m(
+        Stmt::If { cond, then, else_ } => expr_source(
             cond,
             local,
             tainting_fns,
             param_return_taint,
             method_tainting_fns,
             struct_fields,
+            SourceLane::Taint,
         )
         .or_else(|| {
             stmt_value_taint(
@@ -23128,21 +23187,23 @@ fn stmt_value_secret(
 ) -> Option<String> {
     let last = list.last()?;
     match last {
-        Stmt::ExprStmt(expr) => expr_secret_source_m(
+        Stmt::ExprStmt(expr) => expr_source(
             expr,
             local,
             secret_fns,
             param_return_taint,
             method_secret_fns,
             struct_fields,
+            SourceLane::Secret,
         ),
-        Stmt::If { cond, then, else_ } => expr_secret_source_m(
+        Stmt::If { cond, then, else_ } => expr_source(
             cond,
             local,
             secret_fns,
             param_return_taint,
             method_secret_fns,
             struct_fields,
+            SourceLane::Secret,
         )
         .or_else(|| {
             stmt_value_secret(
@@ -23169,100 +23230,278 @@ fn stmt_value_secret(
         _ => None,
     }
 }
-
-/// The taint-source label of an expression, or `None` if clean.
+/// Lane discriminator for the expression source walker. Collapses
+/// `expr_taint_source_m` / `expr_secret_source_m` into one `Expr` match so a
+/// new variant cannot be learned on one lane and dropped on the other.
 ///
-/// - `tainting_fns`: functions whose return carries INTERNAL taint (`sink(get_secret())`).
-/// - `param_return_taint`: functions → which formal params flow to the return value. A call is
-///   tainted from argument i only when i is in this set (Phase-3 A2). When the map has no entry for
-///   a callee (builtins / bootstrap before the summary runs), any tainted argument conservatively
-///   taints the call (fail-closed over-approx). When the map HAS an entry (even empty), only the
-///   summarized params apply — so `fn ignore(x){return 5;}` no longer falsely taints `ignore(secret)`.
-/// - `method_tainting_fns`: impl methods whose RETURN carries internally-minted taint (#67); consulted
-///   in the `CallExpr` arm so `r.tag()` is a taint source. Empty via the 4-arg wrapper.
-fn expr_taint_source_m(
-    expr: &Expr,
-    scope: &BTreeMap<String, ScopeBinding>,
-    tainting_fns: &BTreeSet<String>,
+/// Semantic splits stay as explicit hooks, not a dispatcher of two twins:
+/// Call constructors (I/O taint vs `secret_source`), Var lookup, declared
+/// field types, `TaintSource`, container-element helpers, block walkers,
+/// and the secret-only match-arm lambda escape check.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceLane {
+    Taint,
+    Secret,
+}
+
+impl SourceLane {
+    fn seed_pattern_lane(self) -> SeedPatternLane {
+        match self {
+            Self::Taint => SeedPatternLane::Taint,
+            Self::Secret => SeedPatternLane::Secret,
+        }
+    }
+
+    fn var_source(self, name: &str, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
+        match self {
+            Self::Taint => scope
+                .get(name)
+                .and_then(|binding| binding.info.taint_source.clone())
+                .filter(|_| scope.get(name).is_some_and(|binding| binding.info.tainted)),
+            Self::Secret => scope
+                .get(name)
+                .filter(|b| b.secret)
+                .map(|_| name.to_string()),
+        }
+    }
+
+    fn constructor_source(
+        self,
+        callee: &str,
+        scope: &BTreeMap<String, ScopeBinding>,
+    ) -> Option<String> {
+        match self {
+            Self::Taint => {
+                let aliased_builtin_source = scope.get(callee).is_some_and(|binding| {
+                    binding
+                        .builtin_gate_tags
+                        .contains(&BuiltinGateTag::TaintSource)
+                });
+                if is_io_taint_source(callee) || aliased_builtin_source {
+                    Some(format!("io source `{callee}`"))
+                } else {
+                    None
+                }
+            }
+            Self::Secret => {
+                if callee == SECRET_SOURCE_NAME {
+                    Some(SECRET_SOURCE_NAME.to_string())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn binding_labeled(self, binding: &ScopeBinding) -> bool {
+        match self {
+            Self::Taint => binding.info.tainted,
+            Self::Secret => binding.secret,
+        }
+    }
+
+    fn capture_or_source(self, binding: &ScopeBinding, callee: &str) -> Option<String> {
+        match self {
+            Self::Taint => binding.info.taint_source.clone(),
+            Self::Secret => Some(format!("captured secret in closure `{callee}`")),
+        }
+    }
+
+    fn apply_labeled_source(self, binding: &ScopeBinding, callee: &str) -> Option<String> {
+        match self {
+            Self::Taint => binding
+                .info
+                .taint_source
+                .clone()
+                .or_else(|| Some(format!("captured tainted value in closure `{callee}`"))),
+            Self::Secret => Some(format!("captured secret in closure `{callee}`")),
+        }
+    }
+
+    fn declared_field_source(self, field: &str, field_ty: &str) -> Option<String> {
+        let labeled = match self {
+            Self::Taint => is_tainted_type(Some(field_ty)),
+            Self::Secret => is_secret_type(Some(field_ty)),
+        };
+        labeled.then(|| format!("declared field `{field}` of type `{field_ty}`"))
+    }
+
+    fn taint_source_label(self, label: &str) -> Option<String> {
+        match self {
+            Self::Taint => Some(label.to_string()),
+            Self::Secret => None,
+        }
+    }
+}
+
+fn walk_block_source(
+    stmts: &[Stmt],
+    local: &mut BTreeMap<String, ScopeBinding>,
+    lane_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-    method_tainting_fns: &BTreeSet<String>,
-    // R1: the struct-field type registry, so `FieldAccess` can honor a field's DECLARED
-    // qualifier. Keyed struct-type -> field name, never bare field name — a field called `key` on
-    // two different structs must not share a row.
+    method_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
-) -> Option<String> {
-    match expr {
-        Expr::Var(name) => scope
-            .get(name)
-            .and_then(|binding| binding.info.taint_source.clone())
-            .filter(|_| scope.get(name).is_some_and(|binding| binding.info.tainted)),
-        Expr::Binary { lhs, rhs, .. } => expr_taint_source_m(
-            lhs,
-            scope,
-            tainting_fns,
+    lane: SourceLane,
+) {
+    match lane {
+        SourceLane::Taint => walk_block_taint(
+            stmts,
+            local,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
-            struct_fields,
-        )
-        .or_else(|| {
-            expr_taint_source_m(
-                rhs,
-                scope,
-                tainting_fns,
-                param_return_taint,
-                method_tainting_fns,
-                struct_fields,
-            )
-        }),
-        Expr::Unary { expr, .. } => expr_taint_source_m(
-            expr,
-            scope,
-            tainting_fns,
-            param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
         ),
+        SourceLane::Secret => walk_block_secret(
+            stmts,
+            local,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+        ),
+    }
+}
+
+fn stmt_value_source(
+    list: &[Stmt],
+    local: &BTreeMap<String, ScopeBinding>,
+    lane_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+    lane: SourceLane,
+) -> Option<String> {
+    match lane {
+        SourceLane::Taint => stmt_value_taint(
+            list,
+            local,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+        ),
+        SourceLane::Secret => stmt_value_secret(
+            list,
+            local,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+        ),
+    }
+}
+
+fn container_element_source(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    lane_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+    lane: SourceLane,
+) -> Option<String> {
+    match lane {
+        SourceLane::Taint => container_element_taint(
+            e,
+            scope,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+        ),
+        SourceLane::Secret => container_element_secret(
+            e,
+            scope,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+        ),
+    }
+}
+
+/// The source label of an expression, or `None` if clean.
+///
+/// - `lane_fns`: functions whose return carries an internally minted label
+///   (`tainting_fns` / `secret_fns`).
+/// - `param_return_taint`: functions → which formal params flow to the return
+///   value. Shared across lanes — value-flow is label-agnostic.
+/// - `method_fns`: impl methods whose RETURN carries an internally minted
+///   label (#67). Empty via the 4-arg taint wrapper.
+///
+/// Replaces the historical `expr_taint_source_m` / `expr_secret_source_m`
+/// twins. One `Expr` match; lane hooks keep Call / container / TaintSource
+/// / Var / FieldAccess / Block / match-lambda semantics byte-preserving.
+fn expr_source(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    lane_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+    lane: SourceLane,
+) -> Option<String> {
+    match expr {
+        Expr::Var(name) => lane.var_source(name, scope),
+        Expr::Binary { lhs, rhs, .. } => expr_source(
+            lhs,
+            scope,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+            lane,
+        )
+        .or_else(|| {
+            expr_source(
+                rhs,
+                scope,
+                lane_fns,
+                param_return_taint,
+                method_fns,
+                struct_fields,
+                lane,
+            )
+        }),
+        Expr::Unary { expr, .. } => expr_source(
+            expr,
+            scope,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+            lane,
+        ),
         Expr::Call { callee, args } => {
-            // Integrity twin of the alias resolution in `expr_secret_source_m`: `let g = get; g()`
-            // must consult `get`'s summary, not the raw local name `g`. See that arm for the full
-            // rationale; keeping the two symmetric is what stops one lane from being laundered by a
-            // form the other lane already rejects.
+            // Resolve a FUNCTION-VALUE ALIAS before consulting either summary:
+            // `let g = key; g()` parses as `Call { callee: "g" }`, and a raw-name
+            // lookup misses `key`'s entry. Same resolution on both lanes so
+            // aliasing cannot launder a label one lane already rejects.
             let resolved = scope
                 .get(callee)
                 .and_then(|b| b.fn_alias.as_deref())
                 .unwrap_or(callee.as_str());
-            // C4: an I/O read is itself a taint source (untrusted input), even with clean args.
-            let aliased_builtin_source = scope.get(callee).is_some_and(|binding| {
-                binding
-                    .builtin_gate_tags
-                    .contains(&BuiltinGateTag::TaintSource)
-            });
-            if is_io_taint_source(callee) || aliased_builtin_source {
-                Some(format!("io source `{callee}`"))
-            } else if tainting_fns.contains(resolved) {
+            if let Some(src) = lane.constructor_source(callee, scope) {
+                Some(src)
+            } else if lane_fns.contains(resolved) {
                 Some(format!("return value of `{}`", resolved))
             } else if let Some(rets) = param_return_taint.get(resolved) {
-                // Known user function: only params that the summary says reach the return.
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {
-                        expr_taint_source_m(
+                        expr_source(
                             a,
                             scope,
-                            tainting_fns,
+                            lane_fns,
                             param_return_taint,
-                            method_tainting_fns,
+                            method_fns,
                             struct_fields,
+                            lane,
                         )
                     })
                 })
             } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
-                // Task #48-g: a LOCAL CLOSURE's RESULT carries the taint of its body's RETURNED value,
-                // evaluated in the caller scope (where the closure's CAPTURES live) MINUS the lambda's
-                // own params (a param is bound to the arg, not a capture, so it must not shadow-taint).
-                // `let g = |x| t; let r = g(0); sink(r)` otherwise laundered the captured `t`. Combined
-                // with the existing conservative rule (a tainted ARG into the closure). A `return` in a
-                // block body is covered via `expr_tail_values`; a deeper-nested capture is a residual.
-                let capture_taint = if let Expr::Lambda { params, body } = lam.as_ref() {
+                let capture = if let Expr::Lambda { params, body } = lam.as_ref() {
                     let mut inner = scope.clone();
                     for p in params {
                         inner.remove(p);
@@ -23270,83 +23509,80 @@ fn expr_taint_source_m(
                     seed_body_local_lambdas(body, &mut inner);
                     let mut tails = Vec::new();
                     expr_tail_values(body, &mut tails);
-                    // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
                     let __subst = closure_body_let_subst(body);
                     let tails: Vec<Expr> = tails
                         .into_iter()
                         .map(|t| substitute_vars(&t, &__subst))
                         .collect();
                     tails.iter().find_map(|t| {
-                        expr_taint_source_m(
+                        expr_source(
                             t,
                             &inner,
-                            tainting_fns,
+                            lane_fns,
                             param_return_taint,
-                            method_tainting_fns,
+                            method_fns,
                             struct_fields,
+                            lane,
                         )
                     })
                 } else {
                     None
                 };
-                capture_taint
-                    // The resolved closure body reading clean must not SHADOW the binding's own taint
-                    // label (integrity dual — conditionally-returned tainted-capturing closure).
+                capture
                     .or_else(|| {
                         scope
                             .get(callee)
-                            .filter(|b| b.info.tainted)
-                            .and_then(|b| b.info.taint_source.clone())
+                            .filter(|b| lane.binding_labeled(b))
+                            .and_then(|b| lane.capture_or_source(b, callee))
                     })
                     .or_else(|| {
                         args.iter().find_map(|arg| {
-                            expr_taint_source_m(
+                            expr_source(
                                 arg,
                                 scope,
-                                tainting_fns,
+                                lane_fns,
                                 param_return_taint,
-                                method_tainting_fns,
+                                method_fns,
                                 struct_fields,
+                                lane,
                             )
                         })
                     })
-            } else if scope.get(callee).is_some_and(|b| b.info.tainted) {
-                // Applying a TAINTED-VALUED binding exposes its capture (integrity dual of the secret
-                // apply rule) — `let g = fwd(|x| input()); g(0)`, or a call returning a tainted-
-                // capturing closure. Report the binding's recorded taint source.
+            } else if scope.get(callee).is_some_and(|b| lane.binding_labeled(b)) {
                 scope
                     .get(callee)
-                    .and_then(|b| b.info.taint_source.clone())
-                    .or_else(|| Some(format!("captured tainted value in closure `{callee}`")))
+                    .and_then(|b| lane.apply_labeled_source(b, callee))
             } else {
-                // Builtin / not-yet-summarized: any tainted argument taints the call (conservative).
                 args.iter().find_map(|arg| {
-                    expr_taint_source_m(
+                    expr_source(
                         arg,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
+                        lane,
                     )
                 })
             }
         }
-        Expr::Tainted { inner, .. } => expr_taint_source_m(
+        Expr::Tainted { inner, .. } => expr_source(
             inner,
             scope,
-            tainting_fns,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
+            lane,
         ),
-        Expr::Assume(inner) | Expr::Assert(inner) => expr_taint_source_m(
+        Expr::Assume(inner) | Expr::Assert(inner) => expr_source(
             inner,
             scope,
-            tainting_fns,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
+            lane,
         ),
         Expr::Declassify {
             inner,
@@ -23355,151 +23591,117 @@ fn expr_taint_source_m(
             ..
         } => {
             if declassify_wellformed(policy, reason) {
-                None // cleared
+                None
             } else {
-                expr_taint_source_m(
+                expr_source(
                     inner,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
+                    lane,
                 )
             }
         }
-        Expr::TaintSource { label } => Some(label.clone()),
-        // Indexing/field-access on a tainted binding must not launder the taint — without these
-        // arms, `sink(tainted_arr[i])` / `sink(tainted_struct.field)` fell through to the catch-all
-        // below and silently escaped `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` (a real fail-open gap).
-        // `Index` checks both operands (like `Binary`, not `Unary`'s single-operand shape): a tainted
-        // INDEX into an otherwise-clean array (`sink(arr[tainted_offset])`) is an equally real leak.
-        // Whole-binding granularity only: a struct's OWN field individually declared `tainted<T>` in
-        // its type definition does not, by itself, make `.field` access on an otherwise-clean instance
-        // tainted — only a binding whose own `let`/param annotation (or tainted initializer) seeded it
-        // tainted propagates here, matching how every other walker in this file treats field/struct
-        // definitions as opaque to flow analysis.
-        Expr::Index { base, index } => expr_taint_source_m(
+        Expr::TaintSource { label } => lane.taint_source_label(label),
+        Expr::Index { base, index } => expr_source(
             base,
             scope,
-            tainting_fns,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
+            lane,
         )
         .or_else(|| {
-            expr_taint_source_m(
+            expr_source(
                 index,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
         }),
-        // R1 — the structural twin of the declared-RETURN seed: a field's DECLARED type is a promise
-        // to whoever reads it. Value-flow from `base` alone left `struct S { k: tainted<i64> }` +
-        // `shell(s.k)` completely clean whenever `s` itself carried no label, because this arm walked
-        // the base and never looked at the field. Runtime-proven, not structural: the confidentiality
-        // face printed the value.
-        //
-        // Lookup is ALWAYS struct-type → field, never bare field name — a field called `key` on two
-        // different structs must not share a row (bare-name keying is a four-times-proven defect
-        // generator in this file). `place_struct_type` is reused so nested `outer.inner.k` keys
-        // exactly the way the assignment and solver place-paths already key it.
-        //
-        // Composed with `.or_else`, so the declared type only ADDS a source: a secret base with a
-        // public-typed field stays labelled (value-flow wins), and a declared qualifier can never
-        // clear a label. `declassify(s.k, ..)` is handled by the `Declassify` arm and still releases.
-        // An untyped base yields `None` from `place_struct_type` and simply carries no declared
-        // charge — an under-approximation, and the residual is field access on a CALL result
-        // (`get().k`), which `place_struct_type` does not walk today.
-        Expr::FieldAccess { base, field, .. } => expr_taint_source_m(
+        Expr::FieldAccess { base, field, .. } => expr_source(
             base,
             scope,
-            tainting_fns,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
+            lane,
         )
         .or_else(|| {
             let field_ty = declared_field_type(base, field, scope, struct_fields)?;
-            is_tainted_type(Some(field_ty.as_str()))
-                .then(|| format!("declared field `{field}` of type `{field_ty}`"))
+            lane.declared_field_source(field, &field_ty)
         }),
-        // A cast reinterprets a value without changing its provenance — `secret as u64` is still the
-        // secret. Without this arm, `sink(s as u64)` (and `return s as u64` interprocedurally)
-        // laundered taint through the cast (adversary-found fail-open, both intra- and inter-procedural).
-        Expr::Cast { expr, .. } => expr_taint_source_m(
+        Expr::Cast { expr, .. } => expr_source(
             expr,
             scope,
-            tainting_fns,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
+            lane,
         ),
-        // Composite value propagation: a container/aggregate carries taint if ANY sub-expression it is
-        // built from does. Without these, `sink([tainted])` / `sink(Struct{f: tainted})` /
-        // `sink(Enum::V(tainted))` / `sink({k: tainted})` laundered taint through the aggregate — an
-        // adversary-shaped bypass (the composite-laundering boundary the review confirmed, closed here
-        // symmetrically with the secrecy dual and the interprocedural param-flow summary).
-        //
-        // Container arms use `container_element_taint` so a bare tainting fn NAME element reads the
-        // same as the equivalent lambda — `app([key])` with `key -> tainted` must behave like
-        // `app([|| key()])`, which already rejects (parity with `container_element_secret`).
         Expr::ArrayLiteral { elements } => elements.iter().find_map(|e| {
-            container_element_taint(
+            container_element_source(
                 e,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
         }),
         Expr::StructLiteral { fields, .. } => fields.iter().find_map(|(_, e)| {
-            container_element_taint(
+            container_element_source(
                 e,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
         }),
         Expr::EnumConstruct { fields, .. } => fields.iter().find_map(|e| {
-            container_element_taint(
+            container_element_source(
                 e,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
         }),
         Expr::MapLiteral { entries, .. } => entries.iter().find_map(|(k, v)| {
-            expr_taint_source_m(
+            expr_source(
                 k,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
             .or_else(|| {
-                container_element_taint(
+                container_element_source(
                     v,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
+                    lane,
                 )
             })
         }),
-        // A capturing closure IS a tainted VALUE (integrity dual of the secret Lambda arm) — labeling
-        // the lambda literal lets the existing value-flow track it through struct fields, dicts, fn
-        // returns and nesting, closing the higher-order laundering class in one place. Non-capturing
-        // lambdas return None (no false reject). Soundness hunt 2026-07-20.
         Expr::Lambda { params, body } => {
             let mut inner = scope.clone();
             for p in params {
@@ -23510,84 +23712,64 @@ fn expr_taint_source_m(
             let mut tails = Vec::new();
             expr_tail_values(body, &mut tails);
             tails.iter().find_map(|t| {
-                expr_taint_source_m(
+                expr_source(
                     &substitute_vars(t, &subst),
                     &inner,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
+                    lane,
                 )
             })
         }
-        // Control-flow value expressions (`match` / `if` / `if let` / block) — SCOPE-AWARE walk.
-        // Each arm/branch/block extends a CLONE of the ambient scope: inner bindings (pattern vars,
-        // block-local `let`s) SHADOW a same-named outer binding (no false positive — the exact
-        // defect that deferred this from the composite slice), and a value passed THROUGH an inner
-        // binding is tracked (no laundering). The clone is local to one arm/block — nothing leaks
-        // to a sibling arm or to code after the expression. Combine is may-carry (`or_else`): any
-        // branch carrying taint taints the whole value. The `if` condition and match guards are
-        // control, not value — ignored (explicit-flow model; implicit flows stay a named boundary).
-        // Pattern vars inherit the WHOLE scrutinee's label (whole-value granularity, matching the
-        // `Index`/`FieldAccess` arms above). A straight-line `Assign` to a Var inside a block is
-        // applied to the local clone with the same set/CLEAR discipline as the main analyzer's
-        // `Stmt::Assign` arm, so a reassign-to-clean before the tail stays accepted (the committed
-        // `taint_reassign_to_clean` contract, in value position) and a reassign-to-tainted is caught.
-        // Value-position block: thread the block's statement flow through `walk_block_taint` (the
-        // scope-aware stmt walker, at parity with the enforcing `analyze_stmts` merge discipline), then
-        // read the tail's label in the block's post-statement scope. This closes a prior
-        // wildcard-fail-open where nested control-flow inside the block
-        // (`{ let r=0; if c { r=x; } r }`) was dropped and a laundered value read clean.
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
-            walk_block_taint(
+            walk_block_source(
                 stmts,
                 &mut local,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             );
-            // `stmt_value_taint` and `last_expr_of_stmts` live at top-level (above
-            // `expr_taint_source`) so their wildcard-covered non-tail arms stay
-            // outside this function's body when `scripts/phase_metrics.sh` counts
-            // label-lane wildcards. `stmt_value_taint` is registered as
-            // `stmt_value_taint:partial-stmt` in `run_walker_completeness_gate.sh`,
-            // so G19 still enforces field-binding on every variant the top-level
-            // helper explicitly handles.
             tail.as_deref()
                 .or_else(|| last_expr_of_stmts(stmts))
                 .and_then(|t| {
-                    expr_taint_source_m(
+                    expr_source(
                         t,
                         &local,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
+                        lane,
                     )
                 })
                 .or_else(|| {
-                    stmt_value_taint(
+                    stmt_value_source(
                         stmts,
                         &local,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
+                        lane,
                     )
                 })
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            let scrut = expr_taint_source_m(
+            let scrut = expr_source(
                 scrutinee,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             );
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
@@ -23595,16 +23777,43 @@ fn expr_taint_source_m(
                     &mut local,
                     &arm.pattern,
                     &scrut,
-                    SeedPatternLane::Taint,
+                    lane.seed_pattern_lane(),
                     struct_fields,
                 );
-                expr_taint_source_m(
+                // Secret-only: a LAMBDA arm value is opaque at its definition —
+                // safe only while every application site descends in a scope
+                // that still holds what it captured. A closure built in an arm
+                // and returned OUT of the match escapes the arm scope. The
+                // taint twin historically did not have this check; adding it
+                // is a D4 closure and belongs in its own slice.
+                if lane == SourceLane::Secret {
+                    if let Expr::Lambda { params, body } = &arm.body {
+                        let mut inner = local.clone();
+                        for p in params {
+                            inner.remove(p);
+                        }
+                        seed_body_local_lambdas(body, &mut inner);
+                        if let Some(src) = expr_source(
+                            body,
+                            &inner,
+                            lane_fns,
+                            param_return_taint,
+                            method_fns,
+                            struct_fields,
+                            lane,
+                        ) {
+                            return Some(src);
+                        }
+                    }
+                }
+                expr_source(
                     &arm.body,
                     &local,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
+                    lane,
                 )
             })
         }
@@ -23615,103 +23824,98 @@ fn expr_taint_source_m(
             else_,
             ..
         } => {
-            let scrut = expr_taint_source_m(
+            let scrut = expr_source(
                 scrutinee,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             );
             let mut local = scope.clone();
             seed_pattern(
                 &mut local,
                 pattern,
                 &scrut,
-                SeedPatternLane::Taint,
+                lane.seed_pattern_lane(),
                 struct_fields,
             );
-            expr_taint_source_m(
+            expr_source(
                 then,
                 &local,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
             .or_else(|| {
-                expr_taint_source_m(
+                expr_source(
                     else_,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
+                    lane,
                 )
             })
         }
         Expr::If {
             cond, then, else_, ..
-        } => expr_taint_source_m(
+        } => expr_source(
             cond,
             scope,
-            tainting_fns,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
+            lane,
         )
         .or_else(|| {
-            expr_taint_source_m(
+            expr_source(
                 then,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
         })
         .or_else(|| {
-            expr_taint_source_m(
+            expr_source(
                 else_,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
         }),
-        // `expr?` unwraps Ok/Some to the inner value, which carries the same provenance (no binding).
-        Expr::Try(inner) => expr_taint_source_m(
+        Expr::Try(inner) => expr_source(
             inner,
             scope,
-            tainting_fns,
+            lane_fns,
             param_return_taint,
-            method_tainting_fns,
+            method_fns,
             struct_fields,
+            lane,
         ),
-        // A method/closure application (`x.clone()`, `f(a)`) may carry the taint of its receiver/callee
-        // or any argument — conservatively surface the first tainted sub-expression (the symmetric
-        // intra-procedural twin of the `CallExpr` arm in `expr_param_return_flow`, so `s.clone()` does
-        // not launder a tainted value).
         Expr::CallExpr { callee, args } => {
-            // Soundness hunt 2026-07-19 (#48-h, integrity twin of the secrecy dual): a closure stored
-            // in a struct FIELD (`b.f(0)`) or LIST ELEMENT (`arr[0](0)`) carries the TAINT of its
-            // body's returned value when applied. `let b = Box { f: |x| t }; sink(b.f(0))` otherwise
-            // laundered the captured tainted value past ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY. Resolve
-            // the stored lambda from the base binding's `field_closures` and read its tail values in
-            // the caller scope minus the lambda params.
             let stored_closure = flatten_access_path(callee).and_then(|(root, path)| {
                 scope
                     .get(&root)
                     .and_then(|b| b.field_closures.get(&path).cloned())
             });
             if let Some(Expr::Var(f)) = stored_closure.as_deref() {
-                // M1, integrity twin of the arm in `expr_secret_source_m` — see it for rationale.
                 let target = scope
                     .get(f)
                     .and_then(|b| b.fn_alias.as_deref())
                     .unwrap_or(f.as_str());
-                if tainting_fns.contains(target) {
+                if lane_fns.contains(target) {
                     return Some(format!("return value of `{target}`"));
                 }
             }
@@ -23723,58 +23927,53 @@ fn expr_taint_source_m(
                 seed_body_local_lambdas(body, &mut inner);
                 let mut tails = Vec::new();
                 expr_tail_values(body, &mut tails);
-                // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
                 let __subst = closure_body_let_subst(body);
                 let tails: Vec<Expr> = tails
                     .into_iter()
                     .map(|t| substitute_vars(&t, &__subst))
                     .collect();
                 if let Some(s) = tails.iter().find_map(|t| {
-                    expr_taint_source_m(
+                    expr_source(
                         t,
                         &inner,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
+                        lane,
                     )
                 }) {
                     return Some(s);
                 }
             }
-            // #67: an impl method whose RETURN carries internally-minted taint makes
-            // `r.tag()` a taint source. Bare-name keyed; inert when method_tainting_fns is empty.
             if let Expr::FieldAccess { field, .. } = callee.as_ref() {
-                if method_tainting_fns.contains(field) {
+                if method_fns.contains(field) {
                     return Some(format!("return value of method `{field}`"));
                 }
             }
-            expr_taint_source_m(
+            expr_source(
                 callee,
                 scope,
-                tainting_fns,
+                lane_fns,
                 param_return_taint,
-                method_tainting_fns,
+                method_fns,
                 struct_fields,
+                lane,
             )
             .or_else(|| {
                 args.iter().find_map(|a| {
-                    expr_taint_source_m(
+                    expr_source(
                         a,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
+                        lane,
                     )
                 })
             })
         }
-        // Non-source Expr variants — enumerated so a new Expr variant forces a decision at compile
-        // time rather than silently returning None (walker-carrier-totality; capability.rs §
-        // walk_expr is the reference). All six listed here are non-code-holding value shapes
-        // and are correctly bound with `(_)` / `{ .. }` — no G19 field-discard risk because none
-        // of these variants embed `Expr` or `Stmt` payloads.
         Expr::Literal(_)
         | Expr::StrLiteral(_)
         | Expr::Symbolic { .. }
@@ -23878,13 +24077,14 @@ fn container_element_secret(
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) -> Option<String> {
-    if let Some(found) = expr_secret_source_m(
+    if let Some(found) = expr_source(
         e,
         scope,
         secret_fns,
         param_return_taint,
         method_secret_fns,
         struct_fields,
+        SourceLane::Secret,
     ) {
         return Some(found);
     }
@@ -23914,13 +24114,14 @@ fn container_element_taint(
     method_tainting_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) -> Option<String> {
-    if let Some(found) = expr_taint_source_m(
+    if let Some(found) = expr_source(
         e,
         scope,
         tainting_fns,
         param_return_taint,
         method_tainting_fns,
         struct_fields,
+        SourceLane::Taint,
     ) {
         return Some(found);
     }
@@ -23933,591 +24134,6 @@ fn container_element_taint(
         .and_then(|b| b.fn_alias.clone())
         .filter(|a| tainting_fns.contains(a))
         .map(|a| format!("return value of `{a}`"))
-}
-
-fn expr_secret_source_m(
-    expr: &Expr,
-    scope: &BTreeMap<String, ScopeBinding>,
-    secret_fns: &BTreeSet<String>,
-    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-    method_secret_fns: &BTreeSet<String>,
-    // R1, confidentiality dual: see the same parameter on `expr_taint_source_m`.
-    struct_fields: &PlaceTypes<'_>,
-) -> Option<String> {
-    match expr {
-        Expr::Var(name) => scope.get(name).filter(|b| b.secret).map(|_| name.clone()),
-        Expr::Call { callee, args } => {
-            // Resolve a FUNCTION-VALUE ALIAS before consulting either summary: `let g = key; g()`
-            // parses as `Call { callee: "g" }`, and a raw-name lookup misses `key`'s entry. The
-            // binding already carries the transitively-resolved target (`fn_alias_of`), which the
-            // interproc sink/egress checks consult for exactly this reason — this reuses that
-            // resolution rather than adding a second one. Without it, aliasing launders any
-            // summary-derived label, including one seeded from a declared `-> secret<T>`
-            // (GROK-SEKHMET reopened the declared-return fix through this path). Falls back to the
-            // raw name, so a local closure binding still reaches the `closure_lambda` arm below.
-            let resolved = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
-            if callee == SECRET_SOURCE_NAME {
-                Some(SECRET_SOURCE_NAME.to_string())
-            } else if secret_fns.contains(resolved) {
-                Some(format!("return value of `{resolved}`"))
-            } else if let Some(rets) = param_return_taint.get(resolved) {
-                // Known user function: only params the summary says reach the return carry secrecy.
-                rets.iter().find_map(|&i| {
-                    args.get(i).and_then(|a| {
-                        expr_secret_source_m(
-                            a,
-                            scope,
-                            secret_fns,
-                            param_return_taint,
-                            method_secret_fns,
-                            struct_fields,
-                        )
-                    })
-                })
-            } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
-                // Task #48-g (secret dual, keeps parity with `expr_taint_source_m`): a LOCAL CLOSURE's
-                // RESULT carries the secrecy of its body's RETURNED value, evaluated in the caller scope
-                // (captures) MINUS the lambda params. `let g = |x| s; let r = g(0); send(r)` otherwise
-                // laundered the captured secret `s`. Combined with the conservative secret-ARG rule.
-                let capture_secret = if let Expr::Lambda { params, body } = lam.as_ref() {
-                    let mut inner = scope.clone();
-                    for p in params {
-                        inner.remove(p);
-                    }
-                    seed_body_local_lambdas(body, &mut inner);
-                    let mut tails = Vec::new();
-                    expr_tail_values(body, &mut tails);
-                    // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
-                    let __subst = closure_body_let_subst(body);
-                    let tails: Vec<Expr> = tails
-                        .into_iter()
-                        .map(|t| substitute_vars(&t, &__subst))
-                        .collect();
-                    tails.iter().find_map(|t| {
-                        expr_secret_source_m(
-                            t,
-                            &inner,
-                            secret_fns,
-                            param_return_taint,
-                            method_secret_fns,
-                            struct_fields,
-                        )
-                    })
-                } else {
-                    None
-                };
-                capture_secret
-                    // Even when the RESOLVED closure body reads clean, a binding marked secret by the
-                    // fn-return summary still exposes its capture — the closure_lambda read must not
-                    // SHADOW the binding's own label (soundness hunt2 residual: `fn mk(c){ if c>0 {
-                    // return |x| k; } return |x| 0; }` — fn_returns_lambda records the WRONG non-secret
-                    // tail lambda, but `mk` is in `secret_fns`, so `g = mk(); g(0)` must read secret).
-                    .or_else(|| {
-                        scope
-                            .get(callee)
-                            .filter(|b| b.secret)
-                            .map(|_| format!("captured secret in closure `{callee}`"))
-                    })
-                    .or_else(|| {
-                        args.iter().find_map(|a| {
-                            expr_secret_source_m(
-                                a,
-                                scope,
-                                secret_fns,
-                                param_return_taint,
-                                method_secret_fns,
-                                struct_fields,
-                            )
-                        })
-                    })
-            } else if scope.get(callee).is_some_and(|b| b.secret) {
-                // Applying a SECRET-VALUED binding exposes its capture — a var bound to a capturing
-                // closure, or to a call that RETURNS one (`let g = fwd(|x| k); g(0)`, or `let g =
-                // mk(); g(0)` where mk conditionally returns a secret-capturing closure so mk landed
-                // in `secret_fns`). This is the application dual of the Lambda-literal arm: labeling
-                // the closure value is only useful if applying it also carries the label.
-                Some(format!("captured secret in closure `{callee}`"))
-            } else {
-                // Builtin / not-yet-summarized: any secret argument is conservative.
-                args.iter().find_map(|a| {
-                    expr_secret_source_m(
-                        a,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                })
-            }
-        }
-        Expr::Binary { lhs, rhs, .. } => expr_secret_source_m(
-            lhs,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        )
-        .or_else(|| {
-            expr_secret_source_m(
-                rhs,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-        }),
-        Expr::Unary { expr, .. } => expr_secret_source_m(
-            expr,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        ),
-        Expr::Index { base, index } => expr_secret_source_m(
-            base,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        )
-        .or_else(|| {
-            expr_secret_source_m(
-                index,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-        }),
-        // R1, confidentiality dual — identical keying discipline to the taint arm. See it for the
-        // full rationale; keeping the two symmetric is what stops one lane being laundered through a
-        // form the other already rejects.
-        Expr::FieldAccess { base, field, .. } => expr_secret_source_m(
-            base,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        )
-        .or_else(|| {
-            let field_ty = declared_field_type(base, field, scope, struct_fields)?;
-            is_secret_type(Some(field_ty.as_str()))
-                .then(|| format!("declared field `{field}` of type `{field_ty}`"))
-        }),
-        Expr::Cast { expr, .. } => expr_secret_source_m(
-            expr,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        ),
-        // Faithful mirror of `expr_taint_source`'s `Tainted` arm: unwrap the marker to keep tracking
-        // provenance (defensive — the parser does not currently emit `Expr::Tainted`, but the taint
-        // dual has this arm, so the confidentiality side keeps it symmetric).
-        Expr::Tainted { inner, .. } => expr_secret_source_m(
-            inner,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        ),
-        Expr::Assume(inner) | Expr::Assert(inner) => expr_secret_source_m(
-            inner,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        ),
-        Expr::Declassify {
-            inner,
-            policy,
-            reason,
-            ..
-        } => {
-            if declassify_wellformed(policy, reason) {
-                None // released — dual of the taint declassify clear
-            } else {
-                expr_secret_source_m(
-                    inner,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-            }
-        }
-        // Composite / control-flow value propagation — the confidentiality dual of the same arms on
-        // `expr_taint_source`: a secret stashed in a container, or a branch of a match/if, carries.
-        // Container arms use `container_element_secret` so a bare fn NAME element reads the same as
-        // the equivalent lambda — `app([key])` must behave like `app([|| key()])`, which already
-        // rejects. All four literal forms share the helper rather than repeating the check.
-        Expr::ArrayLiteral { elements } => elements.iter().find_map(|e| {
-            container_element_secret(
-                e,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-        }),
-        Expr::StructLiteral { fields, .. } => fields.iter().find_map(|(_, e)| {
-            container_element_secret(
-                e,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-        }),
-        Expr::EnumConstruct { fields, .. } => fields.iter().find_map(|e| {
-            container_element_secret(
-                e,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-        }),
-        Expr::MapLiteral { entries, .. } => entries.iter().find_map(|(k, v)| {
-            expr_secret_source_m(
-                k,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-            .or_else(|| {
-                container_element_secret(
-                    v,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-            })
-        }),
-        // A capturing closure IS a secret VALUE — its captures hold the secret. Labeling a lambda
-        // literal itself makes the EXISTING container/field/param/return value-flow track it wherever
-        // it is dispatched-and-egressed, closing the higher-order laundering class in ONE place rather
-        // than per storage shape (soundness hunt 2026-07-20: closure in a struct-field param, a dict of
-        // closures, a fn that returns a closure, a nested/conditional closure — all reduce to "this
-        // value is secret"). Detect via the body's returned value(s), local-let aliases resolved, in
-        // the enclosing scope MINUS the lambda's own params (a param is an arg, not a capture). A
-        // non-capturing lambda returns None, so only capturing closures are labeled (no false reject).
-        Expr::Lambda { params, body } => {
-            let mut inner = scope.clone();
-            for p in params {
-                inner.remove(p);
-            }
-            seed_body_local_lambdas(body, &mut inner);
-            let subst = closure_body_let_subst(body);
-            let mut tails = Vec::new();
-            expr_tail_values(body, &mut tails);
-            tails.iter().find_map(|t| {
-                expr_secret_source_m(
-                    &substitute_vars(t, &subst),
-                    &inner,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-            })
-        }
-        // Control-flow value exprs — SCOPE-AWARE walk, the exact confidentiality dual of the same
-        // arms on `expr_taint_source` (see the full note there): clone-per-arm/block, inner
-        // bindings shadow, pattern vars inherit the whole scrutinee's secrecy, straight-line block
-        // `Assign` applies the main analyzer's set/CLEAR discipline to the local clone.
-        // Value-position block: confidentiality dual of the taint Block arm — thread through
-        // `walk_block_secret` then read the tail's secret label in the post-statement scope, closing the
-        // same value-position nested-control-flow fail-open on the confidentiality side.
-        Expr::Block { stmts, tail } => {
-            let mut local = scope.clone();
-            walk_block_secret(
-                stmts,
-                &mut local,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            );
-            // Mirrors the taint side above; `stmt_value_secret` and
-            // `last_expr_of_stmts` are the top-level helpers so no wildcard lives
-            // in this function's body.
-            tail.as_deref()
-                .or_else(|| last_expr_of_stmts(stmts))
-                .and_then(|t| {
-                    expr_secret_source_m(
-                        t,
-                        &local,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                })
-                .or_else(|| {
-                    stmt_value_secret(
-                        stmts,
-                        &local,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                })
-        }
-        Expr::Match {
-            scrutinee, arms, ..
-        } => {
-            let scrut = expr_secret_source_m(
-                scrutinee,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            );
-            arms.iter().find_map(|arm| {
-                let mut local = scope.clone();
-                seed_pattern(
-                    &mut local,
-                    &arm.pattern,
-                    &scrut,
-                    SeedPatternLane::Secret,
-                    struct_fields,
-                );
-                // A LAMBDA arm value is opaque at its definition — safe only while every application
-                // site descends in a scope that still holds what it captured. A closure built in an
-                // arm and returned OUT of the match escapes the arm scope, so the binder's label is
-                // gone by the time it is applied: `let f = match e { E::Box(x) => || print(x) }; f()`
-                // leaked. Check the capture here, where the arm's bindings still exist, and let the
-                // label ride out with the match's value.
-                if let Expr::Lambda { params, body } = &arm.body {
-                    let mut inner = local.clone();
-                    for p in params {
-                        inner.remove(p);
-                    }
-                    seed_body_local_lambdas(body, &mut inner);
-                    if let Some(src) = expr_secret_source_m(
-                        body,
-                        &inner,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    ) {
-                        return Some(src);
-                    }
-                }
-                expr_secret_source_m(
-                    &arm.body,
-                    &local,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-            })
-        }
-        Expr::IfLet {
-            pattern,
-            scrutinee,
-            then,
-            else_,
-            ..
-        } => {
-            let scrut = expr_secret_source_m(
-                scrutinee,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            );
-            let mut local = scope.clone();
-            seed_pattern(
-                &mut local,
-                pattern,
-                &scrut,
-                SeedPatternLane::Secret,
-                struct_fields,
-            );
-            expr_secret_source_m(
-                then,
-                &local,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-            .or_else(|| {
-                expr_secret_source_m(
-                    else_,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-            })
-        }
-        Expr::If {
-            cond, then, else_, ..
-        } => expr_secret_source_m(
-            cond,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        )
-        .or_else(|| {
-            expr_secret_source_m(
-                then,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-        })
-        .or_else(|| {
-            expr_secret_source_m(
-                else_,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-        }),
-        Expr::Try(inner) => expr_secret_source_m(
-            inner,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        ),
-        // A method/closure application on a secret (`s.clone()`) may carry the secret — conservatively
-        // surface the first secret sub-expression (twin of the `expr_taint_source` CallExpr arm).
-        Expr::CallExpr { callee, args } => {
-            // Soundness hunt 2026-07-19 (#48-h, secret dual): a closure stored in a struct FIELD,
-            // applied via `b.f(0)`, or in a LIST ELEMENT, applied via `arr[0](0)`, carries the secrecy
-            // of its body's RETURNED value — the aggregate-container twin of the var-bound closure rule
-            // in the `Expr::Call` arm. `let g = |x| k; let b = Box { f: g }; send(h, p, b.f(0))`
-            // otherwise laundered the captured secret `k` past ANUBIS_SECRET_EXFILTRATION (the effect
-            // descent at the CallExpr application site charged the body's own effects but never marked
-            // the RESULT secret). Resolve the stored lambda from the base binding's `field_closures`
-            // (field name, or literal element index), then read its tail values in the caller scope
-            // MINUS the lambda params (so a captured secret is seen, a shadowing param is not).
-            let stored_closure = flatten_access_path(callee).and_then(|(root, path)| {
-                scope
-                    .get(&root)
-                    .and_then(|b| b.field_closures.get(&path).cloned())
-            });
-            if let Some(Expr::Var(f)) = stored_closure.as_deref() {
-                // M1: the stored callable may be a NAMED FUNCTION rather than a lambda —
-                // `let xs = [key]; print(xs[0]())`. The lookup above already finds it; only this
-                // consumer was lambda-only, so a named entry fell through as though the container
-                // held nothing and the secret escaped. Consults the same summary the bare `Call`
-                // arm does, through `fn_alias`, so a container of an ALIASED function resolves too.
-                let target = scope
-                    .get(f)
-                    .and_then(|b| b.fn_alias.as_deref())
-                    .unwrap_or(f.as_str());
-                if secret_fns.contains(target) {
-                    return Some(format!("return value of `{target}`"));
-                }
-            }
-            if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
-                let mut inner = scope.clone();
-                for p in params {
-                    inner.remove(p);
-                }
-                seed_body_local_lambdas(body, &mut inner);
-                let mut tails = Vec::new();
-                expr_tail_values(body, &mut tails);
-                // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
-                let __subst = closure_body_let_subst(body);
-                let tails: Vec<Expr> = tails
-                    .into_iter()
-                    .map(|t| substitute_vars(&t, &__subst))
-                    .collect();
-                if let Some(s) = tails.iter().find_map(|t| {
-                    expr_secret_source_m(
-                        t,
-                        &inner,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                }) {
-                    return Some(s);
-                }
-            }
-            // #67: an impl method whose RETURN carries an internally-minted secret makes
-            // `v.key()` a secret source (the getter/accessor exfil). Bare-name keyed, so
-            // fires before the receiver/arg recursion; inert when method_secret_fns is empty.
-            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
-                if method_secret_fns.contains(field) {
-                    return Some(format!("return value of method `{field}`"));
-                }
-            }
-            expr_secret_source_m(
-                callee,
-                scope,
-                secret_fns,
-                param_return_taint,
-                method_secret_fns,
-                struct_fields,
-            )
-            .or_else(|| {
-                args.iter().find_map(|a| {
-                    expr_secret_source_m(
-                        a,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                })
-            })
-        }
-        // Non-source Expr variants — enumerated so a new Expr variant forces a decision at compile
-        // time rather than silently returning None. `TaintSource` is a taint-only source and is
-        // not a secret carrier, so it belongs here rather than in the explicit-source list above.
-        // All bound with `(_)` / `{ .. }` are non-code-holding.
-        Expr::Literal(_)
-        | Expr::StrLiteral(_)
-        | Expr::Symbolic { .. }
-        | Expr::TaintSource { .. }
-        | Expr::UnifiedBuffer { .. }
-        | Expr::RawPtr { .. }
-        | Expr::Other(_) => None,
-    }
 }
 
 // ── Interprocedural return-taint summary (`ctx.tainting_fns`) ────────────────────────────────────
@@ -24549,13 +24165,14 @@ fn seed_one_let(
     struct_fields: &PlaceTypes<'_>,
 ) {
     let explicit = is_tainted_type(ty);
-    let init_taint = expr_taint_source_m(
+    let init_taint = expr_source(
         init,
         scope,
         tainting_fns,
         param_return_taint,
         method_tainting_fns,
         struct_fields,
+        SourceLane::Taint,
     );
     let declassified =
         declassify_source(init, scope, tainting_fns, param_return_taint, struct_fields).is_some();
@@ -24630,7 +24247,7 @@ impl SeedPatternLane {
 ///
 /// `source` carries the taint-lane provenance label directly. The secret lane consults
 /// only `source.is_some()` — the semantic-preserving unification of the pre-collapse
-/// `bool` secret-lane parameter, which itself came from an `expr_secret_source_m(...)
+/// `bool` secret-lane parameter, which itself came from an `expr_source(..., SourceLane::Secret)
 /// .is_some()` at every call site.
 fn seed_pattern(
     scope: &mut BTreeMap<String, ScopeBinding>,
@@ -24742,21 +24359,23 @@ fn seed_effect_let(
     // #67: route to the method-aware `_m` variants so a value-block-local `let x = v.key()` inside an
     // effect-analyzed block is labelled from the method return (its sole caller is the enforcing
     // walk_block_effects, so method awareness is always wanted here).
-    let init_taint = expr_taint_source_m(
+    let init_taint = expr_source(
         init,
         scope,
         tainting_fns,
         param_return_taint,
         method_tainting_fns,
         struct_fields,
+        SourceLane::Taint,
     );
-    let init_secret = expr_secret_source_m(
+    let init_secret = expr_source(
         init,
         scope,
         secret_fns,
         param_return_taint,
         method_secret_fns,
         struct_fields,
+        SourceLane::Secret,
     )
     .is_some();
     let declass = declassify_source(init, scope, tainting_fns, param_return_taint, struct_fields);
@@ -25192,21 +24811,23 @@ impl ReturnSummaryLane {
         struct_fields: &PlaceTypes<'_>,
     ) -> Option<String> {
         match self {
-            Self::Taint => expr_taint_source_m(
+            Self::Taint => expr_source(
                 expr,
                 scope,
                 lane_fns,
                 param_return_taint,
                 method_fns,
                 struct_fields,
+                SourceLane::Taint,
             ),
-            Self::Secret => expr_secret_source_m(
+            Self::Secret => expr_source(
                 expr,
                 scope,
                 lane_fns,
                 param_return_taint,
                 method_fns,
                 struct_fields,
+                SourceLane::Secret,
             ),
         }
     }
@@ -25837,13 +25458,14 @@ fn seed_one_let_secret(
     struct_fields: &PlaceTypes<'_>,
 ) {
     let secret = is_secret_type(ty)
-        || expr_secret_source_m(
+        || expr_source(
             init,
             scope,
             secret_fns,
             param_return_taint,
             method_secret_fns,
             struct_fields,
+            SourceLane::Secret,
         )
         .is_some();
     scope.insert(

@@ -200,7 +200,7 @@ def body(pat):
     return None
 
 LABEL_FNS = ['fn walk_block_taint(', 'fn walk_block_secret(',
-             'fn expr_taint_source_m(', 'fn expr_secret_source_m(']
+             'fn expr_source(']
 
 print(f"{'metric':40s} {'value':>10s}   target")
 print("-" * 74)
