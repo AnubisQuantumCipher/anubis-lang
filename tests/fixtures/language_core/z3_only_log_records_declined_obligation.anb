@@ -1,0 +1,17 @@
+// EXPECT: PASS
+// REG-002 mitigation regression fixture (2026-08-13). Division (`bvsdiv`) is deliberately outside
+// the machine-checked native fragment (see `formal/Anubis/BitBlast.lean`), so the native
+// authoritative path declines and z3 answers alone. This is the exact residual REG-002 names —
+// the audit hook writes one JSONL record per z3-only obligation to `ANUBIS_Z3_ONLY_LOG` when
+// the env var is set, but the default behaviour is unchanged (this file must still PASS).
+fn safe_div(a: i64, b: i64) -> i64
+    requires(b > 0)
+    requires(a >= 0)
+    ensures(result >= 0)
+{
+    return a / b;
+}
+
+fn main() {
+    print(safe_div(10, 3));
+}
