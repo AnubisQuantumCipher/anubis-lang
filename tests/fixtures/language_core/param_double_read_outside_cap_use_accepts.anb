@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// Over-rejection guard for REG-003. Reading a parameter multiple times OUTSIDE
+// a `cap_use(...)` context must not trigger capability linearity — the fix is
+// scoped to CAP_USE's argument arm only, not to arbitrary variable reads.
+fn peek(x) {
+    print(x);
+    print(x);
+    return x;
+}
+fn main() {
+    let a = 42;
+    let b = peek(a);
+    print(b);
+    return 0;
+}
