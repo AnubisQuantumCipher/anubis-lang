@@ -4,7 +4,7 @@ See `MATURITY_CLAIM_MATRIX.md` for historical gate rows. Living freeze:
 [`docs/language/SPEC_1_0_FREEZE.md`](language/SPEC_1_0_FREEZE.md) ·
 [`docs/language/SEMVER_1_0_POLICY.md`](language/SEMVER_1_0_POLICY.md).
 
-## Known open issues (2026-07-27)
+## Known open issues (baseline 2026-07-27; entries dated inline)
 
 Any A15/A+ seal dated 2026-07-24 or earlier (`ROADMAP_A_PLUS.md`, `A_PLUS_CLOSEOUT.md`,
 `A_PLUS_FINAL_REPORT.md`, and the tail of `MATURITY_CLAIM_MATRIX.md`) predates every item below —
@@ -150,6 +150,90 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    Softnet hostname policy retains the HARD post-pin DNS-rebind residual; DDC is not TT-total;
    hosted CI does not prove Metal execution; and native general free/signed non-power-of-two
    division remains deferred. Unit or hosted greens must not silently close these boundaries.
+
+5. **REG-001 — precondition fail-open on opaque-provenance arguments (2026-08-13).**
+   The four-way `is_bool_modelable_*` cascade in `compiler/src/middle/mod.rs:7527-7639` drops
+   the caller-side precondition obligation entirely when a clause is judged unmodelable in all
+   four lanes (int / float / string / strlen). The terminal `else` at `:7637-7639` sets
+   `all_requires_checkable = false` without emitting an obligation — so a green `anubis check`
+   does not guarantee call-site preconditions hold when the argument's provenance is opaque to
+   the solver (e.g. the return value of an uncontracted function).
+
+   Reproducer (adversarial-eval preserved 2026-08-13, built from `6f4a141c`):
+
+   ```text
+   fn produce() -> i64 { return 0 - 42; }
+   fn needs_pos(x: i64) -> i64 requires(x > 0) ensures(result == x) { return x; }
+   fn main() { let v = produce(); let r = needs_pos(v); print(r); return 0; }
+   ```
+
+   `anubis check` → **passed**. `anubis run` → prints **-42**, exit 0. Precondition `x > 0` is
+   violated at runtime with no trap. Controls confirm the mechanism is provenance-modelability:
+   literal `-7` FAILS at check (obligation emitted); an `ensures(result == -42)` producer FAILS
+   at check (counterexample `v = -42`); an UNCONTRACTED producer's return silently drops the
+   obligation. The `docs/PROOF_CORRESPONDENCE.md:55-57` acknowledgment ("A value wrongly judged
+   unmodelable silently drops its obligation") names the exact shape; the "runtime assert/trap"
+   backstop it references does not fire on the standard `anubis run` path. This is Phase 3/4
+   work: the fix is to emit the obligation as an unconstrained variable (unknown-never-passes)
+   whenever the cascade falls through, so `anubis check` returns `ANUBIS_ASSERTION_UNPROVEN`
+   rather than PASS.
+
+6. **REG-002 — z3-only fragment is forgeable by a compromised z3 (2026-08-13).**
+   Obligations outside the native Lean-proven fragment (division, remainder, nonlinear beyond
+   native) are decided by z3 alone. If z3 answers `unsat` (= "proven"), the runtime trusts it
+   with no certificate check and no replay — replay is only triggered on `sat`/counterexamples.
+   A malicious z3 that answers premise-satisfiability honestly and forges `unsat` on the proof
+   goal makes a false division contract pass. Threat model: attacker controls the z3 binary.
+
+   Reproducer (adversarial-eval preserved 2026-08-13, malicious z3 script preserved separately):
+
+   ```text
+   fn div_lie(a: i64, b: i64) -> i64
+       requires(b != 0)
+       ensures(result * b == a)     // false in the general case
+   { return a / b; }
+   ```
+
+   Under a stock z3 the ensures fails; under a smart malicious z3 that reports `unsat` on the
+   z3-only fragment, `anubis check` returns PASS. The native fragment is protected — a lying
+   z3 on a native-decidable goal is caught by `ANUBIS_NATIVE_DISAGREE`. The residual is the
+   z3-only surface. This is Phase 4 work: either require z3 to emit a checkable UNSAT proof
+   certificate and replay it in-process, or narrow the trust to the native fragment plus a
+   documented "z3-decided, unchecked" class named on `check --evidence` output.
+
+7. **REG-003 — linear capability double-spend across a parameter boundary (2026-08-13).**
+   `cap_use(tok); cap_use(tok)` on a token acquired LOCALLY is caught with
+   `ANUBIS_CAPABILITY_REUSE`. The identical double-use on a token received as an UNTYPED
+   PARAMETER is not caught — the capability-linearity check does not track consumption count
+   across the caller/callee boundary when the token flows in as an opaque parameter.
+
+   Reproducer (adversarial-eval preserved 2026-08-13):
+
+   ```text
+   fn spend_twice(tok) { cap_use(tok); cap_use(tok); }
+   fn main() { let t = cap_mint("pay:100"); spend_twice(t); return 0; }
+   ```
+
+   `anubis check` → **passed**. Compare with the intra-procedural form
+   `fn main() { let t = cap_mint("pay:100"); cap_use(t); cap_use(t); return 0; }` which
+   correctly returns `ANUBIS_CAPABILITY_REUSE`. The interprocedural check is the failing side.
+   This is Phase 2 work: the walker family that tracks capability consumption needs the same
+   parameter-boundary awareness the identity walker gained in PR #9, and the fix is a
+   lane-parameterized capability walker that threads consumption count through parameter passing.
+
+   **The unifying theme across REG-001 / REG-003.** Both defects live at the interprocedural
+   boundary with an opaque value (an uncontracted return; a parameter-passed token). Anubis's
+   static analyses are strong intra-procedurally and over solver-modelable values, and weaken
+   exactly when a value crosses a function boundary as a dynamic parameter or return. This is
+   the exact disease Phase 2 of `docs/COMPLETION_BLUEPRINT.md` names (*"replace duplicated
+   value-flow walkers with one total, lane-parameterized mechanism"*) and Phase 3 addresses on
+   the security-label side (*"separate the security-label lattice from accept-biased type
+   inference"*).
+
+   The prior instance of the same class caught in this arc was the mutual-recursion identity
+   walker DoS (PR #9): identity walker A's fix did not propagate to the sibling walker family
+   because the family lost depth across a helper's depth-0 wrapper. Same shape, different
+   walker.
 
 ### Phase 1.5 — sealed VZ + metal-prove workflow jobs are explicitly OUT-OF-CI (2026-08-12)
 
