@@ -151,12 +151,12 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    hosted CI does not prove Metal execution; and native general free/signed non-power-of-two
    division remains deferred. Unit or hosted greens must not silently close these boundaries.
 
-5. **REG-001 — precondition fail-open on opaque-provenance arguments (2026-08-13).**
-   The four-way `is_bool_modelable_*` cascade in `compiler/src/middle/mod.rs:7527-7639` drops
-   the caller-side precondition obligation entirely when a clause is judged unmodelable in all
-   four lanes (int / float / string / strlen). The terminal `else` at `:7637-7639` sets
+5. **REG-001 — precondition fail-open on opaque-provenance arguments — CLOSED (2026-08-13, PR #16).**
+   The four-way `is_bool_modelable_*` cascade in `compiler/src/middle/mod.rs:7527-7639` used to drop
+   the caller-side precondition obligation entirely when a clause was judged unmodelable in all
+   four lanes (int / float / string / strlen). The terminal `else` at `:7637-7639` set
    `all_requires_checkable = false` without emitting an obligation — so a green `anubis check`
-   does not guarantee call-site preconditions hold when the argument's provenance is opaque to
+   did not guarantee call-site preconditions held when the argument's provenance was opaque to
    the solver (e.g. the return value of an uncontracted function).
 
    Reproducer (adversarial-eval preserved 2026-08-13, built from `6f4a141c`):
@@ -167,16 +167,25 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    fn main() { let v = produce(); let r = needs_pos(v); print(r); return 0; }
    ```
 
-   `anubis check` → **passed**. `anubis run` → prints **-42**, exit 0. Precondition `x > 0` is
-   violated at runtime with no trap. Controls confirm the mechanism is provenance-modelability:
-   literal `-7` FAILS at check (obligation emitted); an `ensures(result == -42)` producer FAILS
-   at check (counterexample `v = -42`); an UNCONTRACTED producer's return silently drops the
-   obligation. The `docs/PROOF_CORRESPONDENCE.md:55-57` acknowledgment ("A value wrongly judged
-   unmodelable silently drops its obligation") names the exact shape; the "runtime assert/trap"
-   backstop it references does not fire on the standard `anubis run` path. This is Phase 3/4
-   work: the fix is to emit the obligation as an unconstrained variable (unknown-never-passes)
-   whenever the cascade falls through, so `anubis check` returns `ANUBIS_ASSERTION_UNPROVEN`
-   rather than PASS.
+   Pre-fix: `anubis check` → **passed**. `anubis run` → prints **-42**, exit 0. Precondition
+   `x > 0` violated at runtime with no trap.
+
+   **Fix landed 2026-08-13 (PR #16, commit `898c31ff`).** The `Stmt::Let` handler for a
+   `Call` initializer now registers the bound name in `ctx.solver_int_vars` whenever the callee
+   has a declared integer return type, even with no `ensures`. The concrete-ensures loop still
+   applies its constraints when non-empty; the change only removes the "empty ensures" bypass.
+   Post-fix on the same reproducer: `anubis check` → `ANUBIS_ASSERTION_DISPROVED` on
+   `requires@needs_pos:(bvsgt anb_v (_ bv0 64))` with counterexample `v = 0`. The
+   `docs/PROOF_CORRESPONDENCE.md:55-57` acknowledgment ("A value wrongly judged unmodelable
+   silently drops its obligation") no longer applies to this class.
+
+   Downstream demo ripple: the strengthened checker exposed an unstated invariant in
+   `examples/programs/formal_kernel/{formal_kernel,formal_kernel_hard_tests}.anb`, where
+   `dpll`'s "try false" branch computed `0 - br` on a value from `pick_branch_var(...)`. Fixed
+   in the same PR by applying the golden `wrap_guarded_negation_accepts.anb` pattern (explicit
+   `br == i64::MIN` early return + positive-form `br > 0` guard). G25 formal_kernel gate is
+   green on the fixed binary; 1215+ `cargo test --release` and 258/258 G5 language fixtures
+   also green.
 
 6. **REG-002 — z3-only fragment is forgeable by a compromised z3 (2026-08-13).**
    Obligations outside the native Lean-proven fragment (division, remainder, nonlinear beyond
@@ -201,11 +210,11 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    certificate and replay it in-process, or narrow the trust to the native fragment plus a
    documented "z3-decided, unchecked" class named on `check --evidence` output.
 
-7. **REG-003 — linear capability double-spend across a parameter boundary (2026-08-13).**
-   `cap_use(tok); cap_use(tok)` on a token acquired LOCALLY is caught with
+7. **REG-003 — linear capability double-spend across a parameter boundary — CLOSED (2026-08-13, PR #15).**
+   Pre-fix: `cap_use(tok); cap_use(tok)` on a token acquired LOCALLY was caught with
    `ANUBIS_CAPABILITY_REUSE`. The identical double-use on a token received as an UNTYPED
-   PARAMETER is not caught — the capability-linearity check does not track consumption count
-   across the caller/callee boundary when the token flows in as an opaque parameter.
+   PARAMETER was not caught — the capability-linearity check did not track consumption count
+   across the caller/callee boundary when the token flowed in as an opaque parameter.
 
    Reproducer (adversarial-eval preserved 2026-08-13):
 
@@ -214,21 +223,33 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    fn main() { let t = cap_mint("pay:100"); spend_twice(t); return 0; }
    ```
 
-   `anubis check` → **passed**. Compare with the intra-procedural form
-   `fn main() { let t = cap_mint("pay:100"); cap_use(t); cap_use(t); return 0; }` which
-   correctly returns `ANUBIS_CAPABILITY_REUSE`. The interprocedural check is the failing side.
-   This is Phase 2 work: the walker family that tracks capability consumption needs the same
-   parameter-boundary awareness the identity walker gained in PR #9, and the fix is a
-   lane-parameterized capability walker that threads consumption count through parameter passing.
+   Pre-fix: `anubis check` → **passed**. Intra-procedural form
+   `fn main() { let t = cap_mint("pay:100"); cap_use(t); cap_use(t); return 0; }` correctly
+   returned `ANUBIS_CAPABILITY_REUSE`; the interprocedural form was the failing side.
 
-   **The unifying theme across REG-001 / REG-003.** Both defects live at the interprocedural
+   **Fix landed 2026-08-13 (PR #15, commit `2eaf6cd2`).** The store-then-project path in
+   `compiler/src/middle/capability.rs` at `note_container_ne_mutation` was silently draining
+   unknown-provenance callee args; the walker now tracks the callee's use as a real consumption
+   even when the token's provenance is a formal parameter. Post-fix on the reproducer:
+   `anubis check` → `ANUBIS_CAPABILITY_REUSE`. Regression fixtures
+   (`tests/fixtures/language_core/capability_double_use_via_param_rejects.anb` and the
+   accepting variants) landed alongside.
+
+   **The unifying theme across REG-001 / REG-003.** Both defects lived at the interprocedural
    boundary with an opaque value (an uncontracted return; a parameter-passed token). Anubis's
-   static analyses are strong intra-procedurally and over solver-modelable values, and weaken
-   exactly when a value crosses a function boundary as a dynamic parameter or return. This is
+   static analyses are strong intra-procedurally and over solver-modelable values, and weakened
+   exactly when a value crossed a function boundary as a dynamic parameter or return. This is
    the exact disease Phase 2 of `docs/COMPLETION_BLUEPRINT.md` names (*"replace duplicated
    value-flow walkers with one total, lane-parameterized mechanism"*) and Phase 3 addresses on
    the security-label side (*"separate the security-label lattice from accept-biased type
    inference"*).
+
+   **Status 2026-08-13.** REG-001 CLOSED (PR #16, `898c31ff`) — the modelability cascade now
+   registers the return of any int-typed call as a solver var, so downstream precondition
+   obligations are checked. REG-003 CLOSED (PR #15, `2eaf6cd2`) — capability linearity now
+   tracks consumption across parameter boundaries. The remaining lane in this class is REG-002
+   (z3-only fragment forgeability) — different mechanism, same theme (trust boundary is where
+   the guarantee lives), tracked as item 6 above.
 
    The prior instance of the same class caught in this arc was the mutual-recursion identity
    walker DoS (PR #9): identity walker A's fix did not propagate to the sibling walker family
