@@ -2571,6 +2571,38 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                     if provably_non_capability(arg) {
                         lin.missing();
                     }
+                    // REG-003 (2026-08-13): intra-procedural linearity for an unknown-provenance
+                    // formal parameter. Prior behaviour: a callee body like
+                    //     fn spend_twice(tok) { cap_use(tok); cap_use(tok); }
+                    // walked `use_var("tok")` twice, each time finding `caps.get("tok") = None`
+                    // and hitting the `_ =>` accept-bias at `use_var:1445`. The second `cap_use`
+                    // was not flagged, so a call `spend_twice(t)` where `t` is a live capability
+                    // silently double-spent it. `docs/CLAIMS.md` § REG-003 (2026-08-13).
+                    //
+                    // Fix: after `walk_expr(arg)` has run (use_var already saw None and did
+                    // nothing), if the arg is a bare formal parameter and no token is tracked,
+                    // insert `Consumed` — first cap_use of a param is honoured; the SECOND
+                    // `cap_use(same_param)` will then hit `Some(Consumed)` in `use_var` and
+                    // fire `ANUBIS_CAPABILITY_REUSE`. Kind is None (params never authorize
+                    // effects — the header's INTRAPROCEDURAL causal-spend rule stands).
+                    //
+                    // Non-weakening: this only tightens `cap_use(param); cap_use(param)` from
+                    // silent-accept to reuse-rejection. `cap_use(param)` once is unchanged
+                    // (accept-biased, as before). Reads of a param OUTSIDE `cap_use(...)` are
+                    // unchanged (the insert only happens inside the CAP_USE arm). And a
+                    // non-parameter unknown name still hits the accept-bias in `use_var`.
+                    if let Expr::Var(n) = arg {
+                        if lin.params.contains(n) && caps.get(n).is_none() {
+                            caps.insert(
+                                n.clone(),
+                                CapToken {
+                                    state: CapState::Consumed,
+                                    kind: None,
+                                    non_exportable: false,
+                                },
+                            );
+                        }
+                    }
                 }
             } else if !lin.all_fns.contains(callee) {
                 // Composition: a DIRECT builtin call performing a privileged effect.

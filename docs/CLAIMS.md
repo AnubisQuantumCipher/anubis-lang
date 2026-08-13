@@ -81,7 +81,7 @@ instrument; do not substitute mutable `./target/release/anubis`.
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 923 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 926 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -733,21 +733,21 @@ never terminates is a check/run divergence of a different kind, and is being cha
     Poison/accept guards: `research_build_requires_explicit_consent_and_vz_before_lowering`,
     `whole_program_callers_share_the_same_mode_derived_research_boundary`, and
     `research_block_local_field_access_and_ordinary_twin_both_lower`. At the deciding technical
-    epoch, compiler library **771/771**, language **255/255**, security **327/327**, stdlib
+    epoch, compiler library **771/771**, language **258/258**, security **327/327**, stdlib
     fail-closed **104/104**, PCA **19/19**, and the independent direct/carrier/dead-branch
     falsification matrix **9/9** passed. The current source-matching disposable-guest receipts are
     recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`.
 
     The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) is retained as
-    a failed receipt, not promoted: security **327/327**, language **255/255**, stdlib fail-closed
-    **104/104**; the current native-authoritative corpus is **923 files**, while that failed receipt
+    a failed receipt, not promoted: security **327/327**, language **258/258**, stdlib fail-closed
+    **104/104**; the current native-authoritative corpus is **926 files**, while that failed receipt
     graded 916 files with 0 mismatches; the measured builtin inventory was
     **213 builtins**, while check/run parity and the documentation-coverage floor were RED. Phase 1
     repairs those observed blockers and must rerun.
 
     The audited source-bound rerun at `out/phase1_host_seal_audited_20260730T154003Z` mechanically
     returned `SEAL_PASS` with 18/18 declared gates on pin `anubis-4dc5a51df23b`. It is **not promoted
-    to a whole-tree seal**: native-authoritative enumerated **923 files** from the live disk while the
+    to a whole-tree seal**: native-authoritative enumerated **926 files** from the live disk while the
     docs gate enumerated **916 tracked files**. Five untracked `.anb` files explain the difference;
     silently narrowing either side or staging unrelated showcase work is forbidden. The discrepancy
     was a technical HOLD pending trust-surface sign-off.
@@ -1342,9 +1342,9 @@ and cannot verify later repairs.
     | compiler lib | **766/766** — source-current W1 suite, including recursive malformed-slot tests |
     | tool unit suite | **351/351** plus all integration harnesses green |
     | security corpus | **327/327** — includes the ten annotated list/map/generic/parameter fixtures |
-    | language corpus | **255/255** |
+    | language corpus | **258/258** |
     | stdlib fail-closed | **104/104**, `timed_out=0` |
-    | native-authoritative | current corpus **923 files**; this W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
+    | native-authoritative | current corpus **926 files**; this W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
     | formal | **162 theorems / 15 modules**, machine-checked; no `sorry`/`admit`/free `axiom` |
     | immutable candidate | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; source-tree verification PASS |
 
@@ -1398,9 +1398,9 @@ and cannot verify later repairs.
     | compiler library | **766/766 PASS** |
     | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
     | security | **327/327 PASS** |
-    | language | **255/255 PASS** |
+    | language | **258/258 PASS** |
     | stdlib fail-closed | **104/104 PASS** |
-    | native-authoritative | current corpus **923 files**; this W1 receipt graded 916 files, 0 mismatches |
+    | native-authoritative | current corpus **926 files**; this W1 receipt graded 916 files, 0 mismatches |
     | formal inventory | **162 theorems / 15 modules**, gate PASS |
     | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
 
@@ -2342,7 +2342,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Evidence bundle + tamper detection | package gate path `scripts/run_package_gate.sh` (seal history); unit evidence/tamper tests | Re-run package gate for live CI claims |
 | RISC0 receipt path (in-process) | prove/verify path + A15 gate history; shape + `Receipt::verify` API | Hosted Metal proving **not claimed** |
 | Metal parity (local Apple Silicon) | local Tier-2 parity history in A15 / doctor | Not hosted GPU prove |
-| Language core (fixtures + repro) | **255/255** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
+| Language core (fixtures + repro) | **258/258** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures; vault contacts `run` EXIT=0 post-PTAH | Research/exploit needs `--allow-research` + VZ where required; **proof/shell constructs are non-run by design** (CLAIMS open §2 (B)); (R) preflight false-rejects **closed**; *check ≠ run for proof/shell* is a named product residual, not a checker gap |
 | Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical narrative in `docs/language/ROADMAP.md` | **Named residual:** published reds empty ≠ Class D / D1–D6 closed; green board is not COMPLETE |
