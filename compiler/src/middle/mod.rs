@@ -22710,12 +22710,11 @@ impl BlockLabelDomain<'_> {
         source: &Option<String>,
         struct_fields: &PlaceTypes<'_>,
     ) {
-        match self {
-            Self::Taint { .. } => seed_taint_pattern(scope, pattern, source, struct_fields),
-            Self::Secret { .. } => {
-                seed_secret_pattern(scope, pattern, source.is_some(), struct_fields)
-            }
-        }
+        let lane = match self {
+            Self::Taint { .. } => SeedPatternLane::Taint,
+            Self::Secret { .. } => SeedPatternLane::Secret,
+        };
+        seed_pattern(scope, pattern, source, lane, struct_fields);
     }
 
     fn assign_binding(self, binding: &mut ScopeBinding, source: Option<String>) {
@@ -23592,7 +23591,13 @@ fn expr_taint_source_m(
             );
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
-                seed_taint_pattern(&mut local, &arm.pattern, &scrut, struct_fields);
+                seed_pattern(
+                    &mut local,
+                    &arm.pattern,
+                    &scrut,
+                    SeedPatternLane::Taint,
+                    struct_fields,
+                );
                 expr_taint_source_m(
                     &arm.body,
                     &local,
@@ -23619,7 +23624,13 @@ fn expr_taint_source_m(
                 struct_fields,
             );
             let mut local = scope.clone();
-            seed_taint_pattern(&mut local, pattern, &scrut, struct_fields);
+            seed_pattern(
+                &mut local,
+                pattern,
+                &scrut,
+                SeedPatternLane::Taint,
+                struct_fields,
+            );
             expr_taint_source_m(
                 then,
                 &local,
@@ -24285,11 +24296,16 @@ fn expr_secret_source_m(
                 param_return_taint,
                 method_secret_fns,
                 struct_fields,
-            )
-            .is_some();
+            );
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
-                seed_secret_pattern(&mut local, &arm.pattern, scrut, struct_fields);
+                seed_pattern(
+                    &mut local,
+                    &arm.pattern,
+                    &scrut,
+                    SeedPatternLane::Secret,
+                    struct_fields,
+                );
                 // A LAMBDA arm value is opaque at its definition — safe only while every application
                 // site descends in a scope that still holds what it captured. A closure built in an
                 // arm and returned OUT of the match escapes the arm scope, so the binder's label is
@@ -24337,10 +24353,15 @@ fn expr_secret_source_m(
                 param_return_taint,
                 method_secret_fns,
                 struct_fields,
-            )
-            .is_some();
+            );
             let mut local = scope.clone();
-            seed_secret_pattern(&mut local, pattern, scrut, struct_fields);
+            seed_pattern(
+                &mut local,
+                pattern,
+                &scrut,
+                SeedPatternLane::Secret,
+                struct_fields,
+            );
             expr_secret_source_m(
                 then,
                 &local,
@@ -24573,55 +24594,96 @@ fn seed_one_let(
     );
 }
 
-/// Seed every name a pattern binds into `scope` with the given TAINT label — the whole-scrutinee /
-/// whole-initializer label (conservative whole-value granularity, matching the `Index`/
-/// `FieldAccess` arms: destructuring a tainted aggregate taints every bound part). Inserting
-/// OVERWRITES an outer same-named binding — the pattern var SHADOWS it, which is the accept-bias
-/// half of the scope-aware walk. Sets `tainted` and `taint_source` TOGETHER: the `Var` arm gates on
-/// BOTH fields (`.filter(tainted)`), so a label written without the flag would be silently dropped
-/// (a one-sided false negative the design review caught before it shipped).
-fn seed_taint_pattern(
+/// Identifies which security-label lane a pattern-seed operation is running on.
+///
+/// Scoped narrowly to `seed_pattern`; distinct from `BlockLabelDomain` because the seed
+/// operation needs only the qualifier predicate and does not consult the function-summary
+/// tables carried by the block-walker domain. Explicitly enumerating the lane at every
+/// call site keeps a future third lane from silently reintroducing a duplicated twin
+/// beside the collapsed pair.
+#[derive(Clone, Copy)]
+enum SeedPatternLane {
+    Taint,
+    Secret,
+}
+
+impl SeedPatternLane {
+    /// The declared-qualifier predicate a pattern binder consults to decide whether an
+    /// enum payload / struct field is labelled at its DECLARED type regardless of the
+    /// scrutinee's label at this call site.
+    fn declared_qualifier(self) -> fn(&str) -> bool {
+        match self {
+            SeedPatternLane::Taint => ty::is_tainted,
+            SeedPatternLane::Secret => ty::is_secret,
+        }
+    }
+}
+
+/// Lane-parameterized replacement for the historical `seed_taint_pattern` /
+/// `seed_secret_pattern` twin. Both lanes seeded the same `ScopeBinding` skeleton with
+/// the same enum-payload / struct-field D4 escalation; they differed only in which
+/// label bit (`info.taint_source` + `info.tainted` vs `secret`) received the write and
+/// which qualifier predicate `qualified_pattern_binders` consulted. Splitting those
+/// two lanes across two top-level functions turned every change to the shared shape
+/// into a two-place edit, which is exactly how the D4 seam gap (declared enum payload
+/// learned on one lane, dropped on the other) reached the tree.
+///
+/// `source` carries the taint-lane provenance label directly. The secret lane consults
+/// only `source.is_some()` — the semantic-preserving unification of the pre-collapse
+/// `bool` secret-lane parameter, which itself came from an `expr_secret_source_m(...)
+/// .is_some()` at every call site.
+fn seed_pattern(
     scope: &mut BTreeMap<String, ScopeBinding>,
     pattern: &Pattern,
-    label: &Option<String>,
+    source: &Option<String>,
+    lane: SeedPatternLane,
     types: &PlaceTypes<'_>,
 ) {
-    // D4 integrity parity, confirmed a REAL residual (not a designed asymmetry) by GROK-HORUS's
-    // seam gate: `seed_secret_pattern` learned declared enum payloads and this twin did not, so a
-    // payload declared `tainted<T>` was labelled on the confidentiality side and not on the
-    // integrity side. Same rule, same place, or the two lanes drift — which is this file's most
-    // repeated defect.
+    // D4 escalation: a binder whose DECLARED enum-payload / struct-field type carries
+    // this lane's qualifier is labelled regardless of whether the scrutinee was.
     let mut declared = BTreeSet::new();
-    qualified_pattern_binders(pattern, types, ty::is_tainted, &mut declared);
+    qualified_pattern_binders(pattern, types, lane.declared_qualifier(), &mut declared);
     for n in pattern.bound_names() {
-        let label = &if label.is_none() && declared.contains(&n) {
-            Some(format!("declared enum payload `{n}`"))
-        } else {
-            label.clone()
-        };
-        scope.insert(
-            n.clone(),
-            ScopeBinding {
-                info: BindingInfo {
-                    name: n,
-                    ty: None,
-                    mode: String::new(),
-                    tainted: label.is_some(),
-                    taint_source: label.clone(),
-                    declassified: false,
-                    span: None,
-                },
-                closure_arity: None,
-                closure_lambda: None,
-                field_closures: BTreeMap::new(),
-                fn_alias: None,
-                fn_identities: FnIdentitySet::Unknown,
-                field_fn_identities: BTreeMap::new(),
-                builtin_gate_tags: BuiltinGateTags::Unknown,
-                field_builtin_gate_tags: BTreeMap::new(),
-                secret: false,
+        let is_declared_here = declared.contains(&n);
+        let mut binding = ScopeBinding {
+            info: BindingInfo {
+                name: n.clone(),
+                ty: None,
+                mode: String::new(),
+                tainted: false,
+                taint_source: None,
+                declassified: false,
+                span: None,
             },
-        );
+            closure_arity: None,
+            closure_lambda: None,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
+            secret: false,
+        };
+        match lane {
+            SeedPatternLane::Taint => {
+                // Set BOTH `tainted` and `taint_source` — the `Var` arm gates on both
+                // (`.filter(tainted)`), so a label without the flag would be silently
+                // dropped (a one-sided false negative the design review caught before
+                // it shipped). Preserves the pre-collapse `seed_taint_pattern` semantics.
+                let label = if source.is_none() && is_declared_here {
+                    Some(format!("declared enum payload `{n}`"))
+                } else {
+                    source.clone()
+                };
+                binding.info.tainted = label.is_some();
+                binding.info.taint_source = label;
+            }
+            SeedPatternLane::Secret => {
+                binding.secret = source.is_some() || is_declared_here;
+            }
+        }
+        scope.insert(n, binding);
     }
 }
 
@@ -25190,7 +25252,13 @@ fn body_returns_taint(
                     method_tainting_fns,
                     struct_fields,
                 );
-                seed_taint_pattern(scope, pattern, &label, struct_fields);
+                seed_pattern(
+                    scope,
+                    pattern,
+                    &label,
+                    SeedPatternLane::Taint,
+                    struct_fields,
+                );
             }
             Stmt::If { then, else_, .. } => {
                 // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
@@ -25672,9 +25740,6 @@ fn seed_one_let_secret(
     );
 }
 
-/// Seed every name a pattern binds into `scope` with the given SECRECY flag — the confidentiality
-/// dual of `seed_taint_pattern` (single-field: the secret walker's `Var` arm gates only on
-/// `.secret`). Inserting overwrites an outer same-named binding (shadow).
 /// Names a pattern binds whose DECLARED enum-payload type carries an information-flow qualifier.
 ///
 /// D4: `enum E { A(secret<i64>) }` then `match e { E::A(x) => print(x) }` leaked. The arm binders are
@@ -25750,44 +25815,6 @@ fn qualified_pattern_binders(
     }
 }
 
-fn seed_secret_pattern(
-    scope: &mut BTreeMap<String, ScopeBinding>,
-    pattern: &Pattern,
-    secret: bool,
-    types: &PlaceTypes<'_>,
-) {
-    // D4: a binder whose DECLARED enum-payload type is `secret<T>` is secret regardless of whether
-    // the SCRUTINEE was — the qualifier is on the payload, not the enum value.
-    let mut declared = BTreeSet::new();
-    qualified_pattern_binders(pattern, types, ty::is_secret, &mut declared);
-    for n in pattern.bound_names() {
-        let secret = secret || declared.contains(&n);
-        scope.insert(
-            n.clone(),
-            ScopeBinding {
-                info: BindingInfo {
-                    name: n,
-                    ty: None,
-                    mode: String::new(),
-                    tainted: false,
-                    taint_source: None,
-                    declassified: false,
-                    span: None,
-                },
-                closure_arity: None,
-                closure_lambda: None,
-                field_closures: BTreeMap::new(),
-                fn_alias: None,
-                fn_identities: FnIdentitySet::Unknown,
-                field_fn_identities: BTreeMap::new(),
-                builtin_gate_tags: BuiltinGateTags::Unknown,
-                field_builtin_gate_tags: BTreeMap::new(),
-                secret,
-            },
-        );
-    }
-}
-
 /// Whether any value a function body can RETURN carries a secret — the dual of `body_returns_taint`,
 /// same lexical-block-scope discipline (snapshot/restore around every block, so a block-local `let`
 /// shadow does not leak past its block and a `return` after the block sees the outer binding).
@@ -25856,16 +25883,21 @@ fn body_returns_secret(
                 }) {
                     return true;
                 }
-                let secret = expr_secret_source_m(
+                let scrut = expr_secret_source_m(
                     init,
                     scope,
                     secret_fns,
                     param_return_taint,
                     method_secret_fns,
                     struct_fields,
-                )
-                .is_some();
-                seed_secret_pattern(scope, pattern, secret, struct_fields);
+                );
+                seed_pattern(
+                    scope,
+                    pattern,
+                    &scrut,
+                    SeedPatternLane::Secret,
+                    struct_fields,
+                );
             }
             Stmt::If { then, else_, .. } => {
                 let saved = scope.clone();
