@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// D4 taint-side residual explicitly named in `PHASE_2_COMPLETION_2026-08-13.md` §9.7 and
+// preserved when PR #24 unified `body_returns_taint`/`body_returns_secret` into `body_returns`.
+// Direct integrity twin of `declared_secret_enum_payload_whilelet_summary_rejects.anb`: a
+// `tainted<i64>` payload extracted through a `while let` binder and RETURNED leaks at the call
+// site, because `body_returns`'s Secret arm called `seed_while_let_binders` on this pattern
+// while the Taint arm bailed at the top of that helper. Fix: unify the helper across both
+// lanes (uses `seed_pattern_lane().declared_qualifier()` + `mark_root_labelled`).
+enum E { A(tainted<i64>), B }
+fn get() -> i64 {
+    let mut cur = E::A(42);
+    while let E::A(x) = cur {
+        return x;
+    }
+    return 0;
+}
+fn main() uses(shell) { shell(get()); }
