@@ -24903,22 +24903,36 @@ impl ReturnSummaryLane {
         }
     }
 
-    /// Secret-only `while let` declared-payload seeder. Taint is a no-op so this
-    /// unification does not close the D4 taint-side gap in the same slice.
+    /// Lane-parameterized `while let` declared-payload seeder. Closes the D4 taint-side
+    /// residual explicitly named in the second-rewrite `PHASE_2_COMPLETION_2026-08-13.md`
+    /// § 9.7: prior to this slice the Secret arm seeded declared enum-payload / struct-field
+    /// binders and the Taint arm bailed out at the top, so a function that internally
+    /// destructured a `tainted<T>` payload through `while let ... = ...` and returned the
+    /// binding was NOT seen as returning tainted data; callers of that function then
+    /// passed the "clean" return value to a sink and the summary-side check accepted.
+    /// The direct (enforcing-lane) form was already caught in both lanes; only the
+    /// summary path — this helper's only caller, inside `body_returns` — needed the fix.
+    ///
+    /// The lane picks its own declared-qualifier predicate through `SeedPatternLane`
+    /// (the same routing the collapsed `seed_pattern` twin uses) and the label bit
+    /// through `mark_root_labelled`, so any future third lane adopts both writes by
+    /// implementing the two lane helpers instead of touching this function.
     fn seed_while_let_binders(
         self,
         stmt: &Stmt,
         scope: &mut BTreeMap<String, ScopeBinding>,
         struct_fields: &PlaceTypes<'_>,
     ) {
-        if !matches!(self, Self::Secret) {
-            return;
-        }
         let Stmt::WhileLet { pattern, .. } = stmt else {
             return;
         };
         let mut names = BTreeSet::new();
-        qualified_pattern_binders(pattern, struct_fields, ty::is_secret, &mut names);
+        qualified_pattern_binders(
+            pattern,
+            struct_fields,
+            self.seed_pattern_lane().declared_qualifier(),
+            &mut names,
+        );
         for n in names {
             let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
                 info: BindingInfo {
@@ -24940,7 +24954,7 @@ impl ReturnSummaryLane {
                 field_builtin_gate_tags: BTreeMap::new(),
                 secret: false,
             });
-            b.secret = true;
+            self.mark_root_labelled(b, format!("declared enum payload `{n}`"));
         }
     }
 }

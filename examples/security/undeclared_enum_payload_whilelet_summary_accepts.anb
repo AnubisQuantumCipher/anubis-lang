@@ -1,0 +1,14 @@
+// EXPECT: PASS
+// Accept-side guard for the D4 WhileLet taint-side unification: the seeder must fire only for
+// binders whose DECLARED enum-payload / struct-field type carries the `tainted<T>` qualifier.
+// This fixture has an undeclared `i64` payload extracted through `while let` and returned to a
+// `shell` sink — no taint carrier declared anywhere, so the summary MUST accept.
+enum E { A(i64), B }
+fn get() -> i64 {
+    let mut cur = E::A(42);
+    while let E::A(x) = cur {
+        return x;
+    }
+    return 0;
+}
+fn main() uses(shell) { shell(get()); }
