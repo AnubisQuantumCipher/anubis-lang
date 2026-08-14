@@ -26,7 +26,14 @@ UPDATE=0
 SELF_TEST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --root)      ROOT="$2"; shift 2 ;;
+    --root)
+      if [[ $# -lt 2 ]]; then
+        echo "PHASE_3_LABEL_CENSUS: FAIL (missing value for --root)"
+        exit 2
+      fi
+      ROOT="$2"
+      shift 2
+      ;;
     --update)    UPDATE=1; shift ;;
     --self-test) SELF_TEST=1; shift ;;
     -h|--help)
@@ -40,20 +47,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ROOT="$(cd "$ROOT" && pwd)"
+set +e
+CANON_ROOT="$(cd "$ROOT" && pwd)"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]]; then
+  echo "PHASE_3_LABEL_CENSUS: FAIL (invalid root: $ROOT)"
+  exit 2
+fi
+ROOT="$CANON_ROOT"
 
 if [[ "$SELF_TEST" == "1" ]]; then
   # Run the census regression unittest suite. This is the RED guard that
   # keeps a regression in the tool itself (word-boundary drop, first-match
   # undercount, missing --update bootstrap) from silently passing the gate.
   cd "$ROOT"
-  if python3 -m unittest -v scripts.test_phase3_label_census 1>&2; then
+  set +e
+  python3 -m unittest -v scripts.test_phase3_label_census 1>&2
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]]; then
     echo "PHASE_3_LABEL_CENSUS_SELFTEST: PASS"
     exit 0
-  else
-    echo "PHASE_3_LABEL_CENSUS_SELFTEST: FAIL"
-    exit 1
   fi
+  echo "PHASE_3_LABEL_CENSUS_SELFTEST: FAIL"
+  exit "$rc"
 fi
 
 CENSUS_TOOL="$ROOT/scripts/lib/phase3_label_census.py"
@@ -74,6 +92,7 @@ if [[ "$UPDATE" == "1" ]]; then
   # must hand-classify it before landing. Bootstraps when EXPECT_FILE is
   # absent (the Python block tolerates FileNotFoundError).
   mkdir -p "$(dirname "$EXPECT_FILE")"
+  set +e
   python3 - "$ROOT" "$EXPECT_FILE" <<'PY'
 import sys, subprocess
 root, expect = sys.argv[1], sys.argv[2]
@@ -94,8 +113,11 @@ except FileNotFoundError:
 
 r = subprocess.run(
     ["python3", f"{root}/scripts/lib/phase3_label_census.py", "--root", root],
-    capture_output=True, text=True, check=True,
+    capture_output=True, text=True,
 )
+if r.returncode != 0:
+    sys.stderr.write(r.stderr)
+    sys.exit(r.returncode)
 lines = r.stdout.strip().splitlines()
 
 rows = ["fn\tfield\twrites\treads\tkind\ttarget_slice\tnotes"]
@@ -111,11 +133,24 @@ with open(expect, "w") as fh:
     fh.write("\n".join(rows) + "\n")
 print(f"wrote {expect} with {len(rows)} rows")
 PY
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    echo "PHASE_3_LABEL_CENSUS: FAIL (update failed, rc=$rc)"
+    exit "$rc"
+  fi
   echo "PHASE_3_LABEL_CENSUS: UPDATED"
   exit 0
 fi
 
+set +e
 CURRENT="$(python3 "$CENSUS_TOOL" --root "$ROOT")"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]]; then
+  echo "PHASE_3_LABEL_CENSUS: FAIL (census tool rc=$rc)"
+  exit "$rc"
+fi
 
 # Normalise expected: strip TSV header and the classification columns; keep only
 # the (fn, field, writes, reads) tuples the tool produces, and the __totals__
