@@ -6741,7 +6741,7 @@ fn main() {
             "$RUNNER_TEMP/anubis-elan.XXXXXX",
             "required=(gate_report.json gate_log.txt profile_environment.txt attestation_identity.txt)",
             "hosted gate report mismatch for",
-            "hosted gate report must contain exactly 29 gate rows",
+            "hosted gate report must contain exactly 30 gate rows",
             "hosted gate report gate roster mismatch",
             "external != [\"G9_poc_kit\"]",
             "8bb3439772cafd75240d61abf255e89122850bab93563d1283b048359ab4e88f",
@@ -6779,7 +6779,7 @@ fn main() {
         }
         let runner = std::fs::read_to_string(root.join("scripts/audit_unified.sh"))
             .expect("scripts/audit_unified.sh must exist");
-        for g in 1..=29 {
+        for g in 1..=30 {
             let marker = format!("\"G{g}_");
             assert!(
                 runner.contains(&marker),

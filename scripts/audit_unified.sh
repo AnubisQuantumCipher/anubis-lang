@@ -536,6 +536,29 @@ else
   gate "G29_host_resource_contract" "FAIL" "fault suite failed or emitted missing/duplicate/malformed summary (see g29_host_resource_contract.log)"
 fi
 
+# G30: Completion Blueprint Phase 3 label-site census.
+#
+# The blueprint's Phase 3 statement is to separate the security-label lattice from accept-biased
+# type inference. Before any migration, every direct read/write of `ScopeBinding.info.tainted /
+# .taint_source / .declassified / .secret` in `compiler/src/middle/mod.rs` is enumerated by
+# `scripts/lib/phase3_label_census.py` and diffed against the hand-classified
+# `docs/phase3/label_census.tsv`. A newly-appeared writer/reader function, a change in the
+# (writes, reads) shape of an existing bucket, or an unclassified row fails the gate.
+#
+# This is the "unclassified constructors fail the gate" clause from the mission. The gate is
+# INTENDED to bind Slices 2-5: as label sites migrate to the explicit lattice, the classified
+# expectation shrinks, and any regression that resurrects a legacy site fails closed.
+# The gate first runs its RED self-test (regression suite that catches a word-boundary drop,
+# first-match undercount, and missing --update bootstrap in the tool itself), then the live
+# comparison. Mirrors the G24/G26 self-test-before-live pattern; a broken census that PASSes the
+# live scan by construction is a real failure mode this guard exists to catch.
+if bash scripts/run_phase3_label_census.sh --self-test >"$OUT/g30_phase3_label_census_selftest.log" 2>&1 \
+  && bash scripts/run_phase3_label_census.sh >"$OUT/g30_phase3_label_census.log" 2>&1; then
+  gate "G30_phase3_label_census" "PASS" "self-test passed; label-site census matches classified expectation"
+else
+  gate "G30_phase3_label_census" "FAIL" "self-test or live scan failed (see g30_phase3_label_census_selftest.log and g30_phase3_label_census.log)"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
@@ -547,7 +570,7 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel G26_proof_correspondence G27_phase_metrics_ledger G28_corpus_inventory_binding G29_host_resource_contract"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel G26_proof_correspondence G27_phase_metrics_ledger G28_corpus_inventory_binding G29_host_resource_contract G30_phase3_label_census"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do

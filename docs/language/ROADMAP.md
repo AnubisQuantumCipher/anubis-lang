@@ -145,6 +145,130 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > queued; self-host registry host-fixed **VM seal pending** (no public post-drift fixpoint);
 > VZ safety residual. See `docs/CLAIMS.md` § Known open issues.
 
+## Completion Blueprint Phase 3 — security-label lattice (opened 2026-08-14)
+
+> **Numbering disambiguation (load-bearing).** This file's historical `Phase 0`–`Phase 10`
+> arc is the **legacy roadmap numbering** authored 2026-07-14. The section below tracks the
+> orthogonal **Completion Blueprint** numbering defined in
+> [`docs/COMPLETION_BLUEPRINT.md`](../COMPLETION_BLUEPRINT.md), whose Phases 0/1/1.5/2 already
+> have signed completion receipts under `docs/evidence/`. A legacy `Phase 3 solver lane` or
+> `Phase 4 done` heading in this file does **not** satisfy Completion Blueprint Phase 3/4/5;
+> always disambiguate as *Completion Phase N* vs *legacy roadmap Phase N*, and never rewrite
+> dated historical evidence to make the numbering look cleaner.
+>
+> Completion Phase 3 statement (blueprint §55): **"Separate the security-label lattice from
+> accept-biased type inference."**
+>
+> **Verdict this file MUST show for Completion Phase 3: OPEN.** Living residuals: see
+> [`docs/CLAIMS.md`](../CLAIMS.md) — this section does not maintain a second parallel residual
+> inventory. Only the completion receipt
+> `docs/evidence/PHASE_3_COMPLETION_2026-08-14.md` (does not yet exist on `main`) may claim
+> COMPLETE, and only when every criterion below is met against the exact final commit.
+
+### Phase 3 exit criteria — one row per criterion
+
+| # | Criterion | State | Gate / evidence pointer |
+|---|---|---|---|
+| 1 | `ScopeBinding` security state can represent `Clean`, `Labeled`, `Unknown` independently of ordinary type inference. | ⬜ OPEN | Domain not yet introduced; current fields are `bool tainted` / `Option<String> taint_source` / `bool declassified` / `bool secret` — the boolean/`Option`-means-clean shape the blueprint targets. |
+| 2 | Every security-label producer, transfer, join, path mutation, and terminal consumer is enumerated by a maintained gate/census; new AST variants or unclassified constructors fail the gate. | ⬜ OPEN | `scripts/run_phase3_label_census.sh` (Slice 1 gate; enumerates every direct read/write of the four `ScopeBinding` label fields grouped by enclosing `fn`). |
+| 3 | No security-sensitive terminal consumer treats `Unknown` as `Clean`. | ⬜ OPEN | Requires (1) + (2) + Slice 5 promotion. Shadow-log first, then promote. |
+| 4 | Known qualifiers and runtime-derived labels survive type-precision loss across all claimed carriers. | ⬜ OPEN | Requires Slices 2–4 across params, returns, patterns, control-flow, loops, calls, closures, aggregates, mutations, joins. |
+| 5 | Integrity and confidentiality use one shared total transfer mechanism with explicit lane hooks; no duplicated taint/secret statement/source/return pair is reintroduced. | 🟡 PARTIAL (baseline held) | `scripts/phase_metrics.sh` reports `duplicated lane pairs = 0` on Completion Phase 2 close (`eeef57cf`); Phase 3 must preserve this — no new twins under the new lattice. |
+| 6 | Ordinary type inference remains accept-biased only outside security-sensitive decisions; the hostile clean/unknown controls prevent blanket over-rejection. | ⬜ OPEN | Requires the hostile matrix (below) to exhibit clean-accept twins alongside labeled-reject rows. |
+| 7 | RED/GREEN/accept/alternate-carrier/dead-branch and A→B→A evidence exists for every enforcing slice. | ⬜ OPEN | Slice 5 enforcing PRs; per-slice receipts. |
+| 8 | Unit tests, language fixtures, security fixtures, walker completeness, phase metrics, docs drift, formatter, clippy, and canonical CI are green on the exact final commit. | ⬜ OPEN | Baseline is green on `eeef57cf`; must remain green through the entire Phase 3 arc. |
+| 9 | A current source-bound immutable pin is published by the active lead and verified against the tree before final semantic claims. | ⬜ OPEN | Pin publication is a lead action at Phase 3 close. |
+| 10 | The canonical seal checklist is run under the repository's admission rules. VM/VZ/offensive/Metal work may not be substituted with host execution; unavailable or external lanes are reported exactly as skipped/external, never inherited as fresh PASS. | ⬜ OPEN | `bash scripts/run_seal_checklist.sh` (lead-run) at Phase 3 close. |
+| 11 | `docs/CLAIMS.md` and `docs/language/ROADMAP.md` (this file) match code and gates without deleting permanent/deferred residuals. | ⬜ OPEN | Continuous during the arc; reconciled at each slice landing. |
+| 12 | `docs/evidence/PHASE_3_COMPLETION_2026-08-14.md` maps every criterion to command, exact verdict, artifact path/hash, RED and accept controls, verified/believed/skipped/unknown registers, dirty state, binary provenance, toolchain, and what the phase got wrong. | ⬜ OPEN | Completion receipt PR at the end of the arc. |
+| 13 | The completion report says INCOMPLETE if any criterion is unmet. No waiver may be invented by the agent. | ⬜ OPEN | Discipline requirement, verified by the receipt PR content. |
+| 14 | Stop and request architect approval before beginning Completion Phase 4. | ⬜ OPEN | Terminal state; no agent-initiated Phase 4 work. |
+
+### Required semantic domain (see blueprint §66 for the authoritative version)
+
+> This section paraphrases; on any conflict the blueprint wins.
+
+Replace security-relevant root-binding booleans and `Option`-means-clean ambiguity with an
+explicit lane-independent security-label state that distinguishes at least:
+
+```text
+Clean    — proven unlabeled on the analyzed path(s)
+Labeled  — may carry the lane's label; retain stable source/provenance when available
+Unknown  — analysis lacks evidence to prove Clean or to identify a concrete labeled source
+```
+
+Required lattice laws (mission §78):
+
+- `join(Clean, Clean) = Clean`
+- `join(Labeled, _) = Labeled` and `join(_, Labeled) = Labeled`
+- `join(Unknown, Clean) = Unknown`
+- `join(Unknown, Unknown) = Unknown`
+- declassification clears a concrete label only under the existing well-formed policy/reason check;
+- declassification must not silently turn unresolved provenance into `Clean` unless the existing
+  semantics explicitly authorize that exact value;
+- missing scope entries, ambiguous carriers, unsupported projections, and lost type precision must
+  not be encoded as `Clean` merely because a boolean defaults to false or an `Option` is `None`.
+
+A declaration qualifier such as `tainted<T>` or `secret<T>` may seed `Labeled`; after seeding, flow
+propagation and enforcement must read the security-label domain, not repeatedly ask accept-biased
+type inference whether the value looks qualified.
+
+### Slice dependency order (mission §115)
+
+1. **Contract + census** *(this slice)* — the section you are reading, plus
+   `scripts/run_phase3_label_census.sh` enumerating producers, joins, and consumers; the gate is
+   fail-closed on unclassified sites.
+2. **Domain introduction** — introduce the `SecurityLabel` domain with `Clean`/`Labeled`/`Unknown`
+   plus its `join` and constructors; add parity tests. No verdict change.
+3. **Root transfer** — migrate root `let`/assign/pattern/control-flow/loop state and remove
+   boolean/`None`-means-clean defaults from those paths. Shadow-log at any newly-visible `Unknown`.
+4. **Path and carrier transfer** — migrate aggregate paths, mutations, closures/HOF,
+   interprocedural summaries.
+5. **Terminal enforcement** — after shadow-logging every candidate `Unknown` sink hit and
+   classifying each case, promote sensitive `Unknown` at sinks to fail-closed with the required
+   RED/GREEN/accept/alternate-carrier/dead-branch and A→B→A witnesses. Unknown ordinary values
+   with no sensitive use remain accepted.
+6. **Completion receipt** — only after every exit gate passes on the final commit.
+
+One bounded slice per PR. Rebase each slice on current `origin/main`. Preserve Completion Phase 2
+machinery (`walk_block_labels`, `SourceLane`, `ReturnSummaryLane`, `SeedPatternLane`, unified
+`expr_source` / `seed_pattern` / `body_returns`); do not reintroduce lane twins.
+
+### Hostile matrix (mission §141) — required across both lanes
+
+- known `Clean` direct sink → ACCEPT;
+- known `Labeled` direct sink → REJECT with existing lane diagnostic;
+- `Unknown` at a security-sensitive sink → REJECT with a stable, explicit unknown-label diagnostic
+  or an architect-approved existing equivalent;
+- `Unknown` never used by a sensitive consumer → ACCEPT;
+- declared label survives inferred-type loss → REJECT at sink;
+- clean value with unknown ordinary type → ACCEPT when no security decision depends on it;
+- every carrier family in mission §96 → labeled-reject plus clean-accept twin;
+- shadowed inner label does not contaminate an unrelated outer binding;
+- reassignment on any reachable path preserves may-label;
+- all branches explicitly clear/declassify only under the existing authorized semantics;
+- malformed declassify keeps the label and rejects at sink;
+- dead/unreachable branch does not create a fake security decision unless conservative semantics
+  intentionally say otherwise;
+- both taint/integrity and secret/confidentiality lanes exercise every shared transfer gate.
+
+### Residuals Phase 3 must NOT silently close or absorb (mission §197)
+
+- REG-002 full in-process UNSAT-certificate replay for the z3-only fragment;
+- full program-counter label propagation / Jif-totality;
+- Keychain/Secure Enclave hardware isolation;
+- Softnet post-pin DNS rebind HARD residual;
+- hosted-CI Metal proving;
+- TT-total / independently authored frontend-backend coverage;
+- general free/signed non-power-of-two native division/remainder;
+- the cross-module four-walker-family consolidation waived from Completion Phase 2 into Phase 4;
+- arbitrary symbolic/deep higher-order container projection beyond what is actually gated;
+- unknown future soundness defects.
+
+### Living residuals
+
+See [`docs/CLAIMS.md`](../CLAIMS.md). This section deliberately does not duplicate that inventory.
+
 ## Earlier status — 2026-07-20 (HEAD `636a41b`)
 
 > **Operator `/goal` 2026-07-20 (4 items, all landed + VM-sealed) + hunt2 closeout + Phase-5 capstone:**
