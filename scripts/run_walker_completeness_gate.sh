@@ -46,8 +46,7 @@ WALKERS=(
   # shape, three functions, and the effect lane clean. That gap was a real leak: a `let` whose init
   # was a secret-SELECTED constant passed `check` and printed the value. Registering them means a
   # future `..` in this position breaks the GATE rather than reopening the leak.
-  expr_taint_source_m:expr
-  expr_secret_source_m:expr
+  expr_source:expr
   expr_param_flow:expr
   # `partial-stmt` = a SPECIALISED walker's contract: it need not match every variant, but every
   # variant it DOES match must bind all that variant's code-holding fields.
