@@ -7185,14 +7185,23 @@ fn merge_taint_over(
             }
         }
         if let Some(b) = scope.get_mut(&name) {
-            b.info.tainted = tainted;
-            if tainted {
-                b.info.declassified = false;
-                b.info.taint_source = b.info.taint_source.take().or(source);
-            }
+            let carried_source = if tainted {
+                Some(
+                    source
+                        .clone()
+                        .or_else(|| b.info.taint_source.clone())
+                        .unwrap_or_else(|| "control-flow join".to_string()),
+                )
+            } else {
+                None
+            };
+            b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
+                tainted,
+                carried_source,
+            ));
             // Confidentiality is the DUAL: a secret cleared on every path (e.g. declassified in both
             // branches) is precisely un-labelled; secret on any path re-secrets the outer binding.
-            b.secret = secret;
+            b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(secret));
         }
     }
 }
@@ -8905,12 +8914,13 @@ fn apply_container_mutation_taint(
     if let Some(root) = root {
         if let Some(b) = scope.get_mut(&root) {
             if let Some(src) = &any_taint {
-                b.info.tainted = true;
-                b.info.taint_source = Some(src.clone());
-                b.info.declassified = false;
+                b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
+                    true,
+                    Some(src.clone()),
+                ));
             }
             if any_secret {
-                b.secret = true;
+                b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(true));
             }
             for lam in seed_lams {
                 let key = format!("_p{}", b.field_closures.len());
@@ -10319,9 +10329,10 @@ fn analyze_stmts(
                     // laundered the taint (the read walker reads `buf`'s whole-binding flag as clean).
                     // Mirrors `body_param_returns`' non-`Var` MAY-update of the root.
                     if let Some(b) = scope.get_mut(root) {
-                        b.info.tainted = true;
-                        b.info.taint_source = Some(src.clone());
-                        b.info.declassified = false;
+                        b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
+                            true,
+                            Some(src.clone()),
+                        ));
                     }
                 }
                 // Flow-sensitive CONFIDENTIALITY (dual of the taint propagation above): a reassignment
@@ -10396,7 +10407,9 @@ fn analyze_stmts(
                     }
                     if value_secret {
                         if let Some(b) = scope.get_mut(root) {
-                            b.secret = true;
+                            b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(
+                                true,
+                            ));
                         }
                     }
                     // TAG dual of the same place assignment, and the one gap in this class that is
@@ -14411,12 +14424,11 @@ fn walk_block_effects(
                 )
                 .is_some();
                 if let Some(b) = scope.get_mut(name) {
-                    b.info.tainted = t.is_some();
-                    if t.is_some() {
-                        b.info.declassified = false;
-                    }
-                    b.info.taint_source = t;
-                    b.secret = s;
+                    b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
+                        t.is_some(),
+                        t,
+                    ));
+                    b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(s));
                 }
             }
             Stmt::Assign { value, .. } => {
@@ -22908,12 +22920,12 @@ impl BlockLabelDomain<'_> {
 
     fn taint_place(self, binding: &mut ScopeBinding, source: String) {
         match self {
-            Self::Taint { .. } => {
-                binding.info.tainted = true;
-                binding.info.taint_source = Some(source);
-                binding.info.declassified = false;
+            Self::Taint { .. } => binding.set_taint_label(
+                security_label::SecurityLabel::from_legacy_taint(true, Some(source)),
+            ),
+            Self::Secret { .. } => {
+                binding.set_secret_label(security_label::SecurityLabel::from_legacy_secret(true));
             }
-            Self::Secret { .. } => binding.secret = true,
         }
     }
 
