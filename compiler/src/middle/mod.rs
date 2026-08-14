@@ -25167,123 +25167,263 @@ fn collect_stmt_patterns<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Pattern>) {
     }
 }
 
-/// reads clean automatically via `expr_taint_source`'s `Declassify` arm. Monotone in `tainting_fns`.
-fn body_returns_taint(
+/// Lane discriminator for the return-summary walker. Collapses
+/// `body_returns_taint` / `body_returns_secret` into one skeleton so a new
+/// statement shape cannot be learned on one lane and dropped on the other.
+///
+/// Semantic split preserved in this slice: only [`ReturnSummaryLane::Secret`]
+/// seeds `while let` binders from declared `secret<T>` payloads. The taint
+/// twin historically did not; adding that seeder is a D4 closure and belongs
+/// in its own slice with its own fixture.
+#[derive(Clone, Copy)]
+enum ReturnSummaryLane {
+    Taint,
+    Secret,
+}
+
+impl ReturnSummaryLane {
+    fn expr_source(
+        self,
+        expr: &Expr,
+        scope: &BTreeMap<String, ScopeBinding>,
+        lane_fns: &BTreeSet<String>,
+        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+        method_fns: &BTreeSet<String>,
+        struct_fields: &PlaceTypes<'_>,
+    ) -> Option<String> {
+        match self {
+            Self::Taint => expr_taint_source_m(
+                expr,
+                scope,
+                lane_fns,
+                param_return_taint,
+                method_fns,
+                struct_fields,
+            ),
+            Self::Secret => expr_secret_source_m(
+                expr,
+                scope,
+                lane_fns,
+                param_return_taint,
+                method_fns,
+                struct_fields,
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_let(
+        self,
+        name: &str,
+        ty: Option<&str>,
+        init: &Expr,
+        scope: &mut BTreeMap<String, ScopeBinding>,
+        lane_fns: &BTreeSet<String>,
+        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+        method_fns: &BTreeSet<String>,
+        struct_fields: &PlaceTypes<'_>,
+    ) {
+        match self {
+            Self::Taint => seed_one_let(
+                name,
+                ty,
+                init,
+                scope,
+                lane_fns,
+                param_return_taint,
+                method_fns,
+                struct_fields,
+            ),
+            Self::Secret => seed_one_let_secret(
+                name,
+                ty,
+                init,
+                scope,
+                lane_fns,
+                param_return_taint,
+                method_fns,
+                struct_fields,
+            ),
+        }
+    }
+
+    fn seed_pattern_lane(self) -> SeedPatternLane {
+        match self {
+            Self::Taint => SeedPatternLane::Taint,
+            Self::Secret => SeedPatternLane::Secret,
+        }
+    }
+
+    fn write_var_label(self, binding: &mut ScopeBinding, src: Option<String>) {
+        match self {
+            Self::Taint => {
+                binding.info.tainted = src.is_some();
+                if src.is_some() {
+                    binding.info.declassified = false;
+                }
+                binding.info.taint_source = src;
+            }
+            Self::Secret => {
+                binding.secret = src.is_some();
+            }
+        }
+    }
+
+    fn mark_root_labelled(self, binding: &mut ScopeBinding, src: String) {
+        match self {
+            Self::Taint => {
+                binding.info.tainted = true;
+                binding.info.taint_source = Some(src);
+                binding.info.declassified = false;
+            }
+            Self::Secret => {
+                binding.secret = true;
+            }
+        }
+    }
+
+    /// Secret-only `while let` declared-payload seeder. Taint is a no-op so this
+    /// unification does not close the D4 taint-side gap in the same slice.
+    fn seed_while_let_binders(
+        self,
+        stmt: &Stmt,
+        scope: &mut BTreeMap<String, ScopeBinding>,
+        struct_fields: &PlaceTypes<'_>,
+    ) {
+        if !matches!(self, Self::Secret) {
+            return;
+        }
+        let Stmt::WhileLet { pattern, .. } = stmt else {
+            return;
+        };
+        let mut names = BTreeSet::new();
+        qualified_pattern_binders(pattern, struct_fields, ty::is_secret, &mut names);
+        for n in names {
+            let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
+                info: BindingInfo {
+                    name: n.clone(),
+                    ty: None,
+                    mode: String::new(),
+                    tainted: false,
+                    taint_source: None,
+                    declassified: false,
+                    span: None,
+                },
+                closure_arity: None,
+                closure_lambda: None,
+                field_closures: BTreeMap::new(),
+                fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
+                secret: false,
+            });
+            b.secret = true;
+        }
+    }
+}
+
+/// Lane-parameterized replacement for `body_returns_taint` / `body_returns_secret`.
+#[allow(clippy::too_many_arguments)]
+fn body_returns(
     stmts: &[Stmt],
     scope: &mut BTreeMap<String, ScopeBinding>,
-    tainting_fns: &BTreeSet<String>,
+    lane_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-    method_tainting_fns: &BTreeSet<String>,
+    method_fns: &BTreeSet<String>,
     tail: bool,
     struct_fields: &PlaceTypes<'_>,
+    lane: ReturnSummaryLane,
 ) -> bool {
     let n = stmts.len();
     for (i, stmt) in stmts.iter().enumerate() {
         let stmt_is_tail = tail && i + 1 == n;
         match stmt {
             Stmt::Let { name, ty, init, .. } => {
-                // A `return` can hide inside the initializer (a `match`/`if` arm).
                 let mut rets = Vec::new();
                 expr_returns(init, &mut rets);
                 if rets.iter().any(|e| {
-                    expr_taint_source_m(
+                    lane.expr_source(
                         e,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
                     )
                     .is_some()
                 }) {
                     return true;
                 }
-                // #70: thread the method-return taint set (non-empty for the METHOD summary) so a
-                // `let t = self.tag(); return t` chain is method-aware; the FREE-fn summary passes empty.
-                seed_one_let(
+                lane.seed_let(
                     name,
                     ty.as_deref(),
                     init,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
                 );
             }
-            // H8 — the DESTRUCTURING twin of the arm above. This walker builds `ctx.tainting_fns`, the
-            // interprocedural return-taint summary every Safe-mode call site consults, and it had no
-            // `LetPattern` arm: `fn leak() { let [a] = [input()]; return a; }` fell to the catch-all,
-            // which collects nested `return`s but never seeds the bound names — so `a` was seen as CLEAN,
-            // `leak` never entered `tainting_fns`, and EVERY caller lost the taint. The single-binding
-            // spelling of the same function (`let a = input();`) was correctly summarized.
-            //
-            // Direct sibling of this morning's #73 fix, which closed `LetPattern` for the ENFORCING
-            // walker (W1) and left the SUMMARY walkers untouched. The pattern-aware seeder it needs —
-            // `seed_taint_pattern` — already exists in this file for a different walker; this arm calls
-            // it rather than introducing a second seeding path.
             Stmt::LetPattern { pattern, init, .. } => {
-                // Same hidden-`return`-in-initializer check the `Let` arm performs.
                 let mut rets = Vec::new();
                 expr_returns(init, &mut rets);
                 if rets.iter().any(|e| {
-                    expr_taint_source_m(
+                    lane.expr_source(
                         e,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
                     )
                     .is_some()
                 }) {
                     return true;
                 }
-                // Every name the pattern binds inherits the INITIALIZER's label. Over-approximate by
-                // construction: destructuring `[input()]` marks `a` tainted without tracking which
-                // element it came from. That is the fail-closed direction for a summary — a missed label
-                // silently un-taints a whole function for all its callers, while an extra one can only
-                // over-report.
-                let label = expr_taint_source_m(
+                let label = lane.expr_source(
                     init,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
                 );
                 seed_pattern(
                     scope,
                     pattern,
                     &label,
-                    SeedPatternLane::Taint,
+                    lane.seed_pattern_lane(),
                     struct_fields,
                 );
             }
             Stmt::If { then, else_, .. } => {
-                // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
                 let saved = scope.clone();
-                if body_returns_taint(
+                if body_returns(
                     then,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     stmt_is_tail,
                     struct_fields,
+                    lane,
                 ) {
                     return true;
                 }
                 *scope = saved.clone();
                 if let Some(else_body) = else_ {
-                    if body_returns_taint(
+                    if body_returns(
                         else_body,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         stmt_is_tail,
                         struct_fields,
+                        lane,
                     ) {
                         return true;
                     }
@@ -25296,17 +25436,17 @@ fn body_returns_taint(
             | Stmt::For { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
-                // A loop/research body is never the function's implicit return value (tail = false);
-                // only an explicit `return` inside it counts. Its `let`s are block-scoped.
                 let saved = scope.clone();
-                if body_returns_taint(
+                lane.seed_while_let_binders(stmt, scope, struct_fields);
+                if body_returns(
                     body,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     false,
                     struct_fields,
+                    lane,
                 ) {
                     return true;
                 }
@@ -25315,137 +25455,127 @@ fn body_returns_taint(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = scope.clone();
-                    if body_returns_taint(
+                    if body_returns(
                         b,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         false,
                         struct_fields,
+                        lane,
                     ) {
                         return true;
                     }
                     *scope = saved;
                 }
             }
-            // A reassignment updates a local's taint so a later `return name` sees it — `let mut xs=[];
-            // xs = [input()]; return xs` returns a tainted container (hunt wf_e67160a7 leak-return-side).
             Stmt::Assign {
                 target: Expr::Var(name),
                 value,
             } => {
-                let label = expr_taint_source_m(
+                let src = lane.expr_source(
                     value,
                     scope,
-                    tainting_fns,
+                    lane_fns,
                     param_return_taint,
-                    method_tainting_fns,
+                    method_fns,
                     struct_fields,
                 );
                 if let Some(b) = scope.get_mut(name) {
-                    b.info.tainted = label.is_some();
-                    if label.is_some() {
-                        b.info.declassified = false;
-                    }
-                    b.info.taint_source = label;
+                    lane.write_var_label(b, src);
                 }
             }
             Stmt::Assign { target, value } => {
                 if let Some(root) = assign_target_root(target) {
-                    if let Some(src) = expr_taint_source_m(
+                    if let Some(src) = lane.expr_source(
                         value,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
                     ) {
                         if let Some(b) = scope.get_mut(root) {
-                            b.info.tainted = true;
-                            b.info.taint_source = Some(src);
-                            b.info.declassified = false;
+                            lane.mark_root_labelled(b, src);
                         }
                     }
                 }
             }
-            // `push`/`insert` taints the container so `push(xs, input()); return xs` is return-tainted.
             Stmt::ExprStmt(Expr::Call { callee, args })
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
             {
                 if let Some(root) = assign_target_root(&args[0]) {
                     if let Some(src) = args[1..].iter().find_map(|a| {
-                        expr_taint_source_m(
+                        lane.expr_source(
                             a,
                             scope,
-                            tainting_fns,
+                            lane_fns,
                             param_return_taint,
-                            method_tainting_fns,
+                            method_fns,
                             struct_fields,
                         )
                     }) {
                         if let Some(b) = scope.get_mut(root) {
-                            b.info.tainted = true;
-                            b.info.taint_source = Some(src);
-                            b.info.declassified = false;
+                            lane.mark_root_labelled(b, src);
                         }
                     }
                 }
             }
             _ => {
-                // Explicit `return X` in this (non-block) statement — statement position or hidden in
-                // an expression (match/if arm) — checked against the CURRENT lexical scope.
-                //
-                // D4 residual: that scope never contains MATCH-ARM BINDERS, so a function extracting
-                // a declared-`tainted` enum payload and returning it was not marked as tainting, and
-                // the CALL SITE checked clean. Seed those binders first, into a local copy so the
-                // labels cannot escape this statement.
                 let mut scope_local;
                 let scope: &mut BTreeMap<String, ScopeBinding> = {
                     scope_local = scope.clone();
-                    seed_declared_pattern_binders(
-                        stmt,
-                        struct_fields,
-                        ty::is_tainted,
-                        &mut scope_local,
-                        |b| {
-                            b.info.tainted = true;
-                            b.info.taint_source = Some("declared enum payload".to_string());
-                        },
-                    );
+                    match lane {
+                        ReturnSummaryLane::Taint => seed_declared_pattern_binders(
+                            stmt,
+                            struct_fields,
+                            ty::is_tainted,
+                            &mut scope_local,
+                            |b| {
+                                b.info.tainted = true;
+                                b.info.taint_source = Some("declared enum payload".to_string());
+                            },
+                        ),
+                        ReturnSummaryLane::Secret => seed_declared_pattern_binders(
+                            stmt,
+                            struct_fields,
+                            ty::is_secret,
+                            &mut scope_local,
+                            |b| b.secret = true,
+                        ),
+                    }
                     seed_stmt_local_lambdas(stmt, &mut scope_local);
                     &mut scope_local
                 };
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 if rets.iter().any(|e| {
-                    expr_taint_source_m(
+                    lane.expr_source(
                         e,
                         scope,
-                        tainting_fns,
+                        lane_fns,
                         param_return_taint,
-                        method_tainting_fns,
+                        method_fns,
                         struct_fields,
                     )
                     .is_some()
                 }) {
                     return true;
                 }
-                // Implicit tail return: a trailing expression in tail position. A control-flow
-                // tail (`if`/`match`/`if let`/block) is tracked too — `expr_taint_source` walks
-                // them scope-aware — so the old tail-`if`/`match` boundary is retired.
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
                         if !is_return_call(e)
-                            && expr_taint_source_m(
-                                e,
-                                scope,
-                                tainting_fns,
-                                param_return_taint,
-                                method_tainting_fns,
-                                struct_fields,
-                            )
-                            .is_some()
+                            && lane
+                                .expr_source(
+                                    e,
+                                    scope,
+                                    lane_fns,
+                                    param_return_taint,
+                                    method_fns,
+                                    struct_fields,
+                                )
+                                .is_some()
                         {
                             return true;
                         }
@@ -25601,7 +25731,7 @@ fn fn_returns_taint(
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    body_returns_taint(
+    body_returns(
         body,
         &mut scope,
         tainting_fns,
@@ -25609,6 +25739,7 @@ fn fn_returns_taint(
         method_tainting_fns,
         true,
         struct_fields,
+        ReturnSummaryLane::Taint,
     )
 }
 
@@ -25815,301 +25946,6 @@ fn qualified_pattern_binders(
     }
 }
 
-/// Whether any value a function body can RETURN carries a secret — the dual of `body_returns_taint`,
-/// same lexical-block-scope discipline (snapshot/restore around every block, so a block-local `let`
-/// shadow does not leak past its block and a `return` after the block sees the outer binding).
-fn body_returns_secret(
-    stmts: &[Stmt],
-    scope: &mut BTreeMap<String, ScopeBinding>,
-    secret_fns: &BTreeSet<String>,
-    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-    method_secret_fns: &BTreeSet<String>,
-    tail: bool,
-    struct_fields: &PlaceTypes<'_>,
-) -> bool {
-    let n = stmts.len();
-    for (i, stmt) in stmts.iter().enumerate() {
-        let stmt_is_tail = tail && i + 1 == n;
-        match stmt {
-            Stmt::Let { name, ty, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                if rets.iter().any(|e| {
-                    expr_secret_source_m(
-                        e,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
-                // #70: thread the (possibly non-empty for the METHOD summary) method-return set so a
-                // `let k = self.key(); return k` chain is method-aware; the FREE-fn summary passes empty.
-                seed_one_let_secret(
-                    name,
-                    ty.as_deref(),
-                    init,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                );
-            }
-            // H8 twin, confirmed a REAL residual by GROK-HORUS's seam gate: `body_returns_taint` has
-            // a `LetPattern` arm and this one did not, so a destructured secret was invisible to the
-            // confidentiality SUMMARY while the integrity summary saw it. Mirrors the taint arm
-            // exactly — the hidden-`return`-in-initializer check, then pattern-wide seeding from the
-            // initializer's label. Over-approximate by construction: destructuring seeds every bound
-            // name, which is the fail-closed direction for a summary, since a missed label silently
-            // un-labels a whole function for every caller.
-            Stmt::LetPattern { pattern, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                if rets.iter().any(|e| {
-                    expr_secret_source_m(
-                        e,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
-                let scrut = expr_secret_source_m(
-                    init,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                );
-                seed_pattern(
-                    scope,
-                    pattern,
-                    &scrut,
-                    SeedPatternLane::Secret,
-                    struct_fields,
-                );
-            }
-            Stmt::If { then, else_, .. } => {
-                let saved = scope.clone();
-                if body_returns_secret(
-                    then,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    stmt_is_tail,
-                    struct_fields,
-                ) {
-                    return true;
-                }
-                *scope = saved.clone();
-                if let Some(else_body) = else_ {
-                    if body_returns_secret(
-                        else_body,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        stmt_is_tail,
-                        struct_fields,
-                    ) {
-                        return true;
-                    }
-                }
-                *scope = saved;
-            }
-            Stmt::While { body, .. }
-            | Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
-                let saved = scope.clone();
-                // A `while let` BINDS a pattern; without seeding it, a declared enum payload
-                // extracted here and returned leaks at the CALL SITE while the in-function form
-                // rejects. Same residual the `match` form had.
-                if let Stmt::WhileLet { pattern, .. } = stmt {
-                    let mut names = BTreeSet::new();
-                    qualified_pattern_binders(pattern, struct_fields, ty::is_secret, &mut names);
-                    for n in names {
-                        let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
-                            info: BindingInfo {
-                                name: n.clone(),
-                                ty: None,
-                                mode: String::new(),
-                                tainted: false,
-                                taint_source: None,
-                                declassified: false,
-                                span: None,
-                            },
-                            closure_arity: None,
-                            closure_lambda: None,
-                            field_closures: BTreeMap::new(),
-                            fn_alias: None,
-                            fn_identities: FnIdentitySet::Unknown,
-                            field_fn_identities: BTreeMap::new(),
-                            builtin_gate_tags: BuiltinGateTags::Unknown,
-                            field_builtin_gate_tags: BTreeMap::new(),
-                            secret: false,
-                        });
-                        b.secret = true;
-                    }
-                }
-                if body_returns_secret(
-                    body,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    false,
-                    struct_fields,
-                ) {
-                    return true;
-                }
-                *scope = saved;
-            }
-            Stmt::HybridBlock { gpu, cpu, prove } => {
-                for b in [gpu, cpu, prove].into_iter().flatten() {
-                    let saved = scope.clone();
-                    if body_returns_secret(
-                        b,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        false,
-                        struct_fields,
-                    ) {
-                        return true;
-                    }
-                    *scope = saved;
-                }
-            }
-            // Reassignment / container-mutation dual of `body_returns_taint` — `xs = [secret_source(..)];
-            // return xs` and `push(xs, secret_source(..)); return xs` are return-secret (hunt wf_e67160a7).
-            Stmt::Assign {
-                target: Expr::Var(name),
-                value,
-            } => {
-                let secret = expr_secret_source_m(
-                    value,
-                    scope,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
-                .is_some();
-                if let Some(b) = scope.get_mut(name) {
-                    b.secret = secret;
-                }
-            }
-            Stmt::Assign { target, value } => {
-                if let Some(root) = assign_target_root(target) {
-                    if expr_secret_source_m(
-                        value,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                    {
-                        if let Some(b) = scope.get_mut(root) {
-                            b.secret = true;
-                        }
-                    }
-                }
-            }
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if args[1..].iter().any(|a| {
-                        expr_secret_source_m(
-                            a,
-                            scope,
-                            secret_fns,
-                            param_return_taint,
-                            method_secret_fns,
-                            struct_fields,
-                        )
-                        .is_some()
-                    }) {
-                        if let Some(b) = scope.get_mut(root) {
-                            b.secret = true;
-                        }
-                    }
-                }
-            }
-            _ => {
-                // D4 residual, confidentiality twin of the taint summary walker: the scope a
-                // `return X` is evaluated against never contains MATCH-ARM BINDERS, so a function
-                // extracting a declared-`secret` enum payload and returning it was not marked as
-                // secret-returning and the CALL SITE checked clean. Seed those binders into a local
-                // copy so the labels cannot escape this statement.
-                let mut scope_local;
-                let scope: &mut BTreeMap<String, ScopeBinding> = {
-                    scope_local = scope.clone();
-                    seed_declared_pattern_binders(
-                        stmt,
-                        struct_fields,
-                        ty::is_secret,
-                        &mut scope_local,
-                        |b| b.secret = true,
-                    );
-                    seed_stmt_local_lambdas(stmt, &mut scope_local);
-                    &mut scope_local
-                };
-                let mut rets = Vec::new();
-                collect_returns_in_stmt(stmt, &mut rets);
-                if rets.iter().any(|e| {
-                    expr_secret_source_m(
-                        e,
-                        scope,
-                        secret_fns,
-                        param_return_taint,
-                        method_secret_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
-                if stmt_is_tail {
-                    if let Stmt::ExprStmt(e) = stmt {
-                        if !is_return_call(e)
-                            && expr_secret_source_m(
-                                e,
-                                scope,
-                                secret_fns,
-                                param_return_taint,
-                                method_secret_fns,
-                                struct_fields,
-                            )
-                            .is_some()
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
 /// Whether a function's return value carries a secret (tail position) — the dual of `fn_returns_taint`.
 /// The scope is seeded with the function's `secret<T>` PARAMS ([`seed_qualifier_params`]) but NOT with
 /// plain params; a returned PLAIN param is arg-flow, resolved at each call site via `param_return_taint`
@@ -26125,7 +25961,7 @@ fn fn_returns_secret(
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    body_returns_secret(
+    body_returns(
         body,
         &mut scope,
         secret_fns,
@@ -26133,6 +25969,7 @@ fn fn_returns_secret(
         method_secret_fns,
         true,
         struct_fields,
+        ReturnSummaryLane::Secret,
     )
 }
 
