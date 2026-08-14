@@ -204,6 +204,71 @@ struct ScopeBinding {
     builtin_gate_tags: BuiltinGateTags,
     /// Gate tags stored at concrete aggregate access paths, parallel to `field_fn_identities`.
     field_builtin_gate_tags: BTreeMap<String, BuiltinGateTags>,
+    /// Integrity-lane lattice. Analysis scratch only — not on `BindingInfo`.
+    /// Slice 3: source of truth for root transfer; legacy `info.tainted` /
+    /// `info.taint_source` stay derived so existing consumers do not flip.
+    taint_label: security_label::SecurityLabel,
+    /// Confidentiality-lane lattice. Same adapter contract as `taint_label`.
+    secret_label: security_label::SecurityLabel,
+}
+
+impl ScopeBinding {
+    /// Derive lattice fields from the legacy bool/`Option` pair. Used at
+    /// construction sites that still fill `info.tainted` / `secret` first.
+    fn sync_labels_from_legacy(&mut self) {
+        self.taint_label = security_label::SecurityLabel::from_legacy_taint(
+            self.info.tainted,
+            self.info.taint_source.clone(),
+        );
+        self.secret_label = security_label::SecurityLabel::from_legacy_secret(self.secret);
+        if self.taint_label.is_unknown() {
+            security_label::SecurityLabel::shadow_unknown(
+                "sync_labels_from_legacy.taint",
+                self.taint_label.unknown_reason(),
+            );
+        }
+        if self.secret_label.is_unknown() {
+            security_label::SecurityLabel::shadow_unknown(
+                "sync_labels_from_legacy.secret",
+                self.secret_label.unknown_reason(),
+            );
+        }
+    }
+
+    fn with_labels(mut self) -> Self {
+        self.sync_labels_from_legacy();
+        self
+    }
+
+    /// Write the integrity lattice, then derive legacy bools. `Unknown`
+    /// cannot become `(false, None)` — see `SecurityLabel::to_legacy_taint`.
+    fn set_taint_label(&mut self, label: security_label::SecurityLabel) {
+        if label.is_unknown() {
+            security_label::SecurityLabel::shadow_unknown(
+                "set_taint_label",
+                label.unknown_reason(),
+            );
+        }
+        let (tainted, source) = label.to_legacy_taint();
+        self.taint_label = label;
+        self.info.tainted = tainted;
+        if tainted {
+            self.info.declassified = false;
+        }
+        self.info.taint_source = source;
+    }
+
+    /// Write the confidentiality lattice, then derive `secret`.
+    fn set_secret_label(&mut self, label: security_label::SecurityLabel) {
+        if label.is_unknown() {
+            security_label::SecurityLabel::shadow_unknown(
+                "set_secret_label",
+                label.unknown_reason(),
+            );
+        }
+        self.secret = label.to_legacy_secret();
+        self.secret_label = label;
+    }
 }
 
 /// Set-valued identity of a first-class callable expression.
@@ -2313,25 +2378,30 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                     _ => None,
                 };
                 if let Some(lam) = lam {
-                    let entry = scope.entry(name.clone()).or_insert_with(|| ScopeBinding {
-                        info: BindingInfo {
-                            name: name.clone(),
-                            ty: None,
-                            mode: String::new(),
-                            tainted: false,
-                            taint_source: None,
-                            declassified: false,
-                            span: None,
-                        },
-                        closure_arity: None,
-                        closure_lambda: None,
-                        field_closures: BTreeMap::new(),
-                        fn_alias: None,
-                        fn_identities: FnIdentitySet::Unknown,
-                        field_fn_identities: BTreeMap::new(),
-                        builtin_gate_tags: BuiltinGateTags::Unknown,
-                        field_builtin_gate_tags: BTreeMap::new(),
-                        secret: false,
+                    let entry = scope.entry(name.clone()).or_insert_with(|| {
+                        ScopeBinding {
+                            info: BindingInfo {
+                                name: name.clone(),
+                                ty: None,
+                                mode: String::new(),
+                                tainted: false,
+                                taint_source: None,
+                                declassified: false,
+                                span: None,
+                            },
+                            closure_arity: None,
+                            closure_lambda: None,
+                            field_closures: BTreeMap::new(),
+                            fn_alias: None,
+                            fn_identities: FnIdentitySet::Unknown,
+                            field_fn_identities: BTreeMap::new(),
+                            builtin_gate_tags: BuiltinGateTags::Unknown,
+                            field_builtin_gate_tags: BTreeMap::new(),
+                            taint_label: security_label::SecurityLabel::default(),
+                            secret_label: security_label::SecurityLabel::default(),
+                            secret: false,
+                        }
+                        .with_labels()
                     });
                     entry.closure_lambda = Some(lam);
                 }
@@ -2451,8 +2521,11 @@ fn seed_loop_var_callable(
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
                     field_builtin_gate_tags: BTreeMap::new(),
+                    taint_label: security_label::SecurityLabel::default(),
+                    secret_label: security_label::SecurityLabel::default(),
                     secret: false,
-                },
+                }
+                .with_labels(),
             );
             any_effectful_field_closure(tmp, &probe)
         }
@@ -2461,9 +2534,8 @@ fn seed_loop_var_callable(
     if elem.is_none() && matches!(identities, FnIdentitySet::Unknown) {
         return;
     }
-    let b = scope
-        .entry(var.to_string())
-        .or_insert_with(|| ScopeBinding {
+    let b = scope.entry(var.to_string()).or_insert_with(|| {
+        ScopeBinding {
             info: BindingInfo {
                 name: var.to_string(),
                 ty: None,
@@ -2481,8 +2553,12 @@ fn seed_loop_var_callable(
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label: security_label::SecurityLabel::default(),
+            secret_label: security_label::SecurityLabel::default(),
             secret: false,
-        });
+        }
+        .with_labels()
+    });
     if let Some(lam) = elem {
         b.closure_lambda = Some(lam);
     }
@@ -5555,8 +5631,11 @@ fn analyze_function(
                         field_fn_identities: BTreeMap::new(),
                         builtin_gate_tags: BuiltinGateTags::Unknown,
                         field_builtin_gate_tags: BTreeMap::new(),
+                        taint_label: security_label::SecurityLabel::default(),
+                        secret_label: security_label::SecurityLabel::default(),
                         secret: false,
-                    },
+                    }
+                    .with_labels(),
                 )
             })
             .collect();
@@ -5664,12 +5743,15 @@ fn analyze_function(
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
                     field_builtin_gate_tags: BTreeMap::new(),
+                    taint_label: security_label::SecurityLabel::default(),
+                    secret_label: security_label::SecurityLabel::default(),
                     // A `secret<T>` param qualifier auto-labels the parameter as secret (the
                     // confidentiality dual of the `tainted<T>` param seeded above), so a secret
                     // arriving via a param needs no `secret_source(..)` call — an egress of it is
                     // exfiltration. Retires the ROADMAP leg-1 "no secret<T> qualifier" boundary.
                     secret: is_secret_type(Some(ty)),
-                },
+                }
+                .with_labels(),
             );
             // Parameters are in-scope for the whole body, so a `let s = param` must not
             // report the parameter as an unknown variable.
@@ -8865,6 +8947,9 @@ fn labelled_param_binding(
     taint_source: Option<String>,
     secret: bool,
 ) -> ScopeBinding {
+    let taint_label =
+        security_label::SecurityLabel::from_legacy_taint(tainted, taint_source.clone());
+    let secret_label = security_label::SecurityLabel::from_legacy_secret(secret);
     ScopeBinding {
         info: BindingInfo {
             name: name.to_string(),
@@ -8883,6 +8968,8 @@ fn labelled_param_binding(
         field_fn_identities: BTreeMap::new(),
         builtin_gate_tags: BuiltinGateTags::Unknown,
         field_builtin_gate_tags: BTreeMap::new(),
+        taint_label,
+        secret_label,
         secret,
     }
 }
@@ -9347,8 +9434,11 @@ fn analyze_stmts(
                         field_fn_identities,
                         builtin_gate_tags,
                         field_builtin_gate_tags,
+                        taint_label: security_label::SecurityLabel::default(),
+                        secret_label: security_label::SecurityLabel::default(),
                         secret: init_secret.is_some() || explicit_secret,
-                    },
+                    }
+                    .with_labels(),
                 );
                 fn_symbols.push(info);
 
@@ -10214,11 +10304,10 @@ fn analyze_stmts(
                     let mut reassigned_fields = BTreeMap::new();
                     collect_container_fn_identities(value, "", scope, ctx, &mut reassigned_fields);
                     if let Some(b) = scope.get_mut(name) {
-                        b.info.tainted = value_taint.is_some();
-                        b.info.taint_source = value_taint.clone();
-                        if value_taint.is_some() {
-                            b.info.declassified = false;
-                        }
+                        b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
+                            value_taint.is_some(),
+                            value_taint.clone(),
+                        ));
                         b.fn_identities = reassigned_ids;
                         b.field_fn_identities = reassigned_fields;
                     }
@@ -10240,7 +10329,7 @@ fn analyze_stmts(
                 // clean/declassified. The branch/loop merge (`merge_taint_over`) refines it across
                 // control flow, exactly as for taint.
                 if let Expr::Var(name) = target {
-                    let value_secret = expr_source(
+                    let value_secret_source = expr_source(
                         value,
                         scope,
                         &ctx.secret_fns,
@@ -10248,8 +10337,8 @@ fn analyze_stmts(
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
                         SourceLane::Secret,
-                    )
-                    .is_some();
+                    );
+                    let value_secret = value_secret_source.is_some();
                     // Safe-mode: secret RHS into a public-typed annotated binding is laundering.
                     if mode == Mode::Safe
                         && value_secret
@@ -10268,7 +10357,10 @@ fn analyze_stmts(
                         });
                     }
                     if let Some(b) = scope.get_mut(name) {
-                        b.secret = value_secret;
+                        b.set_secret_label(value_secret_source.map_or_else(
+                            security_label::SecurityLabel::clean,
+                            security_label::SecurityLabel::labeled_from,
+                        ));
                     }
                 } else if let Some(root) = assign_target_root(target) {
                     // Confidentiality dual: a non-`Var` place-assignment of a SECRET value MAY-labels the
@@ -11461,8 +11553,11 @@ fn analyze_stmts(
                         field_fn_identities: BTreeMap::new(),
                         builtin_gate_tags: BuiltinGateTags::Unknown,
                         field_builtin_gate_tags: BTreeMap::new(),
+                        taint_label: security_label::SecurityLabel::default(),
+                        secret_label: security_label::SecurityLabel::default(),
                         secret: secret_src,
-                    },
+                    }
+                    .with_labels(),
                 );
                 ctx.known_bindings.insert(var.clone());
                 // Solver soundness: the loop VARIABLE shadows any outer binding of the same name inside
@@ -12277,8 +12372,11 @@ fn scope_with_closure_params(
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
                 field_builtin_gate_tags: BTreeMap::new(),
+                taint_label: security_label::SecurityLabel::default(),
+                secret_label: security_label::SecurityLabel::default(),
                 secret: false,
-            },
+            }
+            .with_labels(),
         );
     }
     local
@@ -13199,8 +13297,11 @@ fn analyze_expr_effect(
                                     field_fn_identities: BTreeMap::new(),
                                     builtin_gate_tags: BuiltinGateTags::Unknown,
                                     field_builtin_gate_tags: BTreeMap::new(),
+                                    taint_label: security_label::SecurityLabel::default(),
+                                    secret_label: security_label::SecurityLabel::default(),
                                     secret: arg_secret,
-                                },
+                                }
+                                .with_labels(),
                             );
                         }
                         analyze_expr_effect(body, mode, &local, effects, ctx);
@@ -22646,19 +22747,39 @@ fn seed_loop_carried_labels(
         let mut changed = false;
         let names: Vec<String> = c.keys().cloned().collect();
         for n in names {
-            let (ct, cs, csrc) = c
+            let (ct, cs, ct_label, cs_label) = c
                 .get(&n)
-                .map(|b| (b.info.tainted, b.secret, b.info.taint_source.clone()))
-                .unwrap_or((false, false, None));
+                .map(|b| {
+                    let taint_label = if b.taint_label.is_clean() && b.info.tainted {
+                        // Slice 4 still has legacy-only place/carrier writers. Preserve their
+                        // loop-carried behavior until that slice migrates them.
+                        security_label::SecurityLabel::from_legacy_taint(
+                            b.info.tainted,
+                            b.info.taint_source.clone(),
+                        )
+                    } else {
+                        b.taint_label.clone()
+                    };
+                    let secret_label = if b.secret_label.is_clean() && b.secret {
+                        security_label::SecurityLabel::from_legacy_secret(b.secret)
+                    } else {
+                        b.secret_label.clone()
+                    };
+                    (b.info.tainted, b.secret, taint_label, secret_label)
+                })
+                .unwrap_or((
+                    false,
+                    false,
+                    security_label::SecurityLabel::clean(),
+                    security_label::SecurityLabel::clean(),
+                ));
             if let Some(sb) = scope.get_mut(&n) {
                 if ct && !sb.info.tainted {
-                    sb.info.tainted = true;
-                    sb.info.taint_source = csrc;
-                    sb.info.declassified = false;
+                    sb.set_taint_label(sb.taint_label.clone().join(ct_label));
                     changed = true;
                 }
                 if cs && !sb.secret {
-                    sb.secret = true;
+                    sb.set_secret_label(sb.secret_label.clone().join(cs_label));
                     changed = true;
                 }
             }
@@ -22776,14 +22897,12 @@ impl BlockLabelDomain<'_> {
 
     fn assign_binding(self, binding: &mut ScopeBinding, source: Option<String>) {
         match self {
-            Self::Taint { .. } => {
-                binding.info.tainted = source.is_some();
-                if source.is_some() {
-                    binding.info.declassified = false;
-                }
-                binding.info.taint_source = source;
-            }
-            Self::Secret { .. } => binding.secret = source.is_some(),
+            Self::Taint { .. } => binding.set_taint_label(
+                security_label::SecurityLabel::from_legacy_taint(source.is_some(), source),
+            ),
+            Self::Secret { .. } => binding.set_secret_label(
+                security_label::SecurityLabel::from_legacy_secret(source.is_some()),
+            ),
         }
     }
 
@@ -22799,10 +22918,21 @@ impl BlockLabelDomain<'_> {
     }
 
     fn loop_binding(self, var: &str, source: Option<String>) -> ScopeBinding {
-        let (tainted, taint_source, secret) = match self {
-            Self::Taint { .. } => (source.is_some(), source, false),
-            Self::Secret { .. } => (false, None, source.is_some()),
+        let (taint_label, secret_label) = match self {
+            Self::Taint { .. } => (
+                security_label::SecurityLabel::from_legacy_taint(source.is_some(), source),
+                security_label::SecurityLabel::clean(),
+            ),
+            Self::Secret { .. } => (
+                security_label::SecurityLabel::clean(),
+                source.map_or_else(
+                    security_label::SecurityLabel::clean,
+                    security_label::SecurityLabel::labeled_from,
+                ),
+            ),
         };
+        let (tainted, taint_source) = taint_label.to_legacy_taint();
+        let secret = secret_label.to_legacy_secret();
         ScopeBinding {
             info: BindingInfo {
                 name: var.to_string(),
@@ -22821,6 +22951,8 @@ impl BlockLabelDomain<'_> {
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label,
+            secret_label,
             secret,
         }
     }
@@ -24177,14 +24309,17 @@ fn seed_one_let(
     );
     let declassified =
         declassify_source(init, scope, tainting_fns, param_return_taint, struct_fields).is_some();
-    let tainted = explicit || (init_taint.is_some() && !declassified);
-    let taint_source = if explicit {
-        Some(name.to_string())
-    } else if tainted {
-        init_taint
+    let taint_label = if explicit {
+        security_label::SecurityLabel::labeled_from(name)
+    } else if declassified {
+        security_label::SecurityLabel::clean()
     } else {
-        None
+        init_taint.map_or_else(
+            security_label::SecurityLabel::clean,
+            security_label::SecurityLabel::labeled_from,
+        )
     };
+    let (tainted, taint_source) = taint_label.to_legacy_taint();
     scope.insert(
         name.to_string(),
         ScopeBinding {
@@ -24205,6 +24340,8 @@ fn seed_one_let(
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label,
+            secret_label: security_label::SecurityLabel::clean(),
             // This scope feeds the INTEGRITY return summary only; secrecy has its own parallel
             // seeder (`seed_one_let_secret`, feeding `compute_secret_fns`), so it is not seeded here.
             secret: false,
@@ -24281,8 +24418,11 @@ fn seed_pattern(
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label: security_label::SecurityLabel::default(),
+            secret_label: security_label::SecurityLabel::default(),
             secret: false,
-        };
+        }
+        .with_labels();
         match lane {
             SeedPatternLane::Taint => {
                 // Set BOTH `tainted` and `taint_source` — the `Var` arm gates on both
@@ -24294,11 +24434,15 @@ fn seed_pattern(
                 } else {
                     source.clone()
                 };
-                binding.info.tainted = label.is_some();
-                binding.info.taint_source = label;
+                binding.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
+                    label.is_some(),
+                    label,
+                ));
             }
             SeedPatternLane::Secret => {
-                binding.secret = source.is_some() || is_declared_here;
+                binding.set_secret_label(security_label::SecurityLabel::from_legacy_secret(
+                    source.is_some() || is_declared_here,
+                ));
             }
         }
         scope.insert(n, binding);
@@ -24412,8 +24556,11 @@ fn seed_effect_let(
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label: security_label::SecurityLabel::default(),
+            secret_label: security_label::SecurityLabel::default(),
             secret: init_secret || explicit_secret,
-        },
+        }
+        .with_labels(),
     );
 }
 
@@ -24564,8 +24711,11 @@ fn seed_effect_pattern(
                 field_fn_identities,
                 builtin_gate_tags,
                 field_builtin_gate_tags,
+                taint_label: security_label::SecurityLabel::default(),
+                secret_label: security_label::SecurityLabel::default(),
                 secret,
-            },
+            }
+            .with_labels(),
         );
     }
 }
@@ -24597,9 +24747,8 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
             _ => None,
         };
         if let Some(lam) = lam {
-            let e = scope
-                .entry(name.to_string())
-                .or_insert_with(|| ScopeBinding {
+            let e = scope.entry(name.to_string()).or_insert_with(|| {
+                ScopeBinding {
                     info: BindingInfo {
                         name: name.to_string(),
                         ty: None,
@@ -24617,8 +24766,12 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
                     field_builtin_gate_tags: BTreeMap::new(),
+                    taint_label: security_label::SecurityLabel::default(),
+                    secret_label: security_label::SecurityLabel::default(),
                     secret: false,
-                });
+                }
+                .with_labels()
+            });
             e.closure_lambda = Some(lam);
         }
     }
@@ -24697,25 +24850,30 @@ fn seed_declared_pattern_binders(
         qualified_pattern_binders(p, types, is_qualified, &mut names);
     }
     for n in names {
-        let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
-            info: BindingInfo {
-                name: n.clone(),
-                ty: None,
-                mode: String::new(),
-                tainted: false,
-                taint_source: None,
-                declassified: false,
-                span: None,
-            },
-            closure_arity: None,
-            closure_lambda: None,
-            field_closures: BTreeMap::new(),
-            fn_alias: None,
-            fn_identities: FnIdentitySet::Unknown,
-            field_fn_identities: BTreeMap::new(),
-            builtin_gate_tags: BuiltinGateTags::Unknown,
-            field_builtin_gate_tags: BTreeMap::new(),
-            secret: false,
+        let b = scope.entry(n.clone()).or_insert_with(|| {
+            ScopeBinding {
+                info: BindingInfo {
+                    name: n.clone(),
+                    ty: None,
+                    mode: String::new(),
+                    tainted: false,
+                    taint_source: None,
+                    declassified: false,
+                    span: None,
+                },
+                closure_arity: None,
+                closure_lambda: None,
+                field_closures: BTreeMap::new(),
+                fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
+                taint_label: security_label::SecurityLabel::default(),
+                secret_label: security_label::SecurityLabel::default(),
+                secret: false,
+            }
+            .with_labels()
         });
         mark(b);
     }
@@ -24878,29 +25036,21 @@ impl ReturnSummaryLane {
 
     fn write_var_label(self, binding: &mut ScopeBinding, src: Option<String>) {
         match self {
-            Self::Taint => {
-                binding.info.tainted = src.is_some();
-                if src.is_some() {
-                    binding.info.declassified = false;
-                }
-                binding.info.taint_source = src;
-            }
-            Self::Secret => {
-                binding.secret = src.is_some();
-            }
+            Self::Taint => binding.set_taint_label(
+                security_label::SecurityLabel::from_legacy_taint(src.is_some(), src),
+            ),
+            Self::Secret => binding.set_secret_label(
+                security_label::SecurityLabel::from_legacy_secret(src.is_some()),
+            ),
         }
     }
 
     fn mark_root_labelled(self, binding: &mut ScopeBinding, src: String) {
         match self {
             Self::Taint => {
-                binding.info.tainted = true;
-                binding.info.taint_source = Some(src);
-                binding.info.declassified = false;
+                binding.set_taint_label(security_label::SecurityLabel::labeled_from(src))
             }
-            Self::Secret => {
-                binding.secret = true;
-            }
+            Self::Secret => binding.set_secret_label(security_label::SecurityLabel::labeled(None)),
         }
     }
 
@@ -24935,25 +25085,30 @@ impl ReturnSummaryLane {
             &mut names,
         );
         for n in names {
-            let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
-                info: BindingInfo {
-                    name: n.clone(),
-                    ty: None,
-                    mode: String::new(),
-                    tainted: false,
-                    taint_source: None,
-                    declassified: false,
-                    span: None,
-                },
-                closure_arity: None,
-                closure_lambda: None,
-                field_closures: BTreeMap::new(),
-                fn_alias: None,
-                fn_identities: FnIdentitySet::Unknown,
-                field_fn_identities: BTreeMap::new(),
-                builtin_gate_tags: BuiltinGateTags::Unknown,
-                field_builtin_gate_tags: BTreeMap::new(),
-                secret: false,
+            let b = scope.entry(n.clone()).or_insert_with(|| {
+                ScopeBinding {
+                    info: BindingInfo {
+                        name: n.clone(),
+                        ty: None,
+                        mode: String::new(),
+                        tainted: false,
+                        taint_source: None,
+                        declassified: false,
+                        span: None,
+                    },
+                    closure_arity: None,
+                    closure_lambda: None,
+                    field_closures: BTreeMap::new(),
+                    fn_alias: None,
+                    fn_identities: FnIdentitySet::Unknown,
+                    field_fn_identities: BTreeMap::new(),
+                    builtin_gate_tags: BuiltinGateTags::Unknown,
+                    field_builtin_gate_tags: BTreeMap::new(),
+                    taint_label: security_label::SecurityLabel::default(),
+                    secret_label: security_label::SecurityLabel::default(),
+                    secret: false,
+                }
+                .with_labels()
             });
             self.mark_root_labelled(b, format!("declared enum payload `{n}`"));
         }
@@ -25169,8 +25324,9 @@ fn body_returns(
                             ty::is_tainted,
                             &mut scope_local,
                             |b| {
-                                b.info.tainted = true;
-                                b.info.taint_source = Some("declared enum payload".to_string());
+                                b.set_taint_label(security_label::SecurityLabel::labeled_from(
+                                    "declared enum payload",
+                                ));
                             },
                         ),
                         ReturnSummaryLane::Secret => seed_declared_pattern_binders(
@@ -25178,7 +25334,7 @@ fn body_returns(
                             struct_fields,
                             ty::is_secret,
                             &mut scope_local,
-                            |b| b.secret = true,
+                            |b| b.set_secret_label(security_label::SecurityLabel::labeled(None)),
                         ),
                     }
                     seed_stmt_local_lambdas(stmt, &mut scope_local);
@@ -25253,8 +25409,11 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
                 field_builtin_gate_tags: BTreeMap::new(),
+                taint_label: security_label::SecurityLabel::default(),
+                secret_label: security_label::SecurityLabel::default(),
                 secret,
-            },
+            }
+            .with_labels(),
         );
     }
 }
@@ -25472,8 +25631,10 @@ fn seed_one_let_secret(
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
-    let secret = is_secret_type(ty)
-        || expr_source(
+    let secret_label = if is_secret_type(ty) {
+        security_label::SecurityLabel::labeled_from(name)
+    } else {
+        expr_source(
             init,
             scope,
             secret_fns,
@@ -25482,7 +25643,12 @@ fn seed_one_let_secret(
             struct_fields,
             SourceLane::Secret,
         )
-        .is_some();
+        .map_or_else(
+            security_label::SecurityLabel::clean,
+            security_label::SecurityLabel::labeled_from,
+        )
+    };
+    let secret = secret_label.to_legacy_secret();
     scope.insert(
         name.to_string(),
         ScopeBinding {
@@ -25503,6 +25669,8 @@ fn seed_one_let_secret(
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label: security_label::SecurityLabel::clean(),
+            secret_label,
             secret,
         },
     );
@@ -27746,6 +27914,138 @@ fn scan_param_bounds_expr(
 }
 
 #[cfg(test)]
+mod scope_binding_security_label_tests {
+    use super::*;
+
+    fn clean_binding() -> ScopeBinding {
+        labelled_param_binding("fixture", false, None, false)
+    }
+
+    #[test]
+    fn construction_imports_lattice_state_without_mutating_legacy_state() {
+        let clean = clean_binding();
+        assert!(clean.taint_label.is_clean());
+        assert!(clean.secret_label.is_clean());
+        assert!(!clean.info.tainted);
+        assert!(!clean.secret);
+
+        let labeled = labelled_param_binding("fixture", true, Some("input".to_string()), true);
+        assert_eq!(labeled.taint_label.provenance(), Some("input"));
+        assert!(labeled.secret_label.is_labeled());
+        assert!(labeled.info.tainted);
+        assert_eq!(labeled.info.taint_source.as_deref(), Some("input"));
+        assert!(labeled.secret);
+
+        let unresolved =
+            labelled_param_binding("fixture", false, Some("legacy-source".to_string()), false);
+        assert!(unresolved.taint_label.is_unknown());
+        assert!(!unresolved.info.tainted);
+        assert_eq!(
+            unresolved.info.taint_source.as_deref(),
+            Some("legacy-source")
+        );
+    }
+
+    #[test]
+    fn root_assignment_writes_lattice_then_derives_legacy_adapters() {
+        let sources = BTreeSet::<String>::new();
+        let param_returns = BTreeMap::<String, BTreeSet<usize>>::new();
+        let method_sources = BTreeSet::<String>::new();
+        let mut binding = clean_binding();
+
+        BlockLabelDomain::Taint {
+            sources: &sources,
+            param_returns: &param_returns,
+            method_sources: &method_sources,
+        }
+        .assign_binding(&mut binding, Some("input".to_string()));
+        assert_eq!(binding.taint_label.provenance(), Some("input"));
+        assert!(binding.info.tainted);
+        assert_eq!(binding.info.taint_source.as_deref(), Some("input"));
+
+        BlockLabelDomain::Secret {
+            sources: &sources,
+            param_returns: &param_returns,
+            method_sources: &method_sources,
+        }
+        .assign_binding(&mut binding, Some("secret_source".to_string()));
+        assert!(binding.secret_label.is_labeled());
+        assert!(binding.secret);
+
+        binding.set_taint_label(security_label::SecurityLabel::unknown(Some("root-test")));
+        assert!(binding.taint_label.is_unknown());
+        assert!(binding.info.tainted);
+        assert_eq!(binding.info.taint_source.as_deref(), Some("unknown-label"));
+
+        binding.set_secret_label(security_label::SecurityLabel::unknown(Some("root-test")));
+        assert!(binding.secret_label.is_unknown());
+        assert!(binding.secret);
+    }
+
+    #[test]
+    fn analyze_stmts_root_assignment_updates_lattice_state() {
+        let mut scope = BTreeMap::from([
+            (
+                "source".to_string(),
+                labelled_param_binding("source", true, Some("assignment-source".to_string()), true),
+            ),
+            (
+                "target".to_string(),
+                labelled_param_binding("target", false, None, false),
+            ),
+        ]);
+        let mut ctx = SemanticContext::default();
+        ctx.known_bindings
+            .extend(["source".to_string(), "target".to_string()]);
+        let stmt = Stmt::Assign {
+            target: Expr::Var("target".to_string()),
+            value: Expr::Var("source".to_string()),
+        };
+
+        analyze_stmts(
+            &[stmt],
+            Mode::Safe,
+            &mut scope,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut ctx,
+        );
+
+        let target = scope.get("target").expect("target binding");
+        assert_eq!(target.taint_label.provenance(), Some("assignment-source"));
+        assert!(target.secret_label.is_labeled());
+        assert!(target.info.tainted);
+        assert!(target.secret);
+    }
+
+    #[test]
+    fn unknown_root_setter_emits_shadow_receipt() {
+        const CHILD: &str = "ANUBIS_PHASE3_SHADOW_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let mut binding = clean_binding();
+            binding.set_taint_label(security_label::SecurityLabel::unknown(Some("root-test")));
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("unknown_root_setter_emits_shadow_receipt")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .env("ANUBIS_PHASE3_SHADOW", "1")
+            .output()
+            .expect("run shadow-log child");
+
+        assert!(output.status.success());
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 child stderr");
+        assert!(
+            stderr.contains("ANUBIS_PHASE3_UNKNOWN site=set_taint_label reason=root-test"),
+            "stderr: {stderr}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod fn_identity_spine_tests {
     use super::*;
     use crate::frontend::MatchArm;
@@ -27782,7 +28082,10 @@ mod fn_identity_spine_tests {
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label: security_label::SecurityLabel::default(),
+            secret_label: security_label::SecurityLabel::default(),
         }
+        .with_labels()
     }
 
     #[test]
@@ -28054,7 +28357,10 @@ mod builtin_gate_tag_tests {
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: tags,
             field_builtin_gate_tags: BTreeMap::new(),
+            taint_label: security_label::SecurityLabel::default(),
+            secret_label: security_label::SecurityLabel::default(),
         }
+        .with_labels()
     }
 
     #[test]

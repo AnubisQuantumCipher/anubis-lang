@@ -12,11 +12,11 @@
 //! - `Unknown`  — analysis lacks evidence to prove `Clean` or to identify a
 //!   concrete labeled source.
 //!
-//! Slice 2 introduces the type, its constructors, lattice `join`, and legacy
-//! adapters from the historical `(bool, Option<String>)` and `bool`-only
-//! shapes. **No caller migrates in this slice.** Slices 3-5 do the migration
-//! in the recommended dependency order (root transfer → path/carrier →
-//! terminal enforcement) so that this slice cannot flip any fixture verdict.
+//! Slice 2 introduced the type, constructors, lattice `join`, and legacy
+//! adapters without migrating callers. Slice 3 stores the lattice state on
+//! `ScopeBinding` and makes root `let`/assign/pattern/control-flow/loop
+//! transfers write it first; legacy booleans remain derived adapters while
+//! Slices 4-5 migrate path/carrier state and terminal enforcement.
 //!
 //! ## Lattice laws
 //!
@@ -37,12 +37,11 @@
 /// under analysis. See the module docs for the lattice laws and the mission
 /// citations that authorize them.
 ///
-/// This is `pub(crate)` because Slice 2 deliberately introduces the type
-/// without wiring it into any caller. Slices 3-5 migrate the existing
-/// boolean/`Option` sites into this domain; only after Phase 3 close is the
-/// visibility revisited.
+/// This remains `pub(crate)` while Phase 3 migrates the checker in bounded
+/// slices. Slice 3 uses it for root binding transfer; Slices 4-5 extend the
+/// same domain through carriers and terminal consumers.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
-#[allow(dead_code)] // Slice 2: introduced; Slice 3+ migrate callers.
+#[allow(dead_code)] // Phase 3 transition: later slices consume the remaining operations.
 pub(crate) enum SecurityLabel {
     /// Proven unlabeled on every analyzed path.
     #[default]
@@ -64,7 +63,7 @@ pub(crate) enum SecurityLabel {
     Unknown { reason: Option<&'static str> },
 }
 
-#[allow(dead_code)] // Slice 2: introduced; Slice 3+ migrate callers.
+#[allow(dead_code)] // Phase 3 transition: later slices consume the remaining operations.
 impl SecurityLabel {
     /// Construct a `Clean` label.
     pub(crate) fn clean() -> Self {
@@ -194,6 +193,34 @@ impl SecurityLabel {
             Self::Labeled { source: Some(_) } if policy_ok => Self::Clean,
             other => other,
         }
+    }
+
+    /// Emit a shadow-log line when `ANUBIS_PHASE3_SHADOW` is set. Slice 3
+    /// records newly-visible `Unknown` without changing any check verdict.
+    pub(crate) fn shadow_unknown(site: &'static str, reason: Option<&'static str>) {
+        if std::env::var_os("ANUBIS_PHASE3_SHADOW").is_none() {
+            return;
+        }
+        match reason {
+            Some(r) => eprintln!("ANUBIS_PHASE3_UNKNOWN site={site} reason={r}"),
+            None => eprintln!("ANUBIS_PHASE3_UNKNOWN site={site}"),
+        }
+    }
+
+    /// Integrity-lane adapter: `Unknown` MUST NOT become `(false, None)`.
+    /// Slice 5 is what promotes this to a user-facing diagnostic; Slice 3
+    /// only guarantees the adapter cannot invent Clean.
+    pub(crate) fn to_legacy_taint(&self) -> (bool, Option<String>) {
+        match self {
+            Self::Clean => (false, None),
+            Self::Labeled { source } => (true, source.clone()),
+            Self::Unknown { .. } => (true, Some("unknown-label".to_string())),
+        }
+    }
+
+    /// Confidentiality-lane adapter: `Unknown` MUST NOT become `false`.
+    pub(crate) fn to_legacy_secret(&self) -> bool {
+        !self.is_clean()
     }
 }
 
@@ -425,5 +452,32 @@ mod tests {
             SecurityLabel::Clean.declassified_by(false),
             SecurityLabel::Clean
         );
+    }
+
+    #[test]
+    fn to_legacy_taint_never_collapses_unknown_to_clean() {
+        let (tainted, source) = unk().to_legacy_taint();
+        assert!(tainted, "Unknown must not become tainted=false");
+        assert!(
+            source.is_some(),
+            "Unknown must not become taint_source=None"
+        );
+    }
+
+    #[test]
+    fn to_legacy_secret_never_collapses_unknown_to_clean() {
+        assert!(
+            unk().to_legacy_secret(),
+            "Unknown must not become secret=false"
+        );
+    }
+
+    #[test]
+    fn to_legacy_clean_and_labeled_round_trip() {
+        assert_eq!(SecurityLabel::Clean.to_legacy_taint(), (false, None));
+        assert!(!SecurityLabel::Clean.to_legacy_secret());
+        let labeled = lbl("src");
+        assert_eq!(labeled.to_legacy_taint(), (true, Some("src".to_string())));
+        assert!(lbl_none().to_legacy_secret());
     }
 }
