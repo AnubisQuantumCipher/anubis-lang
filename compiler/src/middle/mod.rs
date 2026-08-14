@@ -20,6 +20,7 @@ pub mod loopctl;
 pub mod proptest;
 /// Security research HIR types (Phase 3 stubs — profiles, scoped targets, effect IR).
 pub mod research_profile;
+pub(crate) mod security_label;
 pub(crate) mod trifecta;
 pub(crate) mod ty;
 
