@@ -213,11 +213,11 @@ jobs:
           expected = {
               "profile": "hosted",
               "verdict": "HOSTED_PASS",
-              "pass": 28,
+              "pass": 29,
               "fail": 0,
               "skip": 0,
               "external": 1,
-              "total": 29,
+              "total": 30,
           }
           for key, value in expected.items():
               if report.get(key) != value:
@@ -225,8 +225,8 @@ jobs:
                       f"hosted gate report mismatch for {key}: {report.get(key)!r} != {value!r}"
                   )
           gates = report.get("gates")
-          if not isinstance(gates, list) or len(gates) != 29:
-              raise SystemExit("hosted gate report must contain exactly 29 gate rows")
+          if not isinstance(gates, list) or len(gates) != 30:
+              raise SystemExit("hosted gate report must contain exactly 30 gate rows")
           expected_names = [
               "G1_fmt", "G2_clippy", "G3_test", "G4_build_release",
               "G5_language_fixtures", "G6_turing_core", "G7_pca",
@@ -237,6 +237,7 @@ jobs:
               "G22_fixture_preflight", "G23_carrier_totality", "G24_promise_coherence",
               "G25_formal_kernel", "G26_proof_correspondence", "G27_phase_metrics_ledger",
               "G28_corpus_inventory_binding", "G29_host_resource_contract",
+              "G30_phase3_label_census",
           ]
           names = [row.get("gate") for row in gates if isinstance(row, dict)]
           if names != expected_names:

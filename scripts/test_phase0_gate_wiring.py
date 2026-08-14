@@ -34,7 +34,15 @@ class Phase0GateWiringTests(unittest.TestCase):
     @staticmethod
     def g29_body() -> str:
         text = (ROOT / "scripts" / "audit_unified.sh").read_text(encoding="utf-8")
-        match = re.search(r"# G29\b(?P<body>.*?)# ── Report ──", text, re.DOTALL)
+        match = re.search(r"# G29\b(?P<body>.*?)# G30\b", text, re.DOTALL)
+        if match is None:
+            return ""
+        return match.group("body")
+
+    @staticmethod
+    def g30_body() -> str:
+        text = (ROOT / "scripts" / "audit_unified.sh").read_text(encoding="utf-8")
+        match = re.search(r"# G30\b(?P<body>.*?)# ── Report ──", text, re.DOTALL)
         if match is None:
             return ""
         return match.group("body")
@@ -262,6 +270,29 @@ class Phase0GateWiringTests(unittest.TestCase):
         self.assertIsNotNone(expected, "EXPECTED_GATES is missing")
         assert expected is not None
         self.assertIn("G29_host_resource_contract", expected.group(1).split())
+
+    def test_g30_registers_phase3_label_census_gate(self) -> None:
+        text = (ROOT / "scripts" / "audit_unified.sh").read_text(encoding="utf-8")
+        body = self.g30_body()
+        self.assertTrue(body, "G30 phase3-label-census block is missing")
+        self.assertIn("scripts/run_phase3_label_census.sh", body)
+        self.assertIn('gate "G30_phase3_label_census"', body)
+        expected = re.search(r'^EXPECTED_GATES="([^"]+)"', text, re.MULTILINE)
+        self.assertIsNotNone(expected, "EXPECTED_GATES is missing")
+        assert expected is not None
+        self.assertIn("G30_phase3_label_census", expected.group(1).split())
+
+    def test_phase3_label_census_files_exist(self) -> None:
+        tool = ROOT / "scripts" / "lib" / "phase3_label_census.py"
+        gate = ROOT / "scripts" / "run_phase3_label_census.sh"
+        expect = ROOT / "docs" / "phase3" / "label_census.tsv"
+        for path in (tool, gate, expect):
+            self.assertTrue(path.exists(), f"missing Phase 3 census artifact: {path}")
+        header = expect.read_text(encoding="utf-8").splitlines()[0].split("\t")
+        self.assertEqual(
+            header,
+            ["fn", "field", "writes", "reads", "kind", "target_slice", "notes"],
+        )
 
     def test_host_resource_contract_is_load_bearing_in_seal_checklist(self) -> None:
         text = (ROOT / "scripts" / "run_seal_checklist.sh").read_text(encoding="utf-8")
