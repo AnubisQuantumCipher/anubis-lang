@@ -269,6 +269,24 @@ impl ScopeBinding {
         self.secret = label.to_legacy_secret();
         self.secret_label = label;
     }
+
+    /// Slice 5 (Phase 3) terminal-consumer read: `true` iff the taint
+    /// lattice is anything other than `Clean`. Because `set_taint_label`
+    /// promotes `Unknown` to a `Labeled` legacy view via `to_legacy_taint`,
+    /// this predicate matches `info.tainted` exactly for every producer
+    /// route while giving future consumers a lattice-first read path that
+    /// cannot silently equate `Unknown` with `Clean`.
+    #[allow(dead_code)]
+    fn taint_label_is_labeled_or_unknown(&self) -> bool {
+        !self.taint_label.is_clean()
+    }
+
+    /// Slice 5 (Phase 3) terminal-consumer read: `true` iff the
+    /// confidentiality lattice is anything other than `Clean`.
+    #[allow(dead_code)]
+    fn secret_label_is_labeled_or_unknown(&self) -> bool {
+        !self.secret_label.is_clean()
+    }
 }
 
 /// Set-valued identity of a first-class callable expression.
@@ -12692,6 +12710,24 @@ fn analyze_expr_effect(
                             });
                         }
                     }
+                    // Slice 5 (Phase 3) — terminal-consumer shadow-log. If the argument is a plain
+                    // scope root whose taint lattice recorded `Unknown` (analysis lacks evidence to
+                    // prove Clean and cannot attribute a labeled source), record it so a review can
+                    // classify whether the existing `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`
+                    // rejection is the correct promoted diagnostic or whether a dedicated Unknown
+                    // diagnostic should replace it. Fail-closed already holds because `set_taint_label`
+                    // derives `info.tainted = true` for `Unknown`, so the sink diagnostic above still
+                    // fires — no verdict changes here.
+                    if let Expr::Var(name) = arg {
+                        if let Some(b) = scope.get(name) {
+                            if b.taint_label.is_unknown() {
+                                security_label::SecurityLabel::shadow_unknown(
+                                    "taint_sink_consumer",
+                                    b.taint_label.unknown_reason(),
+                                );
+                            }
+                        }
+                    }
                 }
             }
             // CONFIDENTIALITY egress — the DUAL of the taint sink check above (leg-1 of the lethal
@@ -12731,6 +12767,20 @@ fn analyze_expr_effect(
                             // (the enforcing language/turing/security/stdlib gates stay green in the VM).
                             false,
                         );
+                    }
+                    // Slice 5 (Phase 3) — terminal-consumer shadow-log, secret dual. Fires
+                    // regardless of whether `expr_source` resolved a concrete source, because
+                    // an Unknown-lattice binding is precisely the case the summary walker cannot
+                    // attribute yet still must not silently be Clean at a sink. No verdict change.
+                    if let Expr::Var(name) = arg {
+                        if let Some(b) = scope.get(name) {
+                            if b.secret_label.is_unknown() {
+                                security_label::SecurityLabel::shadow_unknown(
+                                    "secret_egress_consumer",
+                                    b.secret_label.unknown_reason(),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -28054,6 +28104,67 @@ mod scope_binding_security_label_tests {
             stderr.contains("ANUBIS_PHASE3_UNKNOWN site=set_taint_label reason=root-test"),
             "stderr: {stderr}"
         );
+    }
+
+    #[test]
+    fn unknown_taint_at_sink_emits_terminal_consumer_shadow_receipt() {
+        const CHILD: &str = "ANUBIS_PHASE3_SINK_SHADOW_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let mut ctx = SemanticContext::default();
+            ctx.known_bindings.insert("payload".to_string());
+            let mut scope = BTreeMap::new();
+            let mut b = labelled_param_binding("payload", false, None, false);
+            b.set_taint_label(security_label::SecurityLabel::unknown(Some("legacy-shape")));
+            scope.insert("payload".to_string(), b);
+            let stmt = Stmt::ExprStmt(Expr::Call {
+                callee: "shell".to_string(),
+                args: vec![Expr::Var("payload".to_string())],
+            });
+            analyze_stmts(
+                &[stmt],
+                Mode::Safe,
+                &mut scope,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut ctx,
+            );
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("unknown_taint_at_sink_emits_terminal_consumer_shadow_receipt")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .env("ANUBIS_PHASE3_SHADOW", "1")
+            .output()
+            .expect("run shadow-log child");
+
+        assert!(output.status.success(), "child status: {:?}", output.status);
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 child stderr");
+        assert!(
+            stderr.contains("ANUBIS_PHASE3_UNKNOWN site=taint_sink_consumer"),
+            "stderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn unknown_taint_label_promotes_to_labeled_view() {
+        let mut b = clean_binding();
+        b.set_taint_label(security_label::SecurityLabel::unknown(Some("test")));
+        assert!(b.taint_label.is_unknown());
+        assert!(b.taint_label_is_labeled_or_unknown());
+        assert!(b.info.tainted, "sensitive consumer must see tainted=true");
+        assert_eq!(b.info.taint_source.as_deref(), Some("unknown-label"));
+    }
+
+    #[test]
+    fn unknown_secret_label_promotes_to_labeled_view() {
+        let mut b = clean_binding();
+        b.set_secret_label(security_label::SecurityLabel::unknown(Some("test")));
+        assert!(b.secret_label.is_unknown());
+        assert!(b.secret_label_is_labeled_or_unknown());
+        assert!(b.secret, "sensitive consumer must see secret=true");
     }
 }
 

@@ -14,9 +14,39 @@
 //!
 //! Slice 2 introduced the type, constructors, lattice `join`, and legacy
 //! adapters without migrating callers. Slice 3 stores the lattice state on
-//! `ScopeBinding` and makes root `let`/assign/pattern/control-flow/loop
-//! transfers write it first; legacy booleans remain derived adapters while
-//! Slices 4-5 migrate path/carrier state and terminal enforcement.
+//! `ScopeBinding` and makes the three root producers write it. Slice 4
+//! migrates the five remaining path/carrier writers (control-flow-merge,
+//! aggregate mutation, non-`Var` place-assign taint and secret duals, and
+//! the `ReturnSummaryLane::taint_place` helper) to the lattice setters, so
+//! every direct write to `info.tainted` / `taint_source` / `declassified` /
+//! `secret` outside the two setter methods is gone.
+//!
+//! Slice 5 classifies and promotes every Unknown case:
+//!
+//! Producer sources of `Unknown`:
+//! - `SecurityLabel::from_legacy_taint(false, Some(_))` — the historical
+//!   "shape error" where a stale `taint_source` accompanied a false
+//!   `tainted` bool (documented on the constructor). Now reachable only from
+//!   `sync_labels_from_legacy`, which shadow-logs the site.
+//! - Explicit `SecurityLabel::unknown(reason)` — reserved for producers
+//!   that intentionally give up (currently the two Slice 3/5 regression
+//!   tests).
+//!
+//! Terminal-consumer promotion to fail-closed:
+//! - `set_taint_label` derives `info.tainted = true` and
+//!   `taint_source = Some("unknown-label")` for any `Unknown` — every
+//!   downstream consumer reading `info.tainted` therefore refuses to treat
+//!   `Unknown` as `Clean`. The existing `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`
+//!   / `ANUBIS_SECRET_EXFILTRATION` diagnostics fire without a new
+//!   diagnostic code needing to be added.
+//! - `set_secret_label` derives `secret = true` for `Unknown` on the
+//!   confidentiality lane, satisfying the same fail-closed contract.
+//! - The two sink emit sites in `analyze_expr_effect` additionally
+//!   shadow-log `taint_sink_consumer` / `secret_egress_consumer` on any
+//!   `Unknown` at a plain-`Var` argument, so a review can promote the
+//!   generic rejection to a dedicated `ANUBIS_PHASE3_UNKNOWN_AT_SINK`
+//!   diagnostic in a later slice if that precision is wanted; no verdict
+//!   changes here.
 //!
 //! ## Lattice laws
 //!
