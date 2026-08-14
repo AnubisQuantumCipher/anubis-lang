@@ -41,7 +41,7 @@ Additionally, the operator-authored arc statement (`docs/language/ROADMAP.md:277
 
 | # | Criterion | Query | Verbatim decisive output | Verdict |
 |---|---|---|---|---|
-| 1 | **Lane-parameterized total walker** — one walker family | `bash scripts/phase_metrics.sh` at `6dcfa353` | `walker families 4   non-increasing, → 1` | **WAIVED (operator directive 2026-08-13)** — architectural cross-module refactor covering `middle/mod.rs`, `middle/effects.rs`, `middle/capability.rs`. Non-increasing (5→4) holds. Recorded as Phase 4-class scope in Section 10. |
+| 1 | **Lane-parameterized total walker** — one walker family | `bash scripts/phase_metrics.sh` at `6dcfa353` | `walker families 4   non-increasing, → 1` | **WAIVED (operator directive 2026-08-13)** — architectural cross-module refactor covering `compiler/src/middle/mod.rs`, `compiler/src/middle/effects.rs`, `compiler/src/middle/capability.rs`. Non-increasing (5→4) holds. Recorded as Phase 4-class scope in Section 10. |
 | 2 | **Zero duplicated lane pairs** | same command at `6dcfa353` | `duplicated lane pairs 0` with all four `PAIR_SPECS` rows `removed`/`delegated` | **PASS** — pattern seeders (PR #22 `fb49da2a`), block walkers delegated (PR #23 `1499f607`), return summaries (PR #24 `d8e34783`), source walkers (PR #25 `6dcfa353`). |
 | 3 | **Zero `_ =>` wildcards in label-lane walkers** | same command | `_ => in label-lane walkers 0   0 (as in capability.rs)` | **PASS** — closed by PR #20 (`955aed3b`). 12→4 (PR #12) then 4→0 (PR #20). |
 | 4 | **General ExprStmt arm** in `walk_block_taint` / `walk_block_secret` | same command | `walk_block_taint yes   via walk_block_labels`; `walk_block_secret yes   via walk_block_labels` | **PASS** — closed by PR #21 (`533cc47e`) metric alignment; adapters remain and must remain (`walker_shared_registration`). |
@@ -402,7 +402,7 @@ The blueprint requires (§75): "separate verified, believed, skipped, and unknow
 
 ### 7.3 SKIPPED — with reason
 
-- **`walker families → 1`**: waived by operator directive (2026-08-13) as out of Phase 2 scope (cross-module refactor covering `middle/mod.rs`, `middle/effects.rs`, `middle/capability.rs`). Count stays 4 on `main`. See Section 10.
+- **`walker families → 1`**: waived by operator directive (2026-08-13) as out of Phase 2 scope (cross-module refactor covering `compiler/src/middle/mod.rs`, `compiler/src/middle/effects.rs`, `compiler/src/middle/capability.rs`). Count stays 4 on `main`. See Section 10.
 - **In-process UNSAT-cert replay for REG-002**: skipped as Phase 4 architectural. The v0.1.1-preview conditional mitigation is what shipped; the full closure is named in `docs/CLAIMS.md` § REG-002 as remaining Phase-4 work.
 - **Taint-side D4 WhileLet seeder** (surfaced by the #24 unify): explicit follow-up slice, not blocking Phase 2 completion. The unify preserved the pre-existing asymmetry; it did not introduce a defect.
 
@@ -473,7 +473,7 @@ The mitigation shipped is genuinely opt-in. Under the default configuration, a c
 
 The blueprint requires (§77): "obtain operator approval before proceeding."
 
-**Operator directive 2026-08-13 (in-session, this rewrite):** waive `walker families → 1` as out-of-Phase-2 scope (cross-module refactor targeting `middle/mod.rs`, `middle/effects.rs`, `middle/capability.rs`), mark Phase 2 COMPLETE with the pair-count criterion (2) met on `main`, and open Phase 3.
+**Operator directive 2026-08-13 (in-session, this rewrite):** waive `walker families → 1` as out-of-Phase-2 scope (cross-module refactor targeting `compiler/src/middle/mod.rs`, `compiler/src/middle/effects.rs`, `compiler/src/middle/capability.rs`), mark Phase 2 COMPLETE with the pair-count criterion (2) met on `main`, and open Phase 3.
 
 Operator invocation: **"complete every single thing"** issued after PR #23 landed on `main` (at `1499f607`) with `duplicated lane pairs = 2`. The four steps executed under that directive:
 
