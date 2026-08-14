@@ -187,6 +187,73 @@ class LabelCensusPrecisionTests(unittest.TestCase):
             self.assertEqual(census.get(("documented", "taint_source")), None)
 
 
+    def test_nested_local_fn_does_not_steal_following_outer_sites(self) -> None:
+        """Field accesses after a local helper still belong to the outer function."""
+        with tempfile.TemporaryDirectory(prefix="phase3-census-nested-fn-") as tmp:
+            root = Path(tmp)
+            src_dir = root / "compiler" / "src" / "middle"
+            src_dir.mkdir(parents=True)
+            src = src_dir / "mod.rs"
+            src.write_text(
+                "fn outer(b: &mut Binding) {\n"
+                "    fn local_helper() { let brace = \"}\"; }\n"
+                "    b.info.tainted = true;\n"
+                "    if true { b.secret = true; }\n"
+                "}\n"
+                "fn sibling(b: &Binding) -> bool { b.info.tainted }\n"
+            )
+            census = parse_rows(run_tool(root, "compiler/src/middle/mod.rs"))
+            self.assertEqual(census[("outer", "tainted")], (1, 0))
+            self.assertEqual(census[("outer", "secret")], (1, 0))
+            self.assertEqual(census[("sibling", "tainted")], (0, 1))
+            self.assertNotIn(("local_helper", "tainted"), census)
+            self.assertNotIn(("local_helper", "secret"), census)
+
+    def test_array_semicolon_in_signature_does_not_end_function(self) -> None:
+        """A `[T; N]` type is not a declaration-only function terminator."""
+        with tempfile.TemporaryDirectory(prefix="phase3-census-array-signature-") as tmp:
+            root = Path(tmp)
+            src = root / "mod.rs"
+            src.write_text(
+                "fn array_param(buf: [u8; 4], b: &mut Binding) {\n"
+                "    b.info.tainted = buf[0] != 0;\n"
+                "}\n"
+            )
+            census = parse_rows(run_tool(root, "mod.rs"))
+            self.assertEqual(census[("array_param", "tainted")], (1, 0))
+            self.assertNotIn(("<toplevel>", "tainted"), census)
+
+    def test_two_same_line_functions_keep_distinct_owners(self) -> None:
+        """Each same-line `fn` owns its body and following lines."""
+        with tempfile.TemporaryDirectory(prefix="phase3-census-same-line-fns-") as tmp:
+            root = Path(tmp)
+            src = root / "mod.rs"
+            src.write_text(
+                "fn first(a: &mut Binding) { a.secret = true; } "
+                "fn second(b: &mut Binding) {\n"
+                "    b.info.tainted = true;\n"
+                "}\n"
+            )
+            census = parse_rows(run_tool(root, "mod.rs"))
+            self.assertEqual(census[("first", "secret")], (1, 0))
+            self.assertEqual(census[("second", "tainted")], (1, 0))
+            self.assertNotIn(("<toplevel>", "tainted"), census)
+
+    def test_escaped_backslash_char_does_not_expose_later_brace(self) -> None:
+        """`'\\\\'` must not swallow a later char literal and expose its brace."""
+        with tempfile.TemporaryDirectory(prefix="phase3-census-backslash-char-") as tmp:
+            root = Path(tmp)
+            src = root / "mod.rs"
+            src.write_text(
+                "fn chars(b: &mut Binding) {\n"
+                "    let pair = ('\\\\', '{');\n"
+                "    b.secret = true;\n"
+                "}\n"
+            )
+            census = parse_rows(run_tool(root, "mod.rs"))
+            self.assertEqual(census[("chars", "secret")], (1, 0))
+
+
 class LabelCensusGateBootstrapTests(unittest.TestCase):
     """`--update` on the wrapper must bootstrap a missing expectation."""
 

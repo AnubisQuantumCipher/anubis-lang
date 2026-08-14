@@ -50,7 +50,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # Tracked field patterns. Each is a full-word match: the trailing negative
 # lookahead `(?![A-Za-z0-9_])` prevents `.secret_fns`, `.tainted_call`,
@@ -64,20 +64,204 @@ FIELD_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     ("secret",       re.compile(r"\.secret(?![A-Za-z0-9_])")),
 ]
 
-# `fn NAME(...)` on a line that starts with (optional) attributes / visibility.
-FN_RE = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)")
+# Function declarations may be top-level, methods inside an `impl`, or tests
+# inside a module. Local helper functions are legal Rust too, so ownership
+# cannot be inferred from the nearest preceding `fn` token.
+FN_RE = re.compile(r"(?<![A-Za-z0-9_])fn\s+([A-Za-z_][A-Za-z0-9_]*)")
+RAW_STRING_RE = re.compile(r'(?:br|r)(?P<hashes>#{0,255})"')
 
 
-def enclosing_fn(src_lines: List[str], line_no: int) -> str:
-    """Return the name of the innermost `fn X(` at or above `line_no`.
+def _char_literal_end(line: str, start: int) -> Optional[int]:
+    """Return the exclusive end of a Rust char/byte-char literal, if present."""
+    quote = start + 1 if line.startswith("b'", start) else start
+    if quote >= len(line) or line[quote] != "'" or quote + 1 >= len(line):
+        return None
 
-    `line_no` is 1-indexed. Falls back to `"<toplevel>"` if no `fn` is found.
-    """
-    for i in range(line_no - 1, -1, -1):
-        m = FN_RE.match(src_lines[i])
-        if m:
-            return m.group(1)
-    return "<toplevel>"
+    content = quote + 1
+    if line[content] != "\\":
+        closing = content + 1
+    else:
+        escape = content + 1
+        if escape >= len(line):
+            return None
+        if line[escape] == "u" and escape + 1 < len(line) and line[escape + 1] == "{":
+            end_brace = line.find("}", escape + 2)
+            if end_brace < 0:
+                return None
+            closing = end_brace + 1
+        elif line[escape] == "x":
+            closing = escape + 3
+        else:
+            closing = escape + 1
+
+    if closing < len(line) and line[closing] == "'":
+        return closing + 1
+    return None
+
+
+def mask_non_code(src_lines: List[str]) -> List[str]:
+    """Mask comments and literals while preserving code positions and braces."""
+    masked_lines: List[str] = []
+    block_comment_depth = 0
+    string_mode: Optional[str] = None
+    raw_hashes = ""
+
+    for line in src_lines:
+        out = [" "] * len(line)
+        i = 0
+        while i < len(line):
+            if block_comment_depth:
+                if line.startswith("/*", i):
+                    block_comment_depth += 1
+                    i += 2
+                elif line.startswith("*/", i):
+                    block_comment_depth -= 1
+                    i += 2
+                else:
+                    i += 1
+                continue
+
+            if string_mode == "normal":
+                if line[i] == "\\":
+                    i += min(2, len(line) - i)
+                elif line[i] == '"':
+                    string_mode = None
+                    i += 1
+                else:
+                    i += 1
+                continue
+
+            if string_mode == "raw":
+                terminator = '"' + raw_hashes
+                if line.startswith(terminator, i):
+                    string_mode = None
+                    raw_hashes = ""
+                    i += len(terminator)
+                else:
+                    i += 1
+                continue
+
+            if line.startswith("//", i):
+                break
+            if line.startswith("/*", i):
+                block_comment_depth = 1
+                i += 2
+                continue
+
+            raw = RAW_STRING_RE.match(line, i)
+            if raw:
+                string_mode = "raw"
+                raw_hashes = raw.group("hashes")
+                i = raw.end()
+                continue
+
+            if line.startswith('b"', i):
+                string_mode = "normal"
+                i += 2
+                continue
+            if line[i] == '"':
+                string_mode = "normal"
+                i += 1
+                continue
+
+            char_end = _char_literal_end(line, i)
+            if char_end is not None:
+                i = char_end
+                continue
+
+            out[i] = line[i]
+            i += 1
+        masked_lines.append("".join(out))
+
+    if block_comment_depth or string_mode is not None:
+        raise ValueError("unterminated Rust comment or string literal")
+    return masked_lines
+
+
+def enclosing_functions(src_lines: List[str]) -> List[List[Tuple[int, str]]]:
+    """Return owner-change segments for every Rust source line."""
+    code_lines = mask_non_code(src_lines)
+    owners: List[List[Tuple[int, str]]] = []
+    stack: List[Tuple[str, int]] = []
+    pending_fn: Optional[Tuple[str, int, int]] = None
+    brace_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
+
+    for code in code_lines:
+        segments = [(0, stack[-1][0] if stack else "<toplevel>")]
+        declarations = {m.start(): m.group(1) for m in FN_RE.finditer(code)}
+
+
+        for position, ch in enumerate(code):
+            if position in declarations:
+                if pending_fn is not None:
+                    raise ValueError("function declaration before prior declaration ended")
+                pending_fn = (declarations[position], paren_depth, bracket_depth)
+
+            if ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+                if paren_depth < 0:
+                    raise ValueError("unbalanced closing parenthesis in Rust source")
+            elif ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+                if bracket_depth < 0:
+                    raise ValueError("unbalanced closing bracket in Rust source")
+            elif ch == "{":
+                brace_depth += 1
+                if (
+                    pending_fn is not None
+                    and paren_depth == pending_fn[1]
+                    and bracket_depth == pending_fn[2]
+                ):
+                    owner = pending_fn[0]
+                    stack.append((owner, brace_depth))
+                    pending_fn = None
+                    if segments[-1][1] != owner:
+                        segments.append((position + 1, owner))
+            elif ch == "}":
+                brace_depth -= 1
+                if brace_depth < 0:
+                    raise ValueError("unbalanced closing brace in Rust source")
+                while stack and stack[-1][1] > brace_depth:
+                    stack.pop()
+                owner = stack[-1][0] if stack else "<toplevel>"
+                if segments[-1][1] != owner:
+                    segments.append((position + 1, owner))
+            elif (
+                ch == ";"
+                and pending_fn is not None
+                and paren_depth == pending_fn[1]
+                and bracket_depth == pending_fn[2]
+            ):
+                # Trait/extern declaration without a body. Semicolons inside a
+                # fixed-size array type (`[T; N]`) remain inside brackets.
+                pending_fn = None
+        owners.append(segments)
+
+    if (
+        brace_depth != 0
+        or paren_depth != 0
+        or bracket_depth != 0
+        or stack
+        or pending_fn is not None
+    ):
+        raise ValueError("unbalanced Rust source or function declaration")
+    return owners
+
+
+def owner_at(segments: List[Tuple[int, str]], position: int) -> str:
+    """Return the active function owner at one source-column position."""
+    owner = segments[0][1]
+    for start, candidate in segments:
+        if start > position:
+            break
+        owner = candidate
+    return owner
 
 
 def role_of_occurrence(line: str, occ_end: int) -> str:
@@ -101,6 +285,7 @@ def role_of_occurrence(line: str, occ_end: int) -> str:
 def enumerate_sites(src_path: Path) -> Dict[Tuple[str, str], Dict[str, int]]:
     with src_path.open() as fh:
         lines = fh.readlines()
+    owners = enclosing_functions(lines)
 
     buckets: Dict[Tuple[str, str], Dict[str, int]] = defaultdict(
         lambda: {"writes": 0, "reads": 0}
@@ -114,7 +299,7 @@ def enumerate_sites(src_path: Path) -> Dict[Tuple[str, str], Dict[str, int]]:
         for field_name, field_re in FIELD_PATTERNS:
             for m in field_re.finditer(raw):
                 role = role_of_occurrence(raw, m.end())
-                fn = enclosing_fn(lines, idx)
+                fn = owner_at(owners[idx - 1], m.start())
                 buckets[(fn, field_name)][role] += 1
     return buckets
 
