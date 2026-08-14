@@ -186,6 +186,21 @@ class LabelCensusPrecisionTests(unittest.TestCase):
             self.assertEqual(census.get(("documented", "secret")), None)
             self.assertEqual(census.get(("documented", "taint_source")), None)
 
+    def test_literals_and_inline_comments_do_not_count(self) -> None:
+        """Tracked field spellings outside Rust code must not enter the census."""
+        with tempfile.TemporaryDirectory(prefix="phase3-census-non-code-") as tmp:
+            root = Path(tmp)
+            src = root / "mod.rs"
+            src.write_text(
+                "fn prose() {\n"
+                "    let normal = \"b.secret\";\n"
+                "    let raw = r#\"b.info.tainted\"#;\n"
+                "    let x = 1; // b.info.taint_source\n"
+                "    /* b.info.declassified */\n"
+                "}\n"
+            )
+            census = parse_rows(run_tool(root, "mod.rs"))
+            self.assertEqual(census[("__totals__", "-")], (0, 0))
 
     def test_nested_local_fn_does_not_steal_following_outer_sites(self) -> None:
         """Field accesses after a local helper still belong to the outer function."""
@@ -252,6 +267,21 @@ class LabelCensusPrecisionTests(unittest.TestCase):
             )
             census = parse_rows(run_tool(root, "mod.rs"))
             self.assertEqual(census[("chars", "secret")], (1, 0))
+
+    def test_parse_failure_is_reported_without_traceback(self) -> None:
+        """Malformed input fails through the tool's stable rc=2 error path."""
+        with tempfile.TemporaryDirectory(prefix="phase3-census-parse-error-") as tmp:
+            root = Path(tmp)
+            src = root / "mod.rs"
+            src.write_text("fn broken(b: &Binding) {\n    b.secret\n")
+            result = subprocess.run(
+                ["python3", str(TOOL), "--root", str(root), "--source", "mod.rs"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("phase3_label_census: cannot parse", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
 
 
 class LabelCensusGateBootstrapTests(unittest.TestCase):

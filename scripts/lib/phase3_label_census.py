@@ -178,9 +178,8 @@ def mask_non_code(src_lines: List[str]) -> List[str]:
     return masked_lines
 
 
-def enclosing_functions(src_lines: List[str]) -> List[List[Tuple[int, str]]]:
-    """Return owner-change segments for every Rust source line."""
-    code_lines = mask_non_code(src_lines)
+def enclosing_functions(code_lines: List[str]) -> List[List[Tuple[int, str]]]:
+    """Return owner-change segments for masked Rust source lines."""
     owners: List[List[Tuple[int, str]]] = []
     stack: List[Tuple[str, int]] = []
     pending_fn: Optional[Tuple[str, int, int]] = None
@@ -285,21 +284,17 @@ def role_of_occurrence(line: str, occ_end: int) -> str:
 def enumerate_sites(src_path: Path) -> Dict[Tuple[str, str], Dict[str, int]]:
     with src_path.open() as fh:
         lines = fh.readlines()
-    owners = enclosing_functions(lines)
+    code_lines = mask_non_code(lines)
+    owners = enclosing_functions(code_lines)
 
     buckets: Dict[Tuple[str, str], Dict[str, int]] = defaultdict(
         lambda: {"writes": 0, "reads": 0}
     )
-    for idx, raw in enumerate(lines, start=1):
-        stripped = raw.strip()
-        # Skip full-line comments; in-line trailing comments after code are
-        # kept because the code half of the line may still carry an access.
-        if stripped.startswith("//"):
-            continue
+    for idx, code in enumerate(code_lines):
         for field_name, field_re in FIELD_PATTERNS:
-            for m in field_re.finditer(raw):
-                role = role_of_occurrence(raw, m.end())
-                fn = owner_at(owners[idx - 1], m.start())
+            for m in field_re.finditer(code):
+                role = role_of_occurrence(code, m.end())
+                fn = owner_at(owners[idx], m.start())
                 buckets[(fn, field_name)][role] += 1
     return buckets
 
@@ -319,7 +314,11 @@ def main(argv=None) -> int:
         print(f"phase3_label_census: source not found: {src_path}", file=sys.stderr)
         return 2
 
-    buckets = enumerate_sites(src_path)
+    try:
+        buckets = enumerate_sites(src_path)
+    except ValueError as exc:
+        print(f"phase3_label_census: cannot parse {src_path}: {exc}", file=sys.stderr)
+        return 2
     total_w = sum(b["writes"] for b in buckets.values())
     total_r = sum(b["reads"] for b in buckets.values())
 
