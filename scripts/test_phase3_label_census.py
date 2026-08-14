@@ -392,7 +392,13 @@ class LabelCensusGateBootstrapTests(unittest.TestCase):
             for extra_args in ([], ["--update"]):
                 with self.subTest(extra_args=extra_args):
                     result = subprocess.run(
-                        ["bash", str(fake_root / "scripts" / GATE.name), *extra_args],
+                        [
+                            "bash",
+                            str(fake_root / "scripts" / GATE.name),
+                            "--root",
+                            str(fake_root),
+                            *extra_args,
+                        ],
                         cwd=fake_root,
                         capture_output=True,
                         text=True,
