@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Completion Blueprint Phase 3 label-site census.
 
-Enumerates every direct read/write of the security-label fields of
-`ScopeBinding` in `compiler/src/middle/mod.rs`, grouped by enclosing top-level
-`fn` name. The four tracked fields (mission §92) are:
+Enumerates every direct read/write and struct-literal initialization of the
+security-label fields of `ScopeBinding` in `compiler/src/middle/mod.rs`,
+grouped by enclosing `fn` name. The four tracked fields (mission §92) are:
 
 - `ScopeBinding.info.tainted`      (`bool`)
 - `ScopeBinding.info.taint_source` (`Option<String>`)
@@ -19,14 +19,16 @@ compares them.
 
 ## Precision
 
-Field matching uses complete identifiers with a trailing word-boundary so that
-identifiers such as `.secret_fns`, `.secret_present`, `.secret_source`,
-`.tainted_call`, or `.taint_source_of` do NOT contaminate the census. Every
-occurrence on a line is counted independently via `re.finditer`, and each is
-classified as `writes` (assignment on the RHS, `=` not `==`) or `reads`
-(anything else, including reference/`&mut` usages and expression positions).
-A line like `b.info.taint_source = b.info.taint_source.take().or(source);`
-therefore contributes one `write` and one `read` in the `taint_source` bucket.
+Field-access matching uses complete identifiers with a trailing word-boundary
+so that identifiers such as `.secret_fns`, `.secret_present`,
+`.secret_source`, `.tainted_call`, or `.taint_source_of` do NOT contaminate the
+census. `ScopeBinding { ... }` and nested `BindingInfo { ... }` label-field
+initializers are writes, including shorthand initializers. Every occurrence is
+counted independently, and each field access is classified as `writes`
+(standalone assignment, `=` but not `==` or `=>`) or `reads` (anything else,
+including reference/`&mut` usages and expression positions). A line like
+`b.info.taint_source = b.info.taint_source.take().or(source);` therefore
+contributes one `write` and one `read` in the `taint_source` bucket.
 
 ## Stability
 
@@ -40,12 +42,13 @@ Output on stdout: one TSV row per bucket, sorted by `(fn, field)`, plus a
 
     <fn>\t<field>\t<writes>\t<reads>
 
-Exit 0 always; comparison is the wrapper's job.
+Exit 0 on a valid census; exit 2 when the source is missing or cannot be parsed.
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import re
 import sys
 from collections import defaultdict
@@ -69,6 +72,23 @@ FIELD_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 # cannot be inferred from the nearest preceding `fn` token.
 FN_RE = re.compile(r"(?<![A-Za-z0-9_])fn\s+([A-Za-z_][A-Za-z0-9_]*)")
 RAW_STRING_RE = re.compile(r'(?:br|r)(?P<hashes>#{0,255})"')
+STRUCT_LITERAL_RE = re.compile(r"\b(ScopeBinding|BindingInfo)\s*\{")
+STRUCT_LITERAL_FIELDS = {
+    "ScopeBinding": frozenset({"secret"}),
+    "BindingInfo": frozenset({"tainted", "taint_source", "declassified"}),
+}
+NON_LITERAL_PREDECESSORS = frozenset({"struct", "impl", "for", "let"})
+LITERAL_FIELD_RE = re.compile(
+    r"\b(tainted|taint_source|declassified|secret)\b\s*(?::|(?=[,}]))"
+)
+
+
+@dataclass
+class _LiteralContext:
+    type_name: str
+    paren_depth: int
+    bracket_depth: int
+    expect_field: bool = True
 
 
 def _char_literal_end(line: str, start: int) -> Optional[int]:
@@ -263,19 +283,85 @@ def owner_at(segments: List[Tuple[int, str]], position: int) -> str:
     return owner
 
 
+def struct_literal_writes(code_lines: List[str]) -> List[Tuple[int, int, str]]:
+    """Return `(line, column, field)` writes in tracked struct literals."""
+    sites: List[Tuple[int, int, str]] = []
+    brace_stack: List[Optional[_LiteralContext]] = []
+    paren_depth = 0
+    bracket_depth = 0
+
+    for line_index, code in enumerate(code_lines):
+        openers: Dict[int, str] = {}
+        for match in STRUCT_LITERAL_RE.finditer(code):
+            prefix = code[: match.start()]
+            previous = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", prefix)
+            previous_word = previous.group(1) if previous else None
+            if (
+                prefix.rstrip().endswith("->")
+                or previous_word in NON_LITERAL_PREDECESSORS
+            ):
+                continue
+            openers[match.end() - 1] = match.group(1)
+
+        field_matches = {
+            match.start(): match for match in LITERAL_FIELD_RE.finditer(code)
+        }
+        for position, ch in enumerate(code):
+            context = brace_stack[-1] if brace_stack else None
+            field_match = field_matches.get(position)
+            if (
+                context is not None
+                and context.expect_field
+                and context.paren_depth == paren_depth
+                and context.bracket_depth == bracket_depth
+                and field_match is not None
+            ):
+                field = field_match.group(1)
+                if field in STRUCT_LITERAL_FIELDS[context.type_name]:
+                    sites.append((line_index, position, field))
+
+            if ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+            elif ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+            elif ch == "{":
+                type_name = openers.get(position)
+                brace_stack.append(
+                    _LiteralContext(type_name, paren_depth, bracket_depth)
+                    if type_name is not None
+                    else None
+                )
+            elif ch == "}":
+                brace_stack.pop()
+            elif (
+                context is not None
+                and context.paren_depth == paren_depth
+                and context.bracket_depth == bracket_depth
+            ):
+                if ch == ":":
+                    context.expect_field = False
+                elif ch == ",":
+                    context.expect_field = True
+
+    return sites
+
 def role_of_occurrence(line: str, occ_end: int) -> str:
     """Classify a single field-access occurrence as `writes` or `reads`.
 
     An occurrence is a write iff the first non-whitespace character after the
-    match is a single `=` (i.e. an assignment), *not* `==`, `!=`, `<=`, `>=`,
-    or a compound-assign. Everything else (including borrow, method-call,
+    match is a single `=` (i.e. an assignment), *not* `==`, `=>`, `!=`, `<=`,
+    `>=`, or a compound-assign. Everything else (including borrow, method-call,
     `.take()`, `.as_ref()`, tuple pattern binding, etc.) is a read.
     """
     tail = line[occ_end:].lstrip()
     if tail.startswith("="):
         # Rule out equality/comparison operators.
         after = tail[1:2]
-        if after == "=":
+        if after in {"=", ">"}:
             return "reads"
         return "writes"
     return "reads"
@@ -296,6 +382,9 @@ def enumerate_sites(src_path: Path) -> Dict[Tuple[str, str], Dict[str, int]]:
                 role = role_of_occurrence(code, m.end())
                 fn = owner_at(owners[idx], m.start())
                 buckets[(fn, field_name)][role] += 1
+    for line_index, column, field_name in struct_literal_writes(code_lines):
+        fn = owner_at(owners[line_index], column)
+        buckets[(fn, field_name)]["writes"] += 1
     return buckets
 
 
