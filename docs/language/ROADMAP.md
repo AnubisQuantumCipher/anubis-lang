@@ -159,17 +159,20 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > Completion Phase 3 statement (blueprint §55): **"Separate the security-label lattice from
 > accept-biased type inference."**
 >
-> **Verdict this file shows for Completion Phase 3: COMPLETE PENDING EXTERNAL SEAL.** All slices
-> and the completion receipt landed on `main` (PRs #28 domain, #29 census gate, #30 root transfer,
-> #31 path/carrier, #32 terminal enforcement, #33 receipt, #34 seal-attempt evidence). Criteria
-> 1–9 and 11–13 are MET on the merged commits; criterion 10 (canonical VZ self-host seal) is
-> **EXTERNAL / pending** — the seal was attempted and honestly recorded as not-a-PASS in
-> `docs/evidence/PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md` (the throwaway guest base image lacks
-> `cargo`/`lean` on PATH; the check-lane gates that need no toolchain all passed). Criterion 14's
-> stop-before-Phase-4 was superseded by an explicit operator directive to continue. Living
-> residuals: see [`docs/CLAIMS.md`](../CLAIMS.md) — this section does not maintain a second
-> parallel residual inventory. The authoritative record is
-> `docs/evidence/PHASE_3_COMPLETION_2026-08-14.md`.
+> **Verdict this file shows for Completion Phase 3: COMPLETE.** All slices and the completion
+> receipt landed on `main` (PRs #28 domain, #29 census gate, #30 root transfer, #31 path/carrier,
+> #32 terminal enforcement, #33 receipt, #34 seal-attempt evidence). Criteria 1–13 are MET.
+> Criterion 10 (canonical VZ self-host seal) was **EXTERNAL / pending** at #34 — the first seal
+> attempt was honestly recorded as not-a-PASS in `docs/evidence/PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`
+> because the throwaway guest base image had lost `cargo`/`lean`. On 2026-08-15 (operator-authorized)
+> the golden `anubis-xcode` image was re-provisioned with the pinned toolchain (rustup
+> `nightly-2026-05-10`, elan/Lean `v4.32.0`, z3/coreutils/cmake) and the seal ran to a **PASS** on
+> `main` HEAD `7464ff7f`: 0 gate failures, in-VM self-host fixpoint `46ddce14…` unchanged, disposable
+> guest torn down — recorded in `docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md` (which supersedes the
+> attempt). Criterion 14's stop-before-Phase-4 was superseded by an explicit operator directive to
+> continue. Living residuals: see [`docs/CLAIMS.md`](../CLAIMS.md) — this section does not maintain a
+> second parallel residual inventory. The authoritative records are
+> `docs/evidence/PHASE_3_COMPLETION_2026-08-14.md` plus the seal receipt above.
 
 ### Phase 3 exit criteria — one row per criterion
 
@@ -184,10 +187,10 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 | 7 | RED/GREEN/accept/alternate-carrier/dead-branch and A→B→A evidence exists for every enforcing slice. | 🟢 MET | Per-slice PR bodies + `examples/security` fixtures. |
 | 8 | Unit tests, language fixtures, security fixtures, walker completeness, phase metrics, docs drift, formatter, clippy, and canonical CI are green on the exact final commit. | 🟢 MET | Hosted CI green on each merged slice commit. |
 | 9 | A current source-bound immutable pin is published by the active lead and verified against the tree before final semantic claims. | 🟢 MET | Pins published + `publish_pin.sh --verify` per slice. |
-| 10 | The canonical seal checklist is run under the repository's admission rules. VM/VZ/offensive/Metal work may not be substituted with host execution; unavailable or external lanes are reported exactly as skipped/external, never inherited as fresh PASS. | 🟠 EXTERNAL / pending | `docs/evidence/PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`: seal attempted, not a PASS (guest base image lacks `cargo`/`lean`); no host substitution. |
+| 10 | The canonical seal checklist is run under the repository's admission rules. VM/VZ/offensive/Metal work may not be substituted with host execution; unavailable or external lanes are reported exactly as skipped/external, never inherited as fresh PASS. | 🟢 MET | `docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md`: disposable-guest self-host seal PASS on HEAD `7464ff7f` (0 gate failures, fixpoint `46ddce14…` unchanged, teardown verified) after operator-authorized golden re-provision + immutability fix (#38). Supersedes the earlier `PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md` not-a-PASS; no host substitution at any point. |
 | 11 | `docs/CLAIMS.md` and `docs/language/ROADMAP.md` (this file) match code and gates without deleting permanent/deferred residuals. | 🟢 MET | Reconciled at each slice landing; docs-drift gate green. |
 | 12 | `docs/evidence/PHASE_3_COMPLETION_2026-08-14.md` maps every criterion to command, exact verdict, artifact path/hash, RED and accept controls, verified/believed/skipped/unknown registers, dirty state, binary provenance, toolchain, and what the phase got wrong. | 🟢 MET | Merged in PR #33. |
-| 13 | The completion report says INCOMPLETE if any criterion is unmet. No waiver may be invented by the agent. | 🟢 MET | The receipt flags criterion 10 EXTERNAL rather than inventing a PASS. |
+| 13 | The completion report says INCOMPLETE if any criterion is unmet. No waiver may be invented by the agent. | 🟢 MET | The 2026-08-14 receipt flagged criterion 10 EXTERNAL rather than inventing a PASS; the seal was subsequently earned honestly (`PHASE_3_VM_SEAL_2026-08-15.md`), not waived. |
 | 14 | Stop and request architect approval before beginning Completion Phase 4. | 🟠 SUPERSEDED | Superseded by explicit operator directive (2026-08-15) to continue through the remaining phases. |
 
 ### Required semantic domain (see blueprint §66 for the authoritative version)
