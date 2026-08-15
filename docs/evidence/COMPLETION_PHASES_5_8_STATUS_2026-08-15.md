@@ -66,7 +66,7 @@ the seal ran to a PASS — `docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md`.
 
 ## Phase 7 — product-release evidence pack (blueprint §59)
 
-**Verdict: EVIDENCE PACK PRODUCED (agent half complete); the tagged release cut itself is OPERATOR-GATED and not performed.**
+**Verdict: PACK PRODUCED and RELEASE CUT — `v0.1.2-preview` published under explicit in-session operator authorization (own-artifact carveout).**
 
 The evidence-pack inputs exist and are current on `main`:
 
@@ -80,12 +80,12 @@ The evidence-pack inputs exist and are current on `main`:
 
 The pack itself is **produced and verified**: `docs/evidence/RELEASE_EVIDENCE_PACK_2026-08-15/`
 (INDEX.md + MANIFEST.sha256 over 21 artifacts; sealed-pin provenance re-verified byte-for-byte at
-assembly). Cutting a **tagged release** or publishing a release artifact is deliberately **not**
-performed here. Per `AGENTS.md` ("Only the active lead may build, publish pins, commit, or push") and
-the operator's standing rule that releases, tags, and public shipping are human-ratified
-(`skill://human-gate-at-send-button`), a product release is an operator action. The agent has
-produced and verified the pack; the operator presses the release button. This boundary is a
-completion of the agent's half, not an omission.
+assembly). The tagged release was then **cut under explicit in-session operator authorization**
+(`skill://human-gate-at-send-button` § "Explicit operator authorization on own artifacts"; all four
+criteria met — own repo, explicit instruction, content verified end-to-end, reversible):
+**`v0.1.2-preview`** (prerelease) at commit `b5c24125` with the binary + evidence tarballs +
+`SHA256SUMS`, `verify_public_release.py` PASS. First-touch external comms and new-repo / financial /
+legal actions remain fully gated regardless of authorization.
 
 ## Phase 8 — open-ended mechanized-correspondence research (blueprint §60)
 
@@ -105,7 +105,7 @@ it is unscheduled research the product does not depend on.
 |---|---|
 | 5 — language surface | OPTIONAL (bounded; deferrals published) |
 | 6 — permanent CI/regression | **MET** (committed, enforced) |
-| 7 — release evidence pack | **PACK PRODUCED** (`RELEASE_EVIDENCE_PACK_2026-08-15/`); tagged release operator-gated |
+| 7 — release evidence pack | **PACK PRODUCED + RELEASE CUT** — `v0.1.2-preview` published (operator-authorized) |
 | 8 — mechanized-correspondence research | ASPIRATIONAL / UNSCHEDULED by blueprint design (not a completion gate) |
 
 Completion Phases 0–4 have signed receipts. Phases 5–8 are addressed to the
@@ -114,9 +114,9 @@ load-bearing residual that spanned them — the VZ self-host seal on a
 toolchain-provisioned guest — was **closed on 2026-08-15**: the golden guest was
 re-provisioned and the seal ran to a PASS (0 gate failures, in-VM fixpoint
 `46ddce14…` unchanged), recorded in `PHASE_3_VM_SEAL_2026-08-15.md` (which
-supersedes the earlier `PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`). The remaining
-bounded item is the operator-gated release cut (Phase 7).
+supersedes the earlier `PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`). The Phase 7 release cut was then
+performed under explicit operator authorization: `v0.1.2-preview` (prerelease) is published.
 
 ---
 
-`Phases 0–7 complete (agent half): 0–4 receipted, VZ seal PASSED, Phase 5 OPTIONAL-complete, Phase 6 MET, Phase 7 pack PRODUCED; Phase 8 unscheduled by design; tagged release operator-gated`
+`Phases 0–7 complete: 0–4 receipted, VZ seal PASSED, Phase 5 OPTIONAL-complete, Phase 6 MET, Phase 7 pack PRODUCED + release v0.1.2-preview CUT (operator-authorized); Phase 8 unscheduled by design`

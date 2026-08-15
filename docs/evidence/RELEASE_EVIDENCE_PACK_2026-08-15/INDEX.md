@@ -47,7 +47,7 @@ seal receipt records independently.
 ## Indexed evidence (see `MANIFEST.sha256`)
 
 `MANIFEST.sha256` lists the sha256 of each artifact below (repo-relative paths). Manifest self-sha256:
-`3bc713c198dc1f2e4a7a7b2fbffb024e768c73ccf369eb00af4f574e150c3f5c`.
+`5117fe266054c15a85512a8b95097e6eb34c1f0a897bb560391fdee6f9179100`.
 
 - **Completion receipts:** `PHASE_0`/`PHASE_1`/`PHASE_1.5`/`PHASE_2`/`PHASE_3`/`PHASE_4_COMPLETION_*.md`
 - **Self-host seal:** `PHASE_3_VM_SEAL_2026-08-15.md`, `PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`, `scripts/vm/EXPECTED_FIXPOINT_VM`
@@ -71,10 +71,11 @@ is re-cut (then a new dated pack supersedes this one).
 
 ## Boundary — what is NOT in this pack, and why
 
-- **The tagged release / GitHub release / crates publish is NOT performed.** Per `AGENTS.md` ("only
-  the active lead may build, publish pins, commit, or push") and `skill://human-gate-at-send-button`,
-  a public release is a human-ratified action. This pack is the evidence a release would cite; the
-  operator presses publish.
+- **The tagged release was cut under explicit operator authorization.** At pack assembly the release
+  was not yet performed; the operator then explicitly authorized it in-session (own-artifact carveout,
+  `skill://human-gate-at-send-button`) and release **`v0.1.2-preview`** (prerelease) was published at
+  commit `b5c24125` carrying this pack's evidence. What stays human-gated regardless: first-touch
+  external comms, new-repo/org creation, financial, and legal actions.
 - **Phase 8** (mechanized-correspondence research) is **not** represented as done: the blueprint
   (§25–30) defines it as unscheduled research with no ship date, never presented as a current
   guarantee. It is not a product-completion gate and is left open and unclaimed.
@@ -85,4 +86,4 @@ is re-cut (then a new dated pack supersedes this one).
 
 ---
 
-`Phase 7 pack PRODUCED — Phases 0–7 agent-half receipted, seal PASS, evidence hashed + indexed; tagged release remains operator-gated`
+`Phase 7 pack PRODUCED + release v0.1.2-preview CUT (operator-authorized) — Phases 0–7 receipted, seal PASS, evidence hashed + indexed`
