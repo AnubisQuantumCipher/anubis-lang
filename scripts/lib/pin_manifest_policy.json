@@ -154,6 +154,7 @@
     "poc_kit/bin",
     "scripts/__pycache__",
     "scripts/lib/__pycache__",
+    "tools/anubis/out",
     "vm/exports",
     "vm/pins"
   ],
