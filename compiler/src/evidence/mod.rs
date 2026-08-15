@@ -1507,6 +1507,23 @@ mod pca_tests {
     use super::*;
 
     fn known_place_assignment_leak() -> &'static str {
+        // Was: `let b = Box { f: plain }; b.f = key; let g = b.f; print(g());` — the
+        // `let`-bound-alias place-assignment carrier `docs/CLAIMS.md` item 21 named as a true
+        // accept. That exact shape is now CLOSED (Completion Phase 4, 2026-08-15):
+        // `fn_alias_of_d` gained a `FieldAccess`/`Index` arm resolving through
+        // `field_fn_identities` — the same multi-candidate spine `fn_identities_of` already used
+        // — so `check` now correctly rejects it with `ANUBIS_SECRET_EXFILTRATION`. Using it here
+        // would make this poison fixture a "vacuous rejected input" instead of a live known false
+        // accept, which is exactly the failure mode this test exists to catch.
+        //
+        // The DIRECT method-call-syntax variant — calling the stored closure immediately via
+        // `obj.field()` with no intermediate `let` — remains open: `Expr::CallExpr` (parsed
+        // identically to a genuine method call) resolves callee identity only through
+        // `method_returns_param`/`method_sole_return`, never through `field_fn_identities`, so a
+        // field holding a dynamically place-assigned closure is invisible to it regardless of how
+        // well the write side is tracked. Confirmed still-leaking on the post-fix binary and
+        // identical on the pre-fix binary (not a regression from the Phase 4 fix; a separate,
+        // pre-existing residual named in the Phase 4 completion evidence).
         r#"
 struct Box { f: u64 }
 fn plain() -> i64 { return 7; }
@@ -1514,8 +1531,7 @@ fn key() -> secret<i64> { return 42; }
 fn main() {
     let b = Box { f: plain };
     b.f = key;
-    let g = b.f;
-    print(g());
+    print(b.f());
 }
 "#
     }

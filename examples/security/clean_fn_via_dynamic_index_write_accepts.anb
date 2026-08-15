@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// Over-rejection guard for the Phase 4 dynamic-index widen (CLAIMS item 21 row 6): a dynamic-index
+// write of a CLEAN function into a container slot must still ACCEPT. The MONOTONE widen unions the
+// assigned identity into every existing entry, but when that identity is not label-dangerous the
+// result must remain accepted — otherwise ordinary dynamic dispatch tables (arrays of pure
+// functions written through a computed index) would be falsely rejected.
+fn safe_a() -> i64 { return 1; }
+fn safe_b() -> i64 { return 2; }
+fn main() {
+    let fs = [safe_a, safe_a];
+    let i = 1;
+    fs[i] = safe_b;
+    let g = fs[0];
+    print(g());
+}
