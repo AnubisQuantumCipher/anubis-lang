@@ -76,7 +76,7 @@ instrument; do not substitute mutable `./target/release/anubis`.
 | Surface | Observation | Repro / boundary |
 |---|---|---|
 | **Security fixtures** | Lead gate **337/337 PASS**. Live disk inventory **337** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
-| **Language core** | **253/253 PASS** — Phase 1 adds the research-block local-field accept fixture; the earlier 252/252 receipt remains historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
+| **Language core** | **259/259 PASS** — current live count; the earlier 252/252 and 253/253 receipts remain historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
@@ -1499,6 +1499,72 @@ and cannot verify later repairs.
     array literals, which is a different change and is not claimed here.** A unit test pins
     `container_element_type("list") == None` precisely so this boundary cannot be mistaken for
     closure.
+
+    **Row 6 (place-assignment write-carrier, confidentiality + integrity lanes) — CLOSED for the
+    `let`-bound-alias read shape (Completion Blueprint Phase 4, 2026-08-15, PR #35 `0b0889da`).**
+    The write side already populated `field_fn_identities` correctly on the non-`Var` place-assign
+    arm (rows 4/5's "write side sets only `tainted`/`secret`" state was addressed by an intervening
+    commit). The residual was exactly row 6's disease: *the producer writes `field_fn_identities`
+    and the consumer on the sink-check path never reads it.* `expr_source`'s `Expr::Call`
+    sink/egress consumer resolves a callee's returned-label through the SINGLE-candidate spine
+    `fn_alias_of` / `.fn_alias`, and `fn_alias_of_d` had **no match arm for
+    `Expr::FieldAccess`/`Expr::Index`** — so a callable stored via place-assignment and read back
+    through a field/index projection (`let g = b.f; print(g())`) resolved to no alias and the sink
+    check saw nothing, while the identical value written by STRUCT LITERAL (`Box { f: key }`)
+    correctly rejected.
+
+    RED (pre-fix binary `601b0ef2…`):
+
+    ```anubis
+    struct Box { f: u64 }
+    fn key() -> secret<i64> { return 42; }
+    fn main() { let b = Box { f: 0 }; b.f = key; let g = b.f; print(g()); }
+    // check rc=0 (ACCEPT); run printed 42 — the secret leaked
+    ```
+
+    The fix has three parts, all additive (a 929-file pre-fixture corpus verdict-diff vs the
+    pre-fix binary is **0 flips**):
+
+    1. `fn_alias_of_d` gains a `FieldAccess`/`Index` arm resolving through
+       `fn_identities_at_path_expr` (the same `field_fn_identities` lookup the multi-candidate
+       `fn_identities_of` already used), narrowing to one name with the fail-closed "prefer a
+       label-dangerous candidate" rule `join_fn_alias` already uses for branch joins.
+    2. The non-`Var` place-assign write handler treats a wildcard-bearing path (any `*` segment,
+       from a dynamic index `xs[i] = v`) as a MONOTONE widen — union the assigned identity/tags
+       into every existing entry — instead of an exact-overwrite at the `*` key that left stale
+       concrete positional keys, across `field_fn_identities`/`field_closures` and
+       `field_builtin_gate_tags`.
+    3. `expr_source`'s `Expr::Call` arm consults the FULL multi-candidate `fn_identities` set
+       per-lane, so a binding that may-hold both a secret-returning and a tainting function is
+       caught by BOTH lanes independently of which name the single-name `fn_alias` collapsed to
+       (closes a mixed-carrier-into-taint-only-sink sub-case a CodeRabbit review surfaced).
+
+    Verification (candidate `9f0e46ed…`): struct-field / array-element / map-key / dynamic-index
+    write-carriers all REJECT (secret + taint lanes); the literal-construction and direct-`let g =
+    key` controls still REJECT; the clean-value twins still ACCEPT. security **337/337**, language
+    **259/259**, stdlib-fail-closed **104/104**, walker completeness PASS, docs-drift 0 drift,
+    phase metrics OK, native-authoritative **937 files / 0 mismatches**, `cargo test --release`
+    full workspace **1245/0**. Manual hostile matrix **59/59**. A 3-surface, 54-probe adversarial
+    soundness hunt found **0 genuine false accepts and 0 over-rejections** (the single OVER_REJECT
+    is an intentional fail-closed over-approximation on a loop-written symbolic index). Regression
+    witnesses + over-rejection guards under `examples/security/`
+    (`secret_fn_via_place_assign_{field,index}_rejects`, `tainted_fn_via_place_assign_field_rejects`,
+    `secret_fn_via_dynamic_index_write_rejects`, `mixed_secret_taint_field_taint_only_sink_rejects`,
+    `egress_builtin_field_carrier_secret_rejects`, and the `clean_*_accepts` guards).
+
+    **Bounded honestly — still OPEN in this class (NOT closed by this slice):**
+    - **The DIRECT method-call-syntax read shape `obj.f()`** (no intermediate `let`) —
+      `Expr::CallExpr` with a `FieldAccess` callee (row 3), which resolves callee identity only
+      through `method_returns_param`/`method_sole_return`, never `field_fn_identities`. Confirmed
+      still-leaking on both the pre- and post-fix binaries (a distinct pre-existing gap, not a
+      regression). A dedicated fixture and fix belong to a separate slice.
+    - **Rows 1/2 (contract `requires` carrier through guarded bodies / local-alias defeat)**,
+      **row 8's unannotated array-literal element type**, and **rows 9/10 (unannotated
+      formal/return element types)** remain named open above.
+    - Item 21's headline (30 TA across six items) is therefore **partially** retired: the
+      place-assignment write-carrier mechanism (row 6) is closed for the `let`-bound read shape on
+      both security lanes; the contract-discharge, sink-direction bare-builtin, and type-precision
+      mechanisms remain open. Green board does not invent completeness.
 
 Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
 and cannot verify later repairs.
