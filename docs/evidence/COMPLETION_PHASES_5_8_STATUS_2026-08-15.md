@@ -47,7 +47,7 @@ Permanence is not a promise here; it is committed infrastructure:
 | Anti-shrinkage ratchets | `.gate_floors/{native_authoritative,capset_selfhost,effect_selfhost,taint_selfhost,type_selfhost}.floor`, `examples/security/.fixture_count_floor`, `tests/fixtures/{language,turing}_core/.fixture_count_floor`, `examples/security/.corpus_expect_floor` | committed floors; `assert_floor` fails closed if a corpus shrinks |
 | Live-number honesty | `scripts/run_docs_drift_gate.sh` (G16) | committed; fails on any stamp drift (proven this session: it caught 329→335→336→337 corpus growth and forced every stamp) |
 | Phase-metric ledger | `scripts/phase_metrics.sh` + `PHASE_METRICS_LEDGER.md` (G27) | committed |
-| VM self-host seal lane | `scripts/run_seal_checklist.sh` / `scripts/vm/run-slice.sh` | committed (external runner; see the seal-attempt caveat) |
+| VM self-host seal lane | `scripts/run_seal_checklist.sh` / `scripts/vm/run-slice.sh` | committed; seal ran to PASS on a re-provisioned guest 2026-08-15 (`docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md`) |
 
 Direct evidence this phase is live, not aspirational: every PR merged this
 session (#29–#36) was blocked by branch protection until the CI
@@ -59,9 +59,10 @@ now permanent members of the security corpus that CI re-runs on every commit.
 The corpus floors ratcheted upward with the additions (security 327 → 337
 observed).
 
-Phase 6 is MET. The only standing-control lane that cannot be fully exercised
-on a stock runner is the VZ self-host seal (below), which is reported EXTERNAL,
-not PASS.
+Phase 6 is MET. The VZ self-host seal (the one standing-control lane that needs
+a toolchain-provisioned guest, not a stock runner) was reported EXTERNAL when
+this doc was first written; on 2026-08-15 the golden guest was re-provisioned and
+the seal ran to a PASS — `docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md`.
 
 ## Phase 7 — product-release evidence pack (blueprint §59)
 
@@ -105,13 +106,15 @@ unclaimed.
 | 7 — release evidence pack | INPUTS ASSEMBLED; release operator-gated |
 | 8 — mechanized-correspondence research | OUT OF SCOPE by definition |
 
-Completion Phases 0–4 have signed receipts (3 and 4 carry an EXTERNAL VZ-seal
-caveat, honestly recorded). Phases 5–8 are addressed to the agent boundary:
-6 met, 5/7/8 bounded with explicit rationale. The single load-bearing residual
-that spans them — the VZ self-host seal on a toolchain-provisioned guest —
-remains the one operator/environment action outstanding
-(`PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`).
+Completion Phases 0–4 have signed receipts. Phases 5–8 are addressed to the
+agent boundary: 6 met, 5/7/8 bounded with explicit rationale. The single
+load-bearing residual that spanned them — the VZ self-host seal on a
+toolchain-provisioned guest — was **closed on 2026-08-15**: the golden guest was
+re-provisioned and the seal ran to a PASS (0 gate failures, in-VM fixpoint
+`46ddce14…` unchanged), recorded in `PHASE_3_VM_SEAL_2026-08-15.md` (which
+supersedes the earlier `PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`). The remaining
+bounded item is the operator-gated release cut (Phase 7).
 
 ---
 
-`STOPPED — Phases 0–4 landed; 6 met; 5/7/8 bounded; VZ seal is the outstanding operator/environment action`
+`Phases 0–4 landed + VZ seal PASSED (2026-08-15); Phase 6 met; 5/7/8 bounded — release cut remains operator-gated`
