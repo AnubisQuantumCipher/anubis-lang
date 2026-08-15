@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Completion Blueprint Phase 4 (2026-08-15), CLAIMS item 21 row 6: the INTEGRITY-lane dual of the
+// place-assignment write-carrier. A tainted-returning function reference stored into a struct field
+// by place-assignment, read back and applied at a `shell` sink. Same fix closes both lanes because
+// fn_alias_of_d's new arm prefers a label-dangerous candidate for either lane.
+struct Box { f: u64 }
+fn evil() -> tainted<string> { return input(); }
+fn main() uses(shell) {
+    let b = Box { f: 0 };
+    b.f = evil;
+    let g = b.f;
+    shell(g());
+}

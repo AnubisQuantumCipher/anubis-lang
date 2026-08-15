@@ -579,6 +579,37 @@ fn fn_alias_of_d(
             }
             join_fn_alias(candidates.into_iter(), scope, ctx, depth)
         }
+        // A callable stored through PLACE-ASSIGNMENT and read back by field/index projection is
+        // still a function identity: `b.f = key; let g = b.f; print(g())` leaked while the
+        // identical literal construction `Box { f: key }` correctly rejected. The write side
+        // (`analyze_stmts`'s non-`Var` `Stmt::Assign` arm) already tracks this correctly through
+        // `field_fn_identities` — the multi-candidate spine `fn_identities_of` reads — but
+        // `fn_alias_of` is the SINGLE-candidate spine `expr_source`'s `Call` resolution actually
+        // consults, and it had no arm for `FieldAccess`/`Index` at all, so a correctly-tracked
+        // identity never reached the sink check.
+        //
+        // Resolves through the same multi-candidate lookup `fn_identities_of` uses
+        // (`fn_identities_at_path_expr`, which reads `field_fn_identities` for both a named field
+        // and a literal/dynamic container index), then narrows to one name with the same
+        // fail-closed "prefer a dangerous candidate" rule `join_fn_alias` already uses for branch
+        // joins — `fn_alias` holds one name, and a multi-candidate set may offer several, so
+        // picking arbitrarily would let insertion order decide soundness. An `Unknown` or empty
+        // result returns `None`, exactly the pre-existing behaviour for this shape — this arm can
+        // only ADD a detection that was previously always absent, never regress one.
+        Expr::FieldAccess { .. } | Expr::Index { .. } => {
+            let FnIdentitySet::Known(names) =
+                fn_identities_at_path_expr(init, scope, ctx, depth + 1)
+            else {
+                return None;
+            };
+            if let Some(dangerous) = names
+                .iter()
+                .find(|n| ctx.secret_fns.contains(*n) || ctx.tainting_fns.contains(*n))
+            {
+                return Some(dangerous.clone());
+            }
+            names.iter().next().cloned()
+        }
         _ => None,
     }
 }
@@ -10476,9 +10507,28 @@ fn analyze_stmts(
                     );
                     let assigned_path = flatten_access_path(target).map(|(_, path)| path);
                     let assigned_identity = fn_identities_of(value, scope, ctx);
+                    // A DYNAMIC index (`xs[i] = v`) resolves to the wildcard segment `*` — see
+                    // `flatten_access_path`'s Index arm — meaning "some position, not provably
+                    // this one". Treating that like a CONCRETE path (exact overwrite at key `*`,
+                    // leaving every existing positional key `0`, `1`, … untouched) is unsound: a
+                    // later EXACT-key read (`xs[0]`) hits its own stale entry from construction
+                    // time and never falls through to the `*` entry's union-fallback, because the
+                    // exact match short-circuits first. `xs = [safe, safe]; let i = 0; xs[i] =
+                    // leak; print(xs[0]())` — a program that MAY have overwritten slot 0 — read
+                    // slot 0's pre-write identity and printed the leaked secret on a green check.
+                    // The sound reading of a write through an unknown index is the same MONOTONE
+                    // widen already applied when `flatten_access_path` returns `None` entirely:
+                    // union the new value into every existing entry rather than overwriting one.
+                    // A wildcard segment anywhere in the path (`*`, `*.a`, `a.*`, `a.*.b`, …) — not
+                    // only a bare top-level `*` — means the write may have touched any concrete
+                    // sibling at that position, so it takes the same widen treatment throughout;
+                    // only a path with EVERY segment concrete gets the precise exact-overwrite path.
+                    let is_wildcard_path = assigned_path
+                        .as_deref()
+                        .is_some_and(|p| p.split('.').any(|seg| seg == "*"));
                     if let Some(b) = scope.get_mut(root) {
                         match assigned_path.as_ref() {
-                            Some(path) => {
+                            Some(path) if !is_wildcard_path => {
                                 b.field_builtin_gate_tags.retain(|key, _| {
                                     !(key == path
                                         || key.starts_with(&format!("{path}."))
@@ -10490,6 +10540,25 @@ fn analyze_stmts(
                                     b.field_builtin_gate_tags
                                         .insert(prefixed_gate_path(path, &field), tags);
                                 }
+                            }
+                            Some(path) => {
+                                // Wildcard write: union into every existing entry (any of them
+                                // may be the touched position), then also record at the `*` key
+                                // itself so a future symbolic-index read that resolves to the
+                                // same wildcard segment sees it directly.
+                                for tags in b.field_builtin_gate_tags.values_mut() {
+                                    *tags = BuiltinGateTags::union_concrete([
+                                        tags.clone(),
+                                        assigned_carried.clone(),
+                                    ]);
+                                }
+                                let existing_wildcard =
+                                    b.field_builtin_gate_tags.get(path).cloned();
+                                let widened = BuiltinGateTags::union_concrete(
+                                    std::iter::once(assigned_carried.clone())
+                                        .chain(existing_wildcard),
+                                );
+                                b.field_builtin_gate_tags.insert(path.clone(), widened);
                             }
                             None => {
                                 for tags in b.field_builtin_gate_tags.values_mut() {
@@ -10517,7 +10586,7 @@ fn analyze_stmts(
                             }
                         }
                         match assigned_path {
-                            Some(path) => {
+                            Some(path) if !is_wildcard_path => {
                                 b.field_closures.retain(|key, _| {
                                     !(key == &path
                                         || key.starts_with(&format!("{path}."))
@@ -10529,6 +10598,17 @@ fn analyze_stmts(
                                         || path.starts_with(&format!("{key}.")))
                                 });
                                 b.field_fn_identities.insert(path, assigned_identity);
+                            }
+                            Some(path) => {
+                                for identities in b.field_fn_identities.values_mut() {
+                                    *identities =
+                                        identities.clone().union(assigned_identity.clone());
+                                }
+                                let existing_wildcard = b.field_fn_identities.get(&path).cloned();
+                                let widened = assigned_identity
+                                    .clone()
+                                    .union(existing_wildcard.unwrap_or_else(FnIdentitySet::empty));
+                                b.field_fn_identities.insert(path, widened);
                             }
                             None => {
                                 for identities in b.field_fn_identities.values_mut() {
@@ -23681,6 +23761,25 @@ fn expr_source(
                 Some(src)
             } else if lane_fns.contains(resolved) {
                 Some(format!("return value of `{}`", resolved))
+            } else if let Some(hit) = scope.get(callee).and_then(|b| match &b.fn_identities {
+                // MULTI-CANDIDATE per-lane check. The single-name `fn_alias` collapses a
+                // may-hold-several-functions binding to ONE preferred name, chosen lane-agnostically
+                // (`join_fn_alias` / the FieldAccess/Index arm prefer any secret-or-taint candidate).
+                // A binding that may hold BOTH a secret-returning AND a tainting function therefore
+                // resolves `fn_alias` to only one of them, and the OTHER lane's check misses at a
+                // sink that this lane alone guards (e.g. a mixed `{secret_fn, taint_fn}` field applied
+                // at the taint-only `write_file`: the secret lane does not guard a non-egress sink, so
+                // the collapsed-to-secret alias let the tainted branch through). The full identity set
+                // is preserved on the binding, so consult it directly: if ANY known candidate is in
+                // THIS lane's dangerous set, the call may return this lane's label. Additive and
+                // fail-closed — it can only ADD a source where the single-name spine dropped one.
+                FnIdentitySet::Known(names) => names
+                    .iter()
+                    .find(|n| lane_fns.contains(n.as_str()))
+                    .cloned(),
+                FnIdentitySet::Unknown => None,
+            }) {
+                Some(format!("return value of `{}`", hit))
             } else if let Some(rets) = param_return_taint.get(resolved) {
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {

@@ -75,13 +75,13 @@ instrument; do not substitute mutable `./target/release/anubis`.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **329/329 PASS**. Live disk inventory **329** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **337/337 PASS**. Live disk inventory **337** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **253/253 PASS** — Phase 1 adds the research-block local-field accept fixture; the earlier 252/252 receipt remains historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 929 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 937 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -870,21 +870,21 @@ never terminates is a check/run divergence of a different kind, and is being cha
     Poison/accept guards: `research_build_requires_explicit_consent_and_vz_before_lowering`,
     `whole_program_callers_share_the_same_mode_derived_research_boundary`, and
     `research_block_local_field_access_and_ordinary_twin_both_lower`. At the deciding technical
-    epoch, compiler library **771/771**, language **259/259**, security **329/329**, stdlib
+    epoch, compiler library **771/771**, language **259/259**, security **337/337**, stdlib
     fail-closed **104/104**, PCA **19/19**, and the independent direct/carrier/dead-branch
     falsification matrix **9/9** passed. The current source-matching disposable-guest receipts are
     recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`.
 
     The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) is retained as
-    a failed receipt, not promoted: security **329/329**, language **259/259**, stdlib fail-closed
-    **104/104**; the current native-authoritative corpus is **929 files**, while that failed receipt
+    a failed receipt, not promoted: security **337/337**, language **259/259**, stdlib fail-closed
+    **104/104**; the current native-authoritative corpus is **937 files**, while that failed receipt
     graded 916 files with 0 mismatches; the measured builtin inventory was
     **213 builtins**, while check/run parity and the documentation-coverage floor were RED. Phase 1
     repairs those observed blockers and must rerun.
 
     The audited source-bound rerun at `out/phase1_host_seal_audited_20260730T154003Z` mechanically
     returned `SEAL_PASS` with 18/18 declared gates on pin `anubis-4dc5a51df23b`. It is **not promoted
-    to a whole-tree seal**: native-authoritative enumerated **929 files** from the live disk while the
+    to a whole-tree seal**: native-authoritative enumerated **937 files** from the live disk while the
     docs gate enumerated **916 tracked files**. Five untracked `.anb` files explain the difference;
     silently narrowing either side or staging unrelated showcase work is forbidden. The discrepancy
     was a technical HOLD pending trust-surface sign-off.
@@ -1478,10 +1478,10 @@ and cannot verify later repairs.
     |---|---|
     | compiler lib | **766/766** — source-current W1 suite, including recursive malformed-slot tests |
     | tool unit suite | **351/351** plus all integration harnesses green |
-    | security corpus | **329/329** — includes the ten annotated list/map/generic/parameter fixtures |
+    | security corpus | **337/337** — includes the ten annotated list/map/generic/parameter fixtures |
     | language corpus | **259/259** |
     | stdlib fail-closed | **104/104**, `timed_out=0` |
-    | native-authoritative | current corpus **929 files**; this W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
+    | native-authoritative | current corpus **937 files**; this W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
     | formal | **162 theorems / 15 modules**, machine-checked; no `sorry`/`admit`/free `axiom` |
     | immutable candidate | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; source-tree verification PASS |
 
@@ -1534,10 +1534,10 @@ and cannot verify later repairs.
     |---|---|
     | compiler library | **766/766 PASS** |
     | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
-    | security | **329/329 PASS** |
+    | security | **337/337 PASS** |
     | language | **259/259 PASS** |
     | stdlib fail-closed | **104/104 PASS** |
-    | native-authoritative | current corpus **929 files**; this W1 receipt graded 916 files, 0 mismatches |
+    | native-authoritative | current corpus **937 files**; this W1 receipt graded 916 files, 0 mismatches |
     | formal inventory | **162 theorems / 15 modules**, gate PASS |
     | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
 
@@ -2459,7 +2459,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **329/329** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **337/337** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 882 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
