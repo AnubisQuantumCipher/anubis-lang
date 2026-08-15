@@ -5,6 +5,7 @@
 <br><br>
 
 [![CI](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/AnubisQuantumCipher/anubis-lang?include_prereleases&sort=semver&label=release)](https://github.com/AnubisQuantumCipher/anubis-lang/releases/latest)
 ![Built with Rust](https://img.shields.io/badge/built_with-Rust-000000?logo=rust&logoColor=white)
 ![Native SMT solver](https://img.shields.io/badge/native_SMT_solver-0_external_deps-1f6feb)
 ![Apple Silicon](https://img.shields.io/badge/target-Apple_Silicon-black?logo=apple)
