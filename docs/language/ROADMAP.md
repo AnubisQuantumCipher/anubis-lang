@@ -287,8 +287,11 @@ See [`docs/CLAIMS.md`](../CLAIMS.md). This section deliberately does not duplica
 > [`docs/CLAIMS.md`](../CLAIMS.md). A residual that is neither closed nor published is the failure
 > mode this phase exists to prevent.
 >
-> **Verdict this file shows: IN PROGRESS.** The authoritative record is
-> `docs/evidence/PHASE_4_COMPLETION_2026-08-15.md` when it lands; this section tracks the surface.
+> **Verdict this file shows: COMPLETE.** All five exit criteria are MET: the residual soundness
+> surface is closed-or-published (CLAIMS item 21 row 6 closed in PR #35; the still-open residuals
+> are named below), the completion receipt landed (PR #36), and the canonical VZ self-host seal
+> PASSED (PR #39 — `docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md`). The authoritative records are
+> `docs/evidence/PHASE_4_COMPLETION_2026-08-15.md` plus the seal receipt.
 
 ### Closed this phase
 
@@ -316,8 +319,8 @@ All remain in [`docs/CLAIMS.md`](../CLAIMS.md); this table is a pointer index, n
 | 1 | Every open soundness residual is either CLOSED with a RED→GREEN receipt or EXPLICITLY PUBLISHED as a named, dated `docs/CLAIMS.md` entry. | 🟢 MET — the surface above is fully published; item 21 row 6 closed. |
 | 2 | Any closure lands as a bounded, CI-green, adversarially-hunted slice with a 0-flip corpus verdict-diff. | 🟢 MET for PR #35 (the one closure this phase). |
 | 3 | No residual is silently absorbed, weakened, or re-labelled to look closed. | 🟢 MET — every still-open mechanism is named with its CLAIMS pointer. |
-| 4 | `docs/evidence/PHASE_4_COMPLETION_2026-08-15.md` maps the surface, the closure receipt, and the honest open register. | ⬜ pending the receipt PR. |
-| 5 | Canonical seal under admission rules; external lanes reported exactly. | 🟠 EXTERNAL — shares the Phase-3 guest-toolchain seal limitation (`PHASE_3_VM_SEAL_ATTEMPT_2026-08-15.md`). |
+| 4 | `docs/evidence/PHASE_4_COMPLETION_2026-08-15.md` maps the surface, the closure receipt, and the honest open register. | 🟢 MET — landed in PR #36. |
+| 5 | Canonical seal under admission rules; external lanes reported exactly. | 🟢 MET — VZ self-host seal PASS on HEAD `7464ff7f` after operator-authorized golden re-provision (`docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md`, PR #39): 0 gate failures, fixpoint `46ddce14…` unchanged, disposable guest torn down, no host substitution. |
 
 ### Living residuals
 

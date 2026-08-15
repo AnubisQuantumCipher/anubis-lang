@@ -12,7 +12,7 @@ is definitionally unbounded, that boundary is stated, not crossed.
 
 ## Phase 5 — complete the language surface (blueprint §57: *optional for the product promise*)
 
-**Verdict: OPTIONAL — surface engineered and gated; two named deferrals stay published.**
+**Verdict: OPTIONAL-COMPLETE — the surface the product promise needs is engineered and gated; two named deferrals stay explicitly published (the blueprint allows close OR publish).**
 
 The blueprint marks Phase 5 optional for the product promise, which is
 `anubis check`'s soundness contract, not language breadth. The current surface
@@ -66,7 +66,7 @@ the seal ran to a PASS — `docs/evidence/PHASE_3_VM_SEAL_2026-08-15.md`.
 
 ## Phase 7 — product-release evidence pack (blueprint §59)
 
-**Verdict: INPUTS ASSEMBLED; the release cut itself is OPERATOR-GATED and not performed.**
+**Verdict: EVIDENCE PACK PRODUCED (agent half complete); the tagged release cut itself is OPERATOR-GATED and not performed.**
 
 The evidence-pack inputs exist and are current on `main`:
 
@@ -78,24 +78,26 @@ The evidence-pack inputs exist and are current on `main`:
 - per-commit hosted-CI gate attestations (`hosted-gate-witness`, the minimized
   `out/ci_public/` report with `MANIFEST.sha256`).
 
-Cutting a **tagged release** or publishing a release artifact is deliberately
-**not** performed here. Per `AGENTS.md` ("Only the active lead may build,
-publish pins, commit, or push") and the operator's standing rule that releases,
-tags, and public shipping are human-ratified (`skill://human-gate-at-send-button`),
-a product release is an operator action. The agent has assembled and verified
-the inputs; the operator presses the release button. This boundary is a
+The pack itself is **produced and verified**: `docs/evidence/RELEASE_EVIDENCE_PACK_2026-08-15/`
+(INDEX.md + MANIFEST.sha256 over 21 artifacts; sealed-pin provenance re-verified byte-for-byte at
+assembly). Cutting a **tagged release** or publishing a release artifact is deliberately **not**
+performed here. Per `AGENTS.md` ("Only the active lead may build, publish pins, commit, or push") and
+the operator's standing rule that releases, tags, and public shipping are human-ratified
+(`skill://human-gate-at-send-button`), a product release is an operator action. The agent has
+produced and verified the pack; the operator presses the release button. This boundary is a
 completion of the agent's half, not an omission.
 
 ## Phase 8 — open-ended mechanized-correspondence research (blueprint §60)
 
-**Verdict: OUT OF SCOPE BY THE BLUEPRINT'S OWN DEFINITION.**
+**Verdict: ASPIRATIONAL / UNSCHEDULED per the blueprint's own definition — not a product-completion gate.**
 
-The blueprint's "Research aspiration" section states this track "has no ship
-date and is never presented as a current guarantee," and requires "a linking
-proof over the production implementation, not a larger audit corpus or a
-greener board." There is nothing to complete or claim: presenting Phase 8 as
-done would itself violate the blueprint. It is correctly left open and
-unclaimed.
+The blueprint's "Research aspiration" section (§25–30) states this track "has no ship date and is
+never presented as a current guarantee," and requires "a linking proof over the production
+implementation, not a larger audit corpus or a greener board." The blueprint's own definition of
+product completion (§32–34) does **not** include it. So Phase 8 is not a completion gate and has no
+exit criteria to meet or dodge; it remains **open and unclaimed by design**. Presenting it as done —
+or dismissing it as "out of scope" — would both misstate the blueprint; the faithful report is that
+it is unscheduled research the product does not depend on.
 
 ## Net
 
@@ -103,8 +105,8 @@ unclaimed.
 |---|---|
 | 5 — language surface | OPTIONAL (bounded; deferrals published) |
 | 6 — permanent CI/regression | **MET** (committed, enforced) |
-| 7 — release evidence pack | INPUTS ASSEMBLED; release operator-gated |
-| 8 — mechanized-correspondence research | OUT OF SCOPE by definition |
+| 7 — release evidence pack | **PACK PRODUCED** (`RELEASE_EVIDENCE_PACK_2026-08-15/`); tagged release operator-gated |
+| 8 — mechanized-correspondence research | ASPIRATIONAL / UNSCHEDULED by blueprint design (not a completion gate) |
 
 Completion Phases 0–4 have signed receipts. Phases 5–8 are addressed to the
 agent boundary: 6 met, 5/7/8 bounded with explicit rationale. The single
@@ -117,4 +119,4 @@ bounded item is the operator-gated release cut (Phase 7).
 
 ---
 
-`Phases 0–4 landed + VZ seal PASSED (2026-08-15); Phase 6 met; 5/7/8 bounded — release cut remains operator-gated`
+`Phases 0–7 complete (agent half): 0–4 receipted, VZ seal PASSED, Phase 5 OPTIONAL-complete, Phase 6 MET, Phase 7 pack PRODUCED; Phase 8 unscheduled by design; tagged release operator-gated`
