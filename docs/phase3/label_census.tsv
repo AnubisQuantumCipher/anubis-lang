@@ -98,7 +98,10 @@ set_taint_label	tainted	1	0	lattice_adapter	3	lattice setter derives legacy adap
 sync_labels_from_legacy	secret	0	1	construction_adapter	3	construction-time legacy-to-lattice sync (Slice 3)
 sync_labels_from_legacy	taint_source	0	1	construction_adapter	3	construction-time legacy-to-lattice sync (Slice 3)
 sync_labels_from_legacy	tainted	0	1	construction_adapter	3	construction-time legacy-to-lattice sync (Slice 3)
+unknown_secret_label_promotes_to_labeled_view	secret	0	1	lattice_adapter	3	Slice 5 shadow-log / promotion helper (setter round-trip)
+unknown_taint_label_promotes_to_labeled_view	taint_source	0	1	lattice_adapter	3	Slice 5 shadow-log / promotion helper (setter round-trip)
+unknown_taint_label_promotes_to_labeled_view	tainted	0	1	lattice_adapter	3	Slice 5 shadow-log / promotion helper (setter round-trip)
 var_source	secret	0	1	reader	5	expr_source Var arm reader (Slice 5)
 var_source	taint_source	0	1	reader	5	expr_source Var arm reader (Slice 5)
 var_source	tainted	0	1	reader	5	expr_source Var arm reader (Slice 5)
-__totals__	-	92	40	-	-	totals
+__totals__	-	92	43	-	-	totals
