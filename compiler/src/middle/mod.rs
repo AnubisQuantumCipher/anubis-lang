@@ -23761,6 +23761,25 @@ fn expr_source(
                 Some(src)
             } else if lane_fns.contains(resolved) {
                 Some(format!("return value of `{}`", resolved))
+            } else if let Some(hit) = scope.get(callee).and_then(|b| match &b.fn_identities {
+                // MULTI-CANDIDATE per-lane check. The single-name `fn_alias` collapses a
+                // may-hold-several-functions binding to ONE preferred name, chosen lane-agnostically
+                // (`join_fn_alias` / the FieldAccess/Index arm prefer any secret-or-taint candidate).
+                // A binding that may hold BOTH a secret-returning AND a tainting function therefore
+                // resolves `fn_alias` to only one of them, and the OTHER lane's check misses at a
+                // sink that this lane alone guards (e.g. a mixed `{secret_fn, taint_fn}` field applied
+                // at the taint-only `write_file`: the secret lane does not guard a non-egress sink, so
+                // the collapsed-to-secret alias let the tainted branch through). The full identity set
+                // is preserved on the binding, so consult it directly: if ANY known candidate is in
+                // THIS lane's dangerous set, the call may return this lane's label. Additive and
+                // fail-closed — it can only ADD a source where the single-name spine dropped one.
+                FnIdentitySet::Known(names) => names
+                    .iter()
+                    .find(|n| lane_fns.contains(n.as_str()))
+                    .cloned(),
+                FnIdentitySet::Unknown => None,
+            }) {
+                Some(format!("return value of `{}`", hit))
             } else if let Some(rets) = param_return_taint.get(resolved) {
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {
