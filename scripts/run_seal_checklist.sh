@@ -241,6 +241,11 @@ REQUIRED_GATE_SCRIPTS=(
   scripts/run_taint_selfhost_gate.sh
   scripts/run_capset_selfhost_gate.sh
   scripts/gate_run_freshness.sh
+  # Completion Blueprint Phase 8, Slice 1 — production-linked SecurityLabel
+  # correspondence. Required-PASS in the core profile; the strict PASS regex in
+  # the run_gate call below refuses the `--rust-only` / `--lean-only` half-flag
+  # PASS lines so a caller cannot silently satisfy the seal on one side alone.
+  scripts/run_security_label_correspondence_gate.sh
   scripts/lib/seal_verdict_validate.py
   scripts/lib/gate_run_ledger_promote.py
 )
@@ -959,6 +964,20 @@ run_gate proof_correspondence \
   '^PROOF_CORRESPONDENCE_GATE: PASS\b' \
   '^PROOF_CORRESPONDENCE_GATE: FAIL\b' \
   --no-pin-use -- bash scripts/run_proof_correspondence_gate.sh
+
+# Completion Blueprint Phase 8, Slice 1 — production-linked SecurityLabel
+# correspondence. Rust observer + Lean observer + `cmp` byte comparison,
+# 83-row declared abstraction, self-test with nine mutation lanes proves the
+# gate is sensitive. Uses `--no-pin-use` because the gate does not execute
+# anubis (it drives `cargo test` on the compiler crate and `lake exe` on the
+# formal module, both under private temp dirs). The strict PASS regex requires
+# the `rows=` suffix so a future `--rust-only` / `--lean-only` half-flag PASS
+# line cannot silently satisfy the seal.
+run_gate security_label_correspondence \
+  '^SECURITY_LABEL_CORRESPONDENCE_GATE: PASS \(rows=' \
+  '^SECURITY_LABEL_CORRESPONDENCE_GATE: FAIL\b' \
+  --no-pin-use -- bash scripts/run_security_label_correspondence_gate.sh \
+    --out "$SEAL_OUT/gates/security_label_correspondence"
 
 run_gate selfhost \
   '^SELFHOST_GATE: PASS\b' \

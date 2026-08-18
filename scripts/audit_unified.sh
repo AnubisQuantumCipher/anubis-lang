@@ -559,6 +559,28 @@ else
   gate "G30_phase3_label_census" "FAIL" "self-test or live scan failed (see g30_phase3_label_census_selftest.log and g30_phase3_label_census.log)"
 fi
 
+# G31 — Completion Blueprint Phase 8, Slice 1: production-linked SecurityLabel correspondence.
+#
+# Runs both the Rust observer (calls the actual production
+# `SecurityLabel::{from_legacy_taint, from_legacy_secret, join, declassified_by,
+# to_legacy_taint, to_legacy_secret}` methods via `anubis_compiler::observe_security_label_correspondence`)
+# and the Lean observer (`lake exe security_label_observer`, formatting the
+# kernel-checked `Anubis.SecurityLabel.observationRows`), byte-compares the two
+# streams over the declared finite abstraction (83 rows), and refuses schema
+# faults on either side. `--self-test` in the gate itself mutates temporary
+# copies across nine defect classes; here we score only the normal-mode PASS,
+# and use the strict pattern that requires the `rows=` suffix so a future
+# `--rust-only` / `--lean-only` half-run cannot silently produce the same verdict.
+if bash scripts/run_security_label_correspondence_gate.sh \
+     --out "$OUT/g31_security_label_correspondence" \
+     >"$OUT/g31_security_label_correspondence.log" 2>&1 \
+   && grep -qE '^SECURITY_LABEL_CORRESPONDENCE_GATE: PASS \(rows=' \
+     "$OUT/g31_security_label_correspondence.log"; then
+  gate "G31_security_label_correspondence" "PASS" "byte-for-byte Rust<->Lean correspondence over declared abstraction (83 rows)"
+else
+  gate "G31_security_label_correspondence" "FAIL" "correspondence gate failed (see g31_security_label_correspondence.log)"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
@@ -570,7 +592,7 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel G26_proof_correspondence G27_phase_metrics_ledger G28_corpus_inventory_binding G29_host_resource_contract G30_phase3_label_census"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel G26_proof_correspondence G27_phase_metrics_ledger G28_corpus_inventory_binding G29_host_resource_contract G30_phase3_label_census G31_security_label_correspondence"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do
