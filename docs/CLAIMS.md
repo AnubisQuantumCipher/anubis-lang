@@ -80,7 +80,7 @@ instrument; do not substitute mutable `./target/release/anubis`.
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
-| **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
+| **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **199 theorems / 16 modules** (comment-stripped; 2026-08-18, after Phase-8 Slice-1 added `Anubis.SecurityLabel`, 37 theorems including a full-record `join_full_idempotent`) |
 | **Native authoritative** | **PASS over 937 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
@@ -105,7 +105,7 @@ done
 find examples/security -name '*.anb' | wc -l
 ```
 
-Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
+Counting rules: **Lean = 199 / 16** (2026-08-18; Phase-8 Slice-1 added 37 theorems in `Anubis.SecurityLabel`). **Builtins ≈ 213** (five-function union).
 
 ### Open — load-bearing (blocks honest "complete")
 

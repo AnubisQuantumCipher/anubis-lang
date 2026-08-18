@@ -29,7 +29,7 @@ of a red row is not evidence of absence.
 | **Verified build front door** | ✅ | Without the explicit `--no-verify` escape hatch, `anubis build` runs the same checker and refuses the currently modeled unproven-contract cases |
 | **Contract lanes** | 🟡 | integer (exact i64) · float **comparison** · string **equality/length** · bounded arrays · loop invariants · struct fields. Outside the modeled fragment the checker **defers** — see the scoped promise below |
 | **Native SMT solver** | ✅ | a zero-dependency, Lean-verified QF_BV solver; **default-authoritative** on the proven integer fragment (opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`); Z3 cross-checks when present |
-| **Mechanized components** | 🟡 | 162 Lean 4 theorems across 15 modules cover the stated encoding, bit-blast, non-interference, and effect lemmas; `run_formal_gate.sh` checks those files and rejects `sorry`/`admit`/`axiom`. **Not** a proof of total language soundness. Hosted CI installs the pinned Lean toolchain and requires this gate; see [CI reality](#ci-reality) below |
+| **Mechanized components** | 🟡 | 199 Lean 4 theorems across 16 modules cover the stated encoding, bit-blast, non-interference, effect, and (Phase-8 Slice-1) production-linked SecurityLabel-abstraction lemmas; `run_formal_gate.sh` checks those files and rejects `sorry`/`admit`/`axiom`. **Not** a proof of total language soundness. Hosted CI installs the pinned Lean toolchain and requires this gate; see [CI reality](#ci-reality) below |
 
 ### What a green `check` actually promises
 

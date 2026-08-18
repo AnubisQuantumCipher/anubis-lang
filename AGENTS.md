@@ -97,8 +97,9 @@ looks dramatic, check the instrument first.
 - **Builtins are 213**, by union of five functions in `compiler/src/backends/run.rs`
   (`emit_builtin_call` + its inline `matches!` + `is_proof_input_builtin` + `is_poc_kit_builtin` +
   `is_non_run_builtin`, deduplicated). README understates at "~150". Cite the counting method.
-- **Lean is 162 theorems across 15 modules.** A naive `grep '^\s*theorem '` returns 163 — one sits
-  inside a block comment in `NonInterference.lean`.
+- **Lean is 199 theorems across 16 modules** (2026-08-18, after Phase-8 Slice-1 landed the
+  37-theorem `Anubis.SecurityLabel` module). A naive `grep '^\s*theorem '` returns 200 — one sits
+  inside a block comment in `NonInterference.lean`. Re-derive with `scripts/lib/docs_drift_derive.py`.
 - `docs/language/ROADMAP.md` has single lines up to 77,561 characters; `MATURITY_CLAIM_MATRIX.md` is
   83 KB. Work them with targeted `grep`/`sed` and verify every quote against the live file.
 
@@ -138,13 +139,21 @@ Phases 0 through 7 — is landed, sealed, and released. Dated per-phase evidence
 - **Phase 5** OPTIONAL-COMPLETE; **Phase 6** MET (30-gate `ci.yml` + `.gate_floors` + docs-drift,
   branch-protection-enforced); **Phase 7** evidence pack produced
   (`docs/evidence/RELEASE_EVIDENCE_PACK_2026-08-15/`) and **release `v0.1.2-preview` cut** (prerelease,
-  commit `b5c24125`) under explicit operator authorization; **Phase 8** is unscheduled research by the
-  blueprint's own design (§25–30) and is not claimed. See
+  commit `b5c24125`) under explicit operator authorization; **Phase 8** remains **unscheduled by
+  blueprint design (§25–30)** — Slice 1 (`docs/evidence/PHASE_8_SLICE_1_2026-08-18.md`,
+  `phase8/security-label-correspondence-v1`, draft PR pending architect sign-off) added the first
+  bounded, production-linked mechanized-correspondence artifact for six `SecurityLabel` methods
+  (37 new theorems in `Anubis.SecurityLabel`; byte-for-byte gate
+  `scripts/run_security_label_correspondence_gate.sh`) and is a bounded first step, NOT a
+  Phase-8 completion claim. See also
   `docs/evidence/COMPLETION_PHASES_5_8_STATUS_2026-08-15.md`.
 
 Sealed-tree figures: security **337/337**, language **259/259**, stdlib fail-closed **104/104**,
-cargo-test **1179/0**, native-authoritative **937 files / 0 mismatches**, formal **162 theorems / 15
-modules**, docs-drift **53 stamps / 0 drift**. Every PR this arc (#28–#41) was blocked until CI
+cargo-test **1179/0**, native-authoritative **937 files / 0 mismatches**, formal at the release
+seal **162 theorems / 15 modules**, docs-drift **53 stamps / 0 drift**. That seal is `v0.1.2-preview`
+/ `b5c24125` (2026-08-15); the sealed-tree figures are the release-seal snapshot. Post-seal live
+formal figures on this worktree are **199 theorems / 16 modules** — Phase-8 Slice-1 added the
+`Anubis.SecurityLabel` module. Every PR this arc (#28–#41) was blocked until CI
 `hosted-gate-witness` reported `HOSTED_PASS`.
 
 The v0.1.2-preview release pin is `vm/pins/anubis-97cb47782d03-src-59dffa797c0f-release`, commit-bound

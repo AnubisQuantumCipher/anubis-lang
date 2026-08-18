@@ -3,3 +3,12 @@ defaultTargets = ["Anubis"]
 
 [[lean_lib]]
 name = "Anubis"
+
+# Completion Blueprint Phase 8, Slice 1 — Lean executable that emits the SecurityLabel
+# correspondence corpus for `scripts/run_security_label_correspondence_gate.sh`. The
+# executable is a thin wrapper over `Anubis.SecurityLabel.observationRows`, so this
+# Lean-side observation channel and the theorems in `Anubis/SecurityLabel.lean` share
+# a single kernel-checked corpus.
+[[lean_exe]]
+name = "security_label_observer"
+root = "Anubis.SecurityLabelObserver"

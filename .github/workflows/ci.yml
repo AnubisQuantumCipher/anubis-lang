@@ -213,11 +213,11 @@ jobs:
           expected = {
               "profile": "hosted",
               "verdict": "HOSTED_PASS",
-              "pass": 29,
+              "pass": 30,
               "fail": 0,
               "skip": 0,
               "external": 1,
-              "total": 30,
+              "total": 31,
           }
           for key, value in expected.items():
               if report.get(key) != value:
@@ -225,8 +225,8 @@ jobs:
                       f"hosted gate report mismatch for {key}: {report.get(key)!r} != {value!r}"
                   )
           gates = report.get("gates")
-          if not isinstance(gates, list) or len(gates) != 30:
-              raise SystemExit("hosted gate report must contain exactly 30 gate rows")
+          if not isinstance(gates, list) or len(gates) != 31:
+              raise SystemExit("hosted gate report must contain exactly 31 gate rows")
           expected_names = [
               "G1_fmt", "G2_clippy", "G3_test", "G4_build_release",
               "G5_language_fixtures", "G6_turing_core", "G7_pca",
@@ -238,6 +238,11 @@ jobs:
               "G25_formal_kernel", "G26_proof_correspondence", "G27_phase_metrics_ledger",
               "G28_corpus_inventory_binding", "G29_host_resource_contract",
               "G30_phase3_label_census",
+              # Completion Blueprint Phase 8, Slice 1 — production-linked SecurityLabel
+              # correspondence (add-new-mandatory-gate trust-surface change; no existing
+              # gate weakened, renamed, skipped, or special-cased). See
+              # docs/PROOF_CORRESPONDENCE.md § "Production-linked SecurityLabel slice".
+              "G31_security_label_correspondence",
           ]
           names = [row.get("gate") for row in gates if isinstance(row, dict)]
           if names != expected_names:

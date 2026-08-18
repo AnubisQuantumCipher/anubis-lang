@@ -25,6 +25,13 @@ pub use middle::research_profile::{
     proven_effects_from_source, proven_effects_via_typecheck, ProvenEffectSet,
 };
 pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
+// Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer
+// and its row count. Consumed by `compiler/tests/security_label_correspondence_observer.rs`
+// (integration test that only sees `pub` items) and by any external harness that wants to
+// stream the canonical observation TSV. The `SecurityLabel` type itself remains crate-private.
+pub use middle::{
+    observe_security_label_correspondence, OBSERVE_SECURITY_LABEL_CORRESPONDENCE_ROW_COUNT,
+};
 pub use project::{AnubisManifest, ProjectLayout};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6741,7 +6748,7 @@ fn main() {
             "$RUNNER_TEMP/anubis-elan.XXXXXX",
             "required=(gate_report.json gate_log.txt profile_environment.txt attestation_identity.txt)",
             "hosted gate report mismatch for",
-            "hosted gate report must contain exactly 30 gate rows",
+            "hosted gate report must contain exactly 31 gate rows",
             "hosted gate report gate roster mismatch",
             "external != [\"G9_poc_kit\"]",
             "8bb3439772cafd75240d61abf255e89122850bab93563d1283b048359ab4e88f",
@@ -6779,7 +6786,7 @@ fn main() {
         }
         let runner = std::fs::read_to_string(root.join("scripts/audit_unified.sh"))
             .expect("scripts/audit_unified.sh must exist");
-        for g in 1..=30 {
+        for g in 1..=31 {
             let marker = format!("\"G{g}_");
             assert!(
                 runner.contains(&marker),
