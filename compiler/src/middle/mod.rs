@@ -24,6 +24,25 @@ pub(crate) mod security_label;
 pub(crate) mod trifecta;
 pub(crate) mod ty;
 
+/// Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer for
+/// `SecurityLabel`. Emits one canonical TSV row per (op, args) tuple over the DECLARED
+/// FINITE ABSTRACTION, calling the actual `SecurityLabel` methods (no shadow
+/// reimplementation). Consumed by `scripts/run_security_label_correspondence_gate.sh`
+/// through the crate-root re-export in `lib.rs`. See
+/// `docs/PROOF_CORRESPONDENCE.md` § "Production-linked SecurityLabel slice" and
+/// `formal/Anubis/SecurityLabel.lean` for the mechanized model this Rust observer is
+/// compared against.
+pub fn observe_security_label_correspondence<W: std::io::Write>(
+    out: &mut W,
+) -> std::io::Result<()> {
+    security_label::observe_correspondence_rows(out)
+}
+
+/// Locked-in row count for the correspondence observer. Consumers (the gate script,
+/// integration tests) refuse a stream that does not have exactly this many rows.
+pub const OBSERVE_SECURITY_LABEL_CORRESPONDENCE_ROW_COUNT: usize =
+    security_label::DECLARED_ROW_COUNT;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BindingInfo {
     pub name: String,

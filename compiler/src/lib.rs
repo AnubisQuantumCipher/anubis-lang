@@ -25,6 +25,13 @@ pub use middle::research_profile::{
     proven_effects_from_source, proven_effects_via_typecheck, ProvenEffectSet,
 };
 pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
+// Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer
+// and its row count. Consumed by `compiler/tests/security_label_correspondence_observer.rs`
+// (integration test that only sees `pub` items) and by any external harness that wants to
+// stream the canonical observation TSV. The `SecurityLabel` type itself remains crate-private.
+pub use middle::{
+    observe_security_label_correspondence, OBSERVE_SECURITY_LABEL_CORRESPONDENCE_ROW_COUNT,
+};
 pub use project::{AnubisManifest, ProjectLayout};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

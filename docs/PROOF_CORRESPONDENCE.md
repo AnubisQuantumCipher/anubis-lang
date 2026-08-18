@@ -1,6 +1,6 @@
 # Source-to-proof correspondence, and what is still in the TCB
 
-**What this document is for.** Anubis ships 162 machine-checked Lean theorems. Those theorems are
+**What this document is for.** Anubis ships 199 machine-checked Lean theorems. Those theorems are
 about **models** — a bit-blasting relation, an effect lattice, a non-interference property. They are
 not, and do not claim to be, proofs that the production Rust *implements* those models. Between an
 Anubis source file and a verified refutation there are seven links, and only some of them carry
