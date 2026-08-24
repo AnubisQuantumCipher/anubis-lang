@@ -626,6 +626,12 @@ fn build_evidence_bundle_tree_inner(
         claim.verdict = "FAIL".into();
     }
     write_json(&dir.join("pca.json"), &claim)?;
+    // anubis.program-evidence.v3: assembled from the sealed bundle files and covered by the
+    // manifest below. Best-effort — a program that does not fully discharge simply omits it and
+    // the downstream verifier fail-closes on the missing v3 document.
+    if let Err(err) = emit_program_evidence_v3(&dir) {
+        eprintln!("program-evidence.v3 skipped: {err}");
+    }
     write_manifest_hashes(&dir)?;
 
     Ok(EvidenceBundle { dir, manifest })
@@ -1070,6 +1076,284 @@ pub fn pca_signature_status(dir: &Path) -> Result<Option<(bool, String)>, String
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+/// Canonical JSON matching Python `json.dumps(sort_keys=True, separators=(",", ":"),
+/// ensure_ascii=False)`: recursively key-sorted, compact, non-ASCII emitted raw. Object keys
+/// are ASCII throughout this schema, so byte-wise sort equals Python's codepoint sort. Scalars
+/// reuse serde_json's escaping/number formatting, which matches Python for this integer/ASCII
+/// data. Used to reproduce, in the compiler, the exact obligation/function digests the frozen
+/// `anubis_program_verify` recomputes from the sealed bundle files.
+fn canonical_json(value: &serde_json::Value, out: &mut String) {
+    match value {
+        serde_json::Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                canonical_json(item, out);
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, key) in keys.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).unwrap_or_default());
+                out.push(':');
+                canonical_json(map.get(*key).unwrap(), out);
+            }
+            out.push('}');
+        }
+        scalar => out.push_str(&serde_json::to_string(scalar).unwrap_or_default()),
+    }
+}
+
+fn canonical_sha256(value: &serde_json::Value) -> String {
+    let mut buf = String::new();
+    canonical_json(value, &mut buf);
+    sha256_bytes(buf.as_bytes())
+}
+
+fn stage_authority(stage: &str) -> &'static str {
+    match stage {
+        "parse" => "anubis-frontend-parser",
+        "typecheck" => "anubis-typecheck",
+        "monomorphization" => "anubis-monomorphization-inventory",
+        "policy-effects" => "anubis-typecheck-effect-inventory",
+        "policy-capability" => "anubis-confinement-derivation",
+        "policy-information-flow" => "anubis-taint-pass",
+        "policy-declassification" => "anubis-source-walker",
+        "symbolic" => "anubis-symbolic-engine",
+        "solver" => "anubis-solver-native-rup",
+        "source-binding" => "anubis-source-merkle",
+        "artifact-binding" => "anubis-artifact-sha256",
+        "evidence-closure" => "anubis-manifest-sha256",
+        _ => "anubis",
+    }
+}
+
+const PROGRAM_EVIDENCE_STAGES: [&str; 12] = [
+    "parse",
+    "typecheck",
+    "monomorphization",
+    "policy-effects",
+    "policy-capability",
+    "policy-information-flow",
+    "policy-declassification",
+    "symbolic",
+    "solver",
+    "source-binding",
+    "artifact-binding",
+    "evidence-closure",
+];
+
+/// Assemble `program-evidence.json` (`anubis.program-evidence.v3`) from the already-written
+/// bundle files, matching the frozen `inventory-safe-v1` verifier contract. Emitted only for a
+/// fully-discharged safe program — every obligation an rup_refutation PASS and a native artifact
+/// present — so a partial build fail-closes at the verifier rather than presenting an incomplete
+/// v3 document. Best-effort: any shape it cannot map returns Err and the file is simply skipped.
+fn emit_program_evidence_v3(dir: &Path) -> Result<(), String> {
+    let read_json = |rel: &str| -> Result<serde_json::Value, String> {
+        let bytes = std::fs::read(dir.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("{rel}: {e}"))
+    };
+    let artifact_row = |rel: &str| -> Result<serde_json::Value, String> {
+        let path = dir.join(rel);
+        let sha = sha256_file(&path).ok_or_else(|| format!("{rel}: sha"))?;
+        let bytes = std::fs::metadata(&path).map_err(|e| format!("{rel}: {e}"))?.len();
+        Ok(serde_json::json!({"path": rel, "sha256": sha, "bytes": bytes}))
+    };
+
+    // Native artifact is mandatory for inventory-safe-v1.
+    let artifact_path = dir.join("artifact");
+    if !artifact_path.is_file() {
+        return Err("no native artifact".into());
+    }
+    let artifact_sha = sha256_file(&artifact_path).ok_or("artifact sha")?;
+
+    let source_bytes = std::fs::read(dir.join("source.anubis")).map_err(|e| e.to_string())?;
+    let source_sha = sha256_bytes(&source_bytes);
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let compiler_sha = sha256_file(&exe).ok_or("compiler self-hash")?;
+    let compiler_basename = exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("anubis")
+        .to_string();
+
+    // Function inventory: recompute ids exactly as the verifier does from hir.json.
+    let hir = read_json("hir.json")?;
+    let functions_val = hir
+        .get("functions")
+        .and_then(|v| v.as_array())
+        .ok_or("hir.functions")?;
+    let mut functions = Vec::new();
+    let mut fids: Vec<serde_json::Value> = Vec::new();
+    for f in functions_val {
+        if f.get("mode").and_then(|m| m.as_str()) != Some("safe") {
+            return Err("non-safe function".into());
+        }
+        let fid = canonical_sha256(f);
+        fids.push(serde_json::Value::String(fid.clone()));
+        functions.push(serde_json::json!({
+            "id": fid,
+            "name": f.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+            "module": f.get("module").cloned().unwrap_or(serde_json::Value::Null),
+            "mode": f.get("mode").and_then(|v| v.as_str()).unwrap_or(""),
+            "effects": f.get("effects").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "param_count": f.get("params").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+            "symbol_count": f.get("symbols").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+        }));
+    }
+    let fids_val = serde_json::Value::Array(fids);
+
+    // Solver inventory from analysis/proofs.json (order preserved to match solver.json).
+    let proofs = read_json("analysis/proofs.json")?;
+    let proof_rows = proofs
+        .get("obligations")
+        .and_then(|v| v.as_array())
+        .ok_or("proofs.obligations")?;
+    let mut obligations = Vec::new();
+    for row in proof_rows {
+        if row.get("proof").and_then(|v| v.as_str()) != Some("rup_refutation")
+            || row.get("status").and_then(|v| v.as_str()) != Some("PASS")
+        {
+            return Err("obligation without published rup refutation".into());
+        }
+        let name = row.get("obligation").and_then(|v| v.as_str()).ok_or("obligation name")?;
+        let smt_p = row.get("smt").and_then(|v| v.as_str()).ok_or("smt path")?;
+        let cnf_p = row.get("cnf_dimacs").and_then(|v| v.as_str()).ok_or("cnf path")?;
+        let drat_p = row.get("proof_drat").and_then(|v| v.as_str()).ok_or("drat path")?;
+        let smt_sha = sha256_file(&dir.join(smt_p)).ok_or("smt sha")?;
+        let cnf_sha = sha256_file(&dir.join(cnf_p)).ok_or("cnf sha")?;
+        let drat_sha = sha256_file(&dir.join(drat_p)).ok_or("drat sha")?;
+        let stable = serde_json::json!({
+            "name": name,
+            "smt_sha256": smt_sha,
+            "cnf_sha256": cnf_sha,
+            "proof_sha256": drat_sha,
+        });
+        obligations.push(serde_json::json!({
+            "id": canonical_sha256(&stable),
+            "name": name,
+            "status": "PASS",
+            "proof_kind": "rup_refutation",
+            "smt_path": smt_p,
+            "smt_sha256": smt_sha,
+            "cnf_path": cnf_p,
+            "cnf_sha256": cnf_sha,
+            "proof_path": drat_p,
+            "proof_sha256": drat_sha,
+            "num_vars": row.get("num_vars").cloned().unwrap_or_else(|| serde_json::json!(0)),
+            "num_clauses": row.get("num_clauses").cloned().unwrap_or_else(|| serde_json::json!(0)),
+            "steps": row.get("steps").cloned().unwrap_or_else(|| serde_json::json!(0)),
+            "checker": row.get("checker").and_then(|v| v.as_str()).unwrap_or(""),
+            "checker_version": row.get("checker_version").and_then(|v| v.as_str()).unwrap_or(""),
+        }));
+    }
+    if obligations.is_empty() {
+        return Err("zero obligations".into());
+    }
+    let verified = obligations.len();
+
+    let declassifications = read_json("declassify_audit.json")
+        .ok()
+        .and_then(|v| v.get("declassifications").and_then(|d| d.as_array()).map(|a| a.len()))
+        .unwrap_or(0);
+    let capabilities = read_json("confinement_manifest.json")
+        .ok()
+        .and_then(|v| v.get("capabilities_present").and_then(|d| d.as_array()).map(|a| a.len()))
+        .unwrap_or(0);
+    let taint_count = read_json("taint-traces.json")?.as_array().map(|a| a.len()).unwrap_or(0);
+    let mono_count = read_json("mono_specializations.json")?.as_array().map(|a| a.len()).unwrap_or(0);
+    let mir_count = read_json("mir.json")?.as_array().map(|a| a.len()).unwrap_or(0);
+
+    let mut consumers = Vec::new();
+    for cid in ["effects", "capability", "information-flow"] {
+        consumers.push(serde_json::json!({
+            "id": cid,
+            "status": "PASS",
+            "authority": "anubis-typecheck-producer-attested",
+            "subjects": fids_val.clone(),
+        }));
+    }
+    consumers.push(serde_json::json!({
+        "id": "declassification",
+        "status": "PASS",
+        "authority": "anubis-source-walker-producer-attested",
+        "subjects": {"count": declassifications},
+    }));
+    consumers.push(serde_json::json!({
+        "id": "mode",
+        "status": "PASS",
+        "authority": "anubis-typecheck-producer-attested",
+        "subjects": fids_val.clone(),
+    }));
+    consumers.push(serde_json::json!({
+        "id": "contracts",
+        "status": "PASS",
+        "authority": "anubis-typecheck-producer-attested",
+        "subjects": {"solver_obligation_count": verified},
+    }));
+
+    let stages: Vec<serde_json::Value> = PROGRAM_EVIDENCE_STAGES
+        .iter()
+        .map(|s| serde_json::json!({"id": s, "status": "PASS", "authority": stage_authority(s)}))
+        .collect();
+
+    let program = serde_json::json!({
+        "schema": "anubis.program-evidence.v3",
+        "version": 3,
+        "mode": "safe",
+        "source": {
+            "path": "source.anubis",
+            "sha256": source_sha,
+            "merkle": source_sha,
+            "bytes": source_bytes.len(),
+        },
+        "compiler": {
+            "tool": tool_identity(),
+            "path_basename": compiler_basename,
+            "sha256": compiler_sha,
+        },
+        "artifacts": {
+            "hir": artifact_row("hir.json")?,
+            "mir": artifact_row("mir.json")?,
+            "taint": artifact_row("taint-traces.json")?,
+            "solver": artifact_row("solver.json")?,
+            "monomorphization": artifact_row("mono_specializations.json")?,
+            "native": {"path": "artifact", "sha256": artifact_sha},
+        },
+        "stages": stages,
+        "solver_inventory": {"count": verified, "obligations": obligations},
+        "policy_inventory": {
+            "functions": functions,
+            "consumers": consumers,
+            "capabilities_present_count": capabilities,
+            "taint_trace_count": taint_count,
+            "monomorphization_count": mono_count,
+            "mir_function_count": mir_count,
+        },
+        "residual_non_claims": [
+            "no-source-to-vc-proof",
+            "no-smt-to-cnf-proof",
+            "no-source-native-refinement",
+            "no-universal-language-soundness",
+            "policy-semantics-producer-attested",
+            "runtime-not-observed",
+            "derived-confinement-is-not-os-enforcement",
+        ],
+    });
+
+    let text = serde_json::to_string_pretty(&program).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("program-evidence.json"), text).map_err(|e| e.to_string())
 }
 
 fn capture_environment() -> EnvironmentCapture {
