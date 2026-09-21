@@ -14902,11 +14902,31 @@ impl SymbolicEngine {
 /// provable obligations at the cost of a slower worst case; it never changes a
 /// verdict from refused to accepted for an obligation that is genuinely false.
 ///
-/// `-T:600` remains only as a hang guard against a z3 that stops making
-/// progress in a region rlimit does not count. It is thirty times any observed
-/// runtime and must never be the thing that decides a verdict; if it ever
-/// fires, the result is an anomaly to investigate, not a normal UNDECIDED.
-const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "rlimit=200000000", "-T:600"];
+/// `-T` remains only as a hang guard against a z3 that stops making progress in
+/// a region rlimit does not count. It must never be the thing that decides a
+/// verdict; if it ever fires, that is an anomaly to investigate rather than a
+/// normal UNDECIDED.
+///
+/// Its value obeys an ORDERING that matters more than the number itself:
+///
+/// ```text
+///     rlimit (binds normally)  <  -T (hang guard)  <  harness timeout
+/// ```
+///
+/// This was `-T:600`, which inverted the right-hand side. The repository's own
+/// gates wrap `anubis check` in `timeout`, and a per-query guard an order of
+/// magnitude larger than the harness budget means the harness kills the process
+/// first. A harness kill returns rc 124 carrying no diagnostic, and the
+/// native-authoritative gate read that as a verdict mismatch: a timing artifact
+/// reported as a soundness alarm on the flagship gate. A guard that fires after
+/// the thing it is guarding is not a guard.
+///
+/// Note the limit of any per-query bound. A check issues many obligations, so
+/// its wall time is a sum and nothing here bounds it. Measured 2026-09-21,
+/// `examples/programs/snake/snake.anb` takes 46.2 s across its obligations
+/// while no single query comes close. Bounding the check is the harness
+/// budget's job, sized from measurement in `run_native_authoritative_gate.sh`.
+const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "rlimit=200000000", "-T:120"];
 
 fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
