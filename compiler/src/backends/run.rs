@@ -5714,6 +5714,59 @@ pub fn resolved_run_timeout() -> Option<std::time::Duration> {
 /// itself spawns a long-lived grandchild is out of scope here (the research
 /// `target_run` builtin already caps its own probes); the leaks this closes
 /// are leaf compute binaries.
+/// `ETXTBSY` — "Text file busy" — from an `execve`, which is never a defect in
+/// the program being launched.
+///
+/// It is the POSIX fork/exec race. `fork` copies the file-descriptor table, so
+/// a child created by one thread momentarily holds another thread's *write*
+/// handle to some entirely different executable, and `close-on-exec` only takes
+/// effect at the exec that has not happened yet. The kernel refuses to exec any
+/// file that some process holds open for writing, so a build finishing on one
+/// thread can make an unrelated run fail on another.
+///
+/// There is no lock to take: the two threads are touching different files, and
+/// the offending handle belongs to a process that is about to discard it. The
+/// window is microseconds and closes on its own, so a bounded retry is the
+/// correct shape rather than serialising the world.
+///
+/// Measured on this tree: a full `--lib` run at four threads produced exactly
+/// two failures, `module_scoped_struct_and_fn` and
+/// `phase4_proptest_discharge_and_disproof`, both this error, both passing when
+/// run alone. Note what it is not — it is a loud spawn failure, never a wrong
+/// answer, so nothing was ever silently mis-verdicted by it. It is in the way
+/// of *measuring* load-independence (criterion 5), which is why it is fixed.
+const ETXTBSY: i32 = 26;
+
+/// Retry budget for the race above: ~1s total, against a window of microseconds.
+/// Generous enough that saturation cannot exhaust it, short enough that a
+/// genuinely busy executable still fails rather than hanging the suite.
+const EXEC_BUSY_RETRIES: u32 = 40;
+const EXEC_BUSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+
+fn is_exec_busy(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(ETXTBSY)
+}
+
+/// Run `attempt` until it stops losing the fork/exec race.
+///
+/// Every other error is returned on the first try: only `ETXTBSY` is transient,
+/// and retrying anything else would turn a real failure into a slow real
+/// failure.
+fn retry_while_exec_busy<T>(
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut left = EXEC_BUSY_RETRIES;
+    loop {
+        match attempt() {
+            Err(e) if is_exec_busy(&e) && left > 0 => {
+                left -= 1;
+                std::thread::sleep(EXEC_BUSY_BACKOFF);
+            }
+            other => return other,
+        }
+    }
+}
+
 pub fn run_child_capped(
     mut cmd: std::process::Command,
     timeout: Option<std::time::Duration>,
@@ -5725,12 +5778,13 @@ pub fn run_child_capped(
     let Some(budget) = timeout else {
         // Unbounded opt-out: keep the simple blocking capture.
         return Ok(CappedRun {
-            output: cmd.output()?,
+            output: retry_while_exec_busy(|| cmd.output())?,
             timed_out: false,
         });
     };
 
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = retry_while_exec_busy(|| cmd.spawn())?;
 
     // Drain both pipes on dedicated threads so a chatty child cannot wedge by
     // filling a pipe buffer while the main thread polls for exit.
@@ -6316,6 +6370,54 @@ mod run_tests {
         );
         // Zero is the documented opt-out: unbounded.
         assert_eq!(parse_run_timeout_secs(Some("0")), None);
+    }
+
+    #[test]
+    fn exec_busy_is_retried_and_every_other_error_is_not() {
+        use std::cell::Cell;
+        use std::io::{Error, ErrorKind};
+
+        // Loses the race twice, then wins — the real shape of the fork/exec
+        // window, which closes on its own in microseconds.
+        let tries = Cell::new(0u32);
+        let got = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            if tries.get() < 3 {
+                Err(Error::from_raw_os_error(ETXTBSY))
+            } else {
+                Ok("ran")
+            }
+        })
+        .expect("a transient ETXTBSY must not be fatal");
+        assert_eq!(got, "ran");
+        assert_eq!(tries.get(), 3);
+
+        // A missing executable is not transient. Retrying it would turn a real
+        // failure into a slow real failure and hide the cause behind a delay.
+        let tries = Cell::new(0u32);
+        let err = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(Error::new(ErrorKind::NotFound, "no such file"))
+        })
+        .expect_err("a non-transient error must surface");
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert_eq!(tries.get(), 1, "returned on the first attempt, not retried");
+    }
+
+    #[test]
+    fn exec_busy_retries_are_bounded() {
+        use std::cell::Cell;
+        use std::io::Error;
+        // A genuinely busy executable must still fail, rather than hanging the
+        // suite behind an unbounded retry.
+        let tries = Cell::new(0u32);
+        let err = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(Error::from_raw_os_error(ETXTBSY))
+        })
+        .expect_err("the budget must run out");
+        assert!(is_exec_busy(&err), "and it surfaces as the error it was");
+        assert_eq!(tries.get(), EXEC_BUSY_RETRIES + 1);
     }
 
     #[test]
