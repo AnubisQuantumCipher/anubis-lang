@@ -112,8 +112,23 @@ pub const MAX_CERT_WORK: u64 = 50_000_000;
 /// Wall-clock net per obligation. NOT the primary bound — [`DEFAULT_BUDGET`] is, precisely because it
 /// is deterministic (a verdict must not depend on machine load). This exists only for the shape the
 /// conflict budget cannot bound: a very large CNF where each conflict is cheap but propagation is
-/// slow. Overridable with `ANUBIS_NATIVE_TIME_BUDGET_MS`; `0` disables it (fully deterministic).
-pub const DEFAULT_TIME_BUDGET_MS: u64 = 10_000;
+/// Wall-clock budget for one native decision, in milliseconds. **Zero by
+/// default, which means no wall clock at all.**
+///
+/// A verdict that changes with machine load is not evidence. The same program
+/// checked on a busy machine must not be less proved than on an idle one, and
+/// with a 10s budget it was: the repository's own fixture record shows one
+/// fixture returning rc=1 at load 4.9 and rc=0 at load 3.7 from the same pinned
+/// binary, and this suite's `run_tests` fail a different subset on each parallel
+/// run for the same reason.
+///
+/// Search is still bounded, just by WORK rather than by CLOCK: `DEFAULT_BUDGET`
+/// conflicts, `MAX_BLAST_GATES` gates, `MAX_CNF_CLAUSES` clauses and
+/// `MAX_CERT_WORK` certificate steps are all deterministic ceilings, so a
+/// decision still terminates — it simply terminates at the same place every
+/// time. Set `ANUBIS_NATIVE_TIME_BUDGET_MS` to opt a wall clock back in for an
+/// interactive session; doing so makes that session's verdicts unreproducible.
+pub const DEFAULT_TIME_BUDGET_MS: u64 = 0;
 
 /// Read a `u64` env override, falling back to `default` when unset or unparseable.
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -135,7 +150,8 @@ struct NativeLimits {
 }
 
 impl NativeLimits {
-    /// Product defaults, with env overrides applied.
+    /// Product defaults, with env overrides applied. Deterministic unless an
+    /// operator explicitly sets `ANUBIS_NATIVE_TIME_BUDGET_MS`.
     fn from_env() -> NativeLimits {
         let ms = env_u64("ANUBIS_NATIVE_TIME_BUDGET_MS", DEFAULT_TIME_BUDGET_MS);
         NativeLimits {

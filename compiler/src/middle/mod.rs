@@ -14875,7 +14875,42 @@ impl SymbolicEngine {
 /// killed and yields empty output) instead of hanging the checker indefinitely. Bit-blasting a
 /// symbolic `bvsdiv`/`bvsrem` over two free 64-bit operands can otherwise blow up unpredictably.
 /// Both timeout outcomes are handled FAIL-CLOSED downstream (UNKNOWN / None — never a proof).
-const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "-t:10000", "-T:20"];
+/// How z3 is invoked for every obligation outside the native proven fragment.
+///
+/// The bound is `rlimit`, z3's DETERMINISTIC resource counter, not a wall clock.
+/// A verdict that changes with machine load is not evidence, and the previous
+/// `-t:10000 -T:20` made it do exactly that.
+///
+/// Measured on this tree, which also explains the flapping float fixture:
+///
+/// | obligation                          | resource units | wall  |
+/// |-------------------------------------|---------------:|------:|
+/// | ordinary integer contract           |        4–1,280 | <0.01s|
+/// | hard nonlinear `bvsdiv`             |      1,533,709 | 0.35s |
+/// | QF_FP `x*x < x` for 0 < x < 1       |     91,502,028 | 8.18s |
+///
+/// The float obligation needs 8.18 s of CPU against a 10 s soft timeout — a
+/// margin of 1.2x. On an idle machine it proved; under parallel load the same
+/// obligation crossed 10 s and came back `unknown`, silently degrading a
+/// provable contract to UNDECIDED. That is the mechanism behind fixtures in
+/// this repository failing a different subset on each run.
+///
+/// 200,000,000 is roughly 2.2x the hardest obligation measured and, at the
+/// observed ~11M units/second, bounds a runaway obligation near 18 s. Exceeding
+/// it yields `unknown`, which this compiler already treats as UNDECIDED and
+/// refuses — now the same refusal, every time, on every machine.
+///
+/// This is a declared implementation-defined parameter, not a tuning knob for
+/// making a red fixture green: it is sized so obligations that were decidable
+/// stay decidable while the load dependence is removed. Raising it buys more
+/// provable obligations at the cost of a slower worst case; it never changes a
+/// verdict from refused to accepted for an obligation that is genuinely false.
+///
+/// `-T:600` remains only as a hang guard against a z3 that stops making
+/// progress in a region rlimit does not count. It is thirty times any observed
+/// runtime and must never be the thing that decides a verdict; if it ever
+/// fires, the result is an anomaly to investigate, not a normal UNDECIDED.
+const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "rlimit=200000000", "-T:600"];
 
 fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
