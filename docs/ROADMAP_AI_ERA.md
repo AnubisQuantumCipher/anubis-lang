@@ -91,7 +91,8 @@ Ordered by what becomes impossible later, not by appeal.
 
 1. **Irreversible decisions** — editions, governance, and the licence question.
    Days of writing, not engineering. Retrofitting editions forces a default for
-   editionless manifests, which is Rust's permanent 2015 debt.
+   editionless manifests, which is Rust's permanent 2015 debt. *(editions
+   landed; see §5)*
 2. **Close the evidence loop** — a forged certificate must fail. *(started; see
    §5)*
 3. **Deterministic verdict** — bound by work, never by clock. *(started; see §5)*
@@ -141,7 +142,20 @@ The research was blunt about the tempting mistakes. The sharpest:
 
 ## 5. Already landed
 
-Two items from the sequence have first steps in the tree.
+Three items from the sequence have first steps in the tree.
+
+**Irreversible decisions — editions.** `[package] edition = "2026"` is parsed
+and validated. An edition this compiler does not recognise is refused with
+`ANUBIS_EDITION_UNKNOWN` rather than compiled under today's rules, which is what
+makes adding a future edition safe. A missing edition resolves to 2026 now and
+becomes an error at 1.0 — the window to avoid Rust's permanent 2015 default is
+open only while no third-party code exists. `docs/language/EDITIONS.md` states
+what an edition may change and what it may never change, including that a
+soundness fix which only rejects more applies to every edition at once rather
+than living on under an old one.
+
+Still open in this workstream: governance, and the licence question the owner
+has decided to leave as it stands.
 
 **Close the evidence loop.** `anubis evidence-verify` gained a `.proofs` check
 that re-derives every `rup_refutation` obligation by reverse unit propagation,
