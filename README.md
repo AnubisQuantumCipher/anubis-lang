@@ -102,7 +102,31 @@ cargo build --release -p anubis        # binary at ./target/release/anubis; the 
 ./target/release/anubis run   examples/hello.anb                             # → hello from anubis
 ./target/release/anubis check examples/showcase/ring_buffer_underflow.anb    # real counterexample
 ./target/release/anubis check <yours>.anb --suggest-contracts                # infer requires/ensures
+./target/release/anubis check <yours>.anb --message-format=json              # machine-readable verdict
 ```
+
+### The verdict says what it is worth
+
+A pass states how much of itself rests on a re-checkable witness and how much on
+the solver's word, and names the obligations that have none:
+
+```
+check passed
+certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the solver with none
+  no witness (REG-002, out of the proven fragment): ensures:(bvsge (bvsdiv anb_a anb_b) (_ bv0 64))
+```
+
+`--message-format=json` emits the same verdict as JSON Lines on stdout and nothing
+else, one object per refusal and then a summary. It keeps *disproved*, where a
+counterexample exists, apart from *undecided*, where there is neither a proof nor
+a counterexample, because those call for different repairs. The schema and what it
+deliberately refuses to carry are in
+[`docs/language/DIAGNOSTICS_JSON.md`](docs/language/DIAGNOSTICS_JSON.md).
+
+> **Honest boundary.** A witnessed obligation means a stranger can re-check that
+> *that CNF is unsatisfiable*. Nothing yet binds the CNF to its SMT query or the
+> query to the source, so end-to-end verification is not what the ratio claims.
+> See [`docs/PROOF_CORRESPONDENCE.md`](docs/PROOF_CORRESPONDENCE.md).
 
 Full install notes: [`docs/INSTALL.md`](docs/INSTALL.md) · then the
 [tutorial](docs/language/TUTORIAL.md).
