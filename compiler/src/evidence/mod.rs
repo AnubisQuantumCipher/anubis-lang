@@ -183,6 +183,123 @@ pub fn build_rejected_evidence_bundle_tree(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The bundle's own validator, copied into every evidence directory.
+///
+/// It answers two different questions and never conflates them:
+///
+///   1. Has anything been edited?  Every file in MANIFEST.sha256 is re-hashed.
+///   2. Do the proofs actually check?  Every exported DRAT refutation is
+///      replayed against its DIMACS CNF with an external checker.
+///
+/// The second question is the one that matters, and a validator that only
+/// answered the first was reporting "OK" for a bundle whose proofs had never
+/// been re-derived. When no DRAT checker is installed the script says so in
+/// plain words and exits non-zero rather than implying the proofs passed:
+/// "unchecked" is not "verified".
+///
+/// `sha256sum` is tried before `shasum` because Linux is the primary target and
+/// a stock Linux box has coreutils but not necessarily perl's shasum.
+const VALIDATE_SH: &str = r#"#!/usr/bin/env sh
+# Self-contained evidence validation. No 'anubis' binary is used, by design:
+# a bundle you can only check with the tool that produced it is not evidence.
+set -eu
+DIR=$(dirname "$0")
+
+# ---- pick a SHA-256 tool (Linux first, then macOS) --------------------------
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+  echo 'validate.sh: no sha256sum or shasum on PATH' >&2
+  exit 2
+fi
+
+# ---- 1. integrity: nothing in the bundle was edited --------------------------
+if [ ! -f "$DIR/MANIFEST.sha256" ]; then
+  echo 'MISSING MANIFEST.sha256' >&2
+  exit 1
+fi
+while read -r line; do
+  [ -z "$line" ] && continue
+  hash=$(echo "$line" | cut -d' ' -f1)
+  file=$(echo "$line" | cut -d' ' -f2- | xargs)
+  if [ -f "$DIR/$file" ]; then
+    actual=$(sha256 "$DIR/$file")
+    if [ "$actual" != "$hash" ]; then
+      echo "TAMPER: $file hash mismatch" >&2
+      exit 1
+    fi
+  else
+    echo "MISSING: $file" >&2
+    exit 1
+  fi
+done < "$DIR/MANIFEST.sha256"
+echo 'integrity: OK (every file matches MANIFEST.sha256)'
+
+# ---- 2. proofs: replay every refutation with an external checker -------------
+PROOF_DIR="$DIR/analysis/proofs"
+if [ ! -d "$PROOF_DIR" ]; then
+  echo 'proofs: none exported in this bundle'
+  echo 'validate.sh: OK (integrity only)'
+  exit 0
+fi
+
+total=0
+for cnf in "$PROOF_DIR"/obligation_*.cnf; do
+  [ -e "$cnf" ] || break
+  total=$((total + 1))
+done
+if [ "$total" -eq 0 ]; then
+  echo 'proofs: none exported in this bundle'
+  echo 'validate.sh: OK (integrity only)'
+  exit 0
+fi
+
+if command -v drat-trim >/dev/null 2>&1; then
+  CHECKER=drat-trim
+elif command -v cake_lpr >/dev/null 2>&1; then
+  CHECKER=cake_lpr
+else
+  echo "proofs: $total refutation(s) present but NOT REPLAYED: no drat-trim or cake_lpr on PATH" >&2
+  echo 'validate.sh: INCOMPLETE - integrity checked, proofs unchecked' >&2
+  echo '  install a DRAT checker and re-run; unchecked is not verified' >&2
+  exit 3
+fi
+
+checked=0
+for cnf in "$PROOF_DIR"/obligation_*.cnf; do
+  [ -e "$cnf" ] || break
+  drat="${cnf%.cnf}.drat"
+  name=$(basename "$cnf" .cnf)
+  if [ ! -f "$drat" ]; then
+    echo "PROOF MISSING: $name has a formula but no refutation" >&2
+    exit 1
+  fi
+  # The checker's EXIT CODE is the verdict, not its stdout: drat-trim prefixes
+  # its "s VERIFIED" line with a carriage return, so matching on text silently
+  # fails. 0 means the refutation re-derived the empty clause; nonzero means it
+  # did not, which is exactly what a forged, empty, or satisfiable input gives.
+  if "$CHECKER" "$cnf" "$drat" >/dev/null 2>&1; then
+    checked=$((checked + 1))
+  else
+    echo "PROOF FAILED: $name did not replay under $CHECKER" >&2
+    exit 1
+  fi
+done
+echo "proofs: $checked/$total refutation(s) replayed and VERIFIED by $CHECKER"
+
+# What this does and does not establish, stated in the artifact itself.
+cat <<'NOTE'
+validate.sh: OK
+  established: every bundled file is unedited, and every exported refutation
+               re-derives the empty clause under an external checker.
+  NOT established: that each CNF is the faithful encoding of its .smt2, or that
+               each .smt2 is the faithful obligation for the source. That link
+               is still the compiler's word. See analysis/proofs.json.
+NOTE
+"#;
+
 fn build_evidence_bundle_tree_inner(
     files: &[(String, Vec<u8>)],
     mode: &str,
@@ -549,11 +666,7 @@ fn build_evidence_bundle_tree_inner(
 
     let report = build_bounty_report(mode, lane, &checks);
     std::fs::write(dir.join("bounty-report.md"), &report).map_err(|e| e.to_string())?;
-    std::fs::write(
-        dir.join("validate.sh"),
-        "#!/usr/bin/env sh\nset -eu\n# Self-contained bundle validation (no 'anubis' CLI dependency to avoid arg parsing errors).\n# Checks that all files listed in MANIFEST.sha256 still match their recorded hashes.\nDIR=$(dirname \"$0\")\nif [ ! -f \"$DIR/MANIFEST.sha256\" ]; then\n  echo 'MISSING MANIFEST.sha256' >&2\n  exit 1\nfi\nwhile read -r line; do\n  [ -z \"$line\" ] && continue\n  hash=$(echo \"$line\" | cut -d' ' -f1)\n  file=$(echo \"$line\" | cut -d' ' -f2- | xargs)\n  if [ -f \"$DIR/$file\" ]; then\n    actual=$(shasum -a 256 \"$DIR/$file\" | cut -d' ' -f1)\n    if [ \"$actual\" != \"$hash\" ]; then\n      echo \"TAMPER: $file hash mismatch\" >&2\n      exit 1\n    fi\n  else\n    echo \"MISSING: $file\" >&2\n    exit 1\n  fi\ndone < \"$DIR/MANIFEST.sha256\"\necho 'validate.sh: OK'\n",
-    )
-    .map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("validate.sh"), VALIDATE_SH).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1166,7 +1279,9 @@ fn emit_program_evidence_v3(dir: &Path) -> Result<(), String> {
     let artifact_row = |rel: &str| -> Result<serde_json::Value, String> {
         let path = dir.join(rel);
         let sha = sha256_file(&path).ok_or_else(|| format!("{rel}: sha"))?;
-        let bytes = std::fs::metadata(&path).map_err(|e| format!("{rel}: {e}"))?.len();
+        let bytes = std::fs::metadata(&path)
+            .map_err(|e| format!("{rel}: {e}"))?
+            .len();
         Ok(serde_json::json!({"path": rel, "sha256": sha, "bytes": bytes}))
     };
 
@@ -1227,10 +1342,19 @@ fn emit_program_evidence_v3(dir: &Path) -> Result<(), String> {
         {
             return Err("obligation without published rup refutation".into());
         }
-        let name = row.get("obligation").and_then(|v| v.as_str()).ok_or("obligation name")?;
+        let name = row
+            .get("obligation")
+            .and_then(|v| v.as_str())
+            .ok_or("obligation name")?;
         let smt_p = row.get("smt").and_then(|v| v.as_str()).ok_or("smt path")?;
-        let cnf_p = row.get("cnf_dimacs").and_then(|v| v.as_str()).ok_or("cnf path")?;
-        let drat_p = row.get("proof_drat").and_then(|v| v.as_str()).ok_or("drat path")?;
+        let cnf_p = row
+            .get("cnf_dimacs")
+            .and_then(|v| v.as_str())
+            .ok_or("cnf path")?;
+        let drat_p = row
+            .get("proof_drat")
+            .and_then(|v| v.as_str())
+            .ok_or("drat path")?;
         let smt_sha = sha256_file(&dir.join(smt_p)).ok_or("smt sha")?;
         let cnf_sha = sha256_file(&dir.join(cnf_p)).ok_or("cnf sha")?;
         let drat_sha = sha256_file(&dir.join(drat_p)).ok_or("drat sha")?;
@@ -1265,15 +1389,32 @@ fn emit_program_evidence_v3(dir: &Path) -> Result<(), String> {
 
     let declassifications = read_json("declassify_audit.json")
         .ok()
-        .and_then(|v| v.get("declassifications").and_then(|d| d.as_array()).map(|a| a.len()))
+        .and_then(|v| {
+            v.get("declassifications")
+                .and_then(|d| d.as_array())
+                .map(|a| a.len())
+        })
         .unwrap_or(0);
     let capabilities = read_json("confinement_manifest.json")
         .ok()
-        .and_then(|v| v.get("capabilities_present").and_then(|d| d.as_array()).map(|a| a.len()))
+        .and_then(|v| {
+            v.get("capabilities_present")
+                .and_then(|d| d.as_array())
+                .map(|a| a.len())
+        })
         .unwrap_or(0);
-    let taint_count = read_json("taint-traces.json")?.as_array().map(|a| a.len()).unwrap_or(0);
-    let mono_count = read_json("mono_specializations.json")?.as_array().map(|a| a.len()).unwrap_or(0);
-    let mir_count = read_json("mir.json")?.as_array().map(|a| a.len()).unwrap_or(0);
+    let taint_count = read_json("taint-traces.json")?
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let mono_count = read_json("mono_specializations.json")?
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let mir_count = read_json("mir.json")?
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
 
     let mut consumers = Vec::new();
     for cid in ["effects", "capability", "information-flow"] {
