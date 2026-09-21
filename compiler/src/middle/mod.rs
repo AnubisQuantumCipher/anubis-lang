@@ -16156,19 +16156,28 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
 }
 
 /// Build-path variant: same classification, with an explicit "refusing to build" lead-in.
+///
+/// This refusal deliberately does NOT name the flag that would bypass it.
+///
+/// It used to: every build-path contract refusal ended with "or re-run with
+/// `--no-verify` to build anyway". For a human that reads as a caveat. For an
+/// agent optimising to make the check pass it reads as the answer, and it is
+/// the cheapest edit available — strictly cheaper than understanding the
+/// counterexample. A refusal that ships its own bypass is not a refusal, and
+/// once the refusal is machine-readable it becomes the statistically dominant
+/// repair.
+///
+/// The flag still exists and is still documented in `--help`. What changed is
+/// that the compiler no longer recommends it at the moment of refusing.
+/// `diagnostics_never_advertise_their_own_bypass` in `compiler/src/lib.rs`
+/// enforces this over the emitted text rather than by review, because the line
+/// this comment replaces is itself the evidence that review does not hold.
 pub fn format_build_check_failures(fails: &[SolverCheck]) -> String {
     let body = format_check_failures(fails);
-    // Insert refuse note after the code prefix.
     if let Some((code, rest)) = body.split_once(": ") {
-        format!(
-            "{code}: refusing to build — {rest}\n  Fix the contract, or re-run with `--no-verify` \
-             to build anyway (the program's proof surface will be unverified)."
-        )
+        format!("{code}: refusing to build — {rest}")
     } else {
-        format!(
-            "{body}\n  Fix the contract, or re-run with `--no-verify` to build anyway \
-             (the program's proof surface will be unverified)."
-        )
+        body
     }
 }
 

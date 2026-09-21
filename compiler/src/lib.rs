@@ -13701,4 +13701,45 @@ math = { git = "https://example.invalid/math.git" }
             "got: {err}"
         );
     }
+
+    /// A refusal must never name the flag that would bypass it.
+    ///
+    /// Enforced over the emitted text rather than by review: the advertisement
+    /// this forbids survived in `format_build_check_failures` for the life of
+    /// the project, which is the evidence that a review-based rule does not
+    /// hold. An agent optimising to make `check` pass will take the cheapest
+    /// edit the compiler names, and a suppression flag is always cheaper than
+    /// understanding a counterexample.
+    #[test]
+    fn diagnostics_never_advertise_their_own_bypass() {
+        let src = "fn diff(a: i64, b: i64) -> i64 requires(a >= 0) requires(a <= 1000) \
+                   requires(b >= -1000) requires(b <= 1000) ensures(result >= 0) { return a - b; }";
+        let ir =
+            typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks.into_iter().filter(|c| c.status == "FAIL").collect();
+        assert!(
+            !fails.is_empty(),
+            "fixture must actually fail so there is a refusal to inspect"
+        );
+
+        for text in [
+            middle::format_check_failures(&fails),
+            middle::format_build_check_failures(&fails),
+        ] {
+            let lower = text.to_lowercase();
+            for forbidden in [
+                "no-verify",
+                "no_verify",
+                "suppress",
+                "confidence",
+                "ignore this",
+            ] {
+                assert!(
+                    !lower.contains(forbidden),
+                    "a refusal named {forbidden:?}, offering an agent a cheaper path than a real repair:\n{text}"
+                );
+            }
+        }
+    }
 }
