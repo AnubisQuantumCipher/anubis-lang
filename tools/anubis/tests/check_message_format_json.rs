@@ -57,7 +57,9 @@ fn lines_of(out: &Output) -> Vec<Value> {
 }
 
 fn summary(out: &Output) -> Value {
-    lines_of(out).pop().expect("a stream always ends in a summary")
+    lines_of(out)
+        .pop()
+        .expect("a stream always ends in a summary")
 }
 
 const DISPROVED: &str = "fn sub(a: i64, b: i64) -> i64\n\
@@ -79,7 +81,10 @@ const PROVABLE: &str = "fn add(a: i64, b: i64) -> i64\n\
 #[test]
 fn a_disproved_postcondition_is_reported_with_its_counterexample() {
     let out = check("disproved", DISPROVED, &["--message-format=json"]);
-    assert!(!out.status.success(), "a disproved contract must not exit 0");
+    assert!(
+        !out.status.success(),
+        "a disproved contract must not exit 0"
+    );
 
     let lines = lines_of(&out);
     assert_eq!(lines.len(), 2, "one diagnostic, one summary: {lines:?}");
@@ -161,7 +166,10 @@ fn a_refusal_the_solver_never_saw_is_still_a_fail() {
         "fn main() { write_file(\"/tmp/anubis_msgfmt_probe.txt\", \"x\"); }\n",
         &["--message-format=json"],
     );
-    assert!(!out.status.success(), "an undeclared effect must not exit 0");
+    assert!(
+        !out.status.success(),
+        "an undeclared effect must not exit 0"
+    );
     let lines = lines_of(&out);
     let d = &lines[0];
     assert_eq!(d["family"], "frontend");
@@ -176,7 +184,11 @@ fn a_refusal_the_solver_never_saw_is_still_a_fail() {
 
 #[test]
 fn a_parse_error_is_reported_per_error_with_a_location() {
-    let out = check("parse", "fn main() {\n    let x = ;\n", &["--message-format=json"]);
+    let out = check(
+        "parse",
+        "fn main() {\n    let x = ;\n",
+        &["--message-format=json"],
+    );
     assert!(!out.status.success());
     let lines = lines_of(&out);
     let d = &lines[0];
@@ -187,7 +199,10 @@ fn a_parse_error_is_reported_per_error_with_a_location() {
         "location names the file: {loc}"
     );
     assert!(loc["line"].as_u64().unwrap() >= 1, "1-based line: {loc}");
-    assert!(loc["column"].as_u64().unwrap() >= 1, "1-based column: {loc}");
+    assert!(
+        loc["column"].as_u64().unwrap() >= 1,
+        "1-based column: {loc}"
+    );
     assert_eq!(summary(&out)["verdict"], "fail");
 }
 

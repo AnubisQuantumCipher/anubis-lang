@@ -16302,7 +16302,9 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                 }
             }
             AssertionFailKind::Undecided => {
-                out.push_str("\n    (solver returned unknown — undecided within the declared work budget)");
+                out.push_str(
+                    "\n    (solver returned unknown — undecided within the declared work budget)",
+                );
                 if !c.detail.is_empty() {
                     out.push_str(&format!("\n    detail: {}", c.detail));
                 }
@@ -29193,7 +29195,10 @@ mod certificate_coverage_tests {
         ]);
         assert_eq!(c.certified, 2);
         assert_eq!(c.trusted_to_solver, 1);
-        assert_eq!(c.discharged, 3, "the failure is not a discharged obligation");
+        assert_eq!(
+            c.discharged, 3,
+            "the failure is not a discharged obligation"
+        );
         assert_eq!(
             c.uncertified,
             vec!["ensures:(bvsdiv x y)"],
@@ -29219,13 +29224,19 @@ mod certificate_coverage_tests {
         ]);
         let line = c.verdict_line().expect("something was discharged");
         assert!(line.contains("1/2"), "states the ratio: {line}");
-        assert!(line.contains("trusted to the solver"), "names the residual: {line}");
+        assert!(
+            line.contains("trusted to the solver"),
+            "names the residual: {line}"
+        );
         // The correspondence chain from CNF back to source is still the
         // compiler's word (docs/PROOF_CORRESPONDENCE.md), so no phrasing here
         // may imply the program was verified end to end.
         let lower = line.to_lowercase();
         for overclaim in ["fully verified", "proven correct", "guaranteed", "100%"] {
-            assert!(!lower.contains(overclaim), "verdict line overclaims: {line}");
+            assert!(
+                !lower.contains(overclaim),
+                "verdict line overclaims: {line}"
+            );
         }
     }
 }

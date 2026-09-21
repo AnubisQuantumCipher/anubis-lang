@@ -182,7 +182,6 @@ pub fn build_rejected_evidence_bundle_tree(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The bundle's own validator, copied into every evidence directory.
 ///
 /// It answers two different questions and never conflates them:
@@ -300,6 +299,7 @@ validate.sh: OK
 NOTE
 "#;
 
+#[allow(clippy::too_many_arguments)]
 fn build_evidence_bundle_tree_inner(
     files: &[(String, Vec<u8>)],
     mode: &str,

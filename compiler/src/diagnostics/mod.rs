@@ -388,7 +388,10 @@ pub fn diagnostics_of_parse_errors(source: &str, path: &str) -> Vec<Diagnostic> 
 
 /// Strip the compiler's variable prefix so a name matches the source.
 fn source_name(smt_name: &str) -> String {
-    smt_name.strip_prefix("anb_").unwrap_or(smt_name).to_string()
+    smt_name
+        .strip_prefix("anb_")
+        .unwrap_or(smt_name)
+        .to_string()
 }
 
 /// Every `(declare-const NAME ...)` in a query.
@@ -413,7 +416,10 @@ fn decimal_of(smt_value: &str) -> Option<String> {
         let raw = u64::from_str_radix(hex, 16).ok()?;
         return Some((raw as i64).to_string());
     }
-    if let Some(inner) = v.strip_prefix("(_ bv").and_then(|r| r.split_whitespace().next()) {
+    if let Some(inner) = v
+        .strip_prefix("(_ bv")
+        .and_then(|r| r.split_whitespace().next())
+    {
         let raw: u64 = inner.parse().ok()?;
         return Some((raw as i64).to_string());
     }
@@ -512,7 +518,12 @@ pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
         // whether a model was independently verified, and both the human
         // printer and this format must give the same answer.
         let replayed = crate::middle::counterexample_was_replayed(check);
-        counterexample_of(m, &declared, &crate::middle::counterexample_bindings(m), replayed)
+        counterexample_of(
+            m,
+            &declared,
+            &crate::middle::counterexample_bindings(m),
+            replayed,
+        )
     });
 
     Diagnostic {
@@ -595,7 +606,12 @@ pub fn render_with_coverage(diagnostics: &[Diagnostic], coverage: Option<Coverag
     let summary = Summary {
         type_tag: "anubis.summary".into(),
         schema: SCHEMA.into(),
-        verdict: if diagnostics.is_empty() { "pass" } else { "fail" }.into(),
+        verdict: if diagnostics.is_empty() {
+            "pass"
+        } else {
+            "fail"
+        }
+        .into(),
         counts,
         coverage: coverage.filter(|c| c.discharged > 0),
     };
@@ -637,7 +653,11 @@ mod tests {
         let ce = d.counterexample.expect("a disproof has a model");
         assert_eq!(ce.model_completeness, Completeness::Complete);
         let vars: Vec<&str> = ce.assignments.iter().map(|a| a.var.as_str()).collect();
-        assert_eq!(vars, vec!["a", "b"], "the anb_ prefix must not reach a consumer");
+        assert_eq!(
+            vars,
+            vec!["a", "b"],
+            "the anb_ prefix must not reach a consumer"
+        );
         assert_eq!(ce.assignments[0].decimal.as_deref(), Some("1"));
         assert_eq!(ce.assignments[1].decimal.as_deref(), Some("3"));
     }
@@ -666,7 +686,10 @@ mod tests {
         let mut c = disproved_check();
         c.detail = crate::middle::DISPROVED_DETAIL_NATIVE.into();
         let ce = diagnostic_of(&c).counterexample.expect("model present");
-        assert!(ce.trustworthy, "an independently re-evaluated model is trustworthy");
+        assert!(
+            ce.trustworthy,
+            "an independently re-evaluated model is trustworthy"
+        );
     }
 
     #[test]
@@ -674,8 +697,14 @@ mod tests {
         let mut c = disproved_check();
         c.detail = "counterexample found".into(); // no "replayed"
         let ce = diagnostic_of(&c).counterexample.expect("model present");
-        assert!(!ce.trustworthy, "a model the compiler did not replay is not repairable against");
-        assert!(!ce.raw_model.is_empty(), "but it is still shipped for audit");
+        assert!(
+            !ce.trustworthy,
+            "a model the compiler did not replay is not repairable against"
+        );
+        assert!(
+            !ce.raw_model.is_empty(),
+            "but it is still shipped for audit"
+        );
     }
 
     #[test]
@@ -713,18 +742,36 @@ mod tests {
 
     #[test]
     fn every_diagnostic_is_blocking_and_carries_no_lesser_severity() {
-        for c in [disproved_check()] {
-            let d = diagnostic_of(&c);
-            assert_eq!(d.severity, "error");
-            assert!(d.build_blocking);
+        // All three shapes, because the property is about the format rather
+        // than about any one lane: there is no severity below error and no
+        // verdict a consumer may proceed past.
+        let mut undecided = disproved_check();
+        undecided.model = None;
+        undecided.detail = "solver returned `unknown`".into();
+        for d in [
+            diagnostic_of(&disproved_check()),
+            diagnostic_of(&undecided),
+            diagnostic_of_refusal("ANUBIS_PARSE_ERROR: x"),
+        ] {
+            assert_eq!(d.severity, "error", "{:?}", d.code);
+            assert!(d.build_blocking, "{:?} was not blocking", d.code);
         }
     }
 
     #[test]
     fn no_diagnostic_names_a_way_to_silence_itself() {
         let json = render_jsonl(&[disproved_check()]).to_lowercase();
-        for forbidden in ["no-verify", "no_verify", "suppress", "confidence", "can_ignore"] {
-            assert!(!json.contains(forbidden), "diagnostic JSON named {forbidden:?}");
+        for forbidden in [
+            "no-verify",
+            "no_verify",
+            "suppress",
+            "confidence",
+            "can_ignore",
+        ] {
+            assert!(
+                !json.contains(forbidden),
+                "diagnostic JSON named {forbidden:?}"
+            );
         }
     }
 
@@ -791,7 +838,11 @@ mod tests {
             Some("-1"),
             "bitvectors are read as signed, matching the source types"
         );
-        assert_eq!(decimal_of("(fp #b0 #b100 #b00)"), None, "never guess a float");
+        assert_eq!(
+            decimal_of("(fp #b0 #b100 #b00)"),
+            None,
+            "never guess a float"
+        );
     }
 
     #[test]
@@ -810,7 +861,10 @@ mod tests {
         assert_eq!(d["code"], "ANUBIS_EFFECT_FORBIDDEN_IN_MODE");
         assert_eq!(d["family"], "frontend");
         assert_eq!(d["build_blocking"], true);
-        assert!(d.get("obligation").is_none(), "a frontend refusal has no obligation");
+        assert!(
+            d.get("obligation").is_none(),
+            "a frontend refusal has no obligation"
+        );
         let s: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(s["verdict"], "fail");
     }
@@ -828,7 +882,10 @@ mod tests {
 
     #[test]
     fn a_code_is_extracted_never_invented() {
-        assert_eq!(leading_code("ANUBIS_PARSE_ERROR: bad token"), "ANUBIS_PARSE_ERROR");
+        assert_eq!(
+            leading_code("ANUBIS_PARSE_ERROR: bad token"),
+            "ANUBIS_PARSE_ERROR"
+        );
         assert_eq!(
             leading_code("parse failed"),
             "ANUBIS_CHECK_FAILED",
@@ -845,10 +902,19 @@ mod tests {
     fn a_parse_error_points_at_a_real_line_and_column() {
         let src = "fn main() {\n    let x = ;\n";
         let ds = diagnostics_of_parse_errors(src, "t.anb");
-        assert!(!ds.is_empty(), "a broken parse must produce at least one diagnostic");
-        let loc = ds[0].location.as_ref().expect("a parse error knows where it is");
+        assert!(
+            !ds.is_empty(),
+            "a broken parse must produce at least one diagnostic"
+        );
+        let loc = ds[0]
+            .location
+            .as_ref()
+            .expect("a parse error knows where it is");
         assert_eq!(loc.file, "t.anb");
-        assert!(loc.line >= 1 && loc.column >= 1, "1-based, not 0-based: {loc:?}");
+        assert!(
+            loc.line >= 1 && loc.column >= 1,
+            "1-based, not 0-based: {loc:?}"
+        );
         assert!(loc.span_end >= loc.span_start);
         assert_eq!(ds[0].code, "ANUBIS_PARSE_ERROR");
     }
@@ -875,10 +941,12 @@ mod tests {
 
     #[test]
     fn counts_cannot_disagree_with_the_diagnostics_shipped() {
-        let ds = vec![diagnostic_of(&disproved_check()), diagnostic_of_refusal("ANUBIS_X: y")];
+        let ds = vec![
+            diagnostic_of(&disproved_check()),
+            diagnostic_of_refusal("ANUBIS_X: y"),
+        ];
         let out = render(&ds);
-        let summary: serde_json::Value =
-            serde_json::from_str(out.lines().last().unwrap()).unwrap();
+        let summary: serde_json::Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
         assert_eq!(summary["counts"]["total"], 2);
         assert_eq!(summary["counts"]["disproved"], 1);
         assert_eq!(summary["counts"]["refused"], 1);
@@ -892,7 +960,10 @@ mod tests {
         assert!(render_jsonl_with(&[], None).contains("\"verdict\":\"pass\""));
         for refusal in ["ANUBIS_X: y", "parse failed", ""] {
             let out = render_jsonl_with(&[], Some(refusal));
-            assert!(out.contains("\"verdict\":\"fail\""), "refusal {refusal:?} reported pass");
+            assert!(
+                out.contains("\"verdict\":\"fail\""),
+                "refusal {refusal:?} reported pass"
+            );
         }
     }
 
@@ -900,7 +971,10 @@ mod tests {
     fn budget_is_a_resource_counter_and_never_called_a_timeout() {
         let b = Budget::declared();
         assert_eq!(b.metric, "z3-rlimit");
-        assert!(!b.measured, "the compiler does not yet ask z3 what it spent");
+        assert!(
+            !b.measured,
+            "the compiler does not yet ask z3 what it spent"
+        );
         assert!(b.consumed.is_none(), "and so must not report a figure");
     }
 }

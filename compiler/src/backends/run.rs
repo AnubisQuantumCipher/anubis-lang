@@ -5752,9 +5752,7 @@ fn is_exec_busy(e: &std::io::Error) -> bool {
 /// Every other error is returned on the first try: only `ETXTBSY` is transient,
 /// and retrying anything else would turn a real failure into a slow real
 /// failure.
-fn retry_while_exec_busy<T>(
-    mut attempt: impl FnMut() -> std::io::Result<T>,
-) -> std::io::Result<T> {
+fn retry_while_exec_busy<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     let mut left = EXEC_BUSY_RETRIES;
     loop {
         match attempt() {
