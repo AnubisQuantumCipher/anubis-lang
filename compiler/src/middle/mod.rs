@@ -14772,7 +14772,7 @@ impl SymbolicEngine {
             return vec![SolverCheck {
                 name: "solver:no-obligations".into(),
                 status: "PASS".into(),
-                detail: "no assertions to discharge".into(),
+                detail: NO_OBLIGATIONS_DETAIL.into(),
                 model: None,
                 smt: "(check-sat)".into(),
             }];
@@ -15038,9 +15038,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                 return SolverCheck {
                     name: obligation.name.clone(),
                     status: "PASS".into(),
-                    detail: "assertion proved: assumptions imply assertion (native QF_BV solver; \
-                             machine-checked bit-blaster)"
-                        .into(),
+                    detail: PROVED_DETAIL_CERTIFIED.into(),
                     model: None,
                     smt,
                 };
@@ -15183,7 +15181,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         "unsat" => SolverCheck {
             name: obligation.name.clone(),
             status: "PASS".into(),
-            detail: "assertion proved: assumptions imply assertion".into(),
+            detail: PROVED_DETAIL_SOLVER_ONLY.into(),
             model: None,
             smt,
         },
@@ -15560,6 +15558,120 @@ pub enum AssertionFailKind {
     ReplayMismatch,
     /// Residual fail-closed path (vacuous assumptions, malformed SMT, …).
     Other,
+}
+
+/// Detail for a run with no obligations to discharge. A synthetic PASS, and
+/// deliberately NOT a certified one: nothing was proved, so nothing was
+/// witnessed, and counting it would inflate coverage with empty programs.
+pub const NO_OBLIGATIONS_DETAIL: &str = "no assertions to discharge";
+
+/// Detail for an obligation proved by the native solver.
+///
+/// Reaching this requires all of: the proven fragment gate, a CDCL root
+/// refutation, and an independent `lrat::check_proof` accept. So this string is
+/// not a description of how the answer was reached — it is the record that a
+/// machine-checkable witness EXISTS for it.
+pub const PROVED_DETAIL_CERTIFIED: &str =
+    "assertion proved: assumptions imply assertion (native QF_BV solver; machine-checked \
+     bit-blaster)";
+
+/// Detail for an obligation the native lane declined and z3 proved alone.
+///
+/// True as far as it goes, and backed by no witness anyone can re-check. This
+/// is the REG-002 residual: out-of-fragment operations (`bvsdiv`, `bvurem`,
+/// `bvsrem`, `bvudiv`, `bvashr`, `sign_extend`) have no machine-checked
+/// bit-blast, so the native lane declines and the verdict rests on z3's word.
+pub const PROVED_DETAIL_SOLVER_ONLY: &str = "assertion proved: assumptions imply assertion";
+
+/// Whether a discharged obligation carries a witness a stranger could re-check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateStatus {
+    /// A machine-checked refutation exists for it.
+    Certified,
+    /// Proved, but on the solver's word alone. No witness to re-check.
+    TrustedToSolver,
+    /// Not a discharged obligation: a failure, or a run with nothing to prove.
+    NotApplicable,
+}
+
+/// Classify one check by whether its verdict is witnessed.
+///
+/// Exact equality against the constants above, never a prefix test: the
+/// certified detail *begins with* the solver-only detail, so `starts_with`
+/// would silently report every z3-only obligation as certified — the single
+/// worst error this function could make, since it would inflate the coverage
+/// number in exactly the direction that flatters the compiler.
+///
+/// An unrecognised detail is `NotApplicable`, never `Certified`. Coverage may
+/// understate itself; it may never overstate.
+pub fn certificate_status(check: &SolverCheck) -> CertificateStatus {
+    if check.status != "PASS" {
+        return CertificateStatus::NotApplicable;
+    }
+    match check.detail.as_str() {
+        PROVED_DETAIL_CERTIFIED => CertificateStatus::Certified,
+        PROVED_DETAIL_SOLVER_ONLY => CertificateStatus::TrustedToSolver,
+        _ => CertificateStatus::NotApplicable,
+    }
+}
+
+/// How much of a verdict rests on a witness, and how much on the solver's word.
+///
+/// This is the number the roadmap's thesis turns on: every discharged
+/// obligation carries either a machine-checkable witness or a named and counted
+/// admission that it has none. Without it, a `PASS` says the same thing whether
+/// every obligation was witnessed or none was.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CertificateCoverage {
+    pub certified: usize,
+    pub trusted_to_solver: usize,
+    /// Discharged obligations: `certified + trusted_to_solver`. Not the number
+    /// of checks, which may include failures and the synthetic empty PASS.
+    pub discharged: usize,
+    /// The obligations resting on the solver's word, named so the admission is
+    /// specific rather than a count. These are the REG-002 residual.
+    pub uncertified: Vec<String>,
+}
+
+/// Tally certificate coverage over a completed check.
+pub fn certificate_coverage(checks: &[SolverCheck]) -> CertificateCoverage {
+    let mut c = CertificateCoverage::default();
+    for check in checks {
+        match certificate_status(check) {
+            CertificateStatus::Certified => c.certified += 1,
+            CertificateStatus::TrustedToSolver => {
+                c.trusted_to_solver += 1;
+                c.uncertified.push(check.name.clone());
+            }
+            CertificateStatus::NotApplicable => {}
+        }
+    }
+    c.discharged = c.certified + c.trusted_to_solver;
+    c
+}
+
+impl CertificateCoverage {
+    /// One line for the verdict, or `None` when nothing was discharged.
+    ///
+    /// It never says "fully verified" or similar. `4/4` states what was
+    /// measured; a phrase like that would claim the correspondence chain the
+    /// compiler does not have (`docs/PROOF_CORRESPONDENCE.md`).
+    pub fn verdict_line(&self) -> Option<String> {
+        if self.discharged == 0 {
+            return None;
+        }
+        let mut line = format!(
+            "certificates: {}/{} obligations carry a re-checkable witness",
+            self.certified, self.discharged
+        );
+        if self.trusted_to_solver > 0 {
+            line.push_str(&format!(
+                "; {} trusted to the solver with none",
+                self.trusted_to_solver
+            ));
+        }
+        Some(line)
+    }
 }
 
 /// Detail for a z3 counterexample that re-verified under model-substitution replay.
@@ -29007,5 +29119,113 @@ mod builtin_gate_tag_tests {
             .field_builtin_gate_tags
             .values()
             .any(|tags| tags.contains(&BuiltinGateTag::Capability("fs.write".into()))));
+    }
+}
+
+#[cfg(test)]
+mod certificate_coverage_tests {
+    use super::*;
+
+    fn check(status: &str, detail: &str, name: &str) -> SolverCheck {
+        SolverCheck {
+            name: name.into(),
+            status: status.into(),
+            detail: detail.into(),
+            model: None,
+            smt: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_native_proof_is_certified_and_a_z3_proof_is_not() {
+        assert_eq!(
+            certificate_status(&check("PASS", PROVED_DETAIL_CERTIFIED, "e")),
+            CertificateStatus::Certified
+        );
+        assert_eq!(
+            certificate_status(&check("PASS", PROVED_DETAIL_SOLVER_ONLY, "e")),
+            CertificateStatus::TrustedToSolver
+        );
+    }
+
+    #[test]
+    fn the_certified_detail_is_matched_exactly_not_by_prefix() {
+        // The certified detail BEGINS WITH the solver-only detail. A
+        // `starts_with` test would report every z3-only obligation as
+        // certified — the worst error this classifier could make, because it
+        // inflates the coverage number in the direction that flatters the
+        // compiler, and it would do so silently on every REG-002 obligation.
+        assert!(
+            PROVED_DETAIL_CERTIFIED.starts_with(PROVED_DETAIL_SOLVER_ONLY),
+            "this test is only meaningful while that prefix relation holds"
+        );
+        assert_eq!(
+            certificate_status(&check("PASS", PROVED_DETAIL_SOLVER_ONLY, "e")),
+            CertificateStatus::TrustedToSolver,
+            "the shorter detail must not be read as the longer one"
+        );
+    }
+
+    #[test]
+    fn nothing_unrecognised_is_ever_counted_as_certified() {
+        // Coverage may understate itself. It may never overstate.
+        for detail in [NO_OBLIGATIONS_DETAIL, "some future wording", ""] {
+            assert_eq!(
+                certificate_status(&check("PASS", detail, "e")),
+                CertificateStatus::NotApplicable,
+                "detail {detail:?}"
+            );
+        }
+        assert_eq!(
+            certificate_status(&check("FAIL", PROVED_DETAIL_CERTIFIED, "e")),
+            CertificateStatus::NotApplicable,
+            "a failure discharges nothing, whatever its detail says"
+        );
+    }
+
+    #[test]
+    fn coverage_counts_and_names_what_has_no_witness() {
+        let c = certificate_coverage(&[
+            check("PASS", PROVED_DETAIL_CERTIFIED, "ensures:a"),
+            check("PASS", PROVED_DETAIL_CERTIFIED, "ensures:b"),
+            check("PASS", PROVED_DETAIL_SOLVER_ONLY, "ensures:(bvsdiv x y)"),
+            check("FAIL", "disproved", "ensures:d"),
+        ]);
+        assert_eq!(c.certified, 2);
+        assert_eq!(c.trusted_to_solver, 1);
+        assert_eq!(c.discharged, 3, "the failure is not a discharged obligation");
+        assert_eq!(
+            c.uncertified,
+            vec!["ensures:(bvsdiv x y)"],
+            "the admission is specific, not just a count"
+        );
+    }
+
+    #[test]
+    fn an_empty_program_reports_no_coverage_rather_than_zero() {
+        // A program with nothing to prove has not failed to witness anything.
+        // `0/0` would read as "nothing was witnessed" instead of "nothing was
+        // attempted", and a consumer would be right to treat that as alarming.
+        let c = certificate_coverage(&[check("PASS", NO_OBLIGATIONS_DETAIL, "none")]);
+        assert_eq!(c.discharged, 0);
+        assert!(c.verdict_line().is_none());
+    }
+
+    #[test]
+    fn the_verdict_line_states_the_ratio_and_never_claims_more() {
+        let c = certificate_coverage(&[
+            check("PASS", PROVED_DETAIL_CERTIFIED, "a"),
+            check("PASS", PROVED_DETAIL_SOLVER_ONLY, "b"),
+        ]);
+        let line = c.verdict_line().expect("something was discharged");
+        assert!(line.contains("1/2"), "states the ratio: {line}");
+        assert!(line.contains("trusted to the solver"), "names the residual: {line}");
+        // The correspondence chain from CNF back to source is still the
+        // compiler's word (docs/PROOF_CORRESPONDENCE.md), so no phrasing here
+        // may imply the program was verified end to end.
+        let lower = line.to_lowercase();
+        for overclaim in ["fully verified", "proven correct", "guaranteed", "100%"] {
+            assert!(!lower.contains(overclaim), "verdict line overclaims: {line}");
+        }
     }
 }

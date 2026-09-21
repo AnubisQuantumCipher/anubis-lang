@@ -2784,19 +2784,24 @@ fn main() -> Result<()> {
             // Kept in structured form as well as rendered: `format_check_failures` flattens every
             // obligation into one human string, which is the right thing to print and the wrong
             // thing to hand a machine. The JSON lane reads these checks directly.
-            let mut solver_fails: Vec<anubis_compiler::middle::SolverCheck> = Vec::new();
+            // All of them, not only the failures: certificate coverage is a fact about the
+            // obligations that PASSED, and a verdict that omits it says the same thing whether
+            // every obligation carried a re-checkable witness or none did.
+            let mut solver_checks: Vec<anubis_compiler::middle::SolverCheck> = Vec::new();
             if check_error.is_none() {
                 if let Some(t) = &tainted {
-                    let fails: Vec<_> = SymbolicEngine::check_obligations(t)
-                        .into_iter()
+                    solver_checks = SymbolicEngine::check_obligations(t);
+                    let fails: Vec<_> = solver_checks
+                        .iter()
                         .filter(|c| c.status == "FAIL")
+                        .cloned()
                         .collect();
                     if !fails.is_empty() {
                         check_error = Some(anubis_compiler::middle::format_check_failures(&fails));
                     }
-                    solver_fails = fails;
                 }
             }
+            let coverage = anubis_compiler::middle::certificate_coverage(&solver_checks);
 
             std::fs::create_dir_all(&out)?;
 
@@ -2964,6 +2969,16 @@ fn main() -> Result<()> {
                 say!("check passed");
             }
 
+            // Stated on pass and on failure alike. A reader deciding how much to trust a verdict
+            // needs to know how much of it rested on the solver's word, and that is as true of the
+            // obligations that passed in a failing run as of a clean one.
+            if let Some(line) = coverage.verdict_line() {
+                say!("{line}");
+                for name in &coverage.uncertified {
+                    say!("  no witness (REG-002, out of the proven fragment): {name}");
+                }
+            }
+
             // The machine-readable verdict, emitted before any early return so that a refusal is
             // always *stated* in the stream rather than implied by the exit code. `verdict: pass`
             // appears only when there is nothing to report on any lane.
@@ -2975,8 +2990,8 @@ fn main() -> Result<()> {
                 let parse_diags = diag::diagnostics_of_parse_errors(&src, &input.to_string_lossy());
                 let diagnostics = if !parse_diags.is_empty() {
                     parse_diags
-                } else if solver_fails.iter().any(|c| c.status == "FAIL") {
-                    solver_fails
+                } else if solver_checks.iter().any(|c| c.status == "FAIL") {
+                    solver_checks
                         .iter()
                         .filter(|c| c.status == "FAIL")
                         .map(diag::diagnostic_of)
@@ -2986,7 +3001,10 @@ fn main() -> Result<()> {
                 } else {
                     Vec::new()
                 };
-                print!("{}", diag::render(&diagnostics));
+                print!(
+                    "{}",
+                    diag::render_with_coverage(&diagnostics, Some((&coverage).into()))
+                );
             }
 
             if let Some(err) = &check_error {

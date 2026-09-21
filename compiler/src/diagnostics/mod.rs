@@ -259,6 +259,37 @@ pub struct Summary {
     /// only pass is an empty refusal set.
     pub verdict: String,
     pub counts: Counts,
+    /// Absent when nothing was discharged — a parse failure proves nothing, and
+    /// a zero here would read as "nothing was witnessed" rather than "nothing
+    /// was attempted".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Coverage>,
+}
+
+/// How much of a passing verdict rests on a witness rather than the solver's word.
+///
+/// Present on every summary where anything was discharged, including a `pass`.
+/// This is the point: without it a `pass` says the same thing whether every
+/// obligation carried a machine-checkable refutation or none did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Coverage {
+    pub certified: usize,
+    pub trusted_to_solver: usize,
+    /// `certified + trusted_to_solver`.
+    pub discharged: usize,
+    /// The obligations resting on the solver's word, named rather than counted.
+    pub uncertified: Vec<String>,
+}
+
+impl From<&crate::middle::CertificateCoverage> for Coverage {
+    fn from(c: &crate::middle::CertificateCoverage) -> Coverage {
+        Coverage {
+            certified: c.certified,
+            trusted_to_solver: c.trusted_to_solver,
+            discharged: c.discharged,
+            uncertified: c.uncertified.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -535,6 +566,11 @@ pub fn render_jsonl_with(checks: &[SolverCheck], other_refusal: Option<&str>) ->
 /// The counts are derived here rather than passed in, so a caller cannot report
 /// a total that disagrees with the diagnostics it shipped.
 pub fn render(diagnostics: &[Diagnostic]) -> String {
+    render_with_coverage(diagnostics, None)
+}
+
+/// As [`render`], and states how much of the verdict carries a witness.
+pub fn render_with_coverage(diagnostics: &[Diagnostic], coverage: Option<Coverage>) -> String {
     let mut counts = Counts {
         total: diagnostics.len(),
         disproved: 0,
@@ -561,6 +597,7 @@ pub fn render(diagnostics: &[Diagnostic]) -> String {
         schema: SCHEMA.into(),
         verdict: if diagnostics.is_empty() { "pass" } else { "fail" }.into(),
         counts,
+        coverage: coverage.filter(|c| c.discharged > 0),
     };
     out.push_str(&serde_json::to_string(&summary).expect("summary serializes"));
     out.push('\n');

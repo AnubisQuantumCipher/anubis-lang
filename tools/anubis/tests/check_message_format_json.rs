@@ -191,6 +191,90 @@ fn a_parse_error_is_reported_per_error_with_a_location() {
     assert_eq!(summary(&out)["verdict"], "fail");
 }
 
+/// One contract in the proven fragment, one on `bvsdiv` which is not. The
+/// division obligation is the REG-002 residual: no machine-checked bit-blast
+/// exists for it, so the native lane declines and z3 decides alone.
+const MIXED: &str = "fn half(a: i64, b: i64) -> i64\n\
+     requires(a >= 0)\n\
+     requires(a <= 1000)\n\
+     requires(b > 0)\n\
+     ensures(result >= 0)\n\
+     { return a / b; }\n\
+     fn add(a: i64, b: i64) -> i64\n\
+     requires(a >= 0)\n\
+     requires(b >= 0)\n\
+     requires(a <= 1000)\n\
+     requires(b <= 1000)\n\
+     ensures(result >= 0)\n\
+     { return a + b; }\n\
+     fn main() { let x = add(1, 2); let y = half(10, 2); }\n";
+
+#[test]
+fn a_pass_states_how_much_of_itself_rests_on_the_solvers_word() {
+    // The point of the whole format. Without this a `pass` says the same thing
+    // whether every obligation carried a re-checkable refutation or none did.
+    let out = check("coverage", MIXED, &["--message-format=json"]);
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = summary(&out);
+    assert_eq!(s["verdict"], "pass");
+
+    let cov = &s["coverage"];
+    let certified = cov["certified"].as_u64().unwrap();
+    let trusted = cov["trusted_to_solver"].as_u64().unwrap();
+    let discharged = cov["discharged"].as_u64().unwrap();
+    assert_eq!(certified + trusted, discharged, "the parts must sum");
+    assert!(discharged > 0, "this program discharges obligations");
+    assert_eq!(trusted, 1, "exactly the division obligation: {cov}");
+
+    // The admission is specific, not a bare count.
+    let uncertified = cov["uncertified"].as_array().unwrap();
+    assert_eq!(uncertified.len(), 1);
+    assert!(
+        uncertified[0].as_str().unwrap().contains("bvsdiv"),
+        "names the obligation with no witness: {cov}"
+    );
+}
+
+#[test]
+fn a_program_with_nothing_to_prove_reports_no_coverage_at_all() {
+    // Not `0/0`. That would read as "nothing was witnessed" rather than
+    // "nothing was attempted", and a consumer would be right to be alarmed.
+    let out = check("nocov", "fn main() { }\n", &["--message-format=json"]);
+    assert!(out.status.success());
+    let s = summary(&out);
+    assert_eq!(s["verdict"], "pass");
+    assert!(
+        s.get("coverage").is_none(),
+        "coverage must be absent, not zero: {s}"
+    );
+}
+
+#[test]
+fn the_human_verdict_states_coverage_and_names_the_residual() {
+    let out = check("covhuman", MIXED, &[]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("check passed"), "{stdout}");
+    assert!(
+        stdout.contains("re-checkable witness"),
+        "the verdict must state coverage: {stdout}"
+    );
+    assert!(
+        stdout.contains("bvsdiv"),
+        "and name what has none: {stdout}"
+    );
+    // It must not dress the ratio up as end-to-end verification: the chain from
+    // CNF back to source is still the compiler's word.
+    let lower = stdout.to_lowercase();
+    for overclaim in ["fully verified", "proven correct", "guaranteed"] {
+        assert!(!lower.contains(overclaim), "overclaim in verdict: {stdout}");
+    }
+}
+
 #[test]
 fn an_unknown_format_is_refused_rather_than_silently_treated_as_human() {
     // Defaulting here would hand a consumer that typed `jsonl` an empty stdout,

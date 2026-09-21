@@ -100,6 +100,7 @@ Ordered by what becomes impossible later, not by appeal.
    `file:line:col` on every refusal. *(started; see §5)*
 5. **Certificate upgrade and graded coverage** — real LRAT with hints, so a
    *verified* checker can accept Anubis output; coverage as a number.
+   *(coverage landed; the LRAT upgrade has not — see §5)*
 6. **Runtime confinement** — the effect row becomes the kernel policy.
 7. **Linux first-class and sealed** — a reproducibility fixpoint on Linux.
 8. **Close the fragment and bind Lean to Rust.**
@@ -209,6 +210,41 @@ converges on a 20-program repair corpus from the JSON alone. That corpus does
 not exist and the loop has not been run. What exists is the format, its schema,
 and 30 tests over both. The criterion is unmet, and the flag shipping is not the
 same as the criterion being met.
+
+**Graded certificate coverage — criterion 3.** The ordinary verdict now states
+how much of itself rests on a witness and how much on the solver's word:
+
+```
+check passed
+certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the solver with none
+  no witness (REG-002, out of the proven fragment): ensures:(bvsge (bvsdiv anb_a anb_b) (_ bv0 64))
+```
+
+The same numbers appear as a `coverage` object on the JSON summary, on a pass as
+well as a failure. The obligations with no witness are **named**, not merely
+counted, so the admission is specific.
+
+The information was already being computed and thrown away. A native verdict of
+`Unsat` requires all of the proven-fragment gate, a CDCL root refutation, and an
+independent checker accepting that refutation; an obligation the native lane
+declines falls through to z3 alone. That decision was made per obligation and
+then discarded, so a `PASS` read identically whether every obligation carried a
+machine-checked refutation or none did. It no longer does.
+
+Two properties are worth stating because they are what makes the number worth
+trusting. Coverage may understate itself and may never overstate it: an
+obligation whose provenance the classifier does not recognise counts as neither,
+rather than as certified. And a program with nothing to prove reports no
+coverage at all rather than `0/0`, which would read as "nothing was witnessed"
+instead of "nothing was attempted".
+
+**What coverage is not.** A certified obligation means a stranger can re-check
+that *this CNF is unsatisfiable*. It does not mean the program was verified end
+to end, and no wording in the verdict or the schema says otherwise — locked by a
+test that rejects "fully verified", "proven correct" and "guaranteed" in the
+verdict line. The other half of criterion 5, the LRAT-with-hints upgrade that
+would let a *verified* checker such as `cake_lpr` accept Anubis output, has not
+been done; the emitted certificates are still DRAT.
 
 **What is still open on both:** the certificate covers only the Lean-backed
 fragment, so anything touching `bvsdiv`, `bvurem`, `bvsrem`, `bvudiv`, `bvashr`

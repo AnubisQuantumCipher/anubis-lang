@@ -97,10 +97,10 @@ and non-normative, and this document stays the definition.
 | `build_blocking` | `true` | always |
 | `message` | string | human-readable; never the sole carrier of a fact no field holds |
 | `obligation` | object, optional | absent when the refusal predates any obligation |
-| `counterexample` | object, optional | §5 |
-| `location` | object, optional | §6 |
-| `budget` | object, optional | §7 |
-| `suggestions` | array | **always empty in v1** — §8 |
+| `counterexample` | object, optional | §6 |
+| `location` | object, optional | §7 |
+| `budget` | object, optional | §8 |
+| `suggestions` | array | **always empty in v1** — §9 |
 
 `code` is per finding, never a batch headline. A run with two disproofs and one
 undecided emits three codes, not one, because a headline standing in for
@@ -119,10 +119,53 @@ destroys the evidence of the disagreement.
 | `schema` | `"anubis-diagnostics/1"` | |
 | `verdict` | `pass` \| `fail` | §2 |
 | `counts` | `{total, disproved, undecided, replay_mismatch, refused}` | derived from the diagnostics actually emitted, so they cannot disagree |
+| `coverage` | object, optional | §5 — how much of the verdict carries a witness |
 
 ---
 
-## 5. `counterexample`
+## 5. `coverage`
+
+`{certified, trusted_to_solver, discharged, uncertified}`, present on a `pass`
+as well as a `fail`.
+
+Without it a `pass` says the same thing whether every obligation carried a
+machine-checkable refutation or none did. With it, the verdict states its own
+worth:
+
+```
+check passed
+certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the solver with none
+  no witness (REG-002, out of the proven fragment): ensures:(bvsge (bvsdiv anb_a anb_b) (_ bv0 64))
+```
+
+- `certified` — the native solver decided it, which requires all of the proven
+  fragment gate, a CDCL root refutation, and an independent checker accepting
+  that refutation. A witness for it exists in the evidence bundle.
+- `trusted_to_solver` — proved on the solver's word alone, with no witness
+  anyone can re-check. This is the REG-002 residual: `bvsdiv`, `bvurem`,
+  `bvsrem`, `bvudiv`, `bvashr` and `sign_extend` have no machine-checked
+  bit-blast, so the native lane declines.
+- `uncertified` — those obligations **named**, not merely counted, so the
+  admission is specific.
+
+`discharged` is `certified + trusted_to_solver`. It is not the number of checks:
+a failure discharges nothing.
+
+**Absent, never zero, when nothing was discharged.** A program with nothing to
+prove has not failed to witness anything, and `0/0` would read as "nothing was
+witnessed" rather than "nothing was attempted".
+
+Coverage may understate itself and may never overstate it: an obligation whose
+provenance the classifier does not recognise is counted as neither, rather than
+as certified.
+
+What coverage does **not** claim: a certified obligation means a stranger can
+re-check that *this CNF is unsatisfiable*. Nothing in the bundle yet binds that
+CNF to its SMT query, or the query to the source. That chain is still the
+compiler's word, and `docs/PROOF_CORRESPONDENCE.md` says so. Coverage is a
+statement about witnesses, not about end-to-end verification.
+
+## 6. `counterexample`
 
 The concrete assignment that falsifies an obligation. This is the asset no
 comparable toolchain ships — rustc has no counterexample to give — and it is
@@ -148,7 +191,7 @@ Three rules a consumer must honour:
   literal. Bitvector values are read as **signed** 64-bit, matching the source
   types, so `#xffffffffffffffff` is `-1`.
 
-## 6. `location`
+## 7. `location`
 
 `{file, line, column, span_start, span_end}`, with `line` and `column` 1-based.
 
@@ -162,7 +205,7 @@ earlier CLI fix worth reverting, except aimed at an agent that will act on it
 without looking at the file. An absent field says "not tracked". A wrong one
 says "here". That asymmetry is why the field is optional rather than defaulted.
 
-## 7. `budget`
+## 8. `budget`
 
 `{metric, limit, measured, consumed?}`.
 
@@ -179,7 +222,7 @@ budget" about an obligation no budget can decide.
 would imply work was spent deciding something and invite a reader to raise a
 bound that had nothing to do with the refusal.
 
-## 8. `suggestions` is empty, deliberately
+## 9. `suggestions` is empty, deliberately
 
 The compiler can already print a "possible fix" that re-fails when applied
 verbatim, because it never re-proves its own suggestion. Until a re-proof gate
@@ -197,7 +240,7 @@ renderer and the CLI.
 
 ---
 
-## 9. Stability
+## 10. Stability
 
 The schema string carries the major version. Within `anubis-diagnostics/1`:
 
@@ -214,15 +257,16 @@ Codes in `code` are stable identifiers. A code is retired rather than reused.
 
 ---
 
-## 10. What this does not do yet
+## 11. What this does not do yet
 
 Named so nobody reads more into it than it says.
 
-- **Semantic refusals have no location.** §6.
-- **`budget.consumed` is never populated.** §7.
-- **No suggestions.** §8.
+- **Semantic refusals have no location.** §7.
+- **`budget.consumed` is never populated.** §8.
+- **No suggestions.** §9.
 - **Only the `check` command emits it.** `build`, `prove` and `evidence-verify`
   still speak prose.
+- **Coverage counts witnesses, not correspondence.** §5.
 - **The counterexample is the solver's, not the source's.** `assignments` names
   source variables, but nothing yet reconstructs the failing call as source-level
   values a reader could paste into a test. That is the same correspondence gap
