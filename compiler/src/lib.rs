@@ -3,6 +3,7 @@
 //! v0.1 MVP scope per plan.
 
 pub mod backends;
+pub mod diagnostics;
 pub mod doc;
 pub mod evidence;
 pub mod fmt;
@@ -2327,7 +2328,7 @@ fn main() {
 
     #[test]
     fn undecided_loop_invariant_step_fails_closed() {
-        // A z3 `unknown` (undecided within the time budget — NOT disproved) on ANY proof-carrying
+        // A z3 `unknown` (undecided within the work budget — NOT disproved) on ANY proof-carrying
         // obligation must fail closed. The loop-invariant PRESERVATION step is deliberately excluded from
         // the separate vacuity check (a loop whose invariant implies ¬cond never iterates), but it must
         // still be in the undecided-verdict set — else a timed-out step silently admits a possibly-false
@@ -3226,11 +3227,7 @@ fn bad(x: i64) -> i64
         let check = middle::SolverCheck {
             name: "ensures:(hard)".into(),
             status: "FAIL".into(),
-            detail: "solver could not decide this contract within its time budget (z3 \
-                 returned `unknown`, typically a hard symbolic division/remainder); failing \
-                 closed — an undecided postcondition is not a proof. Restate it as a simpler \
-                 or better-bounded obligation"
-                .into(),
+            detail: middle::UNDECIDED_DETAIL.into(),
             model: None,
             smt: String::new(),
         };

@@ -74,7 +74,7 @@ Sixteen criteria. Each is a thing you can run.
 | 6 | The kernel, not the checker, denies an undeclared effect | Build without `uses(fs.write)`, run as an ordinary user: `EACCES`/`EPERM` or `SIGSYS` | `pledge`/WASI enforce but do not prove completeness |
 | 7 | The kernel policy is a pure function of the program | Add one `net.send`, rebuild, diff the emitted BPF bytes; hand-edit the sealed policy and verification fails | Docker/AppArmor profiles drift silently forever |
 | 8 | An open effect row yields the *most* restrictive policy, proved | A Lean theorem beside `EffectSoundness.lean` | Nobody has mechanised sandbox-from-incomplete-analysis soundness |
-| 9 | Every refusal is machine-actionable | `anubis check --json` with a published schema; an agent loop converges on a 20-program repair corpus from JSON alone | rustc has JSON diagnostics but no counterexamples |
+| 9 | Every refusal is machine-actionable | `anubis check --message-format=json` against a published schema; an agent loop converges on a 20-program repair corpus from JSON alone | rustc has JSON diagnostics but no counterexamples |
 | 10 | A vacuous contract is refused | `ensures(true)` fails; adequacy score is a field in `program-evidence.json` | Nobody. Not SPARK, Dafny, Verus, Frama-C |
 | 11 | A conformance suite with a DEFER class | An implementation that *accepts* a DEFER test is non-conforming | Nobody. ACATS answers only accept-or-reject |
 | 12 | Monotonicity is a conformance property | Accept-set of version N+1 ⊆ version N over a declared corpus | No language standard defines this |
@@ -97,7 +97,7 @@ Ordered by what becomes impossible later, not by appeal.
    §5)*
 3. **Deterministic verdict** — bound by work, never by clock. *(started; see §5)*
 4. **Diagnostic identity and machine verdict** — `--json`, stable codes,
-   `file:line:col` on every refusal.
+   `file:line:col` on every refusal. *(started; see §5)*
 5. **Certificate upgrade and graded coverage** — real LRAT with hints, so a
    *verified* checker can accept Anubis output; coverage as a number.
 6. **Runtime confinement** — the effect row becomes the kernel policy.
@@ -178,6 +178,37 @@ found the exact mechanism behind the flapping fixtures: a QF_FP obligation costs
 91,502,028 resource units and 8.18 s of CPU against a 10 s timeout, a margin of
 1.2x, so under parallel load it crossed the line and a provable contract came
 back UNDECIDED.
+
+**Machine-readable verdict.** `anubis check --message-format=json` emits the
+`anubis-diagnostics/1` stream: one JSON object per refusal, then a summary, on
+stdout and nothing else. The format is specified in
+`docs/language/DIAGNOSTICS_JSON.md`.
+
+The design decision worth recording is what it refuses to do. SARIF was the
+obvious carrier and was rejected as the normative format, because its `level`
+enum collapses `disproved` (a counterexample exists; the obligation is false)
+into the same value as `undecided` (no proof and no counterexample; it may still
+be true). Those have different repairs, and an agent that cannot tell them apart
+weakens a contract to clear a solver's undecided verdict — the laundering this
+language exists to refuse, performed automatically. So the epistemic class is a
+field, never a severity and never an exit code.
+
+Three absences are deliberate and locked by tests. `suggestions` is always
+empty, because the compiler's existing "possible fix" re-fails when applied
+verbatim and a machine-readable suggestion would be applied rather than eyed.
+`location` is omitted on semantic refusals, whose span is still start-of-file —
+an absent field says "not tracked", a `1:1` says "here". And nothing anywhere in
+the stream names a bypass, a suppression key or a confidence score.
+
+An unknown `--message-format` value is refused rather than treated as `human`,
+because an empty stdout reads exactly like a clean run to anything counting
+findings.
+
+**What this does not yet meet:** criterion 9 asks for an agent loop that
+converges on a 20-program repair corpus from the JSON alone. That corpus does
+not exist and the loop has not been run. What exists is the format, its schema,
+and 30 tests over both. The criterion is unmet, and the flag shipping is not the
+same as the criterion being met.
 
 **What is still open on both:** the certificate covers only the Lean-backed
 fragment, so anything touching `bvsdiv`, `bvurem`, `bvsrem`, `bvudiv`, `bvashr`

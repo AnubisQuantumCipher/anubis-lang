@@ -2301,6 +2301,26 @@ tuning a constant to make one fixture green. The options, in order of preference
 SUCCESSFUL run's actual time and set a budget with real headroom; restate the obligation as the
 compiler's own error suggests; or give the FP lane its own budget separate from the integer lane.
 
+**Update 2026-09-21 — the first option was taken, and the mechanism is now measured.** A QF_FP
+obligation costs **91,502,028 z3 resource units / 8.18 s of CPU** against the old 10 s wall clock: a
+margin of 1.2x, which is why the fixture flipped under parallel load and not otherwise. The bound
+moved off the clock entirely — `Z3_ARGS` now passes `rlimit=200000000`, a deterministic resource
+counter, sized at 2.2x the measured cost, with a wall-clock argument left only as a hang backstop
+three orders of magnitude away from where any real obligation lands. The native solver's own wall
+clock is off by default (`DEFAULT_TIME_BUDGET_MS = 0`). Because the bound is now a function of the
+query rather than of the machine, the same input yields the same verdict under any load.
+
+**The verdict-diff this record demanded has NOT been run.** That is the whole point of the record —
+a corpus whose verdict depends on solver luck cannot be a seal input, and neither can a corpus whose
+determinism is argued rather than measured. Until the full corpus is run repeatedly under saturation
+and compared byte-for-byte, this stays OPEN. What changed is the mechanism and the measurement, not
+the evidence. Criterion 5 of `docs/ROADMAP_AI_ERA.md` is the operationalisation.
+
+The diagnostic prose was corrected with it: the refusal said *time budget* while the binding bound
+was a resource counter, which tells a reader — and an agent reading the machine-readable stream — to
+retry on a quieter machine when the verdict will not change. It now says *work budget* and names the
+`rlimit`. The string lives at `middle::UNDECIDED_DETAIL` so its test cannot drift from production.
+
 ### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
 
 `anubis check` reports the failures that enforce the entire promise — the security lanes — as a bare
@@ -2335,6 +2355,19 @@ commit.
 **The real fix is compiler-side: give each semantic diagnostic the span of the construct that
 violated.** The CLI rendering is then a few lines and is worth having. Until then this is a named
 residual, not a papered-over one.
+
+**Update 2026-09-21 — still open, and the machine-readable lane was built to respect it.**
+`anubis check --message-format=json` emits `anubis-diagnostics/1`, in which `location` is an
+OPTIONAL field. The parse lane fills it from the compiler's own structured spans, so a parse error
+now carries file, 1-based line and column, and the byte extent. The semantic lanes leave it
+**absent**, because their span is still start-of-file, and this record is the reason: a field
+asserting 1:1 would be the same mislead-with-authority failure as the caret, except aimed at an
+agent that will act on it without looking. An absent field says "not tracked"; a wrong one says
+"here". That asymmetry is why the field is optional rather than defaulted.
+
+So the residual is unchanged and still named. What exists now is a format with a place to put the
+answer once the compiler can give it, and a consumer contract that does not depend on the answer
+arriving.
 
 ### Generics are a STRING HEURISTIC — two measured defects in opposite directions (OPEN 2026-07-28)
 

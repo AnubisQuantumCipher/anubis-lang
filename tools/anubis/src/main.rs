@@ -504,6 +504,18 @@ enum Commands {
         /// authoring. Suggestions are editable and NOT auto-applied; the check still runs normally.
         #[arg(long)]
         suggest_contracts: bool,
+
+        /// Verdict rendering: `human` (default) or `json`.
+        ///
+        /// `json` writes the `anubis-diagnostics/1` stream to stdout as JSON Lines — one
+        /// diagnostic per refusal, then a summary — and nothing else, so a consumer can parse
+        /// stdout without stripping banners. The exit code is unchanged.
+        ///
+        /// An unrecognised value is refused rather than silently treated as `human`: a consumer
+        /// that mistyped the format would otherwise parse an empty stream and read a refusal as
+        /// an accepted program.
+        #[arg(long, value_name = "FORMAT")]
+        message_format: Option<String>,
     },
 
     /// Prove using a specific backend (e.g. risc0 for ZK receipt).
@@ -2654,8 +2666,26 @@ fn main() -> Result<()> {
             out,
             verified,
             suggest_contracts,
+            message_format,
         } => {
-            println!(
+            // Fail closed on an unknown format. Defaulting to `human` here would hand a consumer
+            // that mistyped `--message-format=jsonl` a stream it cannot parse, and an unparseable
+            // stream is indistinguishable from a clean run to anything reading finding counts.
+            let json_mode = match message_format.as_deref() {
+                None | Some("human") => false,
+                Some("json") => true,
+                Some(other) => {
+                    return Err(anyhow!(
+                        "ANUBIS_MESSAGE_FORMAT_UNKNOWN: `--message-format={other}` is not a \
+                         rendering this compiler knows. Use `human` or `json`."
+                    ))
+                }
+            };
+            // In `json` mode stdout carries the diagnostic stream and nothing else.
+            macro_rules! say {
+                ($($t:tt)*) => { if !json_mode { println!($($t)*); } };
+            }
+            say!(
                 "anubis check {} (evidence={}, verified={})",
                 input.display(),
                 evidence,
@@ -2709,13 +2739,13 @@ fn main() -> Result<()> {
                 if let Some(ref a) = ast {
                     let suggestions = anubis_compiler::middle::suggest_contracts(&a.items);
                     if suggestions.is_empty() {
-                        println!("suggest-contracts: no obvious contracts to infer");
+                        say!("suggest-contracts: no obvious contracts to infer");
                     } else {
-                        println!("suggest-contracts: inferred clauses (edit + paste onto the fn signature):");
+                        say!("suggest-contracts: inferred clauses (edit + paste onto the fn signature):");
                         for s in &suggestions {
-                            println!("  fn {}:", s.function);
+                            say!("  fn {}:", s.function);
                             for c in &s.clauses {
-                                println!("      {c}");
+                                say!("      {c}");
                             }
                         }
                     }
@@ -2751,6 +2781,10 @@ fn main() -> Result<()> {
             // program whose own asserted proof is false. The evidence bundle already recorded this;
             // here it becomes the command's verdict (and exit code), not just a bundle field.
             // Codes: DISPROVED (concrete model) ≠ UNDECIDED (timeout) ≠ residual UNPROVEN.
+            // Kept in structured form as well as rendered: `format_check_failures` flattens every
+            // obligation into one human string, which is the right thing to print and the wrong
+            // thing to hand a machine. The JSON lane reads these checks directly.
+            let mut solver_fails: Vec<anubis_compiler::middle::SolverCheck> = Vec::new();
             if check_error.is_none() {
                 if let Some(t) = &tainted {
                     let fails: Vec<_> = SymbolicEngine::check_obligations(t)
@@ -2760,6 +2794,7 @@ fn main() -> Result<()> {
                     if !fails.is_empty() {
                         check_error = Some(anubis_compiler::middle::format_check_failures(&fails));
                     }
+                    solver_fails = fails;
                 }
             }
 
@@ -2780,6 +2815,9 @@ fn main() -> Result<()> {
                 .to_string();
             let do_emit = emit.as_deref().unwrap_or("");
             let emit_evidence = evidence || check_error.is_some();
+            // Recorded rather than returned immediately, so the JSON stream below can state this
+            // refusal too instead of leaving a consumer to infer it from the exit code.
+            let mut verdict_failure: Option<String> = None;
             let emit_all = do_emit == "all" || do_emit.contains("ast") || emit_evidence;
             if emit_all {
                 let ast_rep = serde_json::json!({
@@ -2818,7 +2856,7 @@ fn main() -> Result<()> {
                     let _ = std::fs::write(out.join(format!("{}.mono.json", stem)), m);
                 }
                 if !t.mono_specializations.is_empty() {
-                    println!(
+                    say!(
                         "static monomorphization: {} specialization(s) (see {}.mono.json)",
                         t.mono_specializations.len(),
                         stem
@@ -2893,15 +2931,15 @@ fn main() -> Result<()> {
                 .map_err(|e| anyhow!("{}", e))?;
 
                 if !evidence {
-                    println!("automatic rejection evidence: enabled");
+                    say!("automatic rejection evidence: enabled");
                 }
-                println!("evidence bundle: {}", bundle.dir.display());
-                println!("verdict: {}", bundle.manifest.verdict);
+                say!("evidence bundle: {}", bundle.dir.display());
+                say!("verdict: {}", bundle.manifest.verdict);
 
                 if let Some(err) = &check_error {
-                    println!("check failed: {}", err);
+                    say!("check failed: {}", err);
                 } else {
-                    println!("check passed (no policy violations)");
+                    say!("check passed (no policy violations)");
                 }
 
                 let summary = serde_json::json!({
@@ -2915,20 +2953,47 @@ fn main() -> Result<()> {
                     out.join("check-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
-                if let Some(err) = &check_error {
-                    return Err(anyhow!("check failed: {}", err));
-                }
-                if bundle.manifest.verdict != "PASS" {
-                    return Err(anyhow!(
+                if check_error.is_none() && bundle.manifest.verdict != "PASS" {
+                    verdict_failure = Some(format!(
                         "ANUBIS_EVIDENCE_VERDICT_FAILED: check produced verdict={} and therefore \
                          cannot exit successfully",
                         bundle.manifest.verdict
                     ));
                 }
-            } else if let Some(err) = &check_error {
+            } else if check_error.is_none() {
+                say!("check passed");
+            }
+
+            // The machine-readable verdict, emitted before any early return so that a refusal is
+            // always *stated* in the stream rather than implied by the exit code. `verdict: pass`
+            // appears only when there is nothing to report on any lane.
+            if json_mode {
+                use anubis_compiler::diagnostics as diag;
+                // Most specific lane first. A parse failure has real spans, so it is reported per
+                // error with a location rather than as one blob; the solver lane has structured
+                // obligations and counterexamples; anything else is reported as the refusal it is.
+                let parse_diags = diag::diagnostics_of_parse_errors(&src, &input.to_string_lossy());
+                let diagnostics = if !parse_diags.is_empty() {
+                    parse_diags
+                } else if solver_fails.iter().any(|c| c.status == "FAIL") {
+                    solver_fails
+                        .iter()
+                        .filter(|c| c.status == "FAIL")
+                        .map(diag::diagnostic_of)
+                        .collect()
+                } else if let Some(err) = check_error.clone().or_else(|| verdict_failure.clone()) {
+                    vec![diag::diagnostic_of_refusal(&err)]
+                } else {
+                    Vec::new()
+                };
+                print!("{}", diag::render(&diagnostics));
+            }
+
+            if let Some(err) = &check_error {
                 return Err(anyhow!("check failed: {}", err));
-            } else {
-                println!("check passed");
+            }
+            if let Some(err) = verdict_failure {
+                return Err(anyhow!("{}", err));
             }
 
             Ok(())

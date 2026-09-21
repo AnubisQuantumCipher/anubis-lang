@@ -14739,7 +14739,7 @@ impl TaintPass {
     }
 }
 
-/// Whether an obligation whose solver verdict is `unknown` (UNDECIDED within the z3 time budget — not
+/// Whether an obligation whose solver verdict is `unknown` (UNDECIDED within the z3 work budget — not
 /// disproved, no counterexample) must fail closed. Every proof-carrying contract obligation qualifies:
 /// an `ensures`, a `requires@` call-site precondition, an `assert`, AND BOTH loop-invariant obligations —
 /// the base case AND the preservation STEP. The step is deliberately excluded from the separate VACUITY
@@ -14846,7 +14846,7 @@ impl SymbolicEngine {
                 // timeout on a hard symbolic division/remainder — see `Z3_ARGS`) is NOT proven. The
                 // proof-carrying gate fails closed on it rather than accept an unverified postcondition.
                 // It was not disproved (no counterexample), only undecided within budget — say so, and
-                // clear any model. This branch became reachable once queries got a time budget.
+                // clear any model. This branch became reachable once queries got a bounded budget.
                 // NOTE the predicate is BROADER than the vacuity `is_contract` above: a loop-invariant
                 // PRESERVATION step is (correctly) NOT vacuity-checked, but an UNDECIDED step is still not
                 // a proof — an `unknown` preservation must fail closed exactly like an `ensures`, else a
@@ -14854,11 +14854,7 @@ impl SymbolicEngine {
                 // certifies a false postcondition (a fail-OPEN gap the step's vacuity exclusion left open).
                 if check.status == "UNKNOWN" && obligation_undecided_is_unsound(&obl.name) {
                     check.status = "FAIL".into();
-                    check.detail = "solver could not decide this contract within its time budget (z3 \
-                         returned `unknown`, typically a hard symbolic division/remainder); failing \
-                         closed — an undecided postcondition is not a proof. Restate it as a simpler \
-                         or better-bounded obligation"
-                        .into();
+                    check.detail = UNDECIDED_DETAIL.into();
                     check.model = None;
                 }
                 check
@@ -15085,9 +15081,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                     return SolverCheck {
                         name: obligation.name.clone(),
                         status: "FAIL".into(),
-                        detail: "counterexample satisfies assumptions and negates assertion \
-                                 (native model, independently re-evaluated)"
-                            .into(),
+                        detail: DISPROVED_DETAIL_NATIVE.into(),
                         model: Some(rendered),
                         smt,
                     };
@@ -15212,8 +15206,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                 SolverCheck {
                     name: obligation.name.clone(),
                     status: "FAIL".into(),
-                    detail: "counterexample satisfies assumptions and negates assertion (replayed)"
-                        .into(),
+                    detail: DISPROVED_DETAIL_Z3.into(),
                     model: Some(model),
                     smt,
                 }
@@ -15569,6 +15562,73 @@ pub enum AssertionFailKind {
     Other,
 }
 
+/// Detail for a z3 counterexample that re-verified under model-substitution replay.
+pub const DISPROVED_DETAIL_Z3: &str =
+    "counterexample satisfies assumptions and negates assertion (replayed)";
+
+/// Detail for a native-solver counterexample, independently re-evaluated by the
+/// checker rather than taken on the solver's word.
+pub const DISPROVED_DETAIL_NATIVE: &str =
+    "counterexample satisfies assumptions and negates assertion (native model, independently \
+     re-evaluated)";
+
+/// Whether this counterexample was independently verified before being reported.
+///
+/// The single authority on the question, so the human printer and the JSON
+/// diagnostic cannot disagree about whether a model can be repaired against.
+///
+/// It compares against the named constants rather than sniffing for a word.
+/// Sniffing for `"replayed"` looked equivalent and was not: the native lane's
+/// model IS independently re-evaluated but says so in different words, so a
+/// substring test reported a sound counterexample as untrustworthy — the safe
+/// direction, but still wrong, and it made the native lane look weaker than the
+/// z3 lane for no reason but its prose.
+///
+/// Unknown detail text answers `false`. A counterexample whose provenance this
+/// function does not recognise is one nothing should be repaired against.
+pub fn counterexample_was_replayed(check: &SolverCheck) -> bool {
+    check.detail == DISPROVED_DETAIL_Z3 || check.detail == DISPROVED_DETAIL_NATIVE
+}
+
+/// Source-level bindings from a solver counterexample, for machine-readable output.
+///
+/// The two lane-specific parsers stay private because each one anchors on its
+/// own fixed return-type tag and neither is a general SMT-LIB reader. This is
+/// the single public door onto both, so the JSON diagnostic and the CLI
+/// pretty-printer cannot disagree about what a model said.
+///
+/// Bit-vector entries win a name collision: a model cannot legitimately bind
+/// one variable at two sorts, and preferring the lane that is actually
+/// replayed keeps the trusted reading on top if one ever does.
+pub fn counterexample_bindings(model: &str) -> BTreeMap<String, String> {
+    let mut bindings = parse_z3_model(model);
+    for (name, value) in parse_fp_model_entries(model) {
+        bindings.entry(name).or_insert(value);
+    }
+    bindings
+}
+
+/// The exact text an undecided contract obligation reports.
+///
+/// Named rather than inlined because [`classify_assertion_fail`] recognises an
+/// undecided verdict by reading this prose, so a test that hand-copied the
+/// string would keep passing after production drifted away from it — which is
+/// precisely how a fail-closed refusal decays into an unclassified one. Every
+/// site uses this constant, and `undecided_detail_classifies_as_undecided`
+/// reads it from here rather than restating it.
+///
+/// It says **work budget**, not *timeout*. Since the determinism change the
+/// binding bound is z3's `rlimit` resource counter rather than a clock (see
+/// `Z3_ARGS`); the wall-clock argument that remains is a hang backstop three
+/// orders of magnitude away from where any real obligation lands. Calling this
+/// a timeout would tell a reader — or an agent reading the machine-readable
+/// diagnostic — to retry on a quieter machine, when the verdict is a
+/// deterministic function of the query and will not change.
+pub const UNDECIDED_DETAIL: &str = "solver could not decide this contract within its declared work \
+     budget (z3 returned `unknown` under the deterministic `rlimit` bound, typically a hard symbolic \
+     division/remainder); failing closed — an undecided postcondition is not a proof. Restate it as a \
+     simpler or better-bounded obligation";
+
 /// Classify one failed `SolverCheck` without guessing from free-form prose alone.
 pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     if check.status != "FAIL" {
@@ -15588,7 +15648,11 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     if check.model.is_some() {
         return AssertionFailKind::Disproved;
     }
+    // `time budget` is the pre-determinism wording. It is kept so an archived
+    // evidence bundle deserialized today still classifies as undecided rather
+    // than falling through to `Other`; nothing emits it any more.
     if check.detail.contains("time budget")
+        || check.detail.contains("work budget")
         || check.detail.contains("could not decide")
         || check.detail.contains("undecided")
         || check.detail.contains("returned `unknown`")
@@ -16126,7 +16190,7 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                 }
             }
             AssertionFailKind::Undecided => {
-                out.push_str("\n    (solver returned unknown / hit time budget)");
+                out.push_str("\n    (solver returned unknown — undecided within the declared work budget)");
                 if !c.detail.is_empty() {
                     out.push_str(&format!("\n    detail: {}", c.detail));
                 }
