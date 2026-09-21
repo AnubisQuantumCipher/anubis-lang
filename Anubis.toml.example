@@ -8,7 +8,14 @@
 #   4. Built-in local default (only for the canonical development host)
 
 # Project identity. Parsed today; consumed when the package manager lands (roadmap Phase 6).
+#
+# `edition` declares which version of the LANGUAGE this package is written
+# against, independently of which compiler builds it. Declare it: a compiler
+# that meets an edition it does not recognise refuses rather than compiling your
+# code under different rules, and a manifest with no edition is a warning today
+# and an error at 1.0. See docs/language/EDITIONS.md.
 # [package]
+# edition = "2026"
 # name = "my-app"
 # version = "0.1.0"
 # description = "what it does"
