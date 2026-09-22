@@ -24,9 +24,12 @@ $ anubis check prog.anb --message-format=json
 {"$type":"anubis.summary","schema":"anubis-diagnostics/1","verdict":"fail","counts":{…}}
 ```
 
-A line arrives as it is decided, so a consumer can act on the first refusal
-without waiting for the run to finish. The exit code is unchanged: `0` on pass,
-non-zero on any refusal.
+The exit code is unchanged: `0` on pass, non-zero on any refusal.
+
+**Not yet incremental.** The document is built and written once the check has
+finished, so a consumer cannot act on the first refusal early. The
+line-per-refusal shape makes that possible later; it is not delivered today, and
+this note exists because the format's first draft claimed otherwise.
 
 `--message-format` accepts `human` (the default) and `json`. **Any other value
 is refused** with `ANUBIS_MESSAGE_FORMAT_UNKNOWN` and no stream is written. It
@@ -89,10 +92,10 @@ and non-normative, and this document stays the definition.
 | `$type` | `"anubis.diagnostic"` | discriminator; do not infer a line's kind from its position |
 | `schema` | `"anubis-diagnostics/1"` | |
 | `code` | string | stable `ANUBIS_*` code, **one per finding** |
-| `family` | `contract` \| `wrap_safety` \| `solver_trust` \| `frontend` | what kind of obligation |
+| `family` | `contract` \| `wrap_safety` \| `solver_trust` \| `frontend` \| `environment` | what kind of obligation |
 | `status` | `disproved` \| `undecided` \| `replay_mismatch` \| `refused` | what the compiler established — see §3 |
-| `defect_locus` | `program` \| `compiler` \| `capability` | where the defect is |
-| `agent_action` | `repair_program` \| `restate_or_raise_budget` \| `investigate_compiler` | the single next step |
+| `defect_locus` | `program` \| `compiler` \| `environment` \| `capability` | where the defect is |
+| `agent_action` | `repair_program` \| `restate_or_raise_budget` \| `investigate_compiler` \| `fix_environment` | the single next step |
 | `severity` | `"error"` | always |
 | `build_blocking` | `true` | always |
 | `message` | string | human-readable; never the sole carrier of a fact no field holds |
@@ -109,7 +112,15 @@ introduces.
 
 `defect_locus: compiler` means **do not edit the program**. An agent that
 repairs source in response to a solver disagreement makes the tree worse and
-destroys the evidence of the disagreement.
+destroys the evidence of the disagreement. `environment` means the same and
+adds that no edit anywhere in the program can help: the solver could not be run.
+
+Who owns a refusal is decided by `middle::refusal_locus`, separately from what
+the solver established. The first version of this format inferred it from the
+epistemic kind, and a residual bucket held a native-versus-z3 cross-check alarm,
+a vacuous contract, a missing z3 and a malformed query side by side — so all
+four rendered as `restate_or_raise_budget`. The format told an agent to weaken a
+contract in response to a soundness alarm.
 
 ### `anubis.summary`
 
@@ -138,9 +149,10 @@ certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the so
   no witness (REG-002, out of the proven fragment): ensures:(bvsge (bvsdiv anb_a anb_b) (_ bv0 64))
 ```
 
-- `certified` — the native solver decided it, which requires all of the proven
-  fragment gate, a CDCL root refutation, and an independent checker accepting
-  that refutation. A witness for it exists in the evidence bundle.
+- `certified` — the native lane accepted a machine-checked refutation for it
+  **during this run**, which requires all of the proven fragment gate, a CDCL
+  root refutation, and an independent checker accepting that refutation. Read
+  that literally: it is a statement about what happened, not about what exists.
 - `trusted_to_solver` — proved on the solver's word alone, with no witness
   anyone can re-check. This is the REG-002 residual: `bvsdiv`, `bvurem`,
   `bvsrem`, `bvudiv`, `bvashr` and `sign_extend` have no machine-checked
@@ -151,9 +163,27 @@ certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the so
 `discharged` is `certified + trusted_to_solver`. It is not the number of checks:
 a failure discharges nothing.
 
+- `not_discharged` — checks that reached neither a recognised discharge nor a
+  failure. An `UNKNOWN` wrap-safety obligation is the live case: it is
+  deliberately outside the fail-closed set, so it passes the run without being
+  decided. Without this field the denominator quietly shrank to fit its
+  numerator and printed `3/3` for a run where a fourth obligation was never
+  decided at all.
+- `witnesses_retained` — **whether anything was actually written.** `false` on a
+  plain `check`, which verifies each refutation in process and discards it;
+  `true` when `--evidence` retained them.
+
 **Absent, never zero, when nothing was discharged.** A program with nothing to
 prove has not failed to witness anything, and `0/0` would read as "nothing was
 witnessed" rather than "nothing was attempted".
+
+**The retention distinction is the important one.** An earlier version of this
+document said "a witness for it exists in the evidence bundle" and the verdict
+line said obligations "carry a re-checkable witness" — on the default command,
+which creates no bundle and writes no certificate. The refutation was built,
+checked, and dropped. Upgrading a discarded in-process check into a durable
+third-party-verifiable artifact is the overclaim this project exists to catch,
+and the format committed it in its own headline number.
 
 Coverage may understate itself and may never overstate it: an obligation whose
 provenance the classifier does not recognise is counted as neither, rather than
@@ -213,6 +243,13 @@ says "here". That asymmetry is why the field is optional rather than defaulted.
 verdict is a function of the query, not of machine load. Nothing in this format
 calls it a timeout, because that vocabulary tells a reader to retry on a quieter
 machine when the answer will not change.
+
+`rlimit` is one of three bounds and the only one reported here. The solver also
+runs under a space bound and a wall-clock hang guard. The space bound is
+deterministic in the same sense — the same query allocates the same bytes
+anywhere — and exists because neither of the other two counts bytes: one
+obligation was measured growing z3 to 19.9 GiB. Exhausting it yields `undecided`,
+never a claim that the query was malformed.
 
 `measured` is `false` and `consumed` is absent until the compiler asks z3 what
 it actually spent. An invented figure would let a consumer conclude "raise the

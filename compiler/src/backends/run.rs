@@ -5699,21 +5699,6 @@ pub fn resolved_run_timeout() -> Option<std::time::Duration> {
     parse_run_timeout_secs(std::env::var("ANUBIS_RUN_TIMEOUT_SECS").ok().as_deref())
 }
 
-/// Run a prepared child `Command` to completion under an optional wall-clock
-/// budget, capturing stdout and stderr.
-///
-/// `timeout == None` waits forever (the historical behavior, for callers that
-/// deliberately opt out). With a budget, a watchdog polls for exit and, once
-/// the deadline passes, SIGKILLs and reaps the child — so `anubis run` can
-/// never leave a runaway native binary that outlives its parent and spins a
-/// core indefinitely. The caller's stdin choice is preserved; only stdout and
-/// stderr are forced to pipes so they can be drained without a pipe-buffer
-/// deadlock.
-///
-/// Limitation: only the direct child is signalled. An Anubis program that
-/// itself spawns a long-lived grandchild is out of scope here (the research
-/// `target_run` builtin already caps its own probes); the leaks this closes
-/// are leaf compute binaries.
 /// `ETXTBSY` — "Text file busy" — from an `execve`, which is never a defect in
 /// the program being launched.
 ///
@@ -5765,6 +5750,21 @@ fn retry_while_exec_busy<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> 
     }
 }
 
+/// Run a prepared child `Command` to completion under an optional wall-clock
+/// budget, capturing stdout and stderr.
+///
+/// `timeout == None` waits forever (the historical behavior, for callers that
+/// deliberately opt out). With a budget, a watchdog polls for exit and, once
+/// the deadline passes, SIGKILLs and reaps the child — so `anubis run` can
+/// never leave a runaway native binary that outlives its parent and spins a
+/// core indefinitely. The caller's stdin choice is preserved; only stdout and
+/// stderr are forced to pipes so they can be drained without a pipe-buffer
+/// deadlock.
+///
+/// Limitation: only the direct child is signalled. An Anubis program that
+/// itself spawns a long-lived grandchild is out of scope here (the research
+/// `target_run` builtin already caps its own probes); the leaks this closes
+/// are leaf compute binaries.
 pub fn run_child_capped(
     mut cmd: std::process::Command,
     timeout: Option<std::time::Duration>,

@@ -226,6 +226,27 @@ fn check_rup(cnf_text: &str, proof_text: &str) -> std::result::Result<usize, Str
 fn verify_published_proofs(dir: &Path, id_prefix: &str, report: &mut EvidenceVerifyReport) {
     let index = dir.join("analysis").join("proofs.json");
     if !index.is_file() {
+        // Fail closed rather than return silently. A silent return pushes NO
+        // check, so the report contains no `.proofs` row at all and reads as
+        // though the proofs were examined and were fine. The documented
+        // forgery is "stub the .drat and recompute MANIFEST.sha256"; DELETING
+        // the proofs is the cheaper variant, and it used to reach
+        // `overall: PASS` with the proof lane silently absent.
+        //
+        // Safe to fail here: `--evidence` always writes this file. A program
+        // with no contracts at all still publishes an obligations array. So an
+        // evidence bundle without it is either pre-v3 and archived, or altered
+        // — and the message says both so an operator can tell which.
+        report.push(
+            &format!("{id_prefix}.proofs"),
+            CheckStatus::Fail,
+            "LAB_REAL",
+            "analysis/proofs.json is absent: this bundle publishes no refutations, so nothing \
+             in it was re-derived. Every `--evidence` bundle writes this file, including for a \
+             program with no contracts, so its absence means the bundle predates the proofs \
+             lane or has been altered."
+                .to_string(),
+        );
         return;
     }
     let raw = match std::fs::read_to_string(&index) {
@@ -258,6 +279,15 @@ fn verify_published_proofs(dir: &Path, id_prefix: &str, report: &mut EvidenceVer
         .cloned()
         .unwrap_or_default();
     if obligations.is_empty() {
+        // Same reasoning as the absent file: silence here reads as "checked, fine".
+        report.push(
+            &format!("{id_prefix}.proofs"),
+            CheckStatus::Fail,
+            "LAB_REAL",
+            "analysis/proofs.json publishes an empty obligations array: there is nothing to \
+             re-derive, and a bundle that proves nothing must not verify as though it did."
+                .to_string(),
+        );
         return;
     }
 

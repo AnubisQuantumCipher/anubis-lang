@@ -2307,8 +2307,11 @@ margin of 1.2x, which is why the fixture flipped under parallel load and not oth
 moved off the clock entirely — `Z3_ARGS` now passes `rlimit=200000000`, a deterministic resource
 counter, sized at 2.2x the measured cost, with a wall-clock argument left only as a hang backstop
 three orders of magnitude away from where any real obligation lands. The native solver's own wall
-clock is off by default (`DEFAULT_TIME_BUDGET_MS = 0`). Because the bound is now a function of the
-query rather than of the machine, the same input yields the same verdict under any load.
+clock is off by default (`DEFAULT_TIME_BUDGET_MS = 0`). The bound is now a function of the query rather than of
+the wall clock, which removes the mechanism that was demonstrably moving verdicts. It does not by
+itself establish load-independence: `-T` is still a wall clock in the loop as a hang guard, and a
+verdict-diff repeated under saturation is what would demonstrate the property. See the measurement
+note below.
 
 **The verdict-diff this record demanded has NOT been run.** That is the whole point of the record —
 a corpus whose verdict depends on solver luck cannot be a seal input, and neither can a corpus whose

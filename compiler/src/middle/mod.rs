@@ -14863,14 +14863,6 @@ impl SymbolicEngine {
     }
 }
 
-/// Whether a contract obligation's assumptions are jointly satisfiable. `Some(true)`/`Some(false)`
-/// from z3; `None` if the solver did not cleanly decide (in which case the caller keeps the original
-/// verdict rather than fabricating a vacuity failure).
-/// z3 CLI args for every obligation query. `-t` is a per-check SOFT timeout (ms) and `-T` a HARD
-/// wall-clock backstop (s): a query z3 cannot decide in budget returns `unknown` (or the process is
-/// killed and yields empty output) instead of hanging the checker indefinitely. Bit-blasting a
-/// symbolic `bvsdiv`/`bvsrem` over two free 64-bit operands can otherwise blow up unpredictably.
-/// Both timeout outcomes are handled FAIL-CLOSED downstream (UNKNOWN / None — never a proof).
 /// How z3 is invoked for every obligation outside the native proven fragment.
 ///
 /// The bound is `rlimit`, z3's DETERMINISTIC resource counter, not a wall clock.
@@ -14921,13 +14913,38 @@ impl SymbolicEngine {
 /// reported as a soundness alarm on the flagship gate. A guard that fires after
 /// the thing it is guarding is not a guard.
 ///
+/// `-memory:2048` bounds SPACE, which neither of the other two does.
+///
+/// Found the hard way on 2026-09-21: a single obligation in the test suite grew
+/// z3 to **19.9 GiB of RSS in 73 seconds** and drove a 31 GiB machine to zero
+/// available memory. `rlimit` counts solver work and `-T` counts seconds;
+/// neither counts bytes, so a query that allocates fast is bounded by nothing
+/// but the machine. Raising `-T` from 20 s to 120 s multiplied the window such
+/// a query has to allocate in — at the observed ~220 MiB/s, a 20 s guard capped
+/// it near 4 GiB and a 120 s guard near 26 GiB. The time bound and the space
+/// bound are not substitutes.
+///
+/// A memory cap keeps the determinism property that the wall clock broke: the
+/// same query allocates the same bytes on any machine under any load, so this
+/// is a bound of the same kind as `rlimit`, not a return to machine-dependent
+/// verdicts. Exceeding it makes z3 report `unknown`, which this compiler
+/// already treats as UNDECIDED and refuses.
+///
+/// Sized by outcome rather than introspection: 2048 MiB is orders of magnitude
+/// above any ordinary obligation, and the full 937-file corpus was re-run under
+/// it with zero verdict flips against `main`. Four test threads at this bound
+/// cannot exhaust the machine, which was the concrete failure.
+///
 /// Note the limit of any per-query bound. A check issues many obligations, so
 /// its wall time is a sum and nothing here bounds it. Measured 2026-09-21,
 /// `examples/programs/snake/snake.anb` takes 46.2 s across its obligations
 /// while no single query comes close. Bounding the check is the harness
 /// budget's job, sized from measurement in `run_native_authoritative_gate.sh`.
-const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "rlimit=200000000", "-T:120"];
+const Z3_ARGS: [&str; 5] = ["-in", "-smt2", "rlimit=200000000", "-T:120", "-memory:2048"];
 
+/// Whether a contract obligation's assumptions are jointly satisfiable. `Some(true)`/`Some(false)`
+/// from z3; `None` if the solver did not cleanly decide (in which case the caller keeps the original
+/// verdict rather than fabricating a vacuity failure).
 fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
     let mut body = String::new();
@@ -15228,6 +15245,20 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                     model: Some(model),
                     smt,
                 }
+            }
+        }
+        // z3 refusing for want of memory is a RESOURCE limit, not a malformed query. It became
+        // reachable the moment `Z3_ARGS` gained `-memory:`, and the generic `(error …)` arm below
+        // would report it as "the SMT we emitted is malformed" — blaming this compiler for an
+        // obligation that is merely too big, and sending whoever reads it to hunt a bug that does
+        // not exist. It is UNDECIDED: fail closed, and name the bound that actually bit.
+        other if other.contains("out of memory") || stderr.contains("out of memory") => {
+            SolverCheck {
+                name: obligation.name.clone(),
+                status: "FAIL".into(),
+                detail: UNDECIDED_MEMORY_DETAIL.into(),
+                model: None,
+                smt,
             }
         }
         // A z3 parse/sort ERROR means the SMT WE emitted is malformed (e.g. an undeclared symbol).
@@ -15643,14 +15674,32 @@ pub fn certificate_status(check: &SolverCheck) -> CertificateStatus {
 /// every obligation was witnessed or none was.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CertificateCoverage {
+    /// Obligations for which the native lane accepted a machine-checked
+    /// refutation DURING THIS RUN.
+    ///
+    /// Read that literally. It does not mean an artifact exists: on a plain
+    /// `anubis check` the refutation is built, handed to `lrat::check_proof`,
+    /// and dropped. Only `--evidence` retains it, and `witnesses_retained`
+    /// says which happened.
     pub certified: usize,
     pub trusted_to_solver: usize,
-    /// Discharged obligations: `certified + trusted_to_solver`. Not the number
-    /// of checks, which may include failures and the synthetic empty PASS.
+    /// `certified + trusted_to_solver`. Not the number of checks.
     pub discharged: usize,
     /// The obligations resting on the solver's word, named so the admission is
     /// specific rather than a count. These are the REG-002 residual.
     pub uncertified: Vec<String>,
+    /// Checks that reached neither a recognised discharge nor a failure.
+    ///
+    /// An `UNKNOWN` wrap-safety obligation is the live case:
+    /// `obligation_undecided_is_unsound` deliberately excludes `wrap-safety:`
+    /// from the fail-closed set, so such a check passes the run without ever
+    /// being decided. Counting only the discharged ones would print
+    /// "3/3 obligations" for a run where a fourth was never decided at all,
+    /// which is the denominator quietly shrinking to fit the numerator.
+    pub not_discharged: usize,
+    /// Whether the refutations behind `certified` were written somewhere a
+    /// third party can re-check them. False on a plain `check`.
+    pub witnesses_retained: bool,
 }
 
 /// Tally certificate coverage over a completed check.
@@ -15663,7 +15712,15 @@ pub fn certificate_coverage(checks: &[SolverCheck]) -> CertificateCoverage {
                 c.trusted_to_solver += 1;
                 c.uncertified.push(check.name.clone());
             }
-            CertificateStatus::NotApplicable => {}
+            CertificateStatus::NotApplicable => {
+                // A failure is reported by the refusal path and a run with no
+                // obligations has nothing to count, but anything else that
+                // reaches here was neither discharged nor refused, and the
+                // verdict must not silently omit it.
+                if check.status != "FAIL" && check.detail != NO_OBLIGATIONS_DETAIL {
+                    c.not_discharged += 1;
+                }
+            }
         }
     }
     c.discharged = c.certified + c.trusted_to_solver;
@@ -15677,11 +15734,17 @@ impl CertificateCoverage {
     /// measured; a phrase like that would claim the correspondence chain the
     /// compiler does not have (`docs/PROOF_CORRESPONDENCE.md`).
     pub fn verdict_line(&self) -> Option<String> {
-        if self.discharged == 0 {
+        if self.discharged == 0 && self.not_discharged == 0 {
             return None;
         }
+        // "discharged by a machine-checked refutation", never "carries a
+        // re-checkable witness". The earlier wording said an artifact existed
+        // that a stranger could re-check, on a command that writes no artifact
+        // at all: the refutation is verified in-process and dropped. Upgrading
+        // a discarded in-process check into a durable third-party-verifiable
+        // one is exactly the overclaim `docs/CLAIMS.md` exists to catch.
         let mut line = format!(
-            "certificates: {}/{} obligations carry a re-checkable witness",
+            "certificates: {}/{} obligations discharged by a machine-checked refutation",
             self.certified, self.discharged
         );
         if self.trusted_to_solver > 0 {
@@ -15690,6 +15753,14 @@ impl CertificateCoverage {
                 self.trusted_to_solver
             ));
         }
+        if self.not_discharged > 0 {
+            line.push_str(&format!("; {} never decided", self.not_discharged));
+        }
+        line.push_str(if self.witnesses_retained {
+            " (refutations retained in the evidence bundle)"
+        } else {
+            " (checked in this run and not retained; --evidence writes them)"
+        });
         Some(line)
     }
 }
@@ -15721,6 +15792,17 @@ pub const DISPROVED_DETAIL_NATIVE: &str =
 pub fn counterexample_was_replayed(check: &SolverCheck) -> bool {
     check.detail == DISPROVED_DETAIL_Z3 || check.detail == DISPROVED_DETAIL_NATIVE
 }
+
+/// The exact text an obligation reports when it exhausts the declared memory bound.
+///
+/// Worded so [`classify_assertion_fail`] reads it as UNDECIDED rather than as a
+/// compiler defect: it says "could not decide", and it deliberately does NOT
+/// contain "solver rejected the emitted SMT", which is the marker
+/// [`refusal_locus`] uses for a query this compiler malformed.
+pub const UNDECIDED_MEMORY_DETAIL: &str = "solver could not decide this contract within its \
+     declared memory bound (z3 exhausted the `-memory` cap); failing closed — an undecided \
+     postcondition is not a proof. Restate it as a simpler or better-bounded obligation, or raise \
+     the declared bound if the obligation is genuinely this large";
 
 /// Source-level bindings from a solver counterexample, for machine-readable output.
 ///
@@ -15792,6 +15874,66 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
         return AssertionFailKind::Undecided;
     }
     AssertionFailKind::Other
+}
+
+/// Where the defect behind a refusal actually lives.
+///
+/// [`AssertionFailKind`] answers "what did the solver establish"; this answers
+/// "who should change something", and they are not the same question. The
+/// residual bucket `AssertionFailKind::Other` collects refusals with wildly
+/// different owners: a native-versus-z3 cross-check alarm, a vacuous contract,
+/// a missing z3, and a malformed query this compiler emitted. Mapping that
+/// whole bucket onto one action told an agent to restate the obligation or
+/// raise the budget in response to a SOUNDNESS ALARM — the precise move
+/// `docs/language/DIAGNOSTICS_JSON.md` forbids, delivered through the channel
+/// an agent actually reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalLocus {
+    /// The program is wrong. Repair it.
+    Program,
+    /// This compiler or its solver is wrong. Do NOT edit the program: doing so
+    /// destroys the evidence of the disagreement.
+    Compiler,
+    /// The toolchain is missing or broken. Not a program defect and not a
+    /// capability limit; no contract edit can fix it.
+    Environment,
+    /// Beyond what this compiler can decide. Restate, or raise the declared
+    /// budget.
+    Capability,
+}
+
+/// Classify a refusal by who owns the defect.
+///
+/// Named markers are matched before the generic kinds, because the generic
+/// kinds are what lose the distinction.
+pub fn refusal_locus(check: &SolverCheck) -> RefusalLocus {
+    let d = &check.detail;
+    // Soundness alarms. The compiler contradicted itself or its cross-check.
+    if d.contains("ANUBIS_REPLAY_MISMATCH")
+        || d.contains("ANUBIS_NATIVE_DISAGREEMENT")
+        || d.contains("ANUBIS_Z3_ONLY_UNTRUSTED")
+        || d.contains("solver rejected the emitted SMT")
+    {
+        return RefusalLocus::Compiler;
+    }
+    // The solver could not be run at all. Telling anyone to restate a contract
+    // because z3 is not installed is worse than saying nothing.
+    if d.starts_with("z3 unavailable")
+        || d.starts_with("z3 stdin failed")
+        || d.starts_with("z3 execution failed")
+    {
+        return RefusalLocus::Environment;
+    }
+    // A contract whose own premises cannot hold is a program defect, not a
+    // limit of the checker.
+    if d.contains("self-contradictory") {
+        return RefusalLocus::Program;
+    }
+    match classify_assertion_fail(check) {
+        AssertionFailKind::Disproved | AssertionFailKind::WrapRisk => RefusalLocus::Program,
+        AssertionFailKind::ReplayMismatch => RefusalLocus::Compiler,
+        AssertionFailKind::Undecided | AssertionFailKind::Other => RefusalLocus::Capability,
+    }
 }
 
 /// Parse `(_ bvN 64)` or decimal from a wrap-safety obligation fragment.
@@ -29234,6 +29376,136 @@ mod certificate_coverage_tests {
         let c = certificate_coverage(&[check("PASS", NO_OBLIGATIONS_DETAIL, "none")]);
         assert_eq!(c.discharged, 0);
         assert!(c.verdict_line().is_none());
+    }
+
+    #[test]
+    fn the_verdict_never_claims_a_witness_exists_when_none_was_kept() {
+        // The defect this locks out. A plain `anubis check` builds each
+        // refutation, hands it to the checker, and DROPS it: no bundle, no
+        // .drat, nothing a stranger can re-check. The verdict used to say
+        // "carry a re-checkable witness" on exactly that run, upgrading a
+        // discarded in-process check into a durable third-party artifact.
+        let mut c = certificate_coverage(&[check("PASS", PROVED_DETAIL_CERTIFIED, "a")]);
+
+        c.witnesses_retained = false;
+        let line = c.verdict_line().expect("something was discharged");
+        assert!(
+            !line.contains("re-checkable witness"),
+            "must not promise re-checkability when nothing was written: {line}"
+        );
+        assert!(line.contains("not retained"), "and must say so: {line}");
+
+        c.witnesses_retained = true;
+        let kept = c.verdict_line().unwrap();
+        assert!(kept.contains("retained in the evidence bundle"), "{kept}");
+    }
+
+    #[test]
+    fn an_obligation_that_was_never_decided_is_counted_not_hidden() {
+        // `obligation_undecided_is_unsound` deliberately excludes wrap-safety,
+        // so an UNKNOWN wrap-safety check passes the run. Counting only the
+        // discharged ones printed "1/1 obligations" for a run where a second
+        // was never decided at all — the denominator shrinking to fit.
+        let c = certificate_coverage(&[
+            check("PASS", PROVED_DETAIL_CERTIFIED, "ensures:a"),
+            check("UNKNOWN", "solver did not decide", "wrap-safety:b"),
+        ]);
+        assert_eq!(c.certified, 1);
+        assert_eq!(c.discharged, 1);
+        assert_eq!(
+            c.not_discharged, 1,
+            "the undecided obligation must be visible"
+        );
+        let line = c.verdict_line().unwrap();
+        assert!(line.contains("never decided"), "{line}");
+    }
+
+    #[test]
+    fn a_soundness_alarm_is_never_blamed_on_the_program_or_the_budget() {
+        // Each of these used to land in `AssertionFailKind::Other`, which the
+        // machine-readable lane rendered as "restate the obligation or raise
+        // the budget" — telling an agent to weaken a contract in response to
+        // the compiler contradicting itself.
+        for detail in [
+            "ANUBIS_NATIVE_DISAGREEMENT: the native solver proved this obligation but z3 found it satisfiable",
+            "ANUBIS_REPLAY_MISMATCH: model did not re-verify",
+            "ANUBIS_Z3_ONLY_UNTRUSTED: native solver declined and z3 alone is not trusted here",
+            "solver rejected the emitted SMT (z3: `error` stderr ``)",
+        ] {
+            assert_eq!(
+                refusal_locus(&check("FAIL", detail, "ensures:x")),
+                RefusalLocus::Compiler,
+                "detail {detail:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exhausting_the_memory_bound_is_undecided_not_a_compiler_bug() {
+        // Adding `-memory:` to Z3_ARGS made `(error "out of memory")` reachable,
+        // and the generic `(error …)` arm would have reported it as "solver
+        // rejected the emitted SMT" — blaming this compiler for an obligation
+        // that is simply too big, and sending a reader to hunt a bug that is
+        // not there.
+        let c = check("FAIL", UNDECIDED_MEMORY_DETAIL, "ensures:x");
+        assert_eq!(
+            classify_assertion_fail(&c),
+            AssertionFailKind::Undecided,
+            "a resource limit is an undecided obligation"
+        );
+        assert_eq!(refusal_locus(&c), RefusalLocus::Capability);
+        assert!(
+            !UNDECIDED_MEMORY_DETAIL.contains("solver rejected the emitted SMT"),
+            "must not carry the marker that means the compiler malformed the query"
+        );
+        assert!(
+            !UNDECIDED_MEMORY_DETAIL.contains("timeout")
+                && !UNDECIDED_MEMORY_DETAIL.contains("time budget"),
+            "a space bound is not a clock"
+        );
+    }
+
+    #[test]
+    fn a_missing_solver_is_an_environment_problem_not_a_contract_problem() {
+        for detail in [
+            "z3 unavailable: No such file or directory (os error 2)",
+            "z3 stdin failed: broken pipe",
+            "z3 execution failed: killed",
+        ] {
+            assert_eq!(
+                refusal_locus(&check("FAIL", detail, "ensures:x")),
+                RefusalLocus::Environment,
+                "no contract edit can install a solver: {detail:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_vacuous_contract_is_the_programs_fault() {
+        let d = "assumptions are self-contradictory (unsatisfiable), so the postcondition is not \
+                 really established";
+        assert_eq!(
+            refusal_locus(&check("FAIL", d, "ensures:x")),
+            RefusalLocus::Program
+        );
+    }
+
+    #[test]
+    fn an_ordinary_disproof_and_an_undecided_keep_their_old_owners() {
+        assert_eq!(
+            refusal_locus(&SolverCheck {
+                name: "ensures:x".into(),
+                status: "FAIL".into(),
+                detail: DISPROVED_DETAIL_Z3.into(),
+                model: Some("sat\n()\n".into()),
+                smt: String::new(),
+            }),
+            RefusalLocus::Program
+        );
+        assert_eq!(
+            refusal_locus(&check("FAIL", "solver returned `unknown`", "ensures:x")),
+            RefusalLocus::Capability
+        );
     }
 
     #[test]

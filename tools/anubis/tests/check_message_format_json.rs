@@ -275,19 +275,54 @@ fn the_human_verdict_states_coverage_and_names_the_residual() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("check passed"), "{stdout}");
     assert!(
-        stdout.contains("re-checkable witness"),
+        stdout.contains("discharged by a machine-checked refutation"),
         "the verdict must state coverage: {stdout}"
     );
     assert!(
         stdout.contains("bvsdiv"),
         "and name what has none: {stdout}"
     );
+
+    // This assertion is the point of the test, and it replaces one that
+    // required the opposite. `check` without `--evidence` writes NO bundle and
+    // NO certificate: each refutation is verified in process and dropped. The
+    // verdict used to say these obligations "carry a re-checkable witness",
+    // which told a reader an artifact existed that they could re-check. The
+    // test locked that wording in, so it would have defended the overclaim.
+    assert!(
+        !stdout.contains("re-checkable witness"),
+        "a plain check retains nothing, so it must not promise re-checkability: {stdout}"
+    );
+    assert!(
+        stdout.contains("not retained"),
+        "and it must say the refutations were discarded: {stdout}"
+    );
+
     // It must not dress the ratio up as end-to-end verification: the chain from
     // CNF back to source is still the compiler's word.
     let lower = stdout.to_lowercase();
     for overclaim in ["fully verified", "proven correct", "guaranteed"] {
         assert!(!lower.contains(overclaim), "overclaim in verdict: {stdout}");
     }
+}
+
+#[test]
+fn the_verdict_promises_re_checkability_only_when_a_bundle_was_written() {
+    // The positive half: with `--evidence` the refutations really are on disk,
+    // so the verdict may say so. Without it, the previous test asserts it may
+    // not. The two together pin the distinction the wording collapsed.
+    let out = check("covevidence", MIXED, &["--evidence"]);
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("retained in the evidence bundle"),
+        "a bundle was written, so the verdict should say the refutations survive: {stdout}"
+    );
+    assert!(!stdout.contains("not retained"), "{stdout}");
 }
 
 #[test]

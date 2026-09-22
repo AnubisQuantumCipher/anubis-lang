@@ -2801,7 +2801,7 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            let coverage = anubis_compiler::middle::certificate_coverage(&solver_checks);
+            let mut coverage = anubis_compiler::middle::certificate_coverage(&solver_checks);
 
             std::fs::create_dir_all(&out)?;
 
@@ -2823,6 +2823,10 @@ fn main() -> Result<()> {
             // Recorded rather than returned immediately, so the JSON stream below can state this
             // refusal too instead of leaving a consumer to infer it from the exit code.
             let mut verdict_failure: Option<String> = None;
+            // The refutations behind `certified` only outlive the process when a bundle is
+            // written. Without this the verdict claimed a witness a stranger could re-check on a
+            // command that writes no artifact at all.
+            coverage.witnesses_retained = emit_evidence;
             let emit_all = do_emit == "all" || do_emit.contains("ast") || emit_evidence;
             if emit_all {
                 let ast_rep = serde_json::json!({
@@ -2979,9 +2983,17 @@ fn main() -> Result<()> {
                 }
             }
 
-            // The machine-readable verdict, emitted before any early return so that a refusal is
-            // always *stated* in the stream rather than implied by the exit code. `verdict: pass`
-            // appears only when there is nothing to report on any lane.
+            // The machine-readable verdict. It precedes the refusal returns below, so a contract
+            // or effect refusal is STATED in the stream rather than implied by the exit code, and
+            // `verdict: pass` appears only when there is nothing to report on any lane.
+            //
+            // It does NOT precede every early return. A `?` on reading the source, creating the
+            // output directory, building the bundle, or writing the summary exits before this
+            // point and produces empty stdout — the very thing this format calls unacceptable,
+            // because it is indistinguishable from a clean run to anything counting findings.
+            // Those are I/O failures that also print to stderr and exit non-zero, so the exit code
+            // is not silent; the stream is. Narrowing that gap needs the emission moved above the
+            // bundle work, which is a restructure rather than a comment, and it is not done here.
             if json_mode {
                 use anubis_compiler::diagnostics as diag;
                 // Most specific lane first. A parse failure has real spans, so it is reported per

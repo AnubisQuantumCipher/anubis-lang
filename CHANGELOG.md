@@ -26,10 +26,13 @@ see `docs/CLAIMS.md` item 21 and the phased blueprint.
   value is refused rather than treated as `human`. Optional flag, so MINOR under
   `docs/language/SEMVER_1_0_POLICY.md`; the schema is NOT part of the 1.0 frozen surface.
 - Certificate coverage in the ordinary `check` verdict, and as a `coverage` object on the JSON
-  summary. A pass now states how many discharged obligations carry a re-checkable witness and names
-  those resting on the solver's word. No new analysis: the native lane's decision was already being
-  made per obligation and discarded. Coverage may understate itself and may never overstate it — an
-  obligation whose provenance is unrecognised counts as neither.
+  summary. A pass now states how many discharged obligations were settled by a machine-checked
+  refutation and names those resting on the solver's word. No new analysis: the native lane's
+  decision was already being made per obligation and discarded. Coverage may understate itself and
+  may never overstate it — an obligation whose provenance is unrecognised counts as neither, and one
+  that was never decided is counted under `not_discharged` rather than dropped from the denominator.
+  `witnesses_retained` says whether the refutations were actually written anywhere: on a plain
+  `check` they are verified in process and discarded, and only `--evidence` retains them.
 - `[package] edition` in the manifest, with an edition this compiler does not recognise refused
   (`ANUBIS_EDITION_UNKNOWN`) rather than compiled under today's rules. `docs/language/EDITIONS.md`.
 - `anubis evidence-verify` re-derives every published `rup_refutation` by reverse unit propagation,
@@ -45,6 +48,41 @@ see `docs/CLAIMS.md` item 21 and the phased blueprint.
   directions (15 must-block, 8 must-allow cases).
 
 ### Fixed
+- A refusal in the machine-readable lane no longer tells an agent to weaken a contract in response
+  to a soundness alarm. `ANUBIS_NATIVE_DISAGREEMENT`, `ANUBIS_Z3_ONLY_UNTRUSTED`, a malformed query
+  the compiler emitted, and a missing z3 all fell into one residual bucket that rendered as
+  `restate_or_raise_budget`. Who owns a refusal is now decided by `middle::refusal_locus`,
+  separately from what the solver established: a cross-check alarm routes to the compiler, an
+  unavailable solver to the environment, a vacuous contract to the program.
+- The verdict no longer claims a re-checkable witness exists when none was written. A plain `check`
+  builds each refutation, hands it to the checker and drops it; the line said obligations "carry a
+  re-checkable witness" on exactly that run. It now says what happened and whether anything was
+  retained.
+- The `z3-rlimit` budget is no longer stamped on diagnostics the z3 bound did not decide: a
+  native-lane counterexample comes from the CDCL conflict budget, and an unavailable solver ran
+  under no budget at all.
+- `anubis evidence-verify` no longer returns silently when `analysis/proofs.json` is absent or its
+  obligations array is empty. Silence pushed no check, so the report carried no proof row and read
+  as though the proofs had been examined — deleting the refutations was a cheaper forgery than
+  stubbing them, and it reached `overall: PASS`.
+- The native-authoritative gate printed its timeout failure before the disagreement log, so a run
+  with both suppressed the more serious of the two and leaked the tempfile.
+- Three harnesses (`run_runtime_fixtures.sh`, `run_run_failclosed_gate.sh`,
+  `run_stdlib_failclosed_gate.sh`) sat at a 120 s budget equal to the solver's per-query hang guard,
+  re-creating the very inversion the guard's own note says it fixed. `anubis run` and `anubis build`
+  run the same solver pass, so all three now derive their budget from the same place.
+- Solver queries are bounded in SPACE as well as work and time (`-memory:2048`). Found by driving
+  this machine to zero available memory: a single obligation grew z3 to 19.9 GiB of resident memory
+  in 73 seconds. `rlimit` counts solver work and `-T` counts seconds; neither counts bytes, so a
+  fast-allocating query was bounded only by the machine. Raising `-T` from 20 s to 120 s had
+  multiplied the window such a query has to allocate in, from roughly 4 GiB to roughly 26 GiB at the
+  observed rate. A memory cap keeps the determinism property a clock breaks, since the same query
+  allocates the same bytes anywhere. Verified by outcome: the full 937-file corpus re-run under the
+  bound shows zero verdict flips against `main`.
+- Exhausting that memory bound reports as UNDECIDED rather than as a malformed query. z3 answers
+  `(error "out of memory")`, which the existing `(error …)` arm would have reported as "solver
+  rejected the emitted SMT — a malformed obligation is not a proof", blaming the compiler for an
+  obligation that is merely too large.
 - Proof search is bounded by work rather than by wall clock. z3 runs under a deterministic
   `rlimit` and the native solver's clock is off by default, so the same query yields the same
   verdict under any machine load. Measured 2026-09-21: a QF_FP obligation cost 91,502,028 resource

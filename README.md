@@ -107,12 +107,14 @@ cargo build --release -p anubis        # binary at ./target/release/anubis; the 
 
 ### The verdict says what it is worth
 
-A pass states how much of itself rests on a re-checkable witness and how much on
-the solver's word, and names the obligations that have none:
+A pass states how much of itself was discharged by a machine-checked refutation
+and how much rests on the solver's word, and names the obligations that have no
+refutation at all:
 
 ```
 check passed
-certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the solver with none
+certificates: 9/10 obligations discharged by a machine-checked refutation; 1 trusted to the
+solver with none (checked in this run and not retained; --evidence writes them)
   no witness (REG-002, out of the proven fragment): ensures:(bvsge (bvsdiv anb_a anb_b) (_ bv0 64))
 ```
 
@@ -123,10 +125,14 @@ a counterexample, because those call for different repairs. The schema and what 
 deliberately refuses to carry are in
 [`docs/language/DIAGNOSTICS_JSON.md`](docs/language/DIAGNOSTICS_JSON.md).
 
-> **Honest boundary.** A witnessed obligation means a stranger can re-check that
-> *that CNF is unsatisfiable*. Nothing yet binds the CNF to its SMT query or the
-> query to the source, so end-to-end verification is not what the ratio claims.
-> See [`docs/PROOF_CORRESPONDENCE.md`](docs/PROOF_CORRESPONDENCE.md).
+> **Honest boundary, twice over.** First: a plain `check` VERIFIES each
+> refutation in process and then discards it. Nothing is written, so nothing can
+> be re-checked by anyone afterwards — `--evidence` is what retains the
+> certificates, and the verdict says which happened. Second: even a retained
+> refutation only shows that *that CNF is unsatisfiable*. Nothing yet binds the
+> CNF to its SMT query or the query to the source, so end-to-end verification is
+> not what the ratio claims. See
+> [`docs/PROOF_CORRESPONDENCE.md`](docs/PROOF_CORRESPONDENCE.md).
 
 Full install notes: [`docs/INSTALL.md`](docs/INSTALL.md) · then the
 [tutorial](docs/language/TUTORIAL.md).

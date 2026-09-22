@@ -35,8 +35,13 @@
 //!
 //! The document is emitted as JSON Lines by `anubis check --message-format=json`:
 //! one `Diagnostic` per line, then one summary line. That is the shape rustc
-//! and Dafny both use, and it lets a consumer act on the first refusal without
-//! waiting for the run to finish.
+//! and Dafny both use.
+//!
+//! It is NOT yet incremental. The whole document is built and written once the
+//! check has finished, so a consumer cannot act on the first refusal early. The
+//! line-per-refusal shape makes that possible later; it does not deliver it
+//! today, and this note is here because the format's own first draft claimed it
+//! did.
 
 use crate::middle::{classify_assertion_fail, AssertionFailKind, SolverCheck};
 use serde::{Deserialize, Serialize};
@@ -60,6 +65,8 @@ pub enum Family {
     /// undeclared effect, a taint violation. Structured only to the depth the
     /// compiler currently carries, which for now is the code and the message.
     Frontend,
+    /// The solver could not be run at all. Not a property of the program.
+    Environment,
 }
 
 /// What the compiler established. This is the field that must never be folded
@@ -88,6 +95,8 @@ pub enum DefectLocus {
     Program,
     /// The compiler or solver is wrong. Do not edit the program.
     Compiler,
+    /// The toolchain is missing or broken.
+    Environment,
     /// The obligation is beyond what this compiler can decide. Neither is
     /// "wrong"; the obligation needs restating or the budget raising.
     Capability,
@@ -106,6 +115,9 @@ pub enum AgentAction {
     RestateOrRaiseBudget,
     /// Report this. Do not edit the program.
     InvestigateCompiler,
+    /// Repair the toolchain. No edit to the program can affect this, and a
+    /// contract rewritten in response to a missing solver is pure damage.
+    FixEnvironment,
 }
 
 /// One variable assignment from a counterexample.
@@ -273,12 +285,22 @@ pub struct Summary {
 /// obligation carried a machine-checkable refutation or none did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coverage {
+    /// Obligations for which the native lane accepted a machine-checked
+    /// refutation DURING THIS RUN. Not a claim that an artifact exists — see
+    /// `witnesses_retained`.
     pub certified: usize,
     pub trusted_to_solver: usize,
     /// `certified + trusted_to_solver`.
     pub discharged: usize,
     /// The obligations resting on the solver's word, named rather than counted.
     pub uncertified: Vec<String>,
+    /// Checks that reached neither a recognised discharge nor a failure, so the
+    /// denominator above does not silently shrink to fit its numerator.
+    pub not_discharged: usize,
+    /// Whether the refutations behind `certified` were written where a third
+    /// party can re-check them. **False on a plain `check`**, which verifies
+    /// each refutation in process and discards it; `--evidence` retains them.
+    pub witnesses_retained: bool,
 }
 
 impl From<&crate::middle::CertificateCoverage> for Coverage {
@@ -288,6 +310,8 @@ impl From<&crate::middle::CertificateCoverage> for Coverage {
             trusted_to_solver: c.trusted_to_solver,
             discharged: c.discharged,
             uncertified: c.uncertified.clone(),
+            not_discharged: c.not_discharged,
+            witnesses_retained: c.witnesses_retained,
         }
     }
 }
@@ -470,43 +494,89 @@ fn counterexample_of(
 /// inference is inherited rather than repeated: one classifier is a bug that
 /// can be fixed in one place, three are a drift surface.
 fn classify(check: &SolverCheck) -> (String, Family, Status, DefectLocus, AgentAction) {
+    // Who owns the defect is asked of `middle::refusal_locus`, never inferred
+    // from the epistemic kind. `AssertionFailKind::Other` is a residual bucket
+    // holding a native-versus-z3 soundness alarm, a vacuous contract, a missing
+    // z3 and a malformed query side by side; mapping it onto one action told an
+    // agent to weaken a contract in response to a soundness alarm.
+    let (locus, action) = match crate::middle::refusal_locus(check) {
+        crate::middle::RefusalLocus::Program => (DefectLocus::Program, AgentAction::RepairProgram),
+        crate::middle::RefusalLocus::Compiler => {
+            (DefectLocus::Compiler, AgentAction::InvestigateCompiler)
+        }
+        crate::middle::RefusalLocus::Environment => {
+            (DefectLocus::Environment, AgentAction::FixEnvironment)
+        }
+        crate::middle::RefusalLocus::Capability => {
+            (DefectLocus::Capability, AgentAction::RestateOrRaiseBudget)
+        }
+    };
+    let env = locus == DefectLocus::Environment;
     match classify_assertion_fail(check) {
         AssertionFailKind::Disproved => (
             "ANUBIS_ASSERTION_DISPROVED".into(),
             Family::Contract,
             Status::Disproved,
-            DefectLocus::Program,
-            AgentAction::RepairProgram,
+            locus,
+            action,
         ),
         AssertionFailKind::WrapRisk => (
             "ANUBIS_WRAP_RISK".into(),
             Family::WrapSafety,
             Status::Disproved,
-            DefectLocus::Program,
-            AgentAction::RepairProgram,
+            locus,
+            action,
         ),
         AssertionFailKind::Undecided => (
             "ANUBIS_ASSERTION_UNDECIDED".into(),
             Family::Contract,
             Status::Undecided,
-            DefectLocus::Capability,
-            AgentAction::RestateOrRaiseBudget,
+            locus,
+            action,
         ),
         AssertionFailKind::ReplayMismatch => (
             "ANUBIS_REPLAY_MISMATCH".into(),
             Family::SolverTrust,
             Status::ReplayMismatch,
-            DefectLocus::Compiler,
-            AgentAction::InvestigateCompiler,
+            locus,
+            action,
         ),
         AssertionFailKind::Other => (
-            "ANUBIS_ASSERTION_UNPROVEN".into(),
-            Family::Contract,
+            if env {
+                "ANUBIS_SOLVER_UNAVAILABLE".into()
+            } else if locus == DefectLocus::Compiler {
+                "ANUBIS_SOLVER_TRUST".into()
+            } else {
+                "ANUBIS_ASSERTION_UNPROVEN".to_string()
+            },
+            if env {
+                Family::Environment
+            } else if locus == DefectLocus::Compiler {
+                Family::SolverTrust
+            } else {
+                Family::Contract
+            },
             Status::Refused,
-            DefectLocus::Capability,
-            AgentAction::RestateOrRaiseBudget,
+            locus,
+            action,
         ),
     }
+}
+
+/// Whether this obligation was actually decided under z3's resource bound.
+///
+/// False for the native lane, whose verdicts come from the CDCL conflict budget,
+/// and false when the solver never ran.
+fn decided_under_z3_budget(check: &SolverCheck) -> bool {
+    if check.detail == crate::middle::DISPROVED_DETAIL_NATIVE
+        || check.detail == crate::middle::PROVED_DETAIL_CERTIFIED
+    {
+        return false;
+    }
+    !matches!(
+        crate::middle::refusal_locus(check),
+        crate::middle::RefusalLocus::Environment
+    )
 }
 
 /// Convert one failed solver check into a diagnostic.
@@ -544,7 +614,16 @@ pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
         }),
         counterexample,
         location: None,
-        budget: Some(Budget::declared()),
+        // Only where the z3 bound is what the obligation was actually decided
+        // under. A native-lane counterexample was decided by the CDCL conflict
+        // budget and an unavailable solver was decided under no budget at all;
+        // stamping `z3-rlimit: 200000000` on either invents the one number this
+        // struct already refuses to guess at elsewhere.
+        budget: if decided_under_z3_budget(check) {
+            Some(Budget::declared())
+        } else {
+            None
+        },
         suggestions: Vec::new(),
     }
 }
@@ -613,7 +692,7 @@ pub fn render_with_coverage(diagnostics: &[Diagnostic], coverage: Option<Coverag
         }
         .into(),
         counts,
-        coverage: coverage.filter(|c| c.discharged > 0),
+        coverage: coverage.filter(|c| c.discharged > 0 || c.not_discharged > 0),
     };
     out.push_str(&serde_json::to_string(&summary).expect("summary serializes"));
     out.push('\n');
@@ -922,6 +1001,57 @@ mod tests {
     #[test]
     fn a_clean_parse_produces_no_parse_diagnostics() {
         assert!(diagnostics_of_parse_errors("fn main() { }\n", "t.anb").is_empty());
+    }
+
+    #[test]
+    fn a_soundness_alarm_never_tells_an_agent_to_weaken_a_contract() {
+        // This is the defect the format exists to prevent, and it was live in
+        // the format itself: `ANUBIS_NATIVE_DISAGREEMENT` fell into the
+        // residual `Other` bucket and rendered as `restate_or_raise_budget`.
+        // Native-authoritative is ON by default, so the alarm is reachable in
+        // an ordinary build, and the advice was to edit the contract.
+        let mut c = disproved_check();
+        c.model = None;
+        c.detail = "ANUBIS_NATIVE_DISAGREEMENT: the native solver proved this obligation but z3 \
+                    found it satisfiable — cross-check soundness alarm; failing closed"
+            .into();
+        let d = diagnostic_of(&c);
+        assert_eq!(d.defect_locus, DefectLocus::Compiler);
+        assert_eq!(d.agent_action, AgentAction::InvestigateCompiler);
+        assert_eq!(d.family, Family::SolverTrust);
+        assert_ne!(
+            d.agent_action,
+            AgentAction::RestateOrRaiseBudget,
+            "a cross-check alarm must never route to the weakening repair"
+        );
+    }
+
+    #[test]
+    fn a_missing_solver_asks_for_a_toolchain_fix_and_no_budget() {
+        let mut c = disproved_check();
+        c.model = None;
+        c.detail = "z3 unavailable: No such file or directory (os error 2)".into();
+        let d = diagnostic_of(&c);
+        assert_eq!(d.defect_locus, DefectLocus::Environment);
+        assert_eq!(d.agent_action, AgentAction::FixEnvironment);
+        assert_eq!(d.family, Family::Environment);
+        assert_eq!(d.code, "ANUBIS_SOLVER_UNAVAILABLE");
+        assert!(
+            d.budget.is_none(),
+            "an obligation the solver never saw was decided under no budget"
+        );
+    }
+
+    #[test]
+    fn the_native_lane_is_not_stamped_with_the_z3_bound() {
+        // A native counterexample is decided by the CDCL conflict budget, never
+        // by z3's rlimit. Reporting `z3-rlimit: 200000000` for it invents the
+        // one figure this struct refuses to guess elsewhere.
+        let mut c = disproved_check();
+        c.detail = crate::middle::DISPROVED_DETAIL_NATIVE.into();
+        assert!(diagnostic_of(&c).budget.is_none());
+        // The z3 lane still reports the bound it really ran under.
+        assert!(diagnostic_of(&disproved_check()).budget.is_some());
     }
 
     #[test]

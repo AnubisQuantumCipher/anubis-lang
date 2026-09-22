@@ -216,9 +216,16 @@ how much of itself rests on a witness and how much on the solver's word:
 
 ```
 check passed
-certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the solver with none
+certificates: 9/10 obligations discharged by a machine-checked refutation; 1 trusted to the
+solver with none (checked in this run and not retained; --evidence writes them)
   no witness (REG-002, out of the proven fragment): ensures:(bvsge (bvsdiv anb_a anb_b) (_ bv0 64))
 ```
+
+The retention clause is not decoration. A plain `check` builds each refutation,
+hands it to the checker and drops it; only `--evidence` writes something a
+stranger can re-check. The first version of this line said "carry a re-checkable
+witness" on a command that writes no artifact at all, which is the exact shape of
+overclaim §4 warns about, committed in the verdict itself.
 
 The same numbers appear as a `coverage` object on the JSON summary, on a pass as
 well as a failure. The obligations with no witness are **named**, not merely

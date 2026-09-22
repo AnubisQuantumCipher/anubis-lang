@@ -118,12 +118,17 @@ done
 rm -f "$DISAGREE_LOG.cur"
 
 echo "NATIVE_AUTHORITATIVE equivalence over $n files: mismatches=$mismatches disagreements=$disagreements timeouts=$timeouts"
+if [ "$disagreements" -gt 0 ]; then cat "$DISAGREE_LOG"; fi
+rm -f "$DISAGREE_LOG"
+# Timeouts fail the gate, but only AFTER the disagreement detail is printed and
+# the tempfile removed. Exiting here first suppressed the MORE serious of the
+# two failure classes: a run with both a slow file and a real
+# ANUBIS_NATIVE_DISAGREE printed the timeout, never the soundness evidence, and
+# leaked the log. A cheap failure must not shadow an expensive one.
 if [ "$timeouts" -gt 0 ]; then
   echo "NATIVE_AUTHORITATIVE_GATE: FAIL ($timeouts file(s) exceeded the ${CHECK_BUDGET}s per-check budget; an unfinished comparison is not equivalence. Raise ANUBIS_GATE_CHECK_BUDGET_SECS only with a measurement, never to make this green.)"
   exit 1
 fi
-if [ "$disagreements" -gt 0 ]; then cat "$DISAGREE_LOG"; fi
-rm -f "$DISAGREE_LOG"
 # Hollow PASS guard (Seshat R8): zero files compared is not equivalence.
 if ! require_nonempty_corpus "$n" "examples|tests/fixtures/**/*.anb"; then
   echo "NATIVE_AUTHORITATIVE_GATE: FAIL (zero files compared - hollow PASS forbidden)"
