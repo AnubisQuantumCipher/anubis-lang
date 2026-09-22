@@ -3889,8 +3889,16 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     name.clone(),
                     params.iter().map(|(_, ty)| ty.clone()).collect(),
                 );
-                ctx.fn_ret_types
-                    .insert(name.clone(), ret.clone().unwrap_or_default());
+                // Item-21 Family-3 (D10): recover an UNANNOTATED struct-factory's return type so a
+                // `secret`/`tainted` field read off its result (`let a = mk(); a.k`) is looked up,
+                // exactly as a declared `-> S` already is. `infer_returned_struct_name` is
+                // unanimity-gated and struct-literal-only, so it only fills an empty entry and never
+                // overrides a declared `ret`.
+                let ret_ty = ret
+                    .clone()
+                    .or_else(|| infer_returned_struct_name(body))
+                    .unwrap_or_default();
+                ctx.fn_ret_types.insert(name.clone(), ret_ty);
                 if !generics.is_empty() {
                     ctx.fn_generics.insert(name.clone(), generics.clone());
                 }
@@ -22236,7 +22244,36 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
                 }
             }
         }
-        Expr::ArrayLiteral { .. } => Some("list".into()),
+        // Item-21 Family-3 (D8): recover the element struct type of an UNANNOTATED array literal so
+        // a `secret`/`tainted` field read off an element (`let xs = [S {..}]; xs[0].k`) is looked
+        // up — `place_struct_type`'s `Index` arm resolves `list<S>` via `container_element_type`.
+        // Produces the SAME `list<S>` spelling a declared `let xs: list<S>` already does (whose
+        // element-read path already rejects, corpus-wide), so no consumer sees a new shape; emitted
+        // only when the literal is non-empty and EVERY element is the same struct literal, else the
+        // bare `list` it was (fail-open — a mixed or non-struct array infers no element type).
+        Expr::ArrayLiteral { elements } => {
+            let mut elem: Option<&str> = None;
+            let mut unanimous = !elements.is_empty();
+            for e in elements {
+                match e {
+                    Expr::StructLiteral { name, .. } => match elem {
+                        Some(prev) if prev != name.as_str() => {
+                            unanimous = false;
+                            break;
+                        }
+                        _ => elem = Some(name.as_str()),
+                    },
+                    _ => {
+                        unanimous = false;
+                        break;
+                    }
+                }
+            }
+            Some(match (unanimous, elem) {
+                (true, Some(s)) => format!("list<{s}>"),
+                _ => "list".into(),
+            })
+        }
         Expr::MapLiteral { .. } => Some("map".into()),
         Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
         Expr::If { then, else_, .. } => value_branch_type(&[
@@ -23791,6 +23828,46 @@ fn last_expr_of_stmts(stmts: &[Stmt]) -> Option<&Expr> {
         Stmt::ExprStmt(expr) => Some(expr),
         _ => None,
     })
+}
+
+/// Item-21 Family-3 (D10): infer a function's return STRUCT type when it is UNANNOTATED but every
+/// return position constructs the same struct literal. Used only to fill an empty `fn_ret_types`
+/// entry so declared-field-qualifier recovery (`place_struct_type`) reaches a `secret`/`tainted`
+/// field read off a factory result (`let a = mk(); a.k`), exactly as a declared `-> S` already does.
+///
+/// Conservative by construction: it requires at least one return, requires EVERY return (explicit
+/// `return S {..}` and an implicit tail `S {..}`) to be a bare `Expr::StructLiteral`, and requires
+/// them to AGREE on the struct name. Any non-literal return (a `let`-bound value, a call, a
+/// conditional) or a disagreement yields `None` — fail-open, so a polymorphic or non-struct factory
+/// infers nothing and cannot cause an over-rejection. It only ever FILLS an empty entry; a declared
+/// return type is never overridden (the caller consults this only when `ret` is `None`).
+fn infer_returned_struct_name(body: &[Stmt]) -> Option<String> {
+    let mut returns: Vec<Expr> = Vec::new();
+    for st in body {
+        collect_returns_in_stmt(st, &mut returns);
+    }
+    if let Some(tail) = last_expr_of_stmts(body) {
+        // An implicit tail value is a return; an explicit `return ..` tail is already collected
+        // above (its VALUE, unwrapped), so do not also count the `return` call wrapper here.
+        let is_return_call = matches!(tail, Expr::Call { callee, .. } if callee == "return");
+        if !is_return_call {
+            returns.push(tail.clone());
+        }
+    }
+    if returns.is_empty() {
+        return None;
+    }
+    let mut name: Option<String> = None;
+    for r in &returns {
+        let Expr::StructLiteral { name: sname, .. } = r else {
+            return None;
+        };
+        match &name {
+            Some(prev) if prev != sname => return None,
+            _ => name = Some(sname.clone()),
+        }
+    }
+    name
 }
 
 /// Integrity-side tail-value walker over a statement slice, hoisted out of
