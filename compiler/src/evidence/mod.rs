@@ -1932,31 +1932,35 @@ mod pca_tests {
     use super::*;
 
     fn known_place_assignment_leak() -> &'static str {
-        // Was: `let b = Box { f: plain }; b.f = key; let g = b.f; print(g());` — the
-        // `let`-bound-alias place-assignment carrier `docs/CLAIMS.md` item 21 named as a true
-        // accept. That exact shape is now CLOSED (Completion Phase 4, 2026-08-15):
-        // `fn_alias_of_d` gained a `FieldAccess`/`Index` arm resolving through
-        // `field_fn_identities` — the same multi-candidate spine `fn_identities_of` already used
-        // — so `check` now correctly rejects it with `ANUBIS_SECRET_EXFILTRATION`. Using it here
-        // would make this poison fixture a "vacuous rejected input" instead of a live known false
-        // accept, which is exactly the failure mode this test exists to catch.
+        // This poison fixture MUST be a live known false accept — a program `check` accepts while
+        // it violates a flow policy at runtime — or the three tests below become vacuous (they would
+        // exercise PCA's honesty on an input that was never actually a leak). Its specimen is
+        // therefore repointed each time the previously-named shape is closed. Chain of custody:
         //
-        // The DIRECT method-call-syntax variant — calling the stored closure immediately via
-        // `obj.field()` with no intermediate `let` — remains open: `Expr::CallExpr` (parsed
-        // identically to a genuine method call) resolves callee identity only through
-        // `method_returns_param`/`method_sole_return`, never through `field_fn_identities`, so a
-        // field holding a dynamically place-assigned closure is invisible to it regardless of how
-        // well the write side is tracked. Confirmed still-leaking on the post-fix binary and
-        // identical on the pre-fix binary (not a regression from the Phase 4 fix; a separate,
-        // pre-existing residual named in the Phase 4 completion evidence).
+        //   1. `b.f = key; let g = b.f; print(g());` — the `let`-bound-alias place-assignment
+        //      carrier item 21 first named. CLOSED in Completion Phase 4 (2026-08-15): `fn_alias_of_d`
+        //      gained a `FieldAccess`/`Index` arm reading `field_fn_identities`.
+        //   2. `b.f = key; print(b.f());` — the DIRECT `obj.f()` (`Expr::CallExpr`) variant of the
+        //      same carrier. CLOSED in the item-21 Family-2 slice: the `CallExpr` arm of
+        //      `expr_source` now consults `field_fn_identities` on a `field_closures` miss, so the
+        //      secret AND taint return-carrier both reject.
+        //   3. CURRENT — the TAINT sink-argument place-assign carrier below: a sink closure placed
+        //      into a field via `b.f = g` and applied with an untrusted argument (`b.f(input())`).
+        //      The struct-literal twin (`Box { f: g }`) rejects via the `field_closures` lambda
+        //      descent; the place-assigned twin leaks because the non-`Var` `Stmt::Assign` write
+        //      handler retains-out `field_closures` at the path and stores only an identity set,
+        //      which for a lambda carries no user function name for the closure-body descent to
+        //      follow. A genuine taint leak — which also makes this `taint_clean` test use an
+        //      actual integrity false-accept for the first time. Confirmed accepted-and-leaking on
+        //      this binary. When this shape is closed too, repoint to the then-current open residual
+        //      (or restructure these tests to synthesize an accepted claim without a live leak).
         r#"
 struct Box { f: u64 }
-fn plain() -> i64 { return 7; }
-fn key() -> secret<i64> { return 42; }
-fn main() {
-    let b = Box { f: plain };
-    b.f = key;
-    print(b.f());
+fn main() uses(io.read, shell) {
+    let g = |x| shell(x);
+    let b = Box { f: 0 };
+    b.f = g;
+    b.f(input());
 }
 "#
     }

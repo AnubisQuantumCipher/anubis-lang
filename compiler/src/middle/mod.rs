@@ -24643,6 +24643,28 @@ fn expr_source(
                     return Some(s);
                 }
             }
+            // A callable placed via PLACE-ASSIGNMENT (`b.f = key; b.f()`) is recorded in
+            // `field_fn_identities`, NOT `field_closures`: the non-`Var` `Stmt::Assign` write
+            // handler retains-out the stale closure at the path and inserts only the identity set
+            // (`analyze_stmts` place-assign arm, ~mod.rs:10609). The `stored_closure` lookup above
+            // reads `field_closures`, so it misses this shape — the exact `CallExpr` analogue of
+            // the let-bound read gap row 6 closed for `fn_alias_of` (`let g = b.f; g()`). Consult
+            // the identity map the write side DOES populate, with the same fail-closed rule row 6 /
+            // `join_fn_alias` use: ANY lane-dangerous candidate in the set rejects. Read directly
+            // off the binding (like `field_closures` above), so this stays `ctx`-free. Additive: a
+            // non-lane identity (`b.f = plainfn`) is absent from `lane_fns` and still accepts, and
+            // an `Unknown`/empty set or an unresolvable path yields nothing — the prior behaviour.
+            if stored_closure.is_none() {
+                if let Some((root, path)) = flatten_access_path(callee) {
+                    if let Some(FnIdentitySet::Known(names)) =
+                        scope.get(&root).and_then(|b| b.field_fn_identities.get(&path))
+                    {
+                        if let Some(target) = names.iter().find(|n| lane_fns.contains(n.as_str())) {
+                            return Some(format!("return value of `{target}`"));
+                        }
+                    }
+                }
+            }
             if let Expr::FieldAccess { field, .. } = callee.as_ref() {
                 if method_fns.contains(field) {
                     return Some(format!("return value of method `{field}`"));
