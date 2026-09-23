@@ -199,6 +199,18 @@ holds".
     callee.
 
   The result of any other call is opaque (unconstrained).
+- **Values are modeled with their runtime kind.** The checker follows the runtime's coercions
+  exactly:
+  - an integer literal that fits `i64` is an integer;
+  - a literal beyond `i64::MAX` but within `u64` is the integer it wraps to (18446744073709551615 is
+    -1);
+  - anything larger is a float;
+  - assignment does not coerce, so `s = 7` stores an integer even in a float variable;
+  - a struct literal's field takes its declared type (`P { x: 7 }.x` is 7.0 for `x: f64`);
+  - `-0` is the integer 0 (+0.0 when mixed with floats).
+
+  A value whose kind the checker cannot establish is not modeled, and an obligation over it is
+  refused.
 - **Wrap safety is per statement.** Each arithmetic operation's no-wrap check uses the facts that hold
   immediately before its statement. Facts established later (a later assignment, a loop's
   post-state, an in-body invariant) never justify it.

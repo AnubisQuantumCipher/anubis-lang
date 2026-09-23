@@ -1597,6 +1597,26 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-23 (night) — native solver sort safety and float-lane runtime fidelity
+    (`fb57f472`).** The native solver no longer decides an ill-sorted query. It used to lower
+    Float64/String to bit-vectors without their sort, so a wrongly sorted query could be "proved" with
+    a valid certificate for a CNF the query never meant (latent: its only known producer was fixed in
+    d90082d0). A native verdict on a query z3 rejects now fails closed at the primary, vacuity and raw
+    cross-checks, and the evidence
+    bundle publishes a refutation only for obligations the check accepted.
+
+    Review of that change found three pre-existing, compiler-reachable false proofs in the float lane
+    (`-0`, integer writes to float variables in loops, `f64` struct-literal fields), all fixed with
+    runtime witnesses. It also found and fixed an exponential-memory lowering that could abort the
+    compiler on a 241-byte query.
+
+    Matrix at this pin: 265 cases, 237 PASS, 4 silent accepts (c43, c64, c65, `d9_unknown_arg_type`,
+    all pre-existing), 24 wrong-class (valid programs refused, plus c53 and s09/s10).
+
+    **Still OPEN:** the four silent accepts; the valid programs refused UNDECIDED (P-PREC-1); z3-only
+    trust when the native solver declines (REG-002 / A-SOLVER-1); and the residuals in DEFECTS.md
+    "Native solver and float lane".
+
     **UPDATE 2026-09-23 (evening) — direct-call preconditions and path precision (`d90082d0`,
     branch `mission/anubis-1.0`).** A direct call whose `requires` mentions a parameter of a caller
     that has no `requires` of its own is now checked (M-DIRECT-REQ closed). A clause that cannot be
