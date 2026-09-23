@@ -8153,7 +8153,13 @@ fn discharge_carried_call_requires(
                     let closure_pos = effects::higher_order_closure_args(callee);
                     for (i, x) in a.iter().enumerate() {
                         if !closure_pos.contains(&i) {
-                            ok &= carrier_escape(ctx, scope, outer_callee, x, "is passed to a builtin");
+                            ok &= carrier_escape(
+                                ctx,
+                                scope,
+                                outer_callee,
+                                x,
+                                "is passed to a builtin",
+                            );
                         }
                     }
                 } else {
@@ -8483,8 +8489,8 @@ fn retain_arm_call_preconditions(
     let binder_smt: BTreeSet<String> = binder_names.iter().map(|n| smt_var(n)).collect();
     let pushed = ctx.solver_obligations.split_off(obl_mark);
     for o in pushed {
-        let is_precondition = o.name.starts_with("requires@")
-            || o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX);
+        let is_precondition =
+            o.name.starts_with("requires@") || o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX);
         let mentions_binder = o.vars.iter().any(|v| binder_smt.contains(v));
         if is_precondition && !mentions_binder {
             ctx.solver_obligations.push(o);
@@ -8673,9 +8679,11 @@ fn discharge_builtin_hof_requires(
             if args.len() >= 2 =>
         {
             match &args[0] {
-                Expr::ArrayLiteral { elements } => {
-                    elements.iter().cloned().map(|e| (1usize, vec![e])).collect()
-                }
+                Expr::ArrayLiteral { elements } => elements
+                    .iter()
+                    .cloned()
+                    .map(|e| (1usize, vec![e]))
+                    .collect(),
                 // Unknown collection: recorded residual, not handled here.
                 _ => return,
             }
@@ -10835,10 +10843,8 @@ fn analyze_stmts(
                     arm_scopes.push(arm_scope);
                 }
                 *assumptions = snap_asm;
-                let arm_binders: BTreeSet<String> = arms
-                    .iter()
-                    .flat_map(|a| a.pattern.bound_names())
-                    .collect();
+                let arm_binders: BTreeSet<String> =
+                    arms.iter().flat_map(|a| a.pattern.bound_names()).collect();
                 retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
                 merge_taint_over(scope, &refs);
