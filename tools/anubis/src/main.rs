@@ -14,12 +14,14 @@ mod vz_apply;
 mod vz_egress_gateway;
 mod vz_native;
 
+// The signed Keychain run path (codesign + NE bind) exists only on macOS.
+#[cfg(target_os = "macos")]
+use anubis_compiler::backends::run::compile_sign_and_run_source;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
-        compile_native_rust_to_exe, compile_sign_and_run_source, lower_program_to_guest,
-        lower_program_to_rust_with_mono, resolved_run_timeout, run_child_capped,
-        ANUBIS_RUN_CRYPTO_CACHE_TAG,
+        compile_native_rust_to_exe, lower_program_to_guest, lower_program_to_rust_with_mono,
+        resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
@@ -7162,64 +7164,69 @@ fn run_anubis_source_signed(
     args: &[String],
     proof_inputs_env: Option<&str>,
 ) -> Result<RunOutcome> {
-    let (ast, _ws) = load_program_items(input, source)?;
-    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
-    require_program_research_boundary(ProgramArtifactAction::Run, mode, allow_research)?;
-    let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-    std::fs::create_dir_all(out)?;
-    let rs_path = out.join("anubis_run.rs");
-    let exe_path = out.join("anubis_run");
-
-    #[cfg(target_os = "macos")]
-    {
-        eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
-        let rust_source = lower_program_to_rust_with_mono(
-            &ast.items,
-            allow_research,
-            &typed.mono_specializations,
-            &typed.mono_call_sites,
-        )
-        .map_err(|e| anyhow!("{e}"))?;
-        let _ = std::fs::write(&rs_path, &rust_source);
-        if let Some(pin) = proof_inputs_env {
-            // SAFETY: process-local env for child inherit of proof inputs.
-            unsafe { std::env::set_var("ANUBIS_PROOF_INPUTS", pin) };
-        }
-        let output = compile_sign_and_run_source(source, allow_research, args)
-            .map_err(|e| anyhow!("{e}"))?;
-        if proof_inputs_env.is_some() {
-            unsafe { std::env::remove_var("ANUBIS_PROOF_INPUTS") };
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let _ = std::fs::write(
-            out.join("signed_run.json"),
-            serde_json::json!({
-                "signed": true,
-                "keychain_caps": true,
-                "exit_code": output.status.code(),
-                "stdout": stdout,
-                "stderr": stderr,
-            })
-            .to_string(),
-        );
-        Ok(RunOutcome {
-            input: input.to_path_buf(),
-            mode: mode_name(mode).to_string(),
-            source_hash: sha256_bytes(source.as_bytes()),
-            artifact: exe_path,
-            rust_source: rs_path,
-            stdout,
-            stderr,
-            exit_code: output.status.code(),
-            status_success: output.status.success(),
-            contracts_verified: false,
-        })
-    }
+    // Off macOS there is no signed path: `run_anubis_source` loads, checks the research boundary,
+    // typechecks and runs. Delegating here, rather than after a typecheck of our own, avoids analyzing
+    // the whole program twice on every `anubis run` (the result of the first pass was discarded).
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (rs_path, exe_path);
+        std::fs::create_dir_all(out)?;
         run_anubis_source(input, source, out, allow_research, args, proof_inputs_env)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let (ast, _ws) = load_program_items(input, source)?;
+        let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+        require_program_research_boundary(ProgramArtifactAction::Run, mode, allow_research)?;
+        let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+        std::fs::create_dir_all(out)?;
+        let rs_path = out.join("anubis_run.rs");
+        let exe_path = out.join("anubis_run");
+
+        {
+            eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
+            let rust_source = lower_program_to_rust_with_mono(
+                &ast.items,
+                allow_research,
+                &typed.mono_specializations,
+                &typed.mono_call_sites,
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+            let _ = std::fs::write(&rs_path, &rust_source);
+            if let Some(pin) = proof_inputs_env {
+                // SAFETY: process-local env for child inherit of proof inputs.
+                unsafe { std::env::set_var("ANUBIS_PROOF_INPUTS", pin) };
+            }
+            let output = compile_sign_and_run_source(source, allow_research, args)
+                .map_err(|e| anyhow!("{e}"))?;
+            if proof_inputs_env.is_some() {
+                unsafe { std::env::remove_var("ANUBIS_PROOF_INPUTS") };
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let _ = std::fs::write(
+                out.join("signed_run.json"),
+                serde_json::json!({
+                    "signed": true,
+                    "keychain_caps": true,
+                    "exit_code": output.status.code(),
+                    "stdout": stdout,
+                    "stderr": stderr,
+                })
+                .to_string(),
+            );
+            Ok(RunOutcome {
+                input: input.to_path_buf(),
+                mode: mode_name(mode).to_string(),
+                source_hash: sha256_bytes(source.as_bytes()),
+                artifact: exe_path,
+                rust_source: rs_path,
+                stdout,
+                stderr,
+                exit_code: output.status.code(),
+                status_success: output.status.success(),
+                contracts_verified: false,
+            })
+        }
     }
 }
 

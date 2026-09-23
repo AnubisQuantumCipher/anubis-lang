@@ -6162,7 +6162,7 @@ pub fn compile_sign_and_run_source(
     let (mono, sites) = (typed.mono_specializations, typed.mono_call_sites);
     #[cfg(not(target_os = "macos"))]
     {
-        return compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono, &sites);
+        compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono, &sites)
     }
     #[cfg(target_os = "macos")]
     {
