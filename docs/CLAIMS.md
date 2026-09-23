@@ -1583,6 +1583,20 @@ and cannot verify later repairs.
       losses (loop-carried mutation, requires-seeded recursion, call-result initializer) that refuse
       as UNDECIDED rather than proving the valid case.
 
+    **UPDATE 2026-09-23 (later) — original reproduction fully closed (branch `mission/anubis-1.0`).**
+    All eleven leaks of the original item-21 reproduction (16 cases with their controls, matrix
+    `repro` category) now reject: D9, the unannotated formal, by call-site struct-type inference
+    (`fc645f8f`); the taint sink-argument place-assign carrier by recording the closure a field or
+    index write stores (`2047df10`). Further item-21-adjacent closures on the same branch: a violated
+    `requires` inside a statement `match`/`if let` arm (`e99db1d1`), a contracted function applied by
+    a higher-order builtin over a literal collection (`7465aa46`). **Still OPEN** (the expanded matrix,
+    `tests/soundness/matrix/`, is the authority; its `shared` category lists them): a direct call whose
+    `requires` mentions a parameter of a caller without its own `requires` emits no obligation (M-DIRECT-
+    REQ); stale facts across loop-carried and argument-embedded writes; a function value flowing through
+    a local container or out of a callee; a higher-order builtin over a non-literal collection; an
+    unannotated formal whose argument type is not provable (container element). "Original reproduction
+    closed" is a statement about those eleven specimens, not about the item-21 class.
+
 Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
 and cannot verify later repairs.
 [receipt-scope: pre-fix-only; head: 0f407853; authority: none]
