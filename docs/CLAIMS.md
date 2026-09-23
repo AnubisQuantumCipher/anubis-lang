@@ -1597,6 +1597,19 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-23 (late night) — callee values (`1b40f653`).** A call through a function
+    VALUE the checker cannot resolve is no longer read as "calls no function": when a contracted
+    function escapes as a value, such a call is refused UNDECIDED. Early returns are joined into the
+    identity, contract and secret/taint resolvers, and closures called through values or carriers
+    have their bodies checked. This closes the four long-standing silent accepts (c43, c64, c65,
+    `d9_unknown_arg_type`) and 19 more found in review.
+
+    Matrix at this pin: 338 cases, 288 PASS, 23 silent accepts, 27 wrong-class. Every silent accept
+    is an `open_*` case and is also silent on the previous pin: 16 were found by the fourth review
+    round (block-bodied closures, closure arity, methods with early returns, `map` with a closure),
+    7 are older. **Still OPEN:** those 23 (DEFECTS.md "Callee values and return joins"), and the
+    valid programs refused (P-PREC-1, FV-OVERREFUSE).
+
     **UPDATE 2026-09-23 (night) — native solver sort safety and float-lane runtime fidelity
     (`fb57f472`).** The native solver no longer decides an ill-sorted query. It used to lower
     Float64/String to bit-vectors without their sort, so a wrongly sorted query could be "proved" with

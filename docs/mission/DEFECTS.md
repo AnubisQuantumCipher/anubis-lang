@@ -119,7 +119,7 @@ rounds, and every reproducer is a matrix case (`pp_*`, `rv_*`, `rv2_*`, `rv3_*`)
 | P-CERT-COUNT | S4 | c53's output says "certificates: 2/2 obligations discharged by a machine-checked refutation" while one of the two failures was never sent to a solver (`requires-unresolved@`). The same line appears on the pre-change pin | c53 output | **not a defect** (verified): the line counts DISCHARGED obligations only; c53 has 2 PASS obligations, both certified, and its 2 failures are reported by the refusal path |
 
 Still open from before this change and unchanged by it: the shared silent accepts c43, c64, c65 and
-`d9_unknown_arg_type`, and the s09/s10 shadow chains (L-SHADOW-1).
+`d9_unknown_arg_type` (closed later by 1b40f653), and the s09/s10 shadow chains (L-SHADOW-1).
 
 ## Native solver and float lane (fb57f472, 2026-09-23)
 
@@ -146,3 +146,25 @@ Found while fixing P-SORT-1, by three independent review rounds and a four-lens 
 | R-FLOAT-DEF-GATES | S4 | NaN-aware Float64 `=` costs extra gates; 700+ chained float lets reach the native gate ceiling and are decided by z3 alone | review round 1 | open |
 | ENV-OOM | — | review fuzzers exhausted memory twice; the global OOM killer failed the terminal scope and killed the Claude Code session. Heavy jobs now run in memory-capped scopes (`systemd-run --user --scope -p MemoryMax=…`) | journalctl 15:05 / 16:21 | recorded |
 
+
+## Callee values and return joins (1b40f653, 2026-09-23)
+
+A call whose callee is a VALUE the resolver cannot name used to be read as "calls no function", so a
+contracted function reached that way had its `requires` unchecked. Four adversarial review rounds;
+every reproducer is a matrix case (`rv4_*`, `rv5_*`, `rv6_*`, `open_*`, `open_r4_*`).
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| FV-UNKNOWN-CALLEE | S1 | an unresolved callee value was treated as calling no function: `requires` of an escaping contracted function unchecked (c43, c64, c65 and review S1–S10, S14, S15, E7–E17) | matrix | **fixed** 1b40f653: refused UNDECIDED when a contracted function escapes; a formal of the current function is exempt unless assigned or re-bound |
+| FV-EARLY-RETURN | S1 | resolvers read only a function's TAIL value, so an early `return g` was invisible (contract and secret/taint lanes, free functions) | `rv4_*`, `rv5_ifc_*`, `rv6_*` | **fixed** 1b40f653 (`fn_return_values`, union on top of the tail answer) |
+| FV-CLOSURE-BODY | S1 | a closure's body was never checked when the closure was called through a value or passed to a carrier | S14, S15, E14 | **fixed** 1b40f653 for expression-bodied closures (`discharge_applied_closure`) |
+| D9 residual | S1 | a field read through an unknown base ignored the declared field's `secret` qualifier | `d9_unknown_arg_type` | **fixed** 1b40f653; P5 (an unrelated public field of the same name as a secret one is rejected) is the accepted cost |
+| FV-R4-BLOCK | S1 | a block- or match-bodied closure is instantiated in the caller's scope: `substitution_complete` and the capture test use `collect_expr_vars`, which does not descend into binding forms, and `discharge_calls_in_expr` defers blocks | `open_r4_*body*`, `open_r4_block_body_via_list`, `open_r4_shadowed_capture_in_expr_block` | **open** (pre-existing in the old pin) |
+| FV-R4-ARITY | S1 | the runtime does not enforce closure arity once a closure is passed, returned or stored, but the checker prunes closures of another arity and reads an unresolved closure callee as "no function" | `open_r4_arity_*` | **open** (pre-existing) |
+| FV-R4-METHOD | S1 | methods with early returns: `fn_return_values` has no method twin | `open_r4_method_early_return_*` | **open** (pre-existing; a draft had closed it through the tail registry, which regressed loop forwarders) |
+| FV-R4-ALIAS | S1 | secret lane: an early return that goes through a callee local (`return t[0]`) is unresolvable and the tail answer is used | `open_r4_ifc_early_return_callee_local` | **open** (pre-existing) |
+| FV-R4-HOF | S1 | a closure passed to a higher-order builtin (`map([-1], \|x\| f(x))`) is never applied | `open_r4_map_builtin_with_closure` | **open** (pre-existing) |
+| FV-OPEN | S1 | calls through struct fields and map entries (S11, S12), `for` over a formal list (S13, E16), a match-arm expression (S16), whole-struct and string-index secret prints (S17, S18) | `open_*` | **open** (pre-existing) |
+| FV-P7 | S3 | a join's unreachable closure branch is checked without its path condition, so a valid program is DISPROVED (named-function joins behave the same) | `rv6_valid_join_unreachable_closure` | open (fails closed, wrong class) |
+| FV-OVERREFUSE | S3 | valid closures refused UNDECIDED: a block body over a stable capture (P9), a capture of the `for` variable called in the same iteration (P10), a formal wrapped in a list (P3) | `rv6_valid_*`, review P3 | open |
+| FV-MIXED | S4 | c12, c54, c61 move from DISPROVED to MIXED (an extra explicit refusal next to the counterexample) | matrix | open (still rejected) |
