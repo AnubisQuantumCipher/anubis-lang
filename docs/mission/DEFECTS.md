@@ -28,8 +28,8 @@ its question; S3 precision/over-rejection or crash on input; S4 correctness/qual
 
 | id | sev | defect | evidence | state |
 |---|---|---|---|---|
-| F-PARSE-1 | S1 | malformed source (`let x = );`, `let x = 1 + ;`, unexpected tokens in `requires`/`assert`, `"${1+}"`) gets `check` rc 0 and JSON `verdict:"pass"`; the parser makes a placeholder node without an error (frontend/mod.rs:4042) | probes, review 02 | verified (mapper probes) — reconfirm on HEAD |
-| F-PARSE-2 | S3 | no parser recursion-depth limit; deeply nested input stack-overflows the compiler (exit 134) | probes, review 02 | verified (mapper probes) — reconfirm |
+| F-PARSE-1 | S1 | malformed source (`let x = );`, `let x = 1 + ;`, unexpected tokens in `requires`/`assert`, `"${1+}"`) gets `check` rc 0 and JSON `verdict:"pass"`; the parser makes a placeholder node without an error (frontend/mod.rs:4042) | probes, review 02 | **fixed** (parser commit after b7953650): unexpected token and mid-expression EOF are diagnostics; matrix `parse_*` |
+| F-PARSE-2 | S3 | no parser recursion-depth limit; deeply nested input stack-overflows the compiler (exit 134) | probes, review 02 | **fixed** (same commit): `MAX_PARSE_DEPTH`=256 guard on primary/statement/pattern/interpolation paths; 200k-deep input is a diagnostic, rc 1, not SIGABRT |
 | F-SPAN-1 | S3 | most AST nodes carry no source span; only `let` among statements does; solver/semantic diagnostics always `location:None` | review 02 | reported |
 | F-RESOLVE-1 | S1? | only functions are renamed per module; structs/enums/impls share one namespace; `a.b` and `a_b` collide; same-last-segment imports overwrite | review 02 | reported |
 | F-JSON-1 | S1 | F-PARSE-1 violates the DIAGNOSTICS_JSON rule that verdict is `fail` whenever the check failed | review 02 | reported |
@@ -50,8 +50,18 @@ its question; S3 precision/over-rejection or crash on input; S4 correctness/qual
 
 | id | sev | defect | fix |
 |---|---|---|---|
-| H-ETXTBSY | S4 | four test spawn sites bypass `retry_while_exec_busy`, so a fork/exec ETXTBSY race fails the suite under parallel load (three different tests across three runs) | route all four through the retry helper; verifying |
-| M-BUILTIN-HOF | S1 | `map([1,-2], f)` with contracted `f` checks clean (direct-lane builtin HOF emits no obligation); the valid `apply(f,positive)` twin is refused | declarative builtin registry (next) |
+| H-ETXTBSY | S4 | four test spawn sites bypass `retry_while_exec_busy`, so a fork/exec ETXTBSY race fails the suite under parallel load (three different tests across three runs) | **fixed** 76de6d3a (848/0 at 8 threads, 0 ETXTBSY) |
+| M-BUILTIN-HOF | S1 | `map([1,-2], f)` with contracted `f` checks clean (direct-lane builtin HOF emits no obligation); the valid `apply(f,positive)` twin is refused | **fixed** 7465aa46 for apply/call and element-wise HOFs over literal collections; unknown collections and reduce/compose/fold remain open (M-HOF-UNKNOWN) |
+
+## New findings this session
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| M-HOF-UNKNOWN | S1 | a contracted function mapped over a NON-literal collection (`map(xs, f)`), and any function passed to `reduce`/`compose`/`fold`, is still not discharged | 7465aa46 scope note | open |
+| N-LOWER-1 | S3 | array literals nested deeper than ~128 fail native lowering: the generated crate hits rustc's default macro recursion limit expanding nested `vec!` (clean `ANUBIS_UNSUPPORTED_NATIVE_LOWERING`, check passes). Pre-existing; depth 128 runs | probe, same result on pre-change pin | open |
+| L-LINT-1 | S2 | the workspace clippy gate (`-D warnings`) fails on Linux: 7 errors (macOS-only imports/methods unused off macOS, a needless `return` in a non-macOS cfg block, two newer-clippy lints). Invisible because CI is macOS-only (A-CI-1) | cargo clippy on aarch64 Linux, rustc 1.98.1 | fixed in the Linux-lint commit (macOS side not compiled locally; macOS CI is the witness) |
+| L-RUN-2X | S4 | `anubis run` off macOS typechecked the whole program, discarded the result, then `run_anubis_source` typechecked it again: every Linux run did the full analysis twice | tools/anubis/src/main.rs run_anubis_source_signed | fixed in the Linux-lint commit |
+| P-FMT-1 | S5 | 76de6d3a/e99db1d1/7465aa46 were committed without `cargo fmt`; the fmt gate failed from 76de6d3a until b7953650 | cargo fmt --check at c87ad1cf rc 0, at 7465aa46 rc 1 | fixed b7953650 |
 
 ## Notes on trust
 
@@ -64,8 +74,8 @@ HEAD; probe-verified frontend findings must be reconfirmed on the current source
 | id | sev | defect | evidence | state |
 |---|---|---|---|---|
 | M-DIRECT-REQ | S1 | an unmodelable `requires` on a DIRECT or method call is dropped with no obligation and no diagnostic: `discharge_call_requires` -> `carrier_unresolved_clause` returns early when `ctx.carrier_origin` is None (mod.rs:8340-8343), which holds for every non-carrier call; callee still assumes the requires, contracts not runtime-enforced (mod.rs:20082). Unmodelable `ensures` is refused, so this is asymmetric | mod.rs:8340,20082 | to-reproduce |
-| M-MATCH-TRUNC | S1 | statement-level `match`/`if let` arms run `ctx.solver_obligations.truncate(obl_mark)` (mod.rs:10673/10719/10771/10801), discarding direct `requires@` and carrier `requires-unresolved@` obligations, not just arm-body asserts | mod.rs:10673+ | to-reproduce |
-| M-IFLET-EXPR | S1 | in `discharge_calls_in_expr` the `if let` then-branch and lambda bodies are never discharged (mod.rs:9084-9092); a value block re-binding a tracked name is skipped (mod.rs:8926) | mod.rs:9084,8926 | to-reproduce |
+| M-MATCH-TRUNC | S1 | statement-level `match`/`if let` arms run `ctx.solver_obligations.truncate(obl_mark)` (mod.rs:10673/10719/10771/10801), discarding direct `requires@` and carrier `requires-unresolved@` obligations, not just arm-body asserts | mod.rs:10673+ | **fixed** e99db1d1 (reproduced: rc-0 silent accept pre-fix) |
+| M-IFLET-EXPR | S1 | in `discharge_calls_in_expr` the `if let` then-branch and lambda bodies are never discharged (mod.rs:9084-9092); a value block re-binding a tracked name is skipped (mod.rs:8926) | mod.rs:9084,8926 | statement if-let arm **fixed** e99db1d1; expression-position if-let/lambda/value-block parts still to reproduce |
 | M-GLOBAL-SCOPE | S1 | global name resolved before local scope in `fn_identities_of_d` (740), `fn_alias_of_d` (484), `closure_arity_of` (440), `carrier_mentions_function` (8270); only `carrier_identities` looks at scope first | mod.rs cited | reported |
 | M-SINK-ARGS | S1 | a sink builtin stored in a field/container and called `b.f(p, input())` is capability-charged but its arguments never get the taint->sink check (mod.rs:1926-1928, 14212-14240) | mod.rs cited | candidate |
 | M-JOIN-CLOSURE | S1 | branch joins don't merge `closure_lambda`/`field_closures` (mod.rs:7291-7397), so after an `if` a var may still hold the pre-branch closure | mod.rs:7291 | candidate |

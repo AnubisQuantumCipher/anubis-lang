@@ -150,6 +150,24 @@ A contract that can wrap at `i64::MAX` (e.g. an unbounded `int` param's `x + 1 >
 *not* provable; the same contract on a `u32` param *is* provable because the mask keeps `x < 2^32`, so
 `x + 1 < 2^33 < 2^63` cannot wrap.
 
+## Implementation limits (normative)
+
+Limits are part of the language surface: exceeding one is a diagnostic, never a crash, a hang, or a
+silent pass. A limit may be raised in a later release; lowering one is a compatibility change.
+
+| Limit | Value | On exceeding it |
+|---|---|---|
+| Syntactic nesting depth (expressions, statements, patterns, string interpolation, counted together) | 256 | parse error `program is nested too deeply (more than 256 levels)`; `check` exits 1 with `verdict: "fail"` |
+
+History: before 2026-09-23 there was no nesting bound. Nesting between 257 and a few thousand
+levels was accepted; deeper input exhausted the stack and aborted the compiler (`SIGABRT`). The bound
+is a deliberate compatibility change for programs nested more than 256 deep, recorded as matrix case
+`limit_nesting_1000`.
+
+Known lowering limit (not yet a diagnostic at `check`): an array literal nested more than about 128
+levels fails native lowering (`ANUBIS_UNSUPPORTED_NATIVE_LOWERING`) because the generated Rust exceeds
+rustc's default macro recursion limit. Tracked as N-LOWER-1.
+
 ## Lowering & Evidence Contract
 
 - Every `let` / call / control node produces HIR bindings + MIR blocks.
