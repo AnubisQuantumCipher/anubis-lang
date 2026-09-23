@@ -75,13 +75,13 @@ instrument; do not substitute mutable `./target/release/anubis`.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **337/337 PASS**. Live disk inventory **337** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **356/356 PASS**. Live disk inventory **356** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **259/259 PASS** — current live count; the earlier 252/252 and 253/253 receipts remain historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **199 theorems / 16 modules** (comment-stripped; 2026-08-18, after Phase-8 Slice-1 added `Anubis.SecurityLabel`, 37 theorems including a full-record `join_full_idempotent`) |
-| **Native authoritative** | **PASS over 937 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 956 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -870,21 +870,21 @@ never terminates is a check/run divergence of a different kind, and is being cha
     Poison/accept guards: `research_build_requires_explicit_consent_and_vz_before_lowering`,
     `whole_program_callers_share_the_same_mode_derived_research_boundary`, and
     `research_block_local_field_access_and_ordinary_twin_both_lower`. At the deciding technical
-    epoch, compiler library **771/771**, language **259/259**, security **337/337**, stdlib
+    epoch (historical), compiler library **771/771**, language **259/259**, security **337/337**, stdlib
     fail-closed **104/104**, PCA **19/19**, and the independent direct/carrier/dead-branch
     falsification matrix **9/9** passed. The current source-matching disposable-guest receipts are
     recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`.
 
     The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) is retained as
-    a failed receipt, not promoted: security **337/337**, language **259/259**, stdlib fail-closed
-    **104/104**; the current native-authoritative corpus is **937 files**, while that failed receipt
+    a failed receipt (historical), not promoted: security **337/337**, language **259/259**, stdlib fail-closed
+    **104/104**; the current native-authoritative corpus is **956 files**, while that failed receipt
     graded 916 files with 0 mismatches; the measured builtin inventory was
     **213 builtins**, while check/run parity and the documentation-coverage floor were RED. Phase 1
     repairs those observed blockers and must rerun.
 
     The audited source-bound rerun at `out/phase1_host_seal_audited_20260730T154003Z` mechanically
     returned `SEAL_PASS` with 18/18 declared gates on pin `anubis-4dc5a51df23b`. It is **not promoted
-    to a whole-tree seal**: native-authoritative enumerated **937 files** from the live disk while the
+    to a whole-tree seal**: native-authoritative enumerated **937 files** from the live disk (historical) while the
     docs gate enumerated **916 tracked files**. Five untracked `.anb` files explain the difference;
     silently narrowing either side or staging unrelated showcase work is forbidden. The discrepancy
     was a technical HOLD pending trust-surface sign-off.
@@ -1478,10 +1478,10 @@ and cannot verify later repairs.
     |---|---|
     | compiler lib | **766/766** — source-current W1 suite, including recursive malformed-slot tests |
     | tool unit suite | **351/351** plus all integration harnesses green |
-    | security corpus | **337/337** — includes the ten annotated list/map/generic/parameter fixtures |
+    | security corpus | **337/337** (historical) — includes the ten annotated list/map/generic/parameter fixtures |
     | language corpus | **259/259** |
     | stdlib fail-closed | **104/104**, `timed_out=0` |
-    | native-authoritative | current corpus **937 files**; this W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
+    | native-authoritative | current corpus **937 files**; this W1 receipt (historical) graded 916 files, 0 mismatches, 0 disagreements |
     | formal | **162 theorems / 15 modules**, machine-checked; no `sorry`/`admit`/free `axiom` |
     | immutable candidate | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; source-tree verification PASS |
 
@@ -1541,9 +1541,9 @@ and cannot verify later repairs.
 
     Verification (candidate `9f0e46ed…`): struct-field / array-element / map-key / dynamic-index
     write-carriers all REJECT (secret + taint lanes); the literal-construction and direct-`let g =
-    key` controls still REJECT; the clean-value twins still ACCEPT. security **337/337**, language
+    key` controls still REJECT; the clean-value twins still ACCEPT. security **337/337** (historical), language
     **259/259**, stdlib-fail-closed **104/104**, walker completeness PASS, docs-drift 0 drift,
-    phase metrics OK, native-authoritative **937 files / 0 mismatches**, `cargo test --release`
+    phase metrics OK, native-authoritative **937 files / 0 mismatches** (historical), `cargo test --release`
     full workspace **1245/0**. Manual hostile matrix **59/59**. A 3-surface, 54-probe adversarial
     soundness hunt found **0 genuine false accepts and 0 over-rejections** (the single OVER_REJECT
     is an intentional fail-closed over-approximation on a loop-written symbolic index). Regression
@@ -1565,6 +1565,23 @@ and cannot verify later repairs.
       place-assignment write-carrier mechanism (row 6) is closed for the `let`-bound read shape on
       both security lanes; the contract-discharge, sink-direction bare-builtin, and type-precision
       mechanisms remain open. Green board does not invent completeness.
+
+    **UPDATE 2026-09-23 — further mechanisms closed (branch `item21/soundness-slices`).** The prose
+    above is retained as written; these two slices moved specific rows from open to closed, each with
+    a corpus verdict-diff of 0 real-program flips and a dated receipt under `docs/evidence/`:
+    - **Type-precision (rows 8-unannotated / 9 / 10) — CLOSED** (`029d5538`): a `secret`/`tainted`
+      field read off an unannotated array literal or an unannotated struct-factory return is now
+      looked up (element/return struct type recovered to the spelling the annotated form already
+      produces). The unannotated formal (D9) is NOT closed and remains open.
+    - **Contract-discharge (rows 1/2, the guarded-body and local-alias carrier) — CLOSED** (`84296cef`,
+      `middle/contract_carrier.rs`; receipt `docs/evidence/ITEM21_FAMILY1_CONTRACT_CARRIER_2026-09-23.md`).
+      A carried `requires` is discharged wherever the callee can reach it (guard, loop, alias, match,
+      builtin), firing only on known contracted-function identities; unresolvable cases refuse as
+      `ANUBIS_ASSERTION_UNDECIDED`, never silently. **Bounded honestly — still OPEN, NOT closed here:**
+      the direct `obj.f()` sink-direction bare-builtin row; a function value flowing through a local
+      container / pushed into a list / returned out of a callee (the item-10 join lane); and precision
+      losses (loop-carried mutation, requires-seeded recursion, call-result initializer) that refuse
+      as UNDECIDED rather than proving the valid case.
 
 Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
 and cannot verify later repairs.
@@ -1600,10 +1617,10 @@ and cannot verify later repairs.
     |---|---|
     | compiler library | **766/766 PASS** |
     | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
-    | security | **337/337 PASS** |
+    | security | **337/337 PASS** (historical) |
     | language | **259/259 PASS** |
     | stdlib fail-closed | **104/104 PASS** |
-    | native-authoritative | current corpus **937 files**; this W1 receipt graded 916 files, 0 mismatches |
+    | native-authoritative | current corpus **937 files**; this W1 receipt (historical) graded 916 files, 0 mismatches |
     | formal inventory | **162 theorems / 15 modules**, gate PASS |
     | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
 
@@ -2561,7 +2578,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **337/337** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **356/356** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 882 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
