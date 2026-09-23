@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x > 0) { print("f entered with ${x}"); return x; }
+fn safe(x: i64) -> i64 { return x; }
+enum E { A(any) }
+fn main() { let e = E::A(1); match e { E::A(g) => print(f(-1)), } }

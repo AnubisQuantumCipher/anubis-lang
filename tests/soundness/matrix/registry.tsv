@@ -264,3 +264,76 @@ fl_structlit_arg_let_exprfn_call	FLOAT-RUNTIME	slice	REJECT	carrier	REGRESSION 2
 fl_structlit_let_then_exprfn_call	FLOAT-RUNTIME	slice	REJECT	carrier	same, with the field read bound first (let q = P{v: 0}.v; let z = g(q))
 fl_structlit_return_ensures_valid	FLOAT-RUNTIME	slice	ACCEPT	carrier	twin: ensures(result.status == 0) over a returned R { status: 0 } proves via the declared-type fold
 fl_structlit_return_f64_field_ensures	FLOAT-RUNTIME	slice	REJECT	carrier	returned R { v: 7 } with v: f64 is 7.0 at runtime, so result.v / 2 == 3 is false (3.5); must be disproved, never modeled as the integer 7
+rv4_early_return_callee	F1-contract-carrier	slice	REJ|UNRES	carrier	pick has an early `return g` inside an if; the resolver read only the tail `return safe` and checked h(-1) against safe
+rv4_early_return_callee_let	F1-contract-carrier	slice	REJ|UNRES	carrier	same, result used in a let
+rv4_early_return_lambda	F1-contract-carrier	slice	REJ|UNRES	carrier	lambda twin: an early `return |x| f(x)` was invisible, the function was recorded as returning |x| x
+rv4_unknown_callee_no_escape_valid	F1-contract-carrier	slice	ACCEPT	carrier	control: an unknown callee is not refused when no contracted function escapes as a value (f is only called directly)
+d9_public_field_unknown_base_valid	F3-type-precision	slice	ACCEPT	carrier	twin of d9: no declared struct has a secret field k, so a field read through an unknown base carries no secret
+rv5_ifc_taint_early_return_sink	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW 2026-09-23 R1: an early return must join, not drop, the function's identities (taint lane)
+rv5_ifc_secret_early_return_fnvalue	FN-VALUE-JOIN	slice	REJECT	carrier	R2: secret function value through an early return (runtime prints 42)
+rv5_ifc_early_return_print_sink	FN-VALUE-JOIN	slice	REJECT	carrier	R3: early return of the print sink
+rv5_ifc_early_return_lambda_sink	FN-VALUE-JOIN	slice	REJECT	carrier	R4: early-returned closures merged into one closure over the join
+rv5_ifc_method_early_return	FN-VALUE-JOIN	slice	REJECT	carrier	R5: method twin
+rv5_ifc_forwarded_param_early_return	FN-VALUE-JOIN	slice	REJECT	carrier	R6: join mentioning a formal, resolved with the call's arguments (fn_alias_of_d parity)
+rv5_ifc_join_early_fn_then_param	FN-VALUE-JOIN	slice	REJECT	carrier	join (param early, function tail); leaked on OLD too
+rv5_ifc_join_if_else_returns	FN-VALUE-JOIN	slice	REJECT	carrier	explicit if/else returns form one join; leaked on OLD too
+rv5_carrier_callresult_local	FN-VALUE-JOIN	slice	REJECT	carrier	S1: call-result function value passed to a carrier
+rv5_carrier_callresult_inline	FN-VALUE-JOIN	slice	REJECT	carrier	S2
+rv5_carrier_container_callresult	FN-VALUE-JOIN	slice	REJECT	carrier	S3
+rv5_carrier_for_bound	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	S4: for-bound container element passed to a carrier
+rv5_formal_reassigned_forwarded	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	S7: a reassigned formal is not exempt
+rv5_formal_reassigned_called	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	S8
+rv5_formal_reassigned_recursion	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	S9
+rv5_lambda_calls_contracted_method	FN-VALUE-JOIN	slice	REJECT	carrier	S10: an applied closure's body is checked (method call)
+rv5_lambda_expr_join	FN-VALUE-JOIN	slice	REJECT	carrier	S14: closure join in an if-expression
+rv5_lambda_body_literal_violation	FN-VALUE-JOIN	slice	REJECT	carrier	S15: let g = || f(-1); g() — applied closure bodies are checked
+rv5_valid_alias_of_formal	FN-VALUE-JOIN	slice	ACCEPT	carrier	P1 control
+rv5_valid_formal_list_elem	FN-VALUE-JOIN	slice	ACCEPT	carrier	P2 control
+rv5_valid_lambda_join_plus_escape	FN-VALUE-JOIN	slice	ACCEPT	carrier	P4 control
+open_carrier_lambda_join_inline	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): lambda join passed to a carrier
+open_carrier_lambda_join_local	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing)
+open_fieldcall_struct	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): s.h(-1) field call never reaches the callee resolver
+open_fieldcall_map	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing)
+open_for_over_formal_list	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): for g in gs { g(-1) }
+open_match_arm_expr_unchecked	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): expression-bodied match arm call not checked
+open_whole_struct_print_secret	OPEN-IFC	slice	REJECT	carrier	OPEN (pre-existing): printing a whole struct with a secret field
+open_string_index_secret_field	OPEN-IFC	slice	REJECT	carrier	OPEN (pre-existing): s["k"] reads a secret field
+rv6_join_callee_local_capture	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW esc3 E1: a join of return values resolved in the CALLER's scope misread a callee local; values are now rewritten into the caller's terms or Unknown
+rv6_join_param_alias_local	FN-VALUE-JOIN	slice	REJECT	carrier	E2: a callee let-alias of a formal is followed before the formal is substituted
+rv6_ifc_lambda_join_arity	FN-VALUE-JOIN	slice	REJECT	carrier	E3: closures of another arity in the join must not erase the tail closure (secret lane)
+rv6_ifc_join_let_alias	FN-VALUE-JOIN	slice	REJECT	carrier	E4: secret lane, callee let-alias in a returned join
+rv6_ifc_join_match_return	FN-VALUE-JOIN	slice	REJECT	carrier	E5: a match-returned formal is flattened to its arm leaves before substitution (secret lane)
+rv6_taint_join_let_alias	FN-VALUE-JOIN	slice	REJECT	carrier	E6: taint twin of E4
+rv6_lambda_join_arity_contract	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E7: a closure whose arity does not match the call is not the closure this call runs; the callee is unresolved
+rv6_lambda_join_param_swap	FN-VALUE-JOIN	slice	REJECT	carrier	E8: merging closures with swapped parameter names renames completely
+rv6_closure_callee_param_nonvar_arg	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E9: a closure parameter used as a callee with a non-variable argument cannot be substituted; refused
+rv6_closure_callee_param_callresult	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E10: same, argument is a call result
+rv6_closure_capture_shadowed	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E11: a captured name shadowed at the call site is not read there
+rv6_closure_capture_mutated	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E12: a captured variable assigned later is not stable
+rv6_closure_captures_callee_local	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E13: a returned closure's captures are callee locals
+rv6_closure_capture_through_carrier	FN-VALUE-JOIN	slice	REJECT	carrier	E14: a closure argument is applied by the carrier lane (it was minted as an int symbol)
+rv6_formal_shadowed_by_let	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E15: a formal re-bound by let loses the carrier exemption
+rv6_formal_shadowed_by_match	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E17: a formal re-bound by a match pattern loses the exemption
+open_formal_shadowed_by_for	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E16 OPEN: for over a formal list rebinding the formal's name; same class as open_for_over_formal_list (element application of a formal container is not a carrier item)
+rv6_valid_join_unreachable_closure	FN-VALUE-JOIN	slice	ACCEPT	carrier	P7 KNOWN IMPRECISION: a join's unreachable closure branch is checked without its path condition (as named-function joins are), so a valid program is DISPROVED
+rv6_forwarder_bare_loop_rejects	FN-VALUE-JOIN	slice	REJECT	carrier	esc3 G1 regression guard: a loop forwarder with a fall-through 0 keeps forwarder status
+rv6_forwarder_for_loop_rejects	FN-VALUE-JOIN	slice	REJECT	carrier	esc3 G1 regression guard: a loop forwarder with a fall-through 0 keeps forwarder status
+rv6_forwarder_while_loop_rejects	FN-VALUE-JOIN	slice	REJECT	carrier	esc3 G1 regression guard: a loop forwarder with a fall-through 0 keeps forwarder status
+open_r4_arity_closure_to_carrier	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F10 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_arity_closure_in_list	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F11 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_arity_closure_through_identity	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F12 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_method_early_return_contract	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F13 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_method_early_return_secret	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW round 4 F14 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_ifc_early_return_callee_local	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW round 4 F15 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_map_builtin_with_closure	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F16 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_match_body_param_captured_by_caller	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F1 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_block_body_param_captured_by_caller	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F2 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_block_body_param_callee_captured	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F3 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_block_body_capture_shadowed	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F4 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_block_body_capture_shadowed_in_if	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F5 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_block_body_via_list	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F6 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_shadowed_capture_in_expr_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F7 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_arity_join_dropped_leaf	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F8 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+open_r4_arity_join_tail_wider	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F9 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+rv6_valid_block_closure_stable_capture	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 4 P9: valid block-bodied closure over a stable capture (runtime prints 4)
+rv6_valid_closure_captures_for_var	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 4 P10: valid closure capturing the for variable, defined and called in the same iteration

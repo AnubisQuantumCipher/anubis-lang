@@ -1,0 +1,5 @@
+fn getsec() -> secret<i64> { let s: secret<i64> = 42; return s; }
+fn pub1() -> i64 { return 1; }
+struct B { n: i64 }
+impl B { fn pick(self, c) { if c > 5 { return pub1; } return getsec; } }
+fn main() { let b = B { n: 0 }; let h = b.pick(1); print(h()); }

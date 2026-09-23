@@ -363,6 +363,7 @@ impl FnIdentitySet {
     /// against a guessed member of a join is unsound; discharging every member is sound but rejects
     /// ordinary dynamic HOF/container code whose path is not modeled. Singleton-only is the bounded
     /// improvement: exact identities compose, joins and unknown values retain the runtime boundary.
+    #[cfg(test)]
     fn into_singleton(self) -> Option<String> {
         match self {
             Self::Known(candidates) if candidates.len() == 1 => candidates.into_iter().next(),
@@ -559,6 +560,30 @@ fn fn_alias_of_d(
             // closed under chains by `compute_returns_param_fixpoint`). It was populated and simply
             // never consulted for identity. Resolve the ARGUMENT at that position instead, which also
             // makes chains work for free: `id(fwd(key))` resolves by re-entering this arm.
+            // A multi-return function may yield any of its return values: prefer a secret/tainting one.
+            if let Some((pnames, values, alias)) = ctx.fn_return_values.get(callee) {
+                if pnames.len() == args.len() {
+                    let mut first: Option<String> = None;
+                    let mut all_named = true;
+                    for v in values {
+                        match return_value_alias(v, pnames, args, alias, scope, ctx, depth) {
+                            Some(n) => {
+                                if ctx.secret_fns.contains(&n) || ctx.tainting_fns.contains(&n) {
+                                    return Some(n);
+                                }
+                                first.get_or_insert(n);
+                            }
+                            None => all_named = false,
+                        }
+                    }
+                    // Only when EVERY value named a function is the first one the answer; otherwise
+                    // an unresolved value may be the one that matters, so the tail-based paths below
+                    // still get their say.
+                    if all_named && first.is_some() {
+                        return first;
+                    }
+                }
+            }
             if let Some((pnames, j)) = ctx.fn_returns_param.get(callee) {
                 if pnames.len() == args.len() {
                     if let Some(a) = args.get(*j) {
@@ -568,7 +593,15 @@ fn fn_alias_of_d(
                     }
                 }
             }
-            let ret = ctx.fn_sole_return.get(callee).map(|(_, r)| r.clone())?;
+            let (pnames, ret) = ctx.fn_sole_return.get(callee).cloned()?;
+            // The returned expression is the callee's: its parameters mean this call's arguments
+            // (walker parity with `fn_identities_of_d`). A join `if c { pub1 } else { g }` otherwise
+            // resolved `g` in the caller's scope, to nothing, and `pick(getsec, 1)()` leaked.
+            if pnames.len() == args.len() {
+                let sub: BTreeMap<String, Expr> =
+                    pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                return fn_alias_of_d(&substitute_vars(&ret, &sub), scope, ctx, depth + 1);
+            }
             fn_alias_of_d(&ret, scope, ctx, depth + 1)
         }
         Expr::CallExpr { callee, args } => {
@@ -785,6 +818,16 @@ fn fn_identities_of_d(
                     .map(|arg| fn_identities_of_d(arg, scope, ctx, depth + 1))
                     .fold(FnIdentitySet::empty(), FnIdentitySet::union);
             }
+            // A multi-return function may yield ANY of its return values: name their union.
+            if let Some((pnames, values, alias)) = ctx.fn_return_values.get(callee) {
+                if pnames.len() == args.len() {
+                    return values.iter().fold(FnIdentitySet::empty(), |acc, v| {
+                        acc.union(return_value_identities(
+                            v, pnames, args, alias, scope, ctx, depth,
+                        ))
+                    });
+                }
+            }
             if let Some((param_names, index)) = ctx.fn_returns_param.get(callee) {
                 if param_names.len() == args.len() {
                     if let Some(arg) = args.get(*index) {
@@ -897,6 +940,18 @@ fn fn_identities_of_d(
                     if !matches!(&carried, FnIdentitySet::Known(n) if n.is_empty()) {
                         return carried;
                     }
+                }
+                // The returned expression is the CALLEE's: its parameters mean this call's arguments.
+                // A join such as `if c { pub1 } else { g }` (an early `return pub1` plus a tail
+                // `return g`) resolved `g` in the caller's scope, where it names nothing.
+                if param_names.len() == args.len() {
+                    let sub: BTreeMap<String, Expr> = param_names
+                        .iter()
+                        .cloned()
+                        .zip(args.iter().cloned())
+                        .collect();
+                    let inst = substitute_vars(returned, &sub);
+                    return fn_identities_of_d(&inst, scope, ctx, depth + 1);
                 }
                 return fn_identities_of_d(returned, scope, ctx, depth + 1);
             }
@@ -1099,9 +1154,31 @@ fn fn_identities_at_contract_path(
                 depth + 1,
             ))
         }),
-        Expr::Call { callee, .. } => {
-            if let Some((_, returned)) = ctx.fn_sole_return.get(callee) {
-                return fn_identities_at_contract_path(returned, path, scope, ctx, depth + 1);
+        Expr::Call { callee, args } => {
+            // Every value a multi-return function can return, in the caller's terms.
+            if let Some((pnames, values, alias)) = ctx.fn_return_values.get(callee) {
+                if pnames.len() == args.len() {
+                    return values.iter().fold(FnIdentitySet::empty(), |acc, v| {
+                        acc.union(match return_value_in_caller(v, pnames, args, alias, ctx) {
+                            Some(inst) => {
+                                fn_identities_at_contract_path(&inst, path, scope, ctx, depth + 1)
+                            }
+                            None => FnIdentitySet::Unknown,
+                        })
+                    });
+                }
+                return FnIdentitySet::Unknown;
+            }
+            if let Some((pnames, returned)) = ctx.fn_sole_return.get(callee) {
+                // The callee's parameters mean this call's arguments.
+                let returned = if pnames.len() == args.len() {
+                    let sub: BTreeMap<String, Expr> =
+                        pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                    substitute_vars(returned, &sub)
+                } else {
+                    returned.clone()
+                };
+                return fn_identities_at_contract_path(&returned, path, scope, ctx, depth + 1);
             }
             FnIdentitySet::Unknown
         }
@@ -3156,6 +3233,33 @@ struct SemanticContext {
     /// User functions that may end the program instead of returning (they reach `panic`, `exit` or `?`,
     /// directly or through another such function).
     may_exit_fns: BTreeSet<String>,
+    /// Functions whose precondition matters at a call through a VALUE — a `requires`, or calls through
+    /// their own formals (carrier sites) — that are ALSO used as a value somewhere in the program (named
+    /// other than as a direct call). When this set is empty, a callee value the checker cannot resolve
+    /// cannot be one of them, and the call needs no precondition check; when it is not, such a call is
+    /// an explicit unresolved refusal, never a silent accept (see `unresolved_callee_value`).
+    escaping_contracted_fns: BTreeSet<String>,
+    /// The formal parameters of the function being analyzed. A call THROUGH a formal is checked by the
+    /// carrier lane at each outer call site, where the actual argument is known.
+    current_fn_formals: BTreeSet<String>,
+    /// Locals of the function being analyzed that are bound by exactly one `let` and never assigned,
+    /// with their initializer — so "could this argument carry a function" can look through a local
+    /// (`let xs = [f]; app(xs)`) instead of treating every unresolved value as a possible carrier.
+    current_fn_let_inits: BTreeMap<String, Expr>,
+    /// Names assigned anywhere in the function being analyzed (`x = …`, `x.f = …`, `x[i] = …`).
+    current_fn_assigned: BTreeSet<String>,
+    /// Names bound again inside the function being analyzed (`let`, `for`, patterns, lambda params).
+    current_fn_rebound: BTreeSet<String>,
+    /// Names bound in the function being analyzed by anything but `let` (see `non_let_bound_names`).
+    current_fn_nonlet_bound: BTreeSet<String>,
+    /// Every distinct value a multi-return free function can return — early `return`s, one per branch,
+    /// a loop's fall-through value — with its parameters and its let-alias map, so identity and alias
+    /// resolution can name the UNION of what a call may yield. Only ADDS to the tail-based registries
+    /// (`fn_sole_return`, `fn_returns_param`), which name one value and so missed the others.
+    fn_return_values: BTreeMap<String, ReturnValues>,
+    /// Nesting of closure applications being discharged (`discharge_applied_closure`), bounded so a
+    /// closure that applies itself cannot recurse without end.
+    closure_apply_depth: u32,
     /// Interprocedural taint summary: functions whose RETURN value carries INTERNAL taint (from a
     /// `taint_source()`/`tainted<T>` local, or a return of another such function), computed by a
     /// monotone fixpoint pre-pass before per-function analysis. `expr_taint_source`'s `Call` arm
@@ -3497,6 +3601,7 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         effects::compute_fn_effect_rows(&ast.items, &ctx.all_fns, &ctx.fn_declared_effects);
     // Non-exportable sealedness: program summary before per-fn linearity.
     ctx.cap_summary = capability::program_summary(&ast.items);
+    ctx.escaping_contracted_fns = compute_escaping_contracted_fns(&ast.items, &ctx);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -3701,6 +3806,50 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 {
                     let mut tv = Vec::new();
                     tail_values(body, true, &mut tv);
+                    // The returned-CLOSURE registry sees every return (joined, see
+                    // `extend_with_early_returns`); the sole-return / forwarder registries below keep
+                    // their tail-based definition, and multi-return identities are added on top of them
+                    // through `fn_return_values`.
+                    let mut tv_lam = tv.clone();
+                    extend_with_early_returns(body, &mut tv_lam);
+                    // Every distinct return value, for `fn_return_values`.
+                    {
+                        let mut all = tv.clone();
+                        let mut rets = Vec::new();
+                        for st in body {
+                            collect_returns_in_stmt(st, &mut rets);
+                        }
+                        for r in rets {
+                            let key = format!("{r:?}");
+                            if !all.iter().any(|t| format!("{t:?}") == key) {
+                                all.push(r);
+                            }
+                        }
+                        // Flatten each value into its tail leaves (`match c { _ => g }` → `g`), so a
+                        // parameter in an arm is substituted instead of left inside a binding form.
+                        let mut leaves: Vec<Expr> = Vec::new();
+                        for v in &all {
+                            let mut out = Vec::new();
+                            expr_tail_values(v, &mut out);
+                            for l in out {
+                                let key = format!("{l:?}");
+                                if !leaves.iter().any(|t| format!("{t:?}") == key) {
+                                    leaves.push(l);
+                                }
+                            }
+                        }
+                        let all = leaves;
+                        if all.len() > 1 {
+                            ctx.fn_return_values.insert(
+                                name.clone(),
+                                (
+                                    params.iter().map(|(n, _)| n.clone()).collect(),
+                                    all,
+                                    identity_let_alias_map(body),
+                                ),
+                            );
+                        }
+                    }
                     // The candidate returned lambda: the straight-line tail return (above), OR — when the
                     // tail is not a lambda — a `return <lambda>` inside a conditional/block, provided it is
                     // the function's SOLE return (soundness hunt2 [05]: `fn mk(k){ if true { return |x| k;
@@ -3709,8 +3858,16 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     // be one recorded lambda) — a skipped multi-return case under-approximates, never
                     // false-rejects.
                     let cand: Option<Expr> =
-                        if tv.len() == 1 && matches!(&tv[0], Expr::Lambda { .. }) {
-                            Some(tv[0].clone())
+                        if tv_lam.len() == 1 && matches!(&tv_lam[0], Expr::Lambda { .. }) {
+                            Some(tv_lam[0].clone())
+                        } else if let Some(merged) = tv_lam
+                            .first()
+                            .filter(|_| tv_lam.len() == 1)
+                            .and_then(merge_lambda_join)
+                        {
+                            // Several returned closures (early returns): one closure whose body is
+                            // the join of theirs, so every lane that descends into it sees all of them.
+                            Some(merged)
                         } else {
                             let mut rets = Vec::new();
                             for st in body {
@@ -4072,16 +4229,24 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         {
                             let mut tv = Vec::new();
                             tail_values(body, true, &mut tv);
+                            let mut tv_lam = tv.clone();
+                            extend_with_early_returns(body, &mut tv_lam);
                             let mut rets = Vec::new();
                             for st in body {
                                 collect_returns_in_stmt(st, &mut rets);
                             }
                             let pnames: Vec<String> =
                                 params.iter().map(|(n, _)| n.clone()).collect();
-                            let cand: Option<Expr> = if tv.len() == 1
-                                && matches!(&tv[0], Expr::Lambda { .. })
+                            let cand: Option<Expr> = if tv_lam.len() == 1
+                                && matches!(&tv_lam[0], Expr::Lambda { .. })
                             {
-                                Some(tv[0].clone())
+                                Some(tv_lam[0].clone())
+                            } else if let Some(merged) = tv_lam
+                                .first()
+                                .filter(|_| tv_lam.len() == 1)
+                                .and_then(merge_lambda_join)
+                            {
+                                Some(merged)
                             } else if rets.len() == 1 && matches!(&rets[0], Expr::Lambda { .. }) {
                                 Some(rets[0].clone())
                             } else {
@@ -5741,6 +5906,11 @@ fn analyze_function(
     ctx.solver_int_vars.clear();
     ctx.assert_deferred_vars.clear();
     ctx.fn_bound_names = function_bound_names(params, body);
+    ctx.current_fn_formals = params.iter().map(|(n, _)| n.clone()).collect();
+    ctx.current_fn_let_inits = single_let_inits(body);
+    ctx.current_fn_assigned = assigned_roots(body);
+    ctx.current_fn_rebound = function_bound_names(&[], body);
+    ctx.current_fn_nonlet_bound = non_let_bound_names(body);
     ctx.stmt_states.clear();
     ctx.stmt_state_conflicts.clear();
     ctx.solver_float_vars.clear();
@@ -8117,13 +8287,35 @@ fn discharge_carried_call_requires(
     // (a call result, a cross-function value) as a possible function floods ordinary code with
     // refusals; a genuinely untrackable function identity is a documented residual, like the item-10
     // join and the return-out lane.
-    let could_carry = |a: &Expr, s: &FnIdentitySet| -> bool {
-        matches!(s, FnIdentitySet::Known(n) if !n.is_empty()) || carrier_mentions_function(a, ctx)
+    // An argument whose own text names no function may still carry one through a local
+    // (`let xs = [f]; app(xs)`): look through single-assignment locals. Treating EVERY unresolved
+    // value as a possible carrier instead walked so many calls that the carrier budget ran out on
+    // ordinary programs.
+    // An UNKNOWN argument in a position the callee actually calls through (`g(..)`, `gs[0](..)`) may
+    // be a function whose precondition matters once one escapes somewhere: walk it, and the carried
+    // call then refuses rather than assumes. Restricted to called positions so ordinary data
+    // arguments do not flood the carrier budget.
+    let any_escapes = !ctx.escaping_contracted_fns.is_empty();
+    let calls_through = |i: usize| {
+        ctx.fn_applies_param
+            .get(outer_callee)
+            .is_some_and(|v| v.contains(&i))
+            || ctx
+                .fn_applied_param_paths
+                .get(outer_callee)
+                .is_some_and(|m| m.contains_key(&i))
+    };
+    let could_carry = |i: usize, a: &Expr, s: &FnIdentitySet| -> bool {
+        matches!(s, FnIdentitySet::Known(n) if !n.is_empty())
+            || mentions_function_through_locals(a, ctx)
+            || (matches!(s, FnIdentitySet::Unknown) && any_escapes && calls_through(i))
+            || (calls_through(i) && closure_of(ctx, scope, a).is_some())
     };
     if !outer_args
         .iter()
         .zip(idents.iter())
-        .any(|(a, s)| could_carry(a, s))
+        .enumerate()
+        .any(|(i, (a, s))| could_carry(i, a, s))
     {
         return true;
     }
@@ -8207,7 +8399,8 @@ fn discharge_carried_call_requires(
             }).unwrap_or(false));
         let function_valued = !scalar_typed
             && (!matches!(&idents[i], FnIdentitySet::Known(n) if n.is_empty())
-                || carrier_mentions_function(a, ctx));
+                || carrier_mentions_function(a, ctx)
+                || closure_of(ctx, scope, a).is_some());
         if function_valued {
             continue;
         }
@@ -8315,6 +8508,12 @@ fn discharge_carried_call_requires(
             } => {
                 let c = substitute_vars(callee, &sub);
                 let a: Vec<Expr> = cargs.iter().map(|x| substitute_vars(x, &sub)).collect();
+                // A closure argument is checked by applying it: its body's calls, with its parameters
+                // replaced by what the callee passes (`app(|x| f(s))` calling `g(0)`).
+                let closure = closure_resolves(ctx, scope, &c, a.len());
+                if closure {
+                    ok &= discharge_applied_closure(ctx, &asm, scope, &c, &a);
+                }
                 match carrier_identities(&c, scope, ctx) {
                     FnIdentitySet::Known(names) if !names.is_empty() => {
                         for f in names {
@@ -8333,7 +8532,7 @@ fn discharge_carried_call_requires(
                         // Resolved to no function. Only a data access over a value that holds a
                         // function (`S { h: f }.h`) can still be a call of one (review N2).
                         if matches!(c, Expr::FieldAccess { .. } | Expr::Index { .. })
-                            && carrier_mentions_function(&c, ctx)
+                            && mentions_function_through_locals(&c, ctx)
                         {
                             ok = false;
                             carrier_unresolved_expr(
@@ -8345,7 +8544,20 @@ fn discharge_carried_call_requires(
                         }
                     }
                     FnIdentitySet::Unknown => {
-                        // Item 11: an unknown callee is not assumed to be a contracted function.
+                        // An unknown callee may be a function whose precondition matters when one
+                        // escapes as a value somewhere; then it is refused, never assumed safe. A
+                        // formal of the function being analyzed is exempt: the carrier walk at each
+                        // outer call site, where the actual argument is known, checks it.
+                        let own_formal = derives_from_own_formal(&c, ctx);
+                        if !ctx.escaping_contracted_fns.is_empty() && !own_formal && !closure {
+                            ok = false;
+                            carrier_unresolved_expr(
+                                ctx,
+                                outer_callee,
+                                &c,
+                                "is called but cannot be resolved to a function",
+                            );
+                        }
                     }
                 }
             }
@@ -8643,8 +8855,31 @@ fn discharge_resolved_call_requires_d(
             discharge_builtin_hof_requires(ctx, assumptions, scope, name, args);
         }
     }
-    let Some(candidate) = fn_identities_of(callee, scope, ctx).into_singleton() else {
-        return true;
+    // A callee that is a CLOSURE value: its body runs with these arguments, so the calls inside it are
+    // checked here like any other call. The contract lane never looked inside a closure it applied, so
+    // `let g = || f(-1); g()` — and a closure returned by a function — reached `f` unchecked.
+    let closure_ok = discharge_applied_closure(ctx, assumptions, scope, callee, args);
+    let candidate = match fn_identities_of(callee, scope, ctx) {
+        FnIdentitySet::Known(names) if names.len() == 1 => names.into_iter().next().unwrap(),
+        // Several possible callees (a join): whichever runs must have its precondition met, so each
+        // is checked. Discharging only a singleton let `let h = if c { f } else { g }; h(-1)` through.
+        FnIdentitySet::Known(names) if names.len() > 1 => {
+            let mut ok = true;
+            for name in names {
+                ok &= discharge_call_requires(ctx, assumptions, &name, args);
+                ok &= discharge_carried_call_requires(ctx, assumptions, scope, &name, args, depth);
+            }
+            return ok;
+        }
+        // Proven to hold no user function (a builtin, a plain value, or a closure checked above).
+        FnIdentitySet::Known(_) => return closure_ok,
+        FnIdentitySet::Unknown => {
+            // A closure resolved and checked above is not an unresolved callee.
+            if closure_resolves(ctx, scope, callee, args.len()) {
+                return closure_ok;
+            }
+            return unresolved_callee_value(ctx, callee);
+        }
     };
     let direct = discharge_call_requires(ctx, assumptions, &candidate, args);
     let carried = discharge_carried_call_requires(ctx, assumptions, scope, &candidate, args, depth);
@@ -10372,6 +10607,41 @@ fn analyze_stmts(
                     // fixpoint over the return value and is left open deliberately rather than
                     // half-resolved: under-approximating here misses a leak, and pretending to
                     // resolve it would be worse.
+                    // A multi-return function's containers: every returned value, in the caller's
+                    // terms, merged path by path. A value that cannot be rewritten into the caller's
+                    // terms makes every path (and the wildcard) Unknown.
+                    Expr::Call { callee, args } if ctx.fn_return_values.contains_key(callee) => {
+                        let (pnames, values, alias) = ctx.fn_return_values[callee].clone();
+                        let mut identities: BTreeMap<String, FnIdentitySet> = BTreeMap::new();
+                        let mut unresolved = pnames.len() != args.len();
+                        for v in &values {
+                            if unresolved {
+                                break;
+                            }
+                            let Some(inst) = return_value_in_caller(v, &pnames, args, &alias, ctx)
+                            else {
+                                unresolved = true;
+                                break;
+                            };
+                            let mut one = BTreeMap::new();
+                            collect_container_fn_identities(&inst, "", scope, ctx, &mut one);
+                            for (k, ids) in one {
+                                identities
+                                    .entry(k)
+                                    .and_modify(|cur: &mut FnIdentitySet| {
+                                        *cur = cur.clone().union(ids.clone())
+                                    })
+                                    .or_insert(ids);
+                            }
+                        }
+                        if unresolved {
+                            for ids in identities.values_mut() {
+                                *ids = FnIdentitySet::Unknown;
+                            }
+                            identities.insert("*".into(), FnIdentitySet::Unknown);
+                        }
+                        identities
+                    }
                     Expr::Call { callee, args } if ctx.fn_sole_return.contains_key(callee) => {
                         let mut identities = BTreeMap::new();
                         if let Some((pnames, ret)) = ctx.fn_sole_return.get(callee) {
@@ -18576,6 +18846,9 @@ fn mark_over_approx_obligations(ctx: &mut SemanticContext) {
     ctx.over_approx_scan = len;
 }
 
+/// See `SemanticContext::fn_return_values`: (parameters, return values, let-alias map).
+type ReturnValues = (Vec<String>, Vec<Expr>, BTreeMap<String, String>);
+
 /// See `SemanticContext::stmt_states`.
 type StmtState = (Vec<String>, BTreeSet<String>, Vec<String>);
 
@@ -20996,6 +21269,37 @@ fn substitute_vars(e: &Expr, map: &BTreeMap<String, Expr>) -> Expr {
         },
         Expr::Assume(inner) => Expr::Assume(Box::new(substitute_vars(inner, map))),
         Expr::Assert(inner) => Expr::Assert(Box::new(substitute_vars(inner, map))),
+        // A value-position `if` binds nothing, so it is substituted throughout. Without this arm a
+        // parameter inside a returned join (`if c { g } else { pub1 }`) or a closure body stayed free
+        // and resolved in the CALLER's scope.
+        Expr::If {
+            cond,
+            then,
+            else_,
+            span,
+        } => Expr::If {
+            cond: Box::new(substitute_vars(cond, map)),
+            then: Box::new(substitute_vars(then, map)),
+            else_: Box::new(substitute_vars(else_, map)),
+            span: *span,
+        },
+        Expr::CallExpr { callee, args } => Expr::CallExpr {
+            callee: Box::new(substitute_vars(callee, map)),
+            args: args.iter().map(|a| substitute_vars(a, map)).collect(),
+        },
+        // A lambda's own parameters shadow the substitution inside its body.
+        Expr::Lambda { params, body } => {
+            let mut inner = map.clone();
+            for p in params {
+                inner.remove(p);
+            }
+            Expr::Lambda {
+                params: params.clone(),
+                body: Box::new(substitute_vars(body, &inner)),
+            }
+        }
+        // Binding forms (`match`, `if let`, blocks) are left as they are: a name they bind would need
+        // shadow-aware substitution. Callers that need COMPLETE substitution check for free leftovers.
         other => other.clone(),
     }
 }
@@ -23166,6 +23470,424 @@ fn keepable_written_ints(ctx: &SemanticContext, bodies: &[&[Stmt]]) -> BTreeSet<
     }
 }
 
+/// See `SemanticContext::escaping_contracted_fns`. A function "escapes" when its name appears as an
+/// expression (`Expr::Var`) anywhere — an argument, a list element, a struct field, a `let`, a return —
+/// rather than only as the callee of a direct call. Conservative: a local that merely shares the name
+/// also counts, which can only add refusals.
+fn compute_escaping_contracted_fns(items: &[Item], ctx: &SemanticContext) -> BTreeSet<String> {
+    // Only a function with a `requires` can be the danger. A function that merely calls through its
+    // own formals matters only when a contracted function is passed to it, and that function then
+    // appears as a value itself (or is called in a lambda) — so it is already counted. (Counting every
+    // function with formals flooded ordinary higher-order code with refusals.)
+    let relevant = |f: &str| {
+        ctx.fn_contracts
+            .get(f)
+            .is_some_and(|(_, req, _)| !req.is_empty())
+    };
+    let mut out = BTreeSet::new();
+    visit::each_expr_in_items(items, &mut |e| match e {
+        Expr::Var(name) if relevant(name) => {
+            out.insert(name.clone());
+        }
+        // A lambda is itself a function value: one whose body calls a function whose precondition
+        // matters can reach an unresolved call site (`if c { return |x| f(x); } return |x| x;`)
+        // with no value use of `f` anywhere.
+        Expr::Lambda { body, .. } => {
+            visit::each_expr(body, &mut |inner| match inner {
+                Expr::Call { callee, .. } if relevant(callee) => {
+                    out.insert(format!("a closure calling `{callee}`"));
+                }
+                // A method call `recv.m(x)` inside the closure: `m`'s precondition matters too.
+                Expr::CallExpr { callee, .. } => {
+                    if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                        let contracted = ctx
+                            .method_contracts
+                            .get(field)
+                            .is_some_and(|c| c.as_ref().is_none_or(|(_, req, _)| !req.is_empty()));
+                        if contracted {
+                            out.insert(format!("a closure calling method `{field}`"));
+                        }
+                    }
+                }
+                _ => {}
+            });
+        }
+        _ => {}
+    });
+    out
+}
+
+/// See `SemanticContext::current_fn_let_inits`: locals with exactly one `let` (lambda bodies
+/// included, so a shadowing inner `let` disqualifies the name) and no assignment anywhere.
+fn single_let_inits(body: &[Stmt]) -> BTreeMap<String, Expr> {
+    let mut count: BTreeMap<String, usize> = BTreeMap::new();
+    let mut inits: BTreeMap<String, Expr> = BTreeMap::new();
+    let mut assigned: BTreeSet<String> = BTreeSet::new();
+    visit::each_stmt(body, &mut |st, _| match st {
+        Stmt::Let { name, init, .. } => {
+            *count.entry(name.clone()).or_default() += 1;
+            inits.insert(name.clone(), init.clone());
+        }
+        Stmt::Assign { target, .. } => {
+            let mut root = target;
+            while let Expr::FieldAccess { base, .. } | Expr::Index { base, .. } = root {
+                root = base;
+            }
+            if let Expr::Var(v) = root {
+                assigned.insert(v.clone());
+            }
+        }
+        _ => {}
+    });
+    inits.retain(|n, _| count.get(n) == Some(&1) && !assigned.contains(n));
+    inits
+}
+
+/// Root names written by an assignment anywhere in `body` (lambda bodies included).
+fn assigned_roots(body: &[Stmt]) -> BTreeSet<String> {
+    let mut assigned = BTreeSet::new();
+    visit::each_stmt(body, &mut |st, _| {
+        if let Stmt::Assign { target, .. } = st {
+            let mut root = target;
+            while let Expr::FieldAccess { base, .. } | Expr::Index { base, .. } = root {
+                root = base;
+            }
+            if let Expr::Var(v) = root {
+                assigned.insert(v.clone());
+            }
+        }
+    });
+    assigned
+}
+
+/// A return value of a callee, rewritten into the CALLER's terms: a callee let-alias followed to its
+/// root, parameters replaced by the call's arguments. `None` when the value still mentions a callee
+/// local (it cannot be resolved in the caller's scope, where that name means something else).
+fn return_value_in_caller(
+    v: &Expr,
+    pnames: &[String],
+    args: &[Expr],
+    alias: &BTreeMap<String, String>,
+    ctx: &SemanticContext,
+) -> Option<Expr> {
+    let v = match v {
+        Expr::Var(n) => Expr::Var(alias.get(n).cloned().unwrap_or_else(|| n.clone())),
+        other => other.clone(),
+    };
+    if !substitution_complete(&v, pnames) {
+        return None;
+    }
+    let mut free = BTreeSet::new();
+    collect_expr_vars(&v, &mut free);
+    let closed = free.iter().all(|n| {
+        pnames.contains(n)
+            || ctx.fn_params.contains_key(n)
+            || crate::backends::run::is_builtin_name(n)
+            || is_sink(n)
+            || is_egress_sink(n)
+    });
+    if !closed {
+        return None;
+    }
+    let sub: BTreeMap<String, Expr> = pnames.iter().cloned().zip(args.iter().cloned()).collect();
+    Some(substitute_vars(&v, &sub))
+}
+
+/// Identities one return value contributes to a call's result (see `fn_return_values`). A closure is
+/// Unknown here — it is checked when applied (`discharge_applied_closure`) — and so is a value that
+/// mentions a callee local.
+fn return_value_identities(
+    v: &Expr,
+    pnames: &[String],
+    args: &[Expr],
+    alias: &BTreeMap<String, String>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> FnIdentitySet {
+    if matches!(v, Expr::Lambda { .. }) {
+        return FnIdentitySet::Unknown;
+    }
+    match return_value_in_caller(v, pnames, args, alias, ctx) {
+        Some(inst) => fn_identities_of_d(&inst, scope, ctx, depth + 1),
+        None => FnIdentitySet::Unknown,
+    }
+}
+
+/// The single function name one return value names for the alias lanes (secret / taint).
+fn return_value_alias(
+    v: &Expr,
+    pnames: &[String],
+    args: &[Expr],
+    alias: &BTreeMap<String, String>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> Option<String> {
+    let inst = return_value_in_caller(v, pnames, args, alias, ctx)?;
+    fn_alias_of_d(&inst, scope, ctx, depth + 1)
+}
+
+/// Whether `e`, looking through single-assignment locals (bounded depth), names a user function
+/// (`carrier_mentions_function`). `let xs = [f]; app(xs)` carries `f` although `xs` itself names none.
+fn mentions_function_through_locals(e: &Expr, ctx: &SemanticContext) -> bool {
+    let mut frontier = vec![e.clone()];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for _ in 0..4 {
+        let mut next = Vec::new();
+        for x in &frontier {
+            if carrier_mentions_function(x, ctx) {
+                return true;
+            }
+            let mut vars = BTreeSet::new();
+            collect_expr_vars(x, &mut vars);
+            for v in vars {
+                if seen.insert(v.clone()) {
+                    if let Some(init) = ctx.current_fn_let_inits.get(&v) {
+                        next.push(init.clone());
+                    }
+                }
+            }
+        }
+        if next.is_empty() {
+            return false;
+        }
+        frontier = next;
+    }
+    // Depth exhausted without a verdict: treat as a possible carrier (fail closed).
+    true
+}
+
+/// The closure a callee value holds, if `resolve_closure_value` can tell.
+fn closure_of(
+    ctx: &SemanticContext,
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+) -> Option<Box<Expr>> {
+    resolve_closure_value(
+        callee,
+        scope,
+        &ctx.fn_returns_lambda,
+        &ctx.fn_returns_param,
+        &ctx.method_returns_lambda,
+        &ctx.method_returns_param,
+        0,
+    )
+}
+
+/// Whether `callee` resolves to a closure that a call with `nargs` arguments can run. A closure of
+/// another arity is not the one this call runs (that would be a runtime arity error), so the callee
+/// is then NOT resolved: a join of closures of different arities records only the tail one.
+fn closure_resolves(
+    ctx: &SemanticContext,
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+    nargs: usize,
+) -> bool {
+    matches!(
+        closure_of(ctx, scope, callee).as_deref(),
+        Some(Expr::Lambda { params, .. }) if params.len() == nargs
+    )
+}
+
+/// Discharge the calls inside the closure `callee` holds, with its parameters replaced by `args`.
+/// Returns false when something was refused. No closure (or an arity mismatch) is not this function's
+/// concern and returns true; the identity-based checks at the call site still run.
+fn discharge_applied_closure(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+    args: &[Expr],
+) -> bool {
+    let Some(lam) = closure_of(ctx, scope, callee) else {
+        return true;
+    };
+    let Expr::Lambda { params, body } = *lam else {
+        return true;
+    };
+    if params.len() != args.len() {
+        return true;
+    }
+    if ctx.closure_apply_depth >= 8 {
+        // Nested applications beyond the bound: refuse rather than assume the inner calls are safe.
+        let shown = carrier_display(callee);
+        let origin = ctx.current_fn.clone().unwrap_or_default();
+        carrier_unresolved(
+            ctx,
+            &origin,
+            format!("{shown} applies closures nested too deeply to check"),
+            format!("the closures applied through `{shown}` nest too deeply for their calls to be checked"),
+        );
+        return false;
+    }
+    let sub: BTreeMap<String, Expr> = params.iter().cloned().zip(args.iter().cloned()).collect();
+    let inst = substitute_vars(&body, &sub);
+    // Instantiation must be FAITHFUL before its calls are checked here, in the caller's scope:
+    // - every parameter substituted (`substitution_complete`), including a parameter used as a callee;
+    // - no captured variable: a closure captures by value where it is DEFINED, so a free local read
+    //   here means whatever the CALLER binds under that name (a shadow, a later assignment).
+    // When it is not faithful and the body calls anything whose precondition could matter, refuse.
+    let mut free = BTreeSet::new();
+    collect_expr_vars(&inst, &mut free);
+    // A closure DEFINED in this function (a single-`let` local bound to the literal) reads a stable
+    // local (one `let`, never assigned, never re-bound) as the same value here as where it was
+    // defined, so that capture is faithful. Any other free name is not.
+    let defined_here = closure_defined_here(ctx, callee);
+    let captured = free.iter().any(|n| {
+        !ctx.fn_params.contains_key(n)
+            && !crate::backends::run::is_builtin_name(n)
+            && !(defined_here
+                && ctx.current_fn_let_inits.contains_key(n)
+                && !ctx.current_fn_formals.contains(n)
+                && !ctx.current_fn_nonlet_bound.contains(n))
+    });
+    let mut matters = false;
+    visit::each_expr(&inst, &mut |x| match x {
+        Expr::Call { callee, .. } => {
+            let contracted = ctx
+                .fn_contracts
+                .get(callee)
+                .is_some_and(|(_, req, _)| !req.is_empty());
+            let through_value = !ctx.fn_params.contains_key(callee)
+                && !crate::backends::run::is_builtin_name(callee);
+            if contracted || through_value {
+                matters = true;
+            }
+        }
+        Expr::CallExpr { .. } => matters = true,
+        _ => {}
+    });
+    if !matters {
+        return true;
+    }
+    if !substitution_complete(&body, &params) || captured {
+        let shown = carrier_display(callee);
+        let origin = ctx.current_fn.clone().unwrap_or_default();
+        carrier_unresolved(
+            ctx,
+            &origin,
+            format!("{shown} applies a closure whose body cannot be instantiated"),
+            format!(
+                "the closure applied through `{shown}` uses its parameters where the checker cannot \
+                 substitute the arguments, so the calls in its body cannot be checked"
+            ),
+        );
+        return false;
+    }
+    let before = ctx.solver_obligations.len();
+    ctx.closure_apply_depth += 1;
+    let mut asm = assumptions.to_vec();
+    discharge_calls_in_expr(ctx, &mut asm, scope, &inst);
+    ctx.closure_apply_depth -= 1;
+    !ctx.solver_obligations[before..]
+        .iter()
+        .any(|o| o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX))
+}
+
+/// Whether `callee`, looking through single-assignment locals, is a closure literal written in the
+/// function being analyzed (so its free names are this function's).
+fn closure_defined_here(ctx: &SemanticContext, callee: &Expr) -> bool {
+    let mut cur = callee;
+    for _ in 0..8 {
+        match cur {
+            Expr::Lambda { .. } => return true,
+            Expr::Var(v) => match ctx.current_fn_let_inits.get(v) {
+                Some(init) => cur = init,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Names bound in `body` by anything but `let`: `for` variables, patterns, closure parameters.
+fn non_let_bound_names(body: &[Stmt]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    visit::each_stmt(body, &mut |st, _| match st {
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            out.extend(pattern.bound_names());
+        }
+        Stmt::For { var, .. } => {
+            out.insert(var.clone());
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Lambda { params, .. } => out.extend(params.iter().cloned()),
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                out.extend(arm.pattern.bound_names());
+            }
+        }
+        Expr::IfLet { pattern, .. } => out.extend(pattern.bound_names()),
+        _ => {}
+    });
+    out
+}
+
+/// Whether `e` is, looking through single-assignment locals, a formal of the function being analyzed
+/// (`g`, or `h` after `let h = g;`). Calls through such a value are the carrier lane's to check, at
+/// each outer call site where the actual argument is known.
+fn derives_from_own_formal(e: &Expr, ctx: &SemanticContext) -> bool {
+    let mut cur = e;
+    for _ in 0..8 {
+        // An element or field of the formal (`gs[0]`, `s.h`) is covered by the carrier lane's
+        // applied-parameter paths just like the formal itself.
+        while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = cur {
+            cur = base;
+        }
+        let Expr::Var(v) = cur else {
+            return false;
+        };
+        if ctx.current_fn_formals.contains(v) {
+            // A formal the body re-assigns or re-binds (`let g = …`, `for g in …`, a pattern) may no
+            // longer hold the caller's argument, so the carrier walk at the call site (which checks
+            // the ORIGINAL argument) does not cover it.
+            return !ctx.current_fn_assigned.contains(v) && !ctx.current_fn_rebound.contains(v);
+        }
+        match ctx.current_fn_let_inits.get(v) {
+            Some(init) => cur = init,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// A call through a callee VALUE the checker could not resolve to one function. Refused (explicit
+/// UNDECIDED) when a function whose precondition matters escapes somewhere in the program, since the
+/// callee may be that function and its `requires` would otherwise go unchecked — "unknown" never means
+/// "the precondition holds". A call through a formal of the current function is exempt: the carrier
+/// lane checks it at each outer call site.
+fn unresolved_callee_value(ctx: &mut SemanticContext, callee: &Expr) -> bool {
+    if ctx.escaping_contracted_fns.is_empty() {
+        return true;
+    }
+    if derives_from_own_formal(callee, ctx) {
+        return true;
+    }
+    let shown = carrier_display(callee);
+    let candidates = ctx
+        .escaping_contracted_fns
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let origin = ctx.current_fn.clone().unwrap_or_default();
+    carrier_unresolved(
+        ctx,
+        &origin,
+        format!("{shown} is called but cannot be resolved to a function"),
+        format!(
+            "`{shown}` is called in `{origin}` but the checker cannot tell which function it holds; it \
+             may be one whose precondition matters ({candidates}), so that precondition cannot be \
+             checked here"
+        ),
+    );
+    false
+}
+
 /// User functions that may end the program instead of returning: their body reaches `panic`, `exit`
 /// or `?` (early error return), directly or by calling another such function. A fixpoint over direct
 /// calls; conservative (any mention counts).
@@ -23921,6 +24643,160 @@ fn verify_while_invariants_float(
 
 /// Collect every explicit `return X` expression in a statement (recursing into nested blocks), so a
 /// contract's `ensures` can be checked at every return point, not only the tail.
+/// Whether substituting `params` in `e` with `substitute_vars` reaches every occurrence: false when a
+/// parameter appears inside a form it leaves alone (a binding form — `match`, `if let`, a block — or a
+/// call whose callee NAME is the parameter, which is only rewritten for a plain-variable argument).
+fn substitution_complete(e: &Expr, params: &[String]) -> bool {
+    let mentions = |x: &Expr| {
+        let mut vs = BTreeSet::new();
+        collect_expr_vars(x, &mut vs);
+        params.iter().any(|p| vs.contains(p))
+    };
+    match e {
+        Expr::Var(_) | Expr::Literal(_) | Expr::StrLiteral(_) => true,
+        Expr::Binary { lhs, rhs, .. } => {
+            substitution_complete(lhs, params) && substitution_complete(rhs, params)
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => substitution_complete(expr, params),
+        Expr::Call { callee, args } => {
+            !params.contains(callee) && args.iter().all(|a| substitution_complete(a, params))
+        }
+        Expr::CallExpr { callee, args } => {
+            substitution_complete(callee, params)
+                && args.iter().all(|a| substitution_complete(a, params))
+        }
+        Expr::Index { base, index } => {
+            substitution_complete(base, params) && substitution_complete(index, params)
+        }
+        Expr::ArrayLiteral { elements } => {
+            elements.iter().all(|a| substitution_complete(a, params))
+        }
+        Expr::FieldAccess { base, .. } => substitution_complete(base, params),
+        Expr::StructLiteral { fields, .. } => {
+            fields.iter().all(|(_, v)| substitution_complete(v, params))
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            substitution_complete(cond, params)
+                && substitution_complete(then, params)
+                && substitution_complete(else_, params)
+        }
+        Expr::Lambda {
+            params: inner,
+            body,
+        } => {
+            let outer: Vec<String> = params
+                .iter()
+                .filter(|p| !inner.contains(p))
+                .cloned()
+                .collect();
+            substitution_complete(body, &outer)
+        }
+        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+            substitution_complete(inner, params)
+        }
+        other => !mentions(other),
+    }
+}
+
+/// A join built by `extend_with_early_returns` whose every leaf is a closure of the same arity, merged
+/// into ONE closure: the parameters of the first, and a body that is the same join over each closure's
+/// body (its parameters renamed to the first's). Calling it means calling whichever the join picks, so
+/// any lane that descends into a returned closure now checks every one of them.
+fn merge_lambda_join(e: &Expr) -> Option<Expr> {
+    fn leaves<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+        match e {
+            Expr::If {
+                cond, then, else_, ..
+            } if matches!(cond.as_ref(), Expr::Var(v) if v == "anubis return join") => {
+                leaves(then, out);
+                leaves(else_, out);
+            }
+            other => out.push(other),
+        }
+    }
+    let mut ls = Vec::new();
+    leaves(e, &mut ls);
+    if ls.len() < 2 {
+        return None;
+    }
+    // Merge the closures of the TAIL closure's arity (the first leaf; what the tail-only registry
+    // recorded before). A closure of another arity cannot run from a call of this arity.
+    let Expr::Lambda { params: first, .. } = ls[0] else {
+        return None;
+    };
+    let mut bodies = Vec::new();
+    for l in &ls {
+        let Expr::Lambda { params, body } = l else {
+            continue;
+        };
+        if params.len() != first.len() {
+            continue;
+        }
+        if !substitution_complete(body, params) {
+            return None;
+        }
+        let sub: BTreeMap<String, Expr> = params
+            .iter()
+            .cloned()
+            .zip(first.iter().map(|p| Expr::Var(p.clone())))
+            .collect();
+        bodies.push(substitute_vars(body, &sub));
+    }
+    if bodies.len() == 1 {
+        return Some(ls[0].clone());
+    }
+    let mut it = bodies.into_iter().rev();
+    let last = it.next()?;
+    let body = it.fold(last, |acc, b| Expr::If {
+        cond: Box::new(Expr::Var("anubis return join".into())),
+        then: Box::new(b),
+        else_: Box::new(acc),
+        span: Default::default(),
+    });
+    Some(Expr::Lambda {
+        params: first.clone(),
+        body: Box::new(body),
+    })
+}
+
+/// Add every explicit `return` value in `body` to the tail values `tv`, skipping structural duplicates.
+/// `tail_values` sees only the final statement, so `if c { return g; } return safe;` yielded just
+/// `[safe]`, and a resolver that trusts a single tail value recorded the function as returning `safe`
+/// — the call `pick(f, 1)(-1)` was then checked against `safe`'s (empty) precondition instead of `f`'s.
+/// With every return present, divergent returns are never mistaken for one value.
+fn extend_with_early_returns(body: &[Stmt], tv: &mut Vec<Expr>) {
+    let mut rets = Vec::new();
+    for st in body {
+        collect_returns_in_stmt(st, &mut rets);
+    }
+    let explicit = !rets.is_empty();
+    for r in rets {
+        let key = format!("{r:?}");
+        if !tv.iter().any(|t| format!("{t:?}") == key) {
+            tv.push(r);
+        }
+    }
+    // Several distinct values reached through explicit `return`s (an early one, or one in each branch
+    // of a tail `if`) are ONE join, not "no single value": collapse them into a nested `if`
+    // over an opaque condition, which every resolver (contract identities, secret and taint sources)
+    // already reads as the UNION of its branches. Dropping the function instead made the secret and
+    // taint lanes, which have no escape gate, name nothing — `if c { return pub1; } return getsec;`
+    // then printed the secret unchecked.
+    if explicit && tv.len() > 1 {
+        let mut values = std::mem::take(tv).into_iter().rev();
+        let last = values.next().expect("len > 1");
+        let joined = values.fold(last, |acc, v| Expr::If {
+            cond: Box::new(Expr::Var("anubis return join".into())),
+            then: Box::new(v),
+            else_: Box::new(acc),
+            span: Default::default(),
+        });
+        tv.push(joined);
+    }
+}
+
 fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
     match s {
         // A statement's expressions can hide a `return` inside a `match`-arm / `if`/block expression or
@@ -26644,9 +27520,26 @@ fn expr_source(
             struct_fields,
             lane,
         )
-        .or_else(|| {
-            let field_ty = declared_field_type(base, field, scope, struct_fields)?;
-            lane.declared_field_source(field, &field_ty)
+        .or_else(|| match declared_field_type(base, field, scope, struct_fields) {
+            Some(field_ty) => lane.declared_field_source(field, &field_ty),
+            // The base's struct type is UNKNOWN (an untyped formal whose callers pass a container
+            // element, a value the inference cannot prove): which declaration of `field` applies is
+            // not known, so if ANY declared struct gives a field of that name this lane's qualifier,
+            // the read carries it. Reading `s.k` off an unknown `s` used to carry nothing, and
+            // `fn leak(s) { print(s.k) }; leak(xs[0])` printed a `secret` field (D9 residual).
+            None if place_struct_type(base, scope, struct_fields)
+                .is_none_or(|t| !struct_fields.fields.contains_key(t.trim())) =>
+            {
+                struct_fields
+                .fields
+                .values()
+                .filter_map(|fs| fs.get(field))
+                .find_map(|t| lane.declared_field_source(field, t))
+                .map(|src| {
+                    format!("{src} (the base's struct type is unknown, so every declaration counts)")
+                })
+            }
+            None => None,
         }),
         Expr::Cast { expr, .. } => expr_source(
             expr,

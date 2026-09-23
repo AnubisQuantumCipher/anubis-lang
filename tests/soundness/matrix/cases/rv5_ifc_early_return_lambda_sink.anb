@@ -1,0 +1,2 @@
+fn mk(c) { if c > 5 { return |x| 0; } return |x| print(x); }
+fn main() { let s: secret<i64> = 42; let h = mk(1); h(s); }

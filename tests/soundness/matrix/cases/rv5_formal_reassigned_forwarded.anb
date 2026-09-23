@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { print("f entered with ${x}"); return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn inner(h, y) { return h(y); }
+fn outer(g, fs) { g = fs[0]; return inner(g, -1); }
+fn main() { print(outer(safe, [f])); }
