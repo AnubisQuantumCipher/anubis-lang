@@ -9297,6 +9297,11 @@ fn discharge_calls_in_expr(
                         if ctx.reassigned_roots.contains(name) || ctx.shadowed_lets.contains(name) {
                             continue;
                         }
+                        // Resolve `P { f: v }.f` with `f`'s DECLARED type before modeling (see
+                        // `fold_literal_field_reads`): the runtime coerces `P { x: 7 }.x` to 7.0 for an
+                        // `f64` field, which the integer lane must never model as 7.
+                        let init_folded = fold_struct_literal_reads(init, ctx);
+                        let init = &init_folded;
                         let genuinely_float = !is_int_modelable(init, &ctx.solver_int_vars)
                             && is_float_modelable(init, &ctx.solver_float_vars);
                         let genuinely_string = !is_int_modelable(init, &ctx.solver_int_vars)
@@ -10471,6 +10476,12 @@ fn analyze_stmts(
                 // modeled (is_string_modelable has a Binary `+` arm) — via `string_expr_to_smt`'s
                 // `(str.++ …)` on the String-sorted symbols, NOT a bit-vector; this eviction is exactly what
                 // keeps the concat def-fact in the String lane.
+                // Resolve `P { f: v }.f` with `f`'s DECLARED type before modeling (see
+                // `fold_literal_field_reads`): the runtime coerces `P { x: 7 }.x` to 7.0 for an `f64`
+                // field, which the integer lane must never model as the integer 7. Folding replaces the
+                // read by exactly the runtime value, so every use below may see the folded form.
+                let init_folded = fold_struct_literal_reads(init, ctx);
+                let init = &init_folded;
                 let genuinely_string = !is_int_modelable(init, &ctx.solver_int_vars)
                     && is_string_modelable(init, &ctx.solver_string_vars);
                 if genuinely_string {
@@ -16172,7 +16183,18 @@ impl SymbolicEngine {
                 // Faithful complete smt with defs from ir + obligation
                 let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
                 let mut body = String::new();
-                for a in &obl.assumptions {
+                // A FLOAT obligation carries only the facts relevant to its assertion (see
+                // `relevant_assumptions`): every float fact rides every float obligation, so one
+                // unrelated definition outside the native fragment (`y = x * 1e20`, an `fp.mul`) would
+                // otherwise hand every float obligation in the function to z3, uncertified.
+                let is_float_obligation = smt_uses_floats(&obl.assertion)
+                    || obl.assumptions.iter().any(|a| smt_uses_floats(a));
+                let kept: Vec<&String> = if is_float_obligation {
+                    relevant_assumptions(&obl.assumptions, &obl.assertion, &vars)
+                } else {
+                    obl.assumptions.iter().collect()
+                };
+                for a in kept {
                     body.push_str(&format!("(assert {})\n", a));
                 }
                 body.push_str(&format!("(assert (not {}))\n", obl.assertion));
@@ -16222,12 +16244,23 @@ impl SymbolicEngine {
                     || obl.name.starts_with("loop-invariant-base:")
                     || obl.name.starts_with("assert:");
                 if check.status == "PASS" && is_contract && !obl.assumptions.is_empty() {
-                    if let Some(false) = assumptions_satisfiable(obl) {
-                        check.status = "FAIL".into();
-                        check.detail = "vacuous proof: the contract's assumptions are \
-                             self-contradictory (unsatisfiable), so the postcondition is not really \
-                             established — check for a `requires`/`assume` that cannot hold"
-                            .into();
+                    match assumptions_satisfiable(obl) {
+                        Vacuity::Contradictory => {
+                            check.status = "FAIL".into();
+                            check.detail = "vacuous proof: the contract's assumptions are \
+                                 self-contradictory (unsatisfiable), so the postcondition is not really \
+                                 established — check for a `requires`/`assume` that cannot hold"
+                                .into();
+                        }
+                        // A solver alarm is reported AS one (compiler locus): calling it a
+                        // self-contradictory contract would send whoever reads it to edit a correct
+                        // program and destroy the evidence of the disagreement.
+                        Vacuity::SolverAlarm(detail) => {
+                            check.status = "FAIL".into();
+                            check.detail = detail;
+                            check.model = None;
+                        }
+                        Vacuity::Satisfiable | Vacuity::Unknown => {}
                     }
                 }
                 // A contract obligation the solver could not DECIDE (z3 `unknown`, e.g. a per-query
@@ -16334,7 +16367,21 @@ const Z3_ARGS: [&str; 5] = ["-in", "-smt2", "rlimit=200000000", "-T:120", "-memo
 /// Whether a contract obligation's assumptions are jointly satisfiable. `Some(true)`/`Some(false)`
 /// from z3; `None` if the solver did not cleanly decide (in which case the caller keeps the original
 /// verdict rather than fabricating a vacuity failure).
-fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
+/// What the vacuity query established about a contract's premises.
+enum Vacuity {
+    /// Satisfiable: the proof is not vacuous.
+    Satisfiable,
+    /// Unsatisfiable: the premises contradict each other — a program defect (a `requires`/`assume`
+    /// that cannot hold).
+    Contradictory,
+    /// The solvers could not be trusted on this query: z3 rejected it as malformed, or the native
+    /// solver and z3 disagreed. A compiler soundness alarm, never a program defect.
+    SolverAlarm(String),
+    /// Undecided.
+    Unknown,
+}
+
+fn assumptions_satisfiable(obl: &SolverObligation) -> Vacuity {
     let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
     let mut body = String::new();
     // The vacuity check asks "are the CONTRACT PREMISES self-contradictory?" — a branch PATH CONDITION is
@@ -16383,6 +16430,18 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     if native_authoritative() {
         if let Some(nat) = anubis_solver::native_check_sat_authoritative(&smt) {
             if let Some(z) = z3_spawn_first_line(&smt) {
+                if z3_rejected_query(&z) {
+                    eprintln!(
+                        "ANUBIS_NATIVE_DISAGREE(vacuity): native decided, z3 rejected the query \
+                         (`{}`) — failing closed; smt=<<{}>>",
+                        z,
+                        smt.replace('\n', " ")
+                    );
+                    return Vacuity::SolverAlarm(format!(
+                        "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; \
+                         failing closed — a malformed premise query establishes nothing"
+                    ));
+                }
                 let zb = match z.as_str() {
                     "sat" => Some(true),
                     "unsat" => Some(false),
@@ -16391,25 +16450,40 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
                 if let Some(zb) = zb {
                     if zb != nat {
                         eprintln!(
-                            "ANUBIS_NATIVE_DISAGREE(vacuity): native={} z3={} — failing closed \
-                             (reporting the premises as vacuous); smt=<<{}>>",
+                            "ANUBIS_NATIVE_DISAGREE(vacuity): native={} z3={} — failing closed; \
+                             smt=<<{}>>",
                             if nat { "sat" } else { "unsat" },
                             if zb { "sat" } else { "unsat" },
                             smt.replace('\n', " ")
                         );
-                        return Some(false);
+                        return Vacuity::SolverAlarm(
+                            "ANUBIS_NATIVE_DISAGREEMENT: the native solver and z3 disagree on whether \
+                             this contract's premises are satisfiable — cross-check soundness alarm; \
+                             failing closed"
+                                .into(),
+                        );
                     }
                 }
             }
-            return Some(nat);
+            return if nat {
+                Vacuity::Satisfiable
+            } else {
+                Vacuity::Contradictory
+            };
         }
     }
     let ans = z3_spawn_first_line(&smt);
     native_shadow_compare(&smt, ans.as_deref());
     match ans.as_deref() {
-        Some("sat") => Some(true),
-        Some("unsat") => Some(false),
-        _ => None,
+        Some("sat") => Vacuity::Satisfiable,
+        Some("unsat") => Vacuity::Contradictory,
+        // z3 alone, and it rejected the premise query: the contract's "proof" rests on a query nobody
+        // accepted. Fail closed (before, this fell through to "unknown" and the PASS stood).
+        Some(z) if z3_rejected_query(z) => Vacuity::SolverAlarm(format!(
+            "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; failing \
+             closed — a malformed premise query establishes nothing"
+        )),
+        _ => Vacuity::Unknown,
     }
 }
 
@@ -16443,6 +16517,25 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
                 if let Some(z) = z3_spawn_first_line(&smt) {
+                    if z3_rejected_query(&z) {
+                        eprintln!(
+                            "ANUBIS_NATIVE_DISAGREE(primary): native=unsat z3 rejected the query \
+                             (`{}`) — failing closed; smt=<<{}>>",
+                            z,
+                            smt.replace('\n', " ")
+                        );
+                        return SolverCheck {
+                            name: obligation.name.clone(),
+                            status: "FAIL".into(),
+                            detail: format!(
+                                "solver rejected the emitted SMT (z3: `{z}`) although the native \
+                                 solver decided it; failing closed — a certificate for a malformed \
+                                 obligation is not a proof"
+                            ),
+                            model: None,
+                            smt,
+                        };
+                    }
                     if z == "sat" {
                         eprintln!(
                             "ANUBIS_NATIVE_DISAGREE(primary): native=unsat z3=sat — failing \
@@ -16592,7 +16685,10 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let first = stdout.lines().next().unwrap_or("").trim();
+    // The ANSWER line, not merely the first: an `(error …)` before the verdict is a rejection even when
+    // a warning precedes it or z3 answers what was left of the query (see `z3_answer_line`).
+    let answer = z3_answer_line(&stdout).unwrap_or_default();
+    let first = answer.as_str();
     // Shadow the PRIMARY obligation stream too (not just the replay/raw queries): under
     // `ANUBIS_NATIVE_SHADOW=1` the native verdict is compared against z3's right here, where the
     // real proof/counterexample decisions are made. z3's verdict below is returned unchanged.
@@ -16641,7 +16737,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         // would report it as "the SMT we emitted is malformed" — blaming this compiler for an
         // obligation that is merely too big, and sending whoever reads it to hunt a bug that does
         // not exist. It is UNDECIDED: fail closed, and name the bound that actually bit.
-        other if other.contains("out of memory") || stderr.contains("out of memory") => {
+        other if other == Z3_OUT_OF_MEMORY || stderr.contains("out of memory") => {
             SolverCheck {
                 name: obligation.name.clone(),
                 status: "FAIL".into(),
@@ -16755,6 +16851,94 @@ fn native_authoritative() -> bool {
     }
 }
 
+/// The assumptions RELEVANT to `assertion`, in two sound steps:
+///
+/// 1. Connectivity: keep the facts connected to the assertion through shared declared variables,
+///    transitively. A dropped fact shares no variable with anything kept, so it cannot constrain the
+///    assertion; the only thing it could still do is be unsatisfiable on its own, which would make the
+///    full obligation VACUOUSLY true — and the vacuity check (which keeps every premise) still sees that.
+/// 2. Dangling definitions: drop a kept DEFINITION `(= v t)` whose variable `v` occurs nowhere else
+///    (not in the assertion, not in any other kept fact, not in `t`). `∃v. v = t` holds for every
+///    value of `t`'s variables (every term is total), so removing it preserves satisfiability exactly.
+///    Repeated until nothing changes, so a chain of unused definitions goes too.
+///
+/// Connectivity uses DECLARED variables only: the SMT scraper also returns operator tokens (`RNE`,
+/// `to_fp`), which would otherwise link every float fact to every other.
+fn relevant_assumptions<'a>(
+    assumptions: &'a [String],
+    assertion: &str,
+    declared: &BTreeSet<String>,
+) -> Vec<&'a String> {
+    let vars_of = |smt: &str| -> BTreeSet<String> {
+        let mut vs = BTreeSet::new();
+        collect_vars_from_smt(smt, &mut vs);
+        vs.retain(|v| declared.contains(v));
+        vs
+    };
+    let fact_vars: Vec<BTreeSet<String>> = assumptions.iter().map(|a| vars_of(a)).collect();
+    let mut reached = vars_of(assertion);
+    let mut keep = vec![false; assumptions.len()];
+    loop {
+        let mut grew = false;
+        for (i, vs) in fact_vars.iter().enumerate() {
+            if !keep[i] && !vs.is_disjoint(&reached) {
+                keep[i] = true;
+                reached.extend(vs.iter().cloned());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // Step 2: drop dangling definitions, to a fixpoint.
+    let assertion_vars = vars_of(assertion);
+    let definition_of = |a: &str| -> Option<String> {
+        let rest = a.strip_prefix("(= ")?;
+        let (v, t) = rest.split_once(char::is_whitespace)?;
+        (declared.contains(v) && !vars_of(t).contains(v)).then(|| v.to_string())
+    };
+    loop {
+        let mut dropped = false;
+        for i in 0..assumptions.len() {
+            if !keep[i] {
+                continue;
+            }
+            let Some(v) = definition_of(&assumptions[i]) else {
+                continue;
+            };
+            let used_elsewhere = assertion_vars.contains(&v)
+                || (0..assumptions.len()).any(|j| j != i && keep[j] && fact_vars[j].contains(&v));
+            if !used_elsewhere {
+                keep[i] = false;
+                dropped = true;
+            }
+        }
+        if !dropped {
+            break;
+        }
+    }
+    assumptions
+        .iter()
+        .zip(keep)
+        .filter_map(|(a, k)| k.then_some(a))
+        .collect()
+}
+
+/// Whether z3's first output line says it REJECTED the query as malformed (a sort error, an undeclared
+/// symbol) rather than answering it. Running out of memory is a resource limit, not a malformed query.
+/// A native verdict on a query z3 rejects is a verdict on an encoding that does not mean what the SMT
+/// says (P-SORT-1), so every native-authoritative cross-check fails closed on it.
+fn z3_rejected_query(first_line: &str) -> bool {
+    // EXACT match for the resource limit: z3 copies symbols and string-literal arguments into its
+    // sort-error messages, so a substring test let a rejection that merely MENTIONS "out of memory"
+    // (a string literal in the query) pass as a resource limit — and the native verdict stand.
+    first_line.starts_with("(error") && first_line != Z3_OUT_OF_MEMORY
+}
+
+/// z3's whole answer when `-memory:` bounds it (observed with z3 4.16, exit status 101).
+const Z3_OUT_OF_MEMORY: &str = "(error \"out of memory\")";
+
 /// Bare z3 spawn returning the trimmed first line of stdout (`sat`/`unsat`/`unknown`/`(error…`), or
 /// `None` if z3 could not be spawned or read. No native-solver logic here — this is both the z3 leg
 /// of `z3_check_sat_raw` and the cross-check partner inside the native-authoritative paths.
@@ -16766,12 +16950,30 @@ fn z3_spawn_first_line(smt: &str) -> Option<String> {
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
-    child.stdin.as_mut()?.write_all(smt.as_bytes()).ok()?;
+    // A write error is NOT "z3 unavailable": z3 may have rejected the query and exited before reading
+    // all of it (a query larger than the pipe buffer then gets EPIPE). Its answer is still on stdout,
+    // so read it; treating the write error as "no z3" would let a native verdict stand unchecked.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(smt.as_bytes());
+    }
     let output = child.wait_with_output().ok()?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .map(|l| l.trim().to_string())
+    z3_answer_line(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The line of z3's output that answers the query: an `(error …)` raised BEFORE the verdict (the query
+/// was rejected, even if z3 went on to answer what was left of it), else the verdict itself
+/// (`sat`/`unsat`/`unknown`). Blank and informational lines (`WARNING: …`) are skipped rather than taken
+/// as the answer. An `(error …)` AFTER the verdict belongs to a later command (`get-model` after `unsat`
+/// always errors) and is ignored.
+fn z3_answer_line(stdout: &str) -> Option<String> {
+    let mut first = None;
+    for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        first.get_or_insert_with(|| line.to_string());
+        if line.starts_with("(error") || matches!(line, "sat" | "unsat" | "unknown") {
+            return Some(line.to_string());
+        }
+    }
+    first
 }
 
 /// Runs `smt` and returns the first verdict line (`sat`/`unsat`/`unknown`), or `None` if no solver
@@ -16787,6 +16989,16 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
         if let Some(nat) = anubis_solver::native_check_sat_authoritative(smt) {
             let nat_str = if nat { "sat" } else { "unsat" };
             if let Some(z) = z3_spawn_first_line(smt) {
+                if z3_rejected_query(&z) {
+                    eprintln!(
+                        "ANUBIS_NATIVE_DISAGREE(authoritative): native={} z3 rejected the query \
+                         (`{}`) — failing closed; smt=<<{}>>",
+                        nat_str,
+                        z,
+                        smt.replace('\n', " ")
+                    );
+                    return Some("native-z3-disagreement".to_string());
+                }
                 if (z == "sat" || z == "unsat") && z != nat_str {
                     eprintln!(
                         "ANUBIS_NATIVE_DISAGREE(authoritative): native={} z3={} — failing closed; \
@@ -16896,8 +17108,20 @@ fn native_shadow_compare(smt: &str, z3_ans: Option<&str>) {
         Some("unsat") => Some(false),
         _ => None,
     };
+    let rejected = z3_ans.is_some_and(z3_rejected_query);
     let outcome = match (native, z) {
         (None, _) => "DEFER",
+        // Native decided a query z3 rejects as malformed: the shadow gate exists to catch exactly
+        // this (P-SORT-1), so it is a disagreement, not native-only coverage.
+        (Some(n), None) if rejected => {
+            eprintln!(
+                "ANUBIS_NATIVE_DISAGREE native={} z3-rejected={} smt=<<{}>>",
+                n,
+                z3_ans.unwrap_or_default(),
+                smt.replace('\n', " ")
+            );
+            "DISAGREE"
+        }
         (Some(_), None) => "NATIVE_ONLY",
         (Some(n), Some(zz)) if n == zz => "AGREE",
         (Some(n), Some(zz)) => {
@@ -17276,6 +17500,10 @@ fn unresolved_obligation_smt_comment(obl: &SolverObligation) -> String {
 }
 
 /// Classify one failed `SolverCheck` without guessing from free-form prose alone.
+/// Every FAIL detail for a query z3 rejected as malformed begins with this; classification and the
+/// refusal locus key on it (never on z3's own words).
+pub const Z3_REJECTED_DETAIL_PREFIX: &str = "solver rejected the emitted SMT";
+
 pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     if check.status != "FAIL" {
         return AssertionFailKind::Other;
@@ -17287,6 +17515,12 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     }
     if check.detail.contains("ANUBIS_REPLAY_MISMATCH") {
         return AssertionFailKind::ReplayMismatch;
+    }
+    // A rejected query embeds z3's message verbatim, and z3 copies program symbols and string literals
+    // into it: a rejection mentioning `undecided` must not be read as a budget limit below. Keyed on the
+    // fixed prefix this compiler writes, never on z3's text.
+    if check.detail.starts_with(Z3_REJECTED_DETAIL_PREFIX) {
+        return AssertionFailKind::Other;
     }
     // Wrap-safety obligations are named `wrap-safety:…` (see `push_wrap_safety_obligations`).
     if check.name.starts_with("wrap-safety:") {
@@ -18133,6 +18367,61 @@ fn fold_literal_field_reads(e: &Expr, ctx: &SemanticContext) -> Expr {
     }
 }
 
+/// `P { f: v }.f` resolved with `f`'s DECLARED type (`coerce_literal_into_field`), everywhere in `e`, and
+/// NOTHING else: unlike `fold_literal_field_reads` it never unfolds an expression-function call. That
+/// unfolding is right inside a `requires` clause, but in a `let` initializer it erases the call itself —
+/// `let z = g(P { v: 0 }.v)` became `100 / 0`, so `g`'s precondition was never discharged (a false
+/// accept). Folding a field read replaces it by exactly the value the runtime computes, so every later
+/// use of the folded expression means the same thing.
+fn fold_struct_literal_reads(e: &Expr, ctx: &SemanticContext) -> Expr {
+    let rec = |x: &Expr| Box::new(fold_struct_literal_reads(x, ctx));
+    match e {
+        Expr::FieldAccess { base, field, span } => {
+            let base_f = fold_struct_literal_reads(base, ctx);
+            if let Expr::StructLiteral { name, fields, .. } = &base_f {
+                let declared = ctx
+                    .struct_fields
+                    .get(name)
+                    .and_then(|fs| fs.get(field))
+                    .cloned();
+                if let (Some(value), Some(ty)) = (
+                    fields
+                        .iter()
+                        .find(|(f, _)| f == field)
+                        .map(|(_, v)| (**v).clone()),
+                    declared,
+                ) {
+                    if let Some(folded) = coerce_literal_into_field(&value, &ty) {
+                        return folded;
+                    }
+                }
+            }
+            Expr::FieldAccess {
+                base: Box::new(base_f),
+                field: field.clone(),
+                span: *span,
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: rec(lhs),
+            rhs: rec(rhs),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: op.clone(),
+            expr: rec(expr),
+        },
+        Expr::Call { callee, args } => Expr::Call {
+            callee: callee.clone(),
+            args: args
+                .iter()
+                .map(|a| fold_struct_literal_reads(a, ctx))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
 /// Unfold a call to an expression function (`SemanticContext::expr_fns`) into its body with the
 /// parameters replaced by the arguments, recursively up to a small depth; `None` when `callee` is not
 /// one or the depth is exhausted. A call-position name resolves to a user function first, as at
@@ -18858,11 +19147,15 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // per-field facts need their own symbols + reassignment invalidation (a documented residual).
         // NOTE the walker coupling (see substitute_vars): every shape admitted here MUST be substituted
         // and var-collected — FieldAccess/StructLiteral arms exist in substitute_vars/collect_expr_vars.
+        //
+        // NOT modeled here any more (2026-09-23): this predicate cannot see the struct's DECLARED field
+        // types, and the runtime coerces a struct-literal field to its declared type — `P { x: 7 }.x`
+        // is 7.0 for `x: f64`, so `let r = P { x: 7 }.x / 2` is 3.5 at runtime, while this arm modeled
+        // the integer 7 and certified `r == 3`. Such reads are resolved WITH the declared type by
+        // `fold_literal_field_reads` (at call sites and `let` initializers) before modeling; one that
+        // reaches here unfolded is unmodeled, fail-closed.
         Expr::FieldAccess { base, field, .. } => match base.as_ref() {
-            Expr::StructLiteral { fields, .. } => {
-                fields.iter().any(|(n, _)| n == field)
-                    && fields.iter().all(|(_, v)| is_int_modelable(v, int_vars))
-            }
+            Expr::StructLiteral { .. } => false,
             // A field read `p.field` off a struct VAR is modelable IFF that (base, field) has a
             // registered symbol — i.e. `p` is a struct param whose integer field `field` is constrained
             // by a `requires` (see the has_contract registration). An unregistered field is unmodeled
@@ -18986,19 +19279,17 @@ fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
 }
 
 /// Phase-3 QF_FP: is `e` a modelable FLOAT arithmetic term — a float var, a FINITE decimal-representable
-/// f64 literal, or `+ - *` (and unary `-`) over those? `/` `%`, casts, and non-finite / scientific-
-/// notation literals are excluded (fail-closed). Mirrors `is_int_modelable`, over `solver_float_vars`.
+/// f64 literal, or `+ - *` (and unary `-`) over those? `/` `%`, casts, and non-finite literals are
+/// excluded (fail-closed). Mirrors `is_int_modelable`, over `solver_float_vars`.
 fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => float_vars.contains(v),
-        // A finite f64 literal that has a plain decimal form: `"NaN"`/`"inf"` both `.parse::<f64>()` OK in
-        // Rust (a non-finite literal would break the NaN/inf reasoning), and a very large/small value
-        // formats to scientific notation (`1e20`) which is NOT a valid SMT-LIB Real — reject both.
+        // A finite f64 literal: `"NaN"`/`"inf"` both `.parse::<f64>()` OK in Rust (a non-finite literal
+        // would break the NaN/inf reasoning) — reject those. A very large/small value is fine: the
+        // encoder prints it with `smt_decimal`, never in scientific notation (`1e20`), which is not an
+        // SMT-LIB Real.
         Expr::Literal(l) => {
-            let plain_finite = l
-                .parse::<f64>()
-                .map(|v| v.is_finite() && !format!("{v:?}").contains(['e', 'E']))
-                .unwrap_or(false);
+            let plain_finite = l.parse::<f64>().map(|v| v.is_finite()).unwrap_or(false);
             // CRITICAL (final hunt a2c88967): an INTEGER-FORM literal beyond f64's exact-integer range
             // (2^53) is kept EXACTLY as i64 at runtime when it flows through an ALL-INTEGER subexpr —
             // `9007199254740993 % 2 = 1` — but the float encoder rounds it via `to_fp` (2^53+1 → the even
@@ -19006,9 +19297,15 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
             // rounds, whereas `/`'s divergence is truncation (gated separately in the `/` arm). Reject an
             // int-form literal with |n| > 2^53 from the float lane. A float-FORM literal (has a `.`) rounds
             // IDENTICALLY at parse-time on both sides (runtime and `to_fp`), so it stays admissible.
+            //
+            // A literal that is NOT an i64 but IS a u64 (`18446744073709551615`, `9223372036854775808`) is
+            // a WRAPPED integer at runtime — `literal_to_anubis_value` makes it `Int(u as i64)`, so the
+            // first is -1 — never the float ~1.8e19 that `to_fp` would model. Reject it. (Until
+            // 2026-09-23 this was excluded only by accident: every such value's `{:?}` form has an
+            // exponent, and the scientific-notation gate rejected it.)
             let int_form_exact = match l.parse::<i64>() {
                 Ok(n) => n.unsigned_abs() <= (1u64 << 53),
-                Err(_) => true,
+                Err(_) => l.parse::<u64>().is_err(),
             };
             plain_finite && int_form_exact
         }
@@ -19056,7 +19353,16 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
                 && is_float_modelable(rhs, float_vars)
                 && (is_genuinely_float(lhs, float_vars) || is_genuinely_float(rhs, float_vars))
         }
-        Expr::Unary { op, expr } if op == "-" => is_float_modelable(expr, float_vars),
+        // Unary `-` has the SAME sign-of-zero hazard as the `+ - * %` arm above: over an ALL-INTEGER
+        // operand the runtime negates an `Int` (`-0` is `Int(0)`, coerced to +0.0), while `fp.neg` of the
+        // encoded +0.0 is -0.0 — and `1.0 / (x * -0)` then proves a sign the runtime never produces. So an
+        // integer-kinded operand must fold exactly to a NON-ZERO value; a genuinely float operand is
+        // negated in f64 at runtime too, where `fp.neg` is exact (including -0.0 for +0.0).
+        Expr::Unary { op, expr } if op == "-" => {
+            is_float_modelable(expr, float_vars)
+                && (is_genuinely_float(expr, float_vars)
+                    || int_chain_exact(e).is_some_and(|v| v != 0))
+        }
         Expr::Declassify { inner, .. } => is_float_modelable(inner, float_vars),
         // A float field `p.field` off a struct VAR — modelable IFF registered (a struct param's float
         // field constrained by a `requires`). Mirrors the int/string field arms.
@@ -19069,8 +19375,8 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     }
 }
 
-/// True when `e` is GENUINELY a float at runtime — a float-form literal (`7.0`, has a `.`; an `e`/`E`
-/// literal is already rejected by `is_float_modelable`), a registered float variable/field, or an
+/// True when `e` is GENUINELY a float at runtime — a float-form literal (`7.0`, has a `.`), a
+/// registered float variable/field, or an
 /// arithmetic term one of whose operands is genuinely float (runtime type promotion). This is STRICTER
 /// than `is_float_modelable`, which admits a bare integer literal `"7"` as a float via `.parse::<f64>()`.
 /// It is the gate that keeps an all-integer `/` (integer truncating division at runtime) out of the QF_FP
@@ -19194,15 +19500,15 @@ fn coerce_int_into_float_slot(
             // and `is_float_modelable`'s int-form gate (#39) REJECTS an int-form literal > 2^53 → the clause
             // would silently DEFER → a false accept (hunt FA D-class). `{:.1}` is fixed-point (always a `.`,
             // never scientific) and `v as f64` is integer-valued, so it renders the double exactly. Use it
-            // only when `is_float_modelable` admits it (a scientific-magnitude double, ~>= 1e16, is rejected
-            // by the encoder's own scientific-notation gate) — otherwise fall through to the havoc.
+            // only when `is_float_modelable` admits it — otherwise fall through to the havoc. (Large
+            // magnitudes are admitted: the encoder prints them with `smt_decimal`, never as `1e16`.)
             let lit = Expr::Literal(format!("{:.1}", v as f64));
             if is_float_modelable(&lit, &ctx.solver_float_vars) {
                 return lit;
             }
         }
         // A symbolic / unfoldable integer expression, or a const-fold whose coerced double is not
-        // float-modelable (scientific magnitude) — fail closed with a fresh unconstrained FLOAT var.
+        // float-modelable — fail closed with a fresh unconstrained FLOAT var.
         let hv = format!("anb_c40h_{tag}");
         ctx.solver_float_vars.insert(hv.clone());
         havoc_out.push(hv.clone());
@@ -19238,8 +19544,9 @@ fn coerce_uint_arg(arg: &Expr, width: u32, int_vars: &BTreeSet<String>) -> Expr 
 fn is_genuinely_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => float_vars.contains(v),
-        // A float LITERAL is written with a decimal point (an `e`/`E` form is rejected upstream). A bare
-        // integer literal `"7"` is NOT genuinely float — that is exactly the value this gate excludes.
+        // A float LITERAL written with a decimal point. A bare integer literal `"7"` is NOT genuinely float —
+        // that is exactly the value this gate excludes. An exponent-form literal (`1e5`, a Float at runtime)
+        // is conservatively NOT counted, so a `/` whose only float operand is one defers.
         Expr::Literal(l) => l.contains('.'),
         Expr::Binary { lhs, rhs, .. } => {
             is_genuinely_float(lhs, float_vars) || is_genuinely_float(rhs, float_vars)
@@ -19273,6 +19580,19 @@ fn is_bool_modelable_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     }
 }
 
+/// A finite non-negative f64 as an SMT-LIB decimal literal (`7.0`, `0.0000001`,
+/// `100000000000000000000.0`). SMT-LIB decimals have no exponent: `{:?}` prints `1e20`, which z3 rejects
+/// (`unknown constant e20`). `Display` never uses exponent notation and prints the shortest digits that
+/// round-trip, so the literal denotes exactly `v`.
+fn smt_decimal(v: f64) -> String {
+    let s = format!("{v}");
+    if s.contains('.') {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
 /// Phase-3 QF_FP: encode a float ARITHMETIC term to SMT Float64 `(_ FloatingPoint 11 53)`. Invoked ONLY
 /// on `is_float_modelable` exprs, so every reachable case is total. `+ - *` use round-to-nearest-even
 /// (RNE), matching the runtime's native f64 ops (run.rs anubis_add/sub/mul); a finite literal is a Real
@@ -19283,9 +19603,9 @@ fn float_expr_to_smt(e: &Expr) -> String {
         Expr::Literal(l) => {
             let v: f64 = l.parse().unwrap_or(0.0);
             if v.is_sign_negative() {
-                format!("((_ to_fp 11 53) RNE (- {:?}))", -v)
+                format!("((_ to_fp 11 53) RNE (- {}))", smt_decimal(-v))
             } else {
-                format!("((_ to_fp 11 53) RNE {v:?})")
+                format!("((_ to_fp 11 53) RNE {})", smt_decimal(v))
             }
         }
         Expr::Binary { op, lhs, rhs } => {
@@ -20300,7 +20620,12 @@ fn declare_smt_var_maybe_float(v: &str, is_string: bool, is_float: bool) -> Stri
 /// Whether an obligation's SMT body is a QF_FP (float) query — detected by the float operators the float
 /// encoder emits (`fp.` / `to_fp`), mirroring how `smt_uses_arrays` detects the array sort from the body.
 fn smt_uses_floats(smt_body: &str) -> bool {
-    smt_body.contains("fp.") || smt_body.contains("to_fp")
+    // Match the float encoder's TOKENS, not substrings: every float operator it emits is an application
+    // `(fp.<op> …` or `((_ to_fp 11 53) …`. A bare substring test routed any integer obligation whose
+    // mangled symbol merely CONTAINS `to_fp` / `fp.` (`anb_crypto_fp`, `anb_proto_fps`) to QF_FP and
+    // declared every variable Float64 — an ill-sorted query that z3 rejects and that fails a valid
+    // program closed. A symbol is `anb_…`, so it can never begin with `(fp.` or `(_ to_fp `.
+    smt_body.contains("(fp.") || smt_body.contains("(_ to_fp ")
 }
 
 /// Whether a fact/assumption in the shared `assumptions` channel is a FLOAT fact — it mentions at least
@@ -21295,7 +21620,11 @@ fn push_ensures_obligations(
     span: Span,
 ) {
     for ens in ensures {
-        let concrete = substitute_result(ens, ret_expr);
+        // Returning a struct literal makes the clause read a field off it (`ensures(result.status == 1)`
+        // with `return R { status: 0 }`): resolve that read with the field's DECLARED type
+        // (`fold_struct_literal_reads`), since the integer lane no longer models struct-literal reads it
+        // cannot type (an `f64` field is coerced at runtime).
+        let concrete = fold_struct_literal_reads(&substitute_result(ens, ret_expr), ctx);
         if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
             let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
             // Sort-partition (mirror the assert handler): an integer postcondition assumes only integer
@@ -23523,8 +23852,15 @@ fn verify_while_invariants_float(
     }
 
     // TRANSITION: the straight-line float effect of one iteration on the tracked variables.
-    let transition = match extract_loop_transition(body, &tracked, &model_vars, &is_float_modelable)
-    {
+    //
+    // A write is float-modeled only when the VALUE is genuinely float-kinded. Assignment does not
+    // coerce: `s = 7` stores `Int(7)` in a float variable, so a later `s / 2` is INTEGER division (3),
+    // not `fp.div` (3.5) — modeling the write as `to_fp 7.0` proved a violated `ensures`. The same rule
+    // the float-`let` (`genuinely_float`) and float-field-write (`!is_int_modelable`) paths already apply.
+    let float_write = |e: &Expr, vars: &BTreeSet<String>| {
+        is_float_modelable(e, vars) && is_genuinely_float(e, vars)
+    };
+    let transition = match extract_loop_transition(body, &tracked, &model_vars, &float_write) {
         Some(t) => t,
         None => {
             reject(ctx, "the loop body is not straight-line float assignments");
@@ -31566,5 +31902,92 @@ mod certificate_coverage_tests {
                 "verdict line overclaims: {line}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod smt_well_formedness_tests {
+    use super::*;
+
+    #[test]
+    fn float_literals_are_smt_lib_decimals() {
+        // `{:?}` prints these as `1e20` / `1e-7`, which z3 rejects (`unknown constant e20`).
+        assert_eq!(smt_decimal(1e20), "100000000000000000000.0");
+        assert_eq!(smt_decimal(1e-7), "0.0000001");
+        assert_eq!(smt_decimal(7.0), "7.0");
+        assert_eq!(smt_decimal(3.5), "3.5");
+        assert_eq!(smt_decimal(0.1), "0.1");
+        for v in [1e20, 1e-7, 0.1, 123456.789, f64::MIN_POSITIVE, f64::MAX] {
+            let d = smt_decimal(v);
+            assert!(!d.contains('e') && d.contains('.'), "{d}");
+            assert_eq!(d.parse::<f64>().unwrap(), v, "{d} does not round-trip");
+        }
+    }
+
+    #[test]
+    fn z3_query_rejection_is_not_a_resource_limit() {
+        assert!(z3_rejected_query(
+            "(error \"line 5 column 8: Sort mismatch at argument #1 for function (declare-fun bvsgt\""
+        ));
+        assert!(!z3_rejected_query("(error \"out of memory\")"));
+        assert!(!z3_rejected_query("unsat"));
+        assert!(!z3_rejected_query("sat"));
+        assert!(!z3_rejected_query("unknown"));
+    }
+}
+
+#[cfg(test)]
+mod relevance_slicing_tests {
+    use super::*;
+
+    fn set(vs: &[&str]) -> BTreeSet<String> {
+        vs.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn keeps_facts_connected_to_the_assertion_transitively() {
+        let a = vec![
+            "(= anb_y (fp.mul RNE anb_x ((_ to_fp 11 53) RNE 100000000000000000000.0)))"
+                .to_string(),
+            "(fp.gt anb_z ((_ to_fp 11 53) RNE 0.0))".to_string(),
+            "(= anb_w anb_z)".to_string(),
+        ];
+        let declared = set(&["anb_x", "anb_y", "anb_z", "anb_w"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_w ((_ to_fp 11 53) RNE 0.0))", &declared);
+        // w connects to z through the copy fact; the y = x * 1e20 definition is unrelated.
+        assert_eq!(kept, vec![&a[1], &a[2]]);
+    }
+
+    #[test]
+    fn a_dangling_definition_is_dropped_even_when_connected() {
+        // `y = x * 1e20` shares x with the assertion, but y is used nowhere: dropping it keeps the
+        // obligation equisatisfiable (any x has a y), and keeps an `fp.mul` out of a native query.
+        let a = vec![
+            "(fp.gt anb_x ((_ to_fp 11 53) RNE 1.0))".to_string(),
+            "(= anb_y (fp.mul RNE anb_x ((_ to_fp 11 53) RNE 100000000000000000000.0)))"
+                .to_string(),
+            "(= anb_z (fp.add RNE anb_y anb_y))".to_string(),
+        ];
+        let declared = set(&["anb_x", "anb_y", "anb_z"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_x ((_ to_fp 11 53) RNE 0.0))", &declared);
+        // z is unused, so its definition goes; then y is unused, so its definition goes too.
+        assert_eq!(kept, vec![&a[0]]);
+    }
+
+    #[test]
+    fn a_definition_the_assertion_uses_is_kept() {
+        let a = vec!["(= anb_y (fp.mul RNE anb_x ((_ to_fp 11 53) RNE 2.0)))".to_string()];
+        let declared = set(&["anb_x", "anb_y"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_y ((_ to_fp 11 53) RNE 0.0))", &declared);
+        assert_eq!(kept, vec![&a[0]]);
+    }
+
+    #[test]
+    fn operator_tokens_do_not_connect_facts() {
+        // `RNE` / `to_fp` appear in every float fact; they are not variables.
+        let a = vec!["(= anb_y (fp.add RNE anb_x ((_ to_fp 11 53) RNE 1.0)))".to_string()];
+        let declared = set(&["anb_x", "anb_y", "anb_z"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_z ((_ to_fp 11 53) RNE 0.0))", &declared);
+        assert!(kept.is_empty());
     }
 }

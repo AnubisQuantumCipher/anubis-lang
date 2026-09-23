@@ -1,0 +1,8 @@
+fn f(s: f64) -> f64 requires(s > 0.0 && s < 1.0) ensures(result == 3.5) {
+    while s < 5.0 invariant((s > -1.0 && s < 2.0) || s == 7.0) {
+        s = 7;
+    }
+    let r = s / 2;
+    return r;
+}
+fn main() { println(f(0.5)); }

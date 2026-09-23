@@ -1,0 +1,4 @@
+fn g(x: f64) -> f64 requires(x > 0.0) ensures(result > 1.0) {
+  return x + 18446744073709551615;
+}
+fn main() { println(g(0.5)); }

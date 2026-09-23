@@ -238,3 +238,29 @@ rv3_call_only_param_derived_assert	REVIEW3-2026-09-23	slice	ACCEPT	carrier	deriv
 rv3_reassigned_param_assert_static	REVIEW3-2026-09-23	slice	REJECT	carrier	a reassigned param's assert is checked statically
 rv3_closure_copy_in_loop	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid (closure writes a copy); undecided — precision gap
 rv3_struct_field_after_loop	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid; field unmodeled after the loop -> undecided (gap)
+sort_fp_exp_literal_valid	P-SORT-1	slice	ACCEPT	carrier	a float literal >= 1e16 is encoded as an SMT-LIB decimal (never 1e20, which z3 rejects) and proves
+sort_fp_exp_literal_violated	P-SORT-1	slice	REJECT	carrier	twin: the violated large-literal precondition is disproved
+sort_fp_tiny_literal_valid	P-SORT-1	slice	ACCEPT	carrier	a float literal < 1e-4 is encoded as an SMT-LIB decimal and proves
+sort_fp_tiny_literal_violated	P-SORT-1	slice	REJECT	carrier	twin: the violated tiny-literal precondition is disproved
+sort_u64_literal_callarg	P-SORT-1	slice	REJ|UNRES	carrier	REVIEW 2026-09-23: 18446744073709551615 is Int(-1) at runtime (u64 wraps to i64); proving x > 1.0 for it was a false proof
+sort_u64_literal_ensures	P-SORT-1	slice	REJ|UNRES	carrier	REVIEW 2026-09-23: x + 18446744073709551615 is x - 1 at runtime; ensures(result > 1.0) must not prove
+sort_u64_hex_literal_ensures	P-SORT-1	slice	REJ|UNRES	carrier	REVIEW 2026-09-23: 0xFFFFFFFFFFFFFFFF is -1 at runtime, same wrap
+sort_2p63_literal_ensures	P-SORT-1	slice	REJ|UNRES	carrier	REVIEW 2026-09-23: 9223372036854775808 is i64::MIN at runtime
+sort_above_u64_literal_ensures	P-SORT-1	slice	ACCEPT	carrier	control: 100000000000000000000 exceeds u64, is a Float at runtime, and proves
+fl_neg_int_zero_divisor	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	WORKFLOW 2026-09-23: -0 is Int(0) at runtime (+0.0 when coerced); modeling fp.neg(+0.0) = -0.0 proved 1.0/(x * -0) < 0 while the runtime returns inf
+fl_neg_int_zero_divisor_exp	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	same, with exponent-magnitude literals the P-SORT-1 change newly admitted
+fl_neg_int_one_divisor_valid	FLOAT-RUNTIME	slice	ACCEPT	carrier	twin: -1 folds exactly and non-zero, so x * -1 < 0 still proves (the unary gate admits non-zero integer operands)
+fl_loop_int_assign_div	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	WORKFLOW 2026-09-23: s = 7 in a float loop stores Int(7); s / 2 is integer division (3), not 3.5
+fl_loop_int_assign_div_exp	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	same, exponent-magnitude literals
+fl_loop_int_assign_rem	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	same root: s % 2 then / 2 on an Int-holding float var (runtime 0.0, not 0.5)
+fl_loop_float_assign_div_valid	FLOAT-RUNTIME	slice	ACCEPT	carrier	twin: s = 7.0 is genuinely float; s / 2 == 3.5 proves
+fl_structlit_f64_field_int_requires	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	WORKFLOW 2026-09-23: P { x: 7 }.x is 7.0 for x: f64 (runtime coerces), so r = 3.5; the int lane modeled 7 and certified r == 3
+fl_structlit_f64_field_int_ensures	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	same, ensures form (runtime returns 0)
+fl_structlit_f64_field_int_assert	FLOAT-RUNTIME	slice	REJ|UNRES	carrier	same, assert form (the runtime assert fires)
+fl_structlit_int_field_valid	FLOAT-RUNTIME	slice	ACCEPT	carrier	twin: an i64 field keeps the integer 7, so r == 3 proves
+fl_structlit_f64_field_true_assert_valid	FLOAT-RUNTIME	slice	ACCEPT	carrier	twin: the TRUE float fact r == 3.5 proves via the declared-type fold
+sniff_int_ident_contains_to_fp	FLOAT-RUNTIME	slice	ACCEPT	carrier	WORKFLOW 2026-09-23: an int identifier containing to_fp must stay in QF_BV (the substring sniff routed it to QF_FP, ill-sorted, failed closed)
+fl_structlit_arg_let_exprfn_call	FLOAT-RUNTIME	slice	REJECT	carrier	REGRESSION 2026-09-23 (caught by a unit test): folding a let initializer unfolded the expression-function call g(P{v: 0}.v) into 100 / 0, so g's requires(x > 0) was never discharged
+fl_structlit_let_then_exprfn_call	FLOAT-RUNTIME	slice	REJECT	carrier	same, with the field read bound first (let q = P{v: 0}.v; let z = g(q))
+fl_structlit_return_ensures_valid	FLOAT-RUNTIME	slice	ACCEPT	carrier	twin: ensures(result.status == 0) over a returned R { status: 0 } proves via the declared-type fold
+fl_structlit_return_f64_field_ensures	FLOAT-RUNTIME	slice	REJECT	carrier	returned R { v: 7 } with v: f64 is 7.0 at runtime, so result.v / 2 == 3 is false (3.5); must be disproved, never modeled as the integer 7

@@ -225,7 +225,28 @@ pub enum NativeVerdict {
 /// re-satisfy the formula — which would mean a solver defect — this returns `None` (defer), so a
 /// broken model can never be presented as a counterexample. UNSAT needs no model.
 pub fn native_check_sat_model(smt: &str) -> Option<NativeVerdict> {
-    decide(smt, &NativeLimits::from_env())
+    on_solver_stack(|| decide(smt, &NativeLimits::from_env())).flatten()
+}
+
+/// Stack for the solver's own thread. Parsing, sort checking, lowering, bit-blasting and model
+/// evaluation all recurse once per nesting level of the query (bounded by `parse::MAX_SEXP_DEPTH`).
+/// Running them on a dedicated thread makes that bound independent of the CALLER's stack — a test
+/// harness thread (2 MiB) or a debug build — so no accepted query can overflow and abort the process.
+/// The reservation is virtual; only the pages actually used are touched.
+const SOLVER_STACK_BYTES: usize = 256 << 20;
+
+/// Run `f` on a scoped thread with `SOLVER_STACK_BYTES` of stack. `None` if the thread could not be
+/// created or `f` panicked — the caller treats that as a decline (defer to z3), never as a verdict.
+pub(crate) fn on_solver_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("anubis-solver".into())
+            .stack_size(SOLVER_STACK_BYTES)
+            .spawn_scoped(scope, f)
+            .ok()?
+            .join()
+            .ok()
+    })
 }
 
 /// AUTHORITATIVE verdict (Phase-7 TCB minimization). Identical to [`native_check_sat_model`] EXCEPT it
@@ -243,17 +264,20 @@ pub fn native_check_sat_model(smt: &str) -> Option<NativeVerdict> {
 /// design. The un-gated [`native_check_sat_model`] uses the same Unsat-cert check so no Unsat leaves
 /// this crate without a verified certificate.
 pub fn native_check_sat_model_authoritative(smt: &str) -> Option<NativeVerdict> {
-    let limits = NativeLimits::from_env();
-    let formula = parse::parse_smt2(smt)?;
-    if !fragment::is_proven_authoritative(&formula) {
-        return None;
-    }
-    decide_formula(smt, &formula, &limits)
+    on_solver_stack(|| {
+        let limits = NativeLimits::from_env();
+        let formula = parse::parse_smt2_here(smt)?;
+        if !fragment::is_proven_authoritative(&formula) {
+            return None;
+        }
+        decide_formula(smt, &formula, &limits)
+    })
+    .flatten()
 }
 
 /// As [`native_check_sat_model`] with an explicit conflict budget and no wall-clock component.
 pub fn native_check_sat_model_budget(smt: &str, budget: u64) -> Option<NativeVerdict> {
-    decide(smt, &NativeLimits::deterministic(budget))
+    on_solver_stack(|| decide(smt, &NativeLimits::deterministic(budget))).flatten()
 }
 
 /// The proof objects behind an `Unsat`, in formats an OUTSIDE checker can consume.
@@ -309,19 +333,22 @@ fn cert_to_drat(cert: &lrat::UnsatCert) -> String {
 /// asking for artifacts, which is why this threads an out-parameter instead of adding a second
 /// decision path. `None` artifacts mean the verdict was Sat, or the cert was declined/absent.
 pub fn native_prove_with_artifacts(smt: &str) -> Option<(NativeVerdict, Option<ProofArtifacts>)> {
-    let limits = NativeLimits::from_env();
-    let formula = parse::parse_smt2(smt)?;
-    if !fragment::is_proven_authoritative(&formula) {
-        return None;
-    }
-    let mut artifacts = None;
-    let v = decide_formula_inner(smt, &formula, &limits, Some(&mut artifacts))?;
-    Some((v, artifacts))
+    on_solver_stack(|| {
+        let limits = NativeLimits::from_env();
+        let formula = parse::parse_smt2_here(smt)?;
+        if !fragment::is_proven_authoritative(&formula) {
+            return None;
+        }
+        let mut artifacts = None;
+        let v = decide_formula_inner(smt, &formula, &limits, Some(&mut artifacts))?;
+        Some((v, artifacts))
+    })
+    .flatten()
 }
 
-/// Parse, then decide under `limits`.
+/// Parse, then decide under `limits`. Must already be on the solver stack (`on_solver_stack`).
 fn decide(smt: &str, limits: &NativeLimits) -> Option<NativeVerdict> {
-    let formula = parse::parse_smt2(smt)?;
+    let formula = parse::parse_smt2_here(smt)?;
     decide_formula(smt, &formula, limits)
 }
 
@@ -442,6 +469,10 @@ fn decide_formula_inner(
             if formula.eval(&env, &bool_env) != Some(true) {
                 None
             } else {
+                // The replay above checked the FULL assignment, including the variables the
+                // lowering introduced to share operands. Those are internal: the model reported
+                // is over the query's own declared variables only.
+                model.retain(|(name, _, _)| !parse::is_introduced(name));
                 Some(NativeVerdict::Sat(model))
             }
         }

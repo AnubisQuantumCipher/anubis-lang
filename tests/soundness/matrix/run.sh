@@ -7,7 +7,13 @@
 #   REJECT     a reachable violation must be refused: DISPROVED, MIXED, or a security refusal
 #   ACCEPT     must check clean (rc 0)
 #   UNRES      must be an explicit ANUBIS_ASSERTION_UNDECIDED (never rc 0)
-#   REJ|UNRES  any refusal except an invalid-input error (never rc 0)
+#   REJ|UNRES  any refusal except an invalid-input error (never rc 0), including REFUSED
+#
+# Class REFUSED is a named VERIFICATION refusal the checker raises instead of a verdict: it could not
+# model a float contract (ANUBIS_FLOAT_CONTRACT_UNMODELED), verify a loop invariant inductively
+# (ANUBIS_LOOP_INVARIANT_UNVERIFIABLE), or prove a divisor non-zero (ANUBIS_DIVISOR_MAYBE_ZERO). Each is
+# fail-closed (never rc 0) and none is an input error, so each meets only REJ|UNRES: none is a disproof
+# (REJECT) nor the assertion-level UNDECIDED that UNRES requires. Only these listed codes qualify.
 #   MALFORMED  syntactically invalid: an ordinary diagnostic exit (1); a crash or silent pass fails
 #   LIMIT      valid syntax over a documented implementation limit: same required outcome as MALFORMED
 # An invalid-input / tool error (parse, type, unknown function, panic) is NEVER counted as a
@@ -38,6 +44,8 @@ classify() { # rc outfile -> class
     ANUBIS_SECRET_EXFILTRATION|ANUBIS_TAINTED_SINK*|ANUBIS_INTERPROC_*|ANUBIS_EFFECT_*|ANUBIS_CAPABILITY_*|ANUBIS_IMPLICIT_FLOW*)
       echo "SEC_REJECT" ;;
     ANUBIS_WRAP_RISK) echo WRAP ;;
+    ANUBIS_FLOAT_CONTRACT_UNMODELED|ANUBIS_LOOP_INVARIANT_UNVERIFIABLE|ANUBIS_DIVISOR_MAYBE_ZERO)
+      echo REFUSED ;;
     *) echo "INVALID:${code:-rc$rc}" ;;
   esac
 }
@@ -46,7 +54,8 @@ meets() { # intent class
     ACCEPT) [[ $2 == ACCEPT ]] ;;
     REJECT) [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT || $2 == WRAP ]] ;;
     UNRES) [[ $2 == UNDECIDED ]] ;;
-    'REJ|UNRES') [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT || $2 == WRAP || $2 == UNDECIDED ]] ;;
+    'REJ|UNRES') [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT || $2 == WRAP || $2 == UNDECIDED \
+                  || $2 == REFUSED ]] ;;
     # Malformed source must be refused with an ordinary diagnostic exit (1): a crash (SIGABRT 134,
     # SIGSEGV 139), a timeout, or a missing tool is not a refusal.
     MALFORMED) [[ $2 == INVALID:* && $3 -eq 1 ]] ;;

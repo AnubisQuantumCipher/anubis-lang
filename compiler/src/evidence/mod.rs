@@ -488,7 +488,15 @@ fn build_evidence_bundle_tree_inner(
                             continue;
                         }
                         match anubis_solver::native_prove_with_artifacts(&c.smt) {
-                            Some((anubis_solver::NativeVerdict::Unsat, Some(a))) => {
+                            // Only an obligation the CHECK accepted gets a published refutation. A
+                            // native refutation of a query the check refused — for any reason: z3
+                            // rejected the query or disagreed, the premises were vacuous, the verdict
+                            // was withdrawn — is not a proof of anything, and a `rup_refutation` row
+                            // would present it as one. The row says only what is true of every such
+                            // case: the check did not accept it.
+                            Some((anubis_solver::NativeVerdict::Unsat, Some(a)))
+                                if c.status == "PASS" =>
+                            {
                                 let _ =
                                     std::fs::write(pdir.join(format!("{stem}.cnf")), &a.cnf_dimacs);
                                 let _ = std::fs::write(
@@ -520,6 +528,9 @@ fn build_evidence_bundle_tree_inner(
                                     "proof": match other {
                                         Some((anubis_solver::NativeVerdict::Sat(_), _)) =>
                                             "counterexample_no_refutation",
+                                        Some((anubis_solver::NativeVerdict::Unsat, _))
+                                            if c.status != "PASS" =>
+                                            "refutation_not_accepted_by_check",
                                         Some(_) => "unsat_without_published_certificate",
                                         None => "declined_by_native_solver_deferred",
                                     },
