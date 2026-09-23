@@ -37,15 +37,16 @@ classify() { # rc outfile -> class
     ANUBIS_ASSERTION_UNPROVEN) echo MIXED ;;
     ANUBIS_SECRET_EXFILTRATION|ANUBIS_TAINTED_SINK*|ANUBIS_INTERPROC_*|ANUBIS_EFFECT_*|ANUBIS_CAPABILITY_*|ANUBIS_IMPLICIT_FLOW*)
       echo "SEC_REJECT" ;;
+    ANUBIS_WRAP_RISK) echo WRAP ;;
     *) echo "INVALID:${code:-rc$rc}" ;;
   esac
 }
 meets() { # intent class
   case "$1" in
     ACCEPT) [[ $2 == ACCEPT ]] ;;
-    REJECT) [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT ]] ;;
+    REJECT) [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT || $2 == WRAP ]] ;;
     UNRES) [[ $2 == UNDECIDED ]] ;;
-    'REJ|UNRES') [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT || $2 == UNDECIDED ]] ;;
+    'REJ|UNRES') [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT || $2 == WRAP || $2 == UNDECIDED ]] ;;
     # Malformed source must be refused with an ordinary diagnostic exit (1): a crash (SIGABRT 134,
     # SIGSEGV 139), a timeout, or a missing tool is not a refusal.
     MALFORMED) [[ $2 == INVALID:* && $3 -eq 1 ]] ;;

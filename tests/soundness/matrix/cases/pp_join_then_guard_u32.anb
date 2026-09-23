@@ -1,0 +1,9 @@
+fn clamp_score(x: u32) -> u32 requires(x < 1000000) ensures(result <= 1000000) { return x; }
+fn score(k: i64) -> u32 {
+  let mut base = 20;
+  if k == 1 { base = 10; }
+  let raw = base + 5;
+  if raw > 100 { return clamp_score(100); }
+  return clamp_score(raw);
+}
+fn main() { print(score(1)); }

@@ -1,0 +1,12 @@
+fn go(n: i64) requires(n > 0) {
+    let mut i = 0;
+    while i < 10 invariant(i <= 10) {
+        let t = n * 4611686018427387904;
+        println(t);
+        i = i + 1;
+    }
+    println(i);
+}
+fn main() {
+    go(3);
+}

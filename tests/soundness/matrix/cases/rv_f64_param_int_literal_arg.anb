@@ -1,0 +1,2 @@
+fn f(n: f64) requires(n / 2 == 3) { println(n); }
+fn main() { f(7); }

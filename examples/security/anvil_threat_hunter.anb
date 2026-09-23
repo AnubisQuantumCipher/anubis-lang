@@ -264,7 +264,7 @@ fn scan_event(ev, rs) {
                 rule_id: r.id,
                 name: r.name,
                 attck: r.attck,
-                sev: clamp_sev(r.base),
+                sev: clamp_sev(severity_base(r.base)),
                 conf: r.conf,
                 phase: r.phase,
                 line_no: ev.line_no,
@@ -284,6 +284,16 @@ fn scan_event(ev, rs) {
 // the solver can reason in i64 without overflow — this is the "evidence-native"
 // guarantee the language sells, applied to our own scoring core.
 // ============================================================================
+// A rule's base severity is documented as 0..100 (see `Rule.base`). Rules arrive through a list, where
+// the checker cannot see their values, so this CHECKS the documented range — returning the value
+// unchanged when it holds and failing loudly when it does not — instead of assuming it.
+fn severity_base(b: i64) -> i64 ensures(result >= 0) ensures(result <= 100) {
+    if b < 0 || b > 100 {
+        panic("rule base severity outside 0..100");
+    }
+    return b;
+}
+
 fn clamp_sev(x: u32) -> u32 requires(x < 1000000) ensures(result >= x) {
     return x + 0;
 }

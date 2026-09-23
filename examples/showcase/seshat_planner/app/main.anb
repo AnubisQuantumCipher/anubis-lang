@@ -259,6 +259,16 @@ fn plan_release(tasks, cpu_cap, memory_cap) {
     };
 }
 
+// The scheduled duration of the sample release is within its 30-minute serial duration. The plan
+// arrives destructured from a `Plan`, where the checker cannot see its value, so this CHECKS that
+// bound — returning the value unchanged when it holds and failing loudly when it does not.
+fn scheduled_within_serial(scheduled: i64) -> i64 ensures(result >= 0) ensures(result <= 30) {
+    if scheduled < 0 || scheduled > 30 {
+        panic("scheduled duration outside 0..30");
+    }
+    return scheduled;
+}
+
 fn proven_parallel_savings(serial: i64, scheduled: i64) -> i64
     requires(serial >= 0)
     requires(serial < 1000000)
@@ -338,7 +348,7 @@ fn print_plan(name, plan, cpu_cap, memory_cap) uses(io.print) {
             }
             print("------------------------------------------------------------");
             print("tasks=${len(completed)} waves=${len(waves)} total=${total} critical=${critical}");
-            print("parallelism_saved=${proven_parallel_savings(30, total)}");
+            print("parallelism_saved=${proven_parallel_savings(30, scheduled_within_serial(total))}");
             print("commitment.sha256=${commitment}");
         },
     }

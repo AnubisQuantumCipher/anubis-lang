@@ -463,6 +463,18 @@ fn build_evidence_bundle_tree_inner(
                     for (i, c) in solver_checks.iter().enumerate() {
                         let stem = format!("obligation_{i:04}");
                         let _ = std::fs::write(pdir.join(format!("{stem}.smt2")), &c.smt);
+                        // Refuted only over an over-approximated value: the encoded query has a
+                        // model, but that is not a counterexample to the program, so the native
+                        // solver's SAT label would misstate it.
+                        if c.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL {
+                            index.push(serde_json::json!({
+                                "obligation": c.name,
+                                "status": c.status,
+                                "proof": "undecided_overapproximated",
+                                "smt": format!("analysis/proofs/{stem}.smt2"),
+                            }));
+                            continue;
+                        }
                         // Never encoded, so there is no query to prove or refute. Handing its
                         // comment-only `.smt2` to the native solver would label the row as a
                         // counterexample or a deferral — both false.
@@ -543,6 +555,8 @@ fn build_evidence_bundle_tree_inner(
                         == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
                     {
                         serde_json::json!({ "status": "not_encoded", "replay_valid": false })
+                    } else if first.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL {
+                        serde_json::json!({ "status": "overapproximated_not_replayed", "replay_valid": false })
                     } else {
                         serde_json::json!({
                             "status": if replay { "counterexample_replayed" } else { "replay_failed" },

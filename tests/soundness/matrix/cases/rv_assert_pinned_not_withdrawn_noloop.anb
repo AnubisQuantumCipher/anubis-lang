@@ -1,0 +1,15 @@
+fn neg() -> i64 {
+    return -1;
+}
+fn main() {
+    let c = len(args()) >= 0;
+    let y = 4;
+    let mut b = 0;
+    if c {
+        b = neg();
+    }
+    if b < y {
+        println("lt");
+    }
+    assert(y == 5);
+}

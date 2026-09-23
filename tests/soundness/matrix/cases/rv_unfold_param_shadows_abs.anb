@@ -1,0 +1,9 @@
+fn pick(abs, x: i64) {
+    return abs(x);
+}
+fn g(h, v: i64) requires(pick(h, v) > 0) {
+    println(pick(h, v));
+}
+fn main() {
+    g(|s| 0 - 5, -3);
+}

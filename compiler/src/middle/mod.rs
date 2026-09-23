@@ -174,6 +174,11 @@ pub struct TypedIR {
     pub symbols: Vec<BindingInfo>,
     pub taint_traces: Vec<TaintTrace>,
     pub solver_obligations: Vec<SolverObligation>,
+    /// Names of obligations built over a value the analysis over-approximates (a variable kept as an
+    /// arbitrary integer across a loop or branch join, see `havoc_mark`). A PROOF of such an obligation
+    /// is sound; a counterexample may not be reachable, so `check_obligations` reports a failure as
+    /// undecided (`OVERAPPROX_UNDECIDED_DETAIL`), never as a disproof.
+    pub over_approx_obligations: BTreeSet<String>,
     pub diagnostics: Vec<SemanticDiagnostic>,
     /// Non-blocking warnings (implicit-flow, etc.) — informational, do not fail the check.
     pub warnings: Vec<SemanticDiagnostic>,
@@ -3128,6 +3133,29 @@ struct SemanticContext {
     /// before any local or parameter of the same name — the native runtime's order
     /// (`backends/run.rs` `Expr::Call`: user functions, then locals, then builtins).
     user_fn_names: BTreeSet<String>,
+    /// See `TypedIR::over_approx_obligations`; filled by `mark_over_approx_obligations`.
+    over_approx_obligations: BTreeSet<String>,
+    /// Index into `solver_obligations` up to which `mark_over_approx_obligations` has looked.
+    over_approx_scan: usize,
+    /// SMT names of values an in-body `assert` over which stays runtime-enforced rather than statically
+    /// checked: float/string parameters modeled only for call-site preconditions. Cleared per function.
+    assert_deferred_vars: BTreeSet<String>,
+    /// Every name bound anywhere in the function being analyzed (parameters, `let`s, patterns, loop
+    /// variables, lambda parameters). A call-position name bound locally resolves to the local before a
+    /// builtin at runtime, so `panic`/`exit` are treated as diverging only when not in this set.
+    fn_bound_names: BTreeSet<String>,
+    /// The analysis state immediately BEFORE each statement of the function being analyzed, keyed by
+    /// the statement's address: (assumptions, modeled integer set with markers, path guards). The
+    /// wrap-safety walker runs after the body and must check each statement under the facts that hold
+    /// THERE, not under the end-of-body state (which contains facts established later — a later
+    /// assignment, an early-exit guard, a loop's post-state — and certified wraps that happen).
+    stmt_states: BTreeMap<usize, StmtState>,
+    /// Statements analyzed more than once under different states: no single recorded state is valid for
+    /// all of them, so the walker falls back to the function's entry state.
+    stmt_state_conflicts: BTreeSet<usize>,
+    /// User functions that may end the program instead of returning (they reach `panic`, `exit` or `?`,
+    /// directly or through another such function).
+    may_exit_fns: BTreeSet<String>,
     /// Interprocedural taint summary: functions whose RETURN value carries INTERNAL taint (from a
     /// `taint_source()`/`tainted<T>` local, or a return of another such function), computed by a
     /// monotone fixpoint pre-pass before per-function analysis. `expr_taint_source`'s `Call` arm
@@ -3156,6 +3184,11 @@ struct SemanticContext {
     /// fixpoint can chase forwarder CHAINS (`fn f2(g) { return f1(g); }`), which a single pass cannot
     /// see because `f1`'s own forwarder status may not be known yet.
     fn_sole_return: BTreeMap<String, (Vec<String>, Expr)>,
+    /// Expression functions: free, non-generic functions whose ENTIRE body is one `return <expr>` (or a
+    /// tail expression). Such a function means exactly `<expr>` with its parameters substituted, so a
+    /// call-site precondition that calls one (`requires(is_valid(x))`) can be unfolded and discharged
+    /// instead of being refused as unencodable.
+    expr_fns: BTreeMap<String, (Vec<String>, Expr)>,
     /// Container literals appearing anywhere in a RECURSIVE function's body, by function name.
     ///
     /// A recursive accumulator builds its result across calls — `fn go(n, acc) { if n <= 0 { acc }
@@ -3386,6 +3419,7 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
             .extend(impl_methods.into_iter().map(|(name, _, _)| name));
     }
     ctx.user_fn_names = infer_params::free_fn_names(&ast.items);
+    ctx.may_exit_fns = compute_may_exit_fns(&ast.items);
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
     // Task #48: close `fn_applies_param` under transitive user-fn forwarding (a closure laundered through
@@ -3530,7 +3564,12 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         mir: ctx.mir,
         symbols: ctx.symbols,
         taint_traces: ctx.taint_traces,
-        solver_obligations: ctx.solver_obligations,
+        solver_obligations: ctx
+            .solver_obligations
+            .into_iter()
+            .filter(|o| !o.name.starts_with(WITHDRAWN_ASSERT_PREFIX))
+            .collect(),
+        over_approx_obligations: ctx.over_approx_obligations,
         diagnostics: vec![],
         warnings: ctx.warnings,
         symbolic_defs: ctx.symbolic_defs,
@@ -3604,6 +3643,58 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 body,
                 ..
             } => {
+                // Only when parameter passing is the identity at runtime: an unsigned parameter is masked
+                // on entry and an `f64` parameter widens an integer argument, so substituting the
+                // argument directly would give the body a value the runtime never computes (and could
+                // PROVE a precondition that fails).
+                let identity_params = params
+                    .iter()
+                    .all(|(_, t)| matches!(t.trim(), "" | "i64" | "int" | "string" | "bool"));
+                // The RETURN must pass through unchanged as well: an `-> f64` function widens an integer
+                // result at runtime (and an unsigned return masks it), so its body is not its value.
+                let identity_ret = matches!(
+                    ret.as_deref().map(str::trim),
+                    None | Some("") | Some("i64") | Some("int") | Some("string") | Some("bool")
+                );
+                if generics.is_empty() && identity_params && identity_ret {
+                    let single = match body.as_slice() {
+                        [Stmt::ExprStmt(Expr::Call { callee, args })]
+                            if callee == "return" && args.len() == 1 =>
+                        {
+                            Some(args[0].clone())
+                        }
+                        [Stmt::ExprStmt(e)] if !matches!(e, Expr::Call { callee, .. } if callee == "return") => {
+                            Some(e.clone())
+                        }
+                        _ => None,
+                    };
+                    // Inside the body a call-position name that is one of its PARAMETERS resolves to the
+                    // parameter's value at runtime (a local wins over a builtin), not to the builtin of
+                    // that name; and a lambda may rebind names. Unfolding cannot represent either, so
+                    // such a body is not registered.
+                    let pnames: BTreeSet<&str> = params.iter().map(|(n, _)| n.as_str()).collect();
+                    let body_ok = single.as_ref().is_some_and(|e| {
+                        // No free variables: every name the body reads is a parameter (otherwise the
+                        // unfolded body would capture whatever the CALLER binds under that name).
+                        let mut free = BTreeSet::new();
+                        collect_expr_vars(e, &mut free);
+                        let mut ok = free.iter().all(|v| pnames.contains(v.as_str()));
+                        visit::each_expr(e, &mut |x| match x {
+                            Expr::Call { callee, .. } if pnames.contains(callee.as_str()) => {
+                                ok = false
+                            }
+                            Expr::CallExpr { .. } | Expr::Lambda { .. } => ok = false,
+                            _ => {}
+                        });
+                        ok
+                    });
+                    if let (Some(e), true) = (single, body_ok) {
+                        ctx.expr_fns.insert(
+                            name.clone(),
+                            (params.iter().map(|(n, _)| n.clone()).collect(), e),
+                        );
+                    }
+                }
                 // Task #48 (FP2): record a function whose SOLE tail value is a lambda literal, so a caller
                 // binding + applying its result can descend into the returned closure (with the callee's
                 // params substituted by the call args). Skip a conditional / multi-value tail.
@@ -5648,6 +5739,10 @@ fn analyze_function(
     // (which could hold a string/list/bool), or an integer predicate over the second would be "proved"
     // against the first's model. Reset per function. (Obligations/constraints accumulate globally.)
     ctx.solver_int_vars.clear();
+    ctx.assert_deferred_vars.clear();
+    ctx.fn_bound_names = function_bound_names(params, body);
+    ctx.stmt_states.clear();
+    ctx.stmt_state_conflicts.clear();
     ctx.solver_float_vars.clear();
     ctx.solver_string_vars.clear();
     ctx.active_branch_guards.clear();
@@ -5871,18 +5966,33 @@ fn analyze_function(
     // (conservatively, correctly) rejected — the fix is to state it via `requires`. Float/string in-body
     // asserts stay fail-open (runtime-enforced): this deliberately does NOT reverse the stance for
     // genuinely-unmodelable asserts.
-    let model_int_params = has_contract || body_asserts_over_int_params(body, params);
+    // Also when the body calls a function that has a `requires`: that precondition is discharged at the
+    // call site MODULARLY — for every value the caller's own contract allows — exactly as an in-body
+    // assert over a parameter already is. Without this a caller with no `requires` left its integer
+    // parameters unmodeled, the callee's precondition over them could not be encoded, and it was
+    // dropped: `fn g(x: i64) { f(x) }` with `f` requiring `x > 0` checked clean and `g(-1)` ran `f(-1)`.
+    let calls_contracted = body_calls_contracted_fn(body, ctx);
+    let model_int_params =
+        has_contract || body_asserts_over_int_params(body, params) || calls_contracted;
     // Make integer parameters solver-modelable. NOTE: a `u32`/`u8` annotation is INERT at
     // runtime (a parameter holds any i64; the call boundary applies no width clamp), so we must
     // NOT assume it lies in [0, 2^w-1] — doing so let the solver "prove" `x + 1 > x` while
     // `f(i64::MAX)` wraps and violates it. A contract that needs bounds must state them via
     // `requires`; unbounded i64 arithmetic that can overflow is (correctly) not provable.
+    let only_for_calls = !has_contract && !body_asserts_over_int_params(body, params);
     if model_int_params {
         for (pname, pty) in params {
             // Only INTEGER params are modeled here. A float/string param is contract-only (below): its
             // in-body assert stays runtime-enforced outside a contract, per the middle-option scope.
             if is_integer_ty(pty) {
                 ctx.solver_int_vars.insert(pname.clone());
+                if only_for_calls {
+                    // Modeled only for the callee preconditions: arithmetic over it is not linted and
+                    // an in-body assert over it (or a value defined from it) stays runtime-enforced,
+                    // exactly as when it was unmodeled.
+                    ctx.solver_int_vars.insert(wrapexempt_mark(pname));
+                    ctx.assert_deferred_vars.insert(smt_var(pname));
+                }
                 ctx.symbolic_widths.insert(pname.clone(), 64);
                 // A1 (task #50): a LITERALLY-unsigned fixed-width param (u8/u16/u32) is now masked to
                 // [0, 2^w) at the runtime boundary (`anubis_coerce_uint_param`), so we may SOUNDLY
@@ -5900,6 +6010,23 @@ fn analyze_function(
                     assumptions.push(format!("(bvsge {v} (_ bv0 64))"));
                     assumptions.push(format!("(bvsle {v} (_ bv{hi} 64))"));
                 }
+            }
+        }
+    }
+    if !has_contract && calls_contracted {
+        // The body calls a contracted function, so its float/string parameters are modeled for the
+        // CALL-SITE preconditions (`fn caller(x: string) { if x == "a" { g(x) } }` discharges `g`'s
+        // `requires(s == "a")` under the guard instead of being refused). The documented stance below —
+        // a float/string in-body ASSERT outside a contract stays runtime-enforced — is kept: these
+        // parameters are recorded as assert-deferred, and `mark_over_approx_obligations` withdraws any
+        // `assert:` obligation that mentions them, exactly as when they were unmodeled.
+        for (pname, pty) in params {
+            if is_float_ty(pty) {
+                ctx.solver_float_vars.insert(pname.clone());
+                ctx.assert_deferred_vars.insert(smt_var(pname));
+            } else if pty == "string" {
+                ctx.solver_string_vars.insert(pname.clone());
+                ctx.assert_deferred_vars.insert(smt_var(pname));
             }
         }
     }
@@ -6091,6 +6218,7 @@ fn analyze_function(
         &mut assumptions,
         ctx,
     );
+    mark_over_approx_obligations(ctx);
 
     // Implicit-flow: public return value chosen under a secret PC is binary extraction (return dual
     // of public-local assign). Escape: `-> secret<T>` or return a secret-labelled value.
@@ -6588,7 +6716,10 @@ fn analyze_function(
         // fall through, then control reaches the next statement only when the condition was false
         // (whether it fell through, or came via an else that did not diverge). Symmetric for else.
         // `block_diverges` answers `false` whenever it is unsure, so an uncertain arm adds nothing.
-        let mut asm: Vec<String> = assumptions.clone();
+        // Fallback for a statement with no recorded state: the ENTRY state (requires + parameter
+        // modeling), refined below by early-return guards. Never the end-of-body `assumptions`, which
+        // hold facts established after the statement.
+        let mut asm: Vec<String> = precondition_assumptions.clone();
         for s in body {
             collect_wrap_safety_from_stmt(ctx, s, &asm, &mut seen);
             if let Stmt::If { cond, then, else_ } = s {
@@ -6905,6 +7036,37 @@ fn push_wrap_safety_binop(
     {
         return;
     }
+    // A havoced variable (see `havoc_mark`) and a parameter modeled only for call-site preconditions
+    // (see `wrapexempt_mark`) were unmodeled before those precision changes; the lint keeps treating
+    // them — and any value defined from them (`let j = i; j + 1`) — that way, rather than flagging every
+    // counter update as a free-input wrap.
+    {
+        let exempt: BTreeSet<String> = ctx
+            .solver_int_vars
+            .iter()
+            .filter_map(|m| {
+                m.strip_prefix("\u{1}havoc:")
+                    .or_else(|| m.strip_prefix("\u{1}wrapexempt:"))
+                    .map(smt_var)
+            })
+            .collect();
+        if !exempt.is_empty() {
+            let mut operand_vars = BTreeSet::new();
+            collect_expr_vars(lhs, &mut operand_vars);
+            collect_expr_vars(rhs, &mut operand_vars);
+            let operands: Vec<String> = operand_vars.iter().map(|v| smt_var(v)).collect();
+            let probe = format!("(and {})", operands.join(" "));
+            if depends_on_havoc(
+                &probe,
+                assumptions,
+                &ctx.active_branch_guards,
+                &exempt,
+                HavocDependence::Definitional,
+            ) {
+                return;
+            }
+        }
+    }
     let lx = expr_to_smt(lhs, &ctx.symbolic_widths);
     let rx = expr_to_smt(rhs, &ctx.symbolic_widths);
     // Assertion = "this op does NOT signed-wrap" (proved or CEX).
@@ -6948,7 +7110,9 @@ fn push_wrap_safety_binop(
         }
         _ => return,
     };
-    let key = format!("{op}:{lx}:{rx}");
+    // The same expression text can appear under different facts (two statements, two paths); dedup only
+    // an identical check under an identical state, never a later one under weaker facts.
+    let key = format!("{op}:{lx}:{rx}:{}", assumptions.join("\u{1}"));
     if !seen.insert(key) {
         return;
     }
@@ -7009,7 +7173,33 @@ fn wrap_safety_with_path_facts(
     out
 }
 
+/// Check one statement's wrap safety under the analysis state recorded immediately before it (see
+/// `SemanticContext::stmt_states`), or under the caller-supplied state when none was recorded.
 fn collect_wrap_safety_from_stmt(
+    ctx: &mut SemanticContext,
+    s: &Stmt,
+    assumptions: &[String],
+    seen: &mut BTreeSet<String>,
+) {
+    let key = s as *const Stmt as usize;
+    let recorded = if ctx.stmt_state_conflicts.contains(&key) {
+        None
+    } else {
+        ctx.stmt_states.get(&key).cloned()
+    };
+    match recorded {
+        Some((asm, ints, guards)) => {
+            let saved_ints = std::mem::replace(&mut ctx.solver_int_vars, ints);
+            let saved_guards = std::mem::replace(&mut ctx.active_branch_guards, guards);
+            collect_wrap_safety_from_stmt_at(ctx, s, &asm, seen);
+            ctx.solver_int_vars = saved_ints;
+            ctx.active_branch_guards = saved_guards;
+        }
+        None => collect_wrap_safety_from_stmt_at(ctx, s, assumptions, seen),
+    }
+}
+
+fn collect_wrap_safety_from_stmt_at(
     ctx: &mut SemanticContext,
     s: &Stmt,
     assumptions: &[String],
@@ -7722,6 +7912,10 @@ fn discharge_call_requires(
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
+        // A struct-literal argument makes the clause read a field off a literal (`P { a: "x" }.a ==
+        // "x"`), which no lane encodes; fold it to the field's value so an obviously satisfied call
+        // discharges instead of being refused as unencodable.
+        let concrete = fold_literal_field_reads(&concrete, ctx);
         // Decompose a top-level `&&`: a MIXED-lane conjunction (`s == "ok" && len(s) >= 2`) is neither
         // fully string-eq nor fully strlen modelable, so tested atomically it matched NO lane → skipped
         // (fail-open — a call `gs("no")` certified a runtime-trapping precondition). `A && B` at a call
@@ -8375,6 +8569,21 @@ fn carrier_unresolved_expr(ctx: &mut SemanticContext, origin: &str, e: &Expr, wh
 /// A `requires` clause reached through a function-valued parameter that could not be encoded.
 fn carrier_unresolved_clause(ctx: &mut SemanticContext, callee: &str, clause: &Expr, why: &str) {
     let Some(origin) = ctx.carrier_origin.clone() else {
+        // A DIRECT call: the precondition could not be encoded here either (an argument or clause is
+        // outside every modeled lane). It used to be dropped with no obligation and no diagnostic, so
+        // the call site claimed nothing it could not check and still checked clean. It is now an explicit
+        // unresolved obligation — no solver runs, and it can never be reported as proved.
+        let shown = carrier_display(clause);
+        let caller = ctx.current_fn.clone().unwrap_or_default();
+        carrier_unresolved(
+            ctx,
+            callee,
+            format!("{shown} in {caller}"),
+            format!(
+                "precondition `{shown}` of `{callee}`, called from `{caller}`, could not be encoded \
+                 because {why}"
+            ),
+        );
         return;
     };
     let shown = carrier_display(clause);
@@ -8514,6 +8723,9 @@ fn retain_arm_call_preconditions(
             ctx.solver_obligations.push(o);
         }
     }
+    // The vector may have shrunk below the over-approximation scan position; later obligations must
+    // still be scanned (those kept here were already scanned inside the arms).
+    ctx.over_approx_scan = ctx.over_approx_scan.min(ctx.solver_obligations.len());
 }
 
 /// Process-unique counter for minting fresh SMT symbols for whole-value match bindings (see the
@@ -9247,6 +9459,31 @@ fn push_branch_path_condition(
     cond: &Expr,
     negate: bool,
 ) {
+    let Some(smt) = path_condition_smt(ctx, cond) else {
+        // A conjunction the solver cannot encode as a whole may still have encodable conjuncts. Inside the
+        // branch every conjunct holds, so each encodable one is a sound fact on its own
+        // (`if r.ok && n >= 0 { f(n) }` relieves `f`'s `requires(n >= 0)` though `r.ok` is a field read).
+        // The negation `!(a && b)` is a disjunction and is only usable when the whole is encodable.
+        if !negate {
+            let conjuncts = split_top_level_conjuncts(cond);
+            if conjuncts.len() > 1 {
+                for c in conjuncts {
+                    if let Some(smt) = path_condition_smt(ctx, c) {
+                        assumptions.push(smt.clone());
+                        ctx.active_branch_guards.push(smt);
+                    }
+                }
+            }
+        }
+        return;
+    };
+    let fact = if negate { format!("(not {smt})") } else { smt };
+    assumptions.push(fact.clone());
+    ctx.active_branch_guards.push(fact);
+}
+
+/// The SMT encoding of a branch condition in whichever lane models it, or `None` when none does.
+fn path_condition_smt(ctx: &SemanticContext, cond: &Expr) -> Option<String> {
     let smt = if is_bool_modelable(cond, &ctx.solver_int_vars) {
         expr_to_smt(cond, &ctx.symbolic_widths)
     } else if is_bool_modelable_float(cond, &ctx.solver_float_vars) {
@@ -9257,11 +9494,9 @@ fn push_branch_path_condition(
         // Phase-3 str.len: a string-LENGTH branch guard (`if len(s) >= 3 { … }`) is a scoped path condition.
         strlen_bool_to_smt(cond, &ctx.solver_string_vars)
     } else {
-        return;
+        return None;
     };
-    let fact = if negate { format!("(not {smt})") } else { smt };
-    assumptions.push(fact.clone());
-    ctx.active_branch_guards.push(fact);
+    Some(smt)
 }
 
 /// Resolve a (possibly NESTED) field-access place to its canonical solver symbol: `p` → `p`, `p.a` →
@@ -9727,7 +9962,35 @@ fn analyze_stmts(
     assumptions: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    // Once a statement that always exits has run, the rest of this block cannot execute: its
+    // obligations hold vacuously (`return; f(-1);` is not a violation). Everything is still analyzed
+    // for the other lanes.
+    let mut prev_exits = false;
+    let mut marked_unreachable = false;
     for stmt in stmts {
+        mark_over_approx_obligations(ctx);
+        if prev_exits && !marked_unreachable {
+            push_unreachable(ctx, assumptions);
+            marked_unreachable = true;
+        }
+        {
+            let key = stmt as *const Stmt as usize;
+            let state: StmtState = (
+                assumptions.clone(),
+                ctx.solver_int_vars.clone(),
+                ctx.active_branch_guards.clone(),
+            );
+            match ctx.stmt_states.get(&key) {
+                Some(prev) if *prev != state => {
+                    ctx.stmt_state_conflicts.insert(key);
+                }
+                Some(_) => {}
+                None => {
+                    ctx.stmt_states.insert(key, state);
+                }
+            }
+        }
+        prev_exits = stmt_always_exits(stmt, ctx);
         match stmt {
             Stmt::Let {
                 name,
@@ -10224,6 +10487,28 @@ fn analyze_stmts(
                     || is_int_modelable(init, &ctx.solver_int_vars)
                 {
                     ctx.solver_int_vars.insert(name.clone());
+                } else if !genuinely_string {
+                    // A value-position `if` / `match` whose every value-producing arm is an integer
+                    // expression: the binding equals ONE of those values (`let t = match k { A => 0,
+                    // B => 12 }` gives `t == 0 || t == 12`). Without this the binding was unmodeled and
+                    // every precondition over it unresolvable, even behind a guard that bounds it.
+                    if let Some(values) = int_arm_values(init, ctx) {
+                        let x = smt_var(name);
+                        let alts: Vec<String> = values
+                            .iter()
+                            .filter_map(|v| expr_to_smt_value(v, &ctx.symbolic_widths))
+                            .map(|v| format!("(= {x} {v})"))
+                            .collect();
+                        if !alts.is_empty() && alts.len() == values.len() {
+                            ctx.solver_int_vars.insert(name.clone());
+                            let fact = if alts.len() == 1 {
+                                alts[0].clone()
+                            } else {
+                                format!("(or {})", alts.join(" "))
+                            };
+                            assumptions.push(fact);
+                        }
+                    }
                 }
 
                 // Phase-4 A2: a list literal of int-modelable elements is a *bounded* sequence —
@@ -11729,11 +12014,41 @@ fn analyze_stmts(
                 // stay on their own snapshot path below; this only restores BindingInfo scope.
                 let snapshot = assumptions.clone();
                 let guard_snapshot = ctx.active_branch_guards.clone();
+                let guard_snapshot_pre = guard_snapshot.clone();
                 let snap_scope = scope.clone();
+                let else_slice_pre: &[Stmt] = else_.as_deref().unwrap_or(&[]);
+                let then_exits = block_always_exits(then, ctx);
+                let else_exits = else_.is_some() && block_always_exits(else_slice_pre, ctx);
+                // Only a branch that can FALL THROUGH reaches the code after the `if`, so only its writes
+                // are dropped at the join; an exiting branch's writes never reach it.
+                let mut reaching: Vec<&[Stmt]> = Vec::new();
+                if !then_exits {
+                    reaching.push(then);
+                }
+                if !else_exits {
+                    reaching.push(else_slice_pre);
+                }
+                let keep = keepable_written_ints(ctx, &reaching);
+                // Encoded BEFORE the branches run: analyzing them changes what is modeled.
+                let cond_smt_pre = path_condition_smt(ctx, cond);
+                // What is MODELED before the branches. A branch can change it (a write `x = 3` makes `x`
+                // integer-modeled; a branch-local `let` adds a name), and none of that may survive the
+                // join by itself: an exiting branch never reaches the code after the `if`, and a
+                // reaching branch's writes are decided by the keep/drop below. Restored before the join.
+                let model_snap = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 // The guard holds inside `then` — push it as a scoped path condition.
                 push_branch_path_condition(ctx, assumptions, cond, false);
                 analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
+                let then_asm = assumptions.clone();
+                let then_guards = ctx.active_branch_guards.clone();
                 let then_scope = scope.clone();
+                let mut else_asm: Option<Vec<String>> = None;
+                let mut else_guards: Vec<String> = Vec::new();
                 let else_scope = if let Some(else_body) = else_ {
                     *assumptions = snapshot.clone();
                     ctx.active_branch_guards = guard_snapshot.clone();
@@ -11749,6 +12064,8 @@ fn analyze_stmts(
                         assumptions,
                         ctx,
                     );
+                    else_asm = Some(assumptions.clone());
+                    else_guards = ctx.active_branch_guards.clone();
                     scope.clone()
                 } else {
                     // No `else`: the alternative path leaves outer bindings at their pre-`if` state.
@@ -11770,10 +12087,170 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
-                let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
-                drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
+                let snapshot_facts = snapshot.clone();
+                ctx.solver_int_vars = model_snap.0;
+                ctx.solver_float_vars = model_snap.1;
+                ctx.solver_string_vars = model_snap.2;
+                ctx.symbolic_widths = model_snap.3;
+                drop_written_after_scope_keep(ctx, assumptions, snapshot, &reaching, &keep);
                 // Path conditions are scoped to the branches: restore the pre-`if` guard stack.
                 ctx.active_branch_guards = guard_snapshot;
+                // Early exit: the code after the `if` runs only on a path through a branch that falls
+                // through, so it runs under that branch's condition. `if c { return; } f(x)` checks
+                // `f`'s precondition under `!c`. The fact is over the values `cond` read, which the join
+                // left in place (an exiting branch's writes are not dropped here, and a later write to a
+                // variable in `cond` removes every fact mentioning it). Both branches exiting makes the
+                // rest of the block unreachable, which the statement loop records.
+                // The join: the code after the `if` runs on one of the branches that fall through, so
+                // what holds here is (facts at the end of `then`) OR (facts at the end of `else`). This
+                // keeps `let mut b = 20; if c { b = 10; }` as `b == 10 || b == 20` instead of an
+                // arbitrary `b`, and — when only one branch falls through — is exactly that branch's
+                // facts, which carries the early-exit guard (`if c { return; } f(x)` runs under `!c`).
+                // Variables the join dropped from the model (written in a reaching branch, not kept):
+                // no disjunct may mention them.
+                let dropped_smt: BTreeSet<String> = {
+                    let mut written = BTreeSet::new();
+                    for b in &reaching {
+                        collect_assigned_roots(b, &mut written);
+                    }
+                    written
+                        .iter()
+                        .filter(|v| !keep.contains(*v))
+                        .flat_map(|v| [smt_var(v), seq_arr_smt(v), seq_len_smt(v)])
+                        .collect()
+                };
+                let forbidden_for = |body: &[Stmt]| -> BTreeSet<String> {
+                    // A name the branch binds locally: its solver symbol would alias an outer binding of
+                    // the same name after the join.
+                    let mut forbidden: BTreeSet<String> = dropped_smt.clone();
+                    visit::each_stmt(body, &mut |st, _| {
+                        let names: Vec<String> = match st {
+                            Stmt::Let { name, .. } => vec![name.clone()],
+                            Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+                                pattern.bound_names()
+                            }
+                            Stmt::For { var, .. } => vec![var.clone()],
+                            _ => Vec::new(),
+                        };
+                        for n in names {
+                            forbidden.insert(smt_var(&n));
+                            forbidden.insert(seq_arr_smt(&n));
+                            forbidden.insert(seq_len_smt(&n));
+                        }
+                    });
+                    forbidden
+                };
+                let branch_new = |branch: &[String], body: &[Stmt]| -> Vec<String> {
+                    let forbidden = forbidden_for(body);
+                    // Everything true at the end of the branch that the join does not already know —
+                    // including pre-`if` facts about a variable only the OTHER branch writes, which the
+                    // drop removed but which still hold on this path.
+                    branch
+                        .iter()
+                        .filter(|f| !assumptions.contains(f))
+                        .filter(|f| {
+                            let mut vs = BTreeSet::new();
+                            collect_vars_from_smt(f, &mut vs);
+                            vs.is_disjoint(&forbidden)
+                        })
+                        .cloned()
+                        .collect()
+                };
+                let then_facts = (!then_exits).then(|| branch_new(&then_asm, then));
+                let else_facts = if else_exits {
+                    None
+                } else if let Some(e) = &else_asm {
+                    Some(branch_new(e, else_slice_pre))
+                } else {
+                    // No `else`: that path ends with the pre-`if` state plus `!cond`.
+                    let mut fallthrough = snapshot_facts.clone();
+                    if let Some(c) = &cond_smt_pre {
+                        fallthrough.push(format!("(not {c})"));
+                    }
+                    Some(branch_new(&fallthrough, &[]))
+                };
+                let conj = |fs: &[String]| -> Option<String> {
+                    match fs.len() {
+                        0 => None,
+                        1 => Some(fs[0].clone()),
+                        _ => Some(format!("(and {})", fs.join(" "))),
+                    }
+                };
+                let join: Vec<String> = match (then_facts, else_facts) {
+                    (Some(t), None) => t,
+                    (None, Some(e)) => e,
+                    (Some(t), Some(e)) => match (conj(&t), conj(&e)) {
+                        (Some(a), Some(b)) => vec![format!("(or {a} {b})")],
+                        // One side established nothing: the disjunction is trivially true.
+                        _ => Vec::new(),
+                    },
+                    (None, None) => Vec::new(),
+                };
+                for fact in join {
+                    assumptions.push(fact.clone());
+                    // Path-derived facts: excluded from the vacuity check like any path condition.
+                    ctx.active_branch_guards.push(fact);
+                }
+                // A kept variable is over-approximated only if the join lost its value. When EVERY
+                // branch that reaches here ends with an exact definition of it (`(= anb_v e)` with `e`
+                // over non-havoced values), the disjunction pins it, so it is not havoced any more:
+                // a counterexample over it is a real one.
+                // Only for an ENCODABLE condition: when the solver cannot see which branch runs, a value
+                // pinned in each branch is still unknown, and stays over-approximated.
+                // Path guards are excluded from the exact definitions: `if v == n` restricts which paths run,
+                // it does not compute `v`.
+                let reaching_ends: Vec<(Vec<String>, BTreeSet<String>)> = {
+                    let mut ends = Vec::new();
+                    let no_guards = |facts: &[String], guards: &[String]| -> Vec<String> {
+                        facts
+                            .iter()
+                            .filter(|f| !guards.contains(f))
+                            .cloned()
+                            .collect()
+                    };
+                    if cond_smt_pre.is_some() {
+                        if !then_exits {
+                            ends.push((no_guards(&then_asm, &then_guards), forbidden_for(then)));
+                        }
+                        if !else_exits {
+                            ends.push(match &else_asm {
+                                Some(e) => {
+                                    (no_guards(e, &else_guards), forbidden_for(else_slice_pre))
+                                }
+                                None => (
+                                    no_guards(&snapshot_facts, &guard_snapshot_pre),
+                                    dropped_smt.clone(),
+                                ),
+                            });
+                        }
+                    }
+                    ends
+                };
+                let havoced_now: BTreeSet<String> = ctx
+                    .solver_int_vars
+                    .iter()
+                    .filter_map(|m| m.strip_prefix("\u{1}havoc:").map(smt_var))
+                    .collect();
+                for v in &keep {
+                    let sv = smt_var(v);
+                    let pinned = !reaching_ends.is_empty()
+                        && reaching_ends.iter().all(|(facts, forbidden)| {
+                            facts.iter().any(|f| {
+                                let prefix = format!("(= {sv} ");
+                                if !f.starts_with(&prefix) {
+                                    return false;
+                                }
+                                let mut vs = BTreeSet::new();
+                                collect_vars_from_smt(&f[prefix.len()..], &mut vs);
+                                !vs.contains(&sv)
+                                    && vs.is_disjoint(&havoced_now)
+                                    && vs.is_disjoint(forbidden)
+                            })
+                        });
+                    if pinned {
+                        ctx.solver_int_vars.remove(&havoc_mark(v));
+                    }
+                }
             }
             Stmt::While {
                 cond,
@@ -11826,8 +12303,18 @@ fn analyze_stmts(
                 // discharged against a stale pre-loop value the loop mutates each iteration.
                 // Same for taint scope: a loop-body `let` is block-scoped and must not escape.
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 let snap_scope = scope.clone();
-                havoc_loop_written(ctx, assumptions, body);
+                let keep = keepable_written_ints(ctx, &[body]);
+                havoc_loop_written_keep(ctx, assumptions, body, &keep);
                 seed_loop_carried_labels(
                     body,
                     scope,
@@ -11838,7 +12325,13 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
                 );
+                // The body runs only when `cond` holds. It is re-evaluated at every iteration over the
+                // CURRENT (havoced) values, so it is a sound path condition at the start of the body; a
+                // write in the body to a variable it mentions removes the fact from that point on.
+                let guard_snapshot = ctx.active_branch_guards.clone();
+                push_branch_path_condition(ctx, assumptions, cond, false);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -11852,7 +12345,11 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
-                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
+                drop_written_after_scope_keep(ctx, assumptions, snapshot, &[body], &keep);
                 if let Some((post, _written, readmit)) = admit {
                     // A VERIFIED invariant DOES hold after the loop: re-model the tracked variables
                     // (constrained by the proved invariants ∧ ¬cond) so a later `ensures`/`assert` can
@@ -11863,6 +12360,9 @@ fn analyze_stmts(
                     // is corpus-inert; an integer loop keeps its exact prior behavior below).
                     let is_float = post.iter().any(|a| smt_uses_floats(a));
                     for v in &readmit {
+                        // Re-modeled from the VERIFIED invariant: it has facts again, so it is no longer
+                        // a havoc (an assert over it must be checked against those facts, not deferred).
+                        ctx.solver_int_vars.remove(&havoc_mark(v));
                         if is_float {
                             ctx.solver_float_vars.insert(v.clone());
                         } else {
@@ -11964,6 +12464,15 @@ fn analyze_stmts(
                     })
                     .collect();
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 for (n, _) in &saved_models {
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
@@ -11992,6 +12501,10 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 for (n, m) in saved_models {
                     restore_binding_membership(ctx, &n, m);
@@ -12010,6 +12523,15 @@ fn analyze_stmts(
                     });
                 }
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 seed_loop_carried_labels(
@@ -12036,6 +12558,10 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::For {
@@ -12385,8 +12911,18 @@ fn analyze_stmts(
                 // post-loop contract over the outer binding still discharges (review caught the over-reject).
                 let saved_var_model = capture_binding_membership(ctx, var);
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 invalidate_binding_facts(ctx, assumptions, var);
-                havoc_loop_written(ctx, assumptions, body);
+                let keep = keepable_written_ints(ctx, &[body]);
+                havoc_loop_written_keep(ctx, assumptions, body, &keep);
                 seed_loop_carried_labels(
                     body,
                     scope,
@@ -12404,7 +12940,133 @@ fn analyze_stmts(
                 // walker and `walk_block_effects`; seeding one and not the other is the exact
                 // walker-parity disease behind most of this file's false accepts.
                 seed_loop_var_callable(var, source, scope, ctx);
+                // A range loop's body runs only when `start < end`. The bounds are evaluated ONCE, at
+                // entry, so the fact is sound only while their variables still denote the entry values:
+                // push it only when no bound variable is written in the body (a havoced bound would
+                // otherwise be constrained as if it were its entry value).
+                let guard_snapshot = ctx.active_branch_guards.clone();
+                if let crate::frontend::ForSource::Range { start, end } = source {
+                    let mut body_written = BTreeSet::new();
+                    collect_assigned_roots(body, &mut body_written);
+                    let mut bound_vars = BTreeSet::new();
+                    collect_expr_vars(start, &mut bound_vars);
+                    collect_expr_vars(end, &mut bound_vars);
+                    if bound_vars.is_disjoint(&body_written) && !bound_vars.contains(var) {
+                        let nonempty = Expr::Binary {
+                            op: "<".into(),
+                            lhs: Box::new(start.clone()),
+                            rhs: Box::new(end.clone()),
+                        };
+                        push_branch_path_condition(ctx, assumptions, &nonempty, false);
+                        // The loop variable ranges over `start <= var < end` (bounds fixed at entry, not
+                        // written here), so model it with exactly that, instead of leaving it unmodeled and
+                        // every precondition over it (`for i in 0..n { f(i) }`) unresolved. If the body can
+                        // leave early, not every value is necessarily reached, so a counterexample over it
+                        // is marked over-approximated (reported undecided, never as a disproof).
+                        // A `let`/pattern in the body that re-binds a bound's NAME makes its symbol denote the
+                        // inner binding there, which strips `var < end` exactly where it is needed; the loop
+                        // variable is then left unmodeled (refused as unresolved) rather than modeled with a
+                        // lost bound.
+                        let body_rebinds_bound = {
+                            let mut rebinds = false;
+                            visit::each_stmt(body, &mut |st, _| {
+                                let names: Vec<String> = match st {
+                                    Stmt::Let { name, .. } => vec![name.clone()],
+                                    Stmt::LetPattern { pattern, .. }
+                                    | Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+                                    Stmt::For { var: v, .. } => vec![v.clone()],
+                                    _ => Vec::new(),
+                                };
+                                if names.iter().any(|n| bound_vars.contains(n)) {
+                                    rebinds = true;
+                                }
+                            });
+                            visit::each_expr_in_stmts(body, &mut |e| match e {
+                                Expr::Lambda { params, .. }
+                                    if params.iter().any(|n| bound_vars.contains(n)) =>
+                                {
+                                    rebinds = true;
+                                }
+                                Expr::Match { arms, .. }
+                                    if arms.iter().any(|arm| {
+                                        arm.pattern
+                                            .bound_names()
+                                            .iter()
+                                            .any(|n| bound_vars.contains(n))
+                                    }) =>
+                                {
+                                    rebinds = true;
+                                }
+                                Expr::IfLet { pattern, .. }
+                                    if pattern
+                                        .bound_names()
+                                        .iter()
+                                        .any(|n| bound_vars.contains(n)) =>
+                                {
+                                    rebinds = true;
+                                }
+                                _ => {}
+                            });
+                            rebinds
+                        };
+                        if !body_written.contains(var)
+                            && !body_rebinds_bound
+                            && is_int_modelable(start, &ctx.solver_int_vars)
+                            && is_int_modelable(end, &ctx.solver_int_vars)
+                        {
+                            ctx.solver_int_vars.insert(var.clone());
+                            ctx.symbolic_widths.insert(var.clone(), 64);
+                            let mut exits_early = false;
+                            visit::each_stmt(body, &mut |st, in_lambda| {
+                                if !in_lambda {
+                                    match st {
+                                        Stmt::Break => exits_early = true,
+                                        Stmt::ExprStmt(Expr::Call { callee, .. })
+                                            if matches!(
+                                                callee.as_str(),
+                                                "return" | "break" | "panic" | "exit"
+                                            ) =>
+                                        {
+                                            exits_early = true
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            });
+                            visit::each_expr_in_stmts(body, &mut |e| match e {
+                                Expr::Call { callee, .. } => {
+                                    if matches!(
+                                        callee.as_str(),
+                                        "return" | "break" | "panic" | "exit"
+                                    ) || ctx.may_exit_fns.contains(callee)
+                                    {
+                                        exits_early = true;
+                                    }
+                                }
+                                // `?` returns early on an error.
+                                Expr::Try(_) => exits_early = true,
+                                _ => {}
+                            });
+                            if exits_early {
+                                ctx.solver_int_vars.insert(havoc_mark(var));
+                            }
+                            let lo = Expr::Binary {
+                                op: ">=".into(),
+                                lhs: Box::new(Expr::Var(var.clone())),
+                                rhs: Box::new(start.clone()),
+                            };
+                            let hi = Expr::Binary {
+                                op: "<".into(),
+                                lhs: Box::new(Expr::Var(var.clone())),
+                                rhs: Box::new(end.clone()),
+                            };
+                            push_branch_path_condition(ctx, assumptions, &lo, false);
+                            push_branch_path_condition(ctx, assumptions, &hi, false);
+                        }
+                    }
+                }
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -12418,7 +13080,17 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
-                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
+                drop_written_after_scope_keep(ctx, assumptions, snapshot, &[body], &keep);
+                // The loop variable is scoped to the body: drop whatever modeling the body gave it (the
+                // range model, a havoc mark) before restoring the outer binding's own membership.
+                clear_binding_modelability(&mut ctx.solver_int_vars, var);
+                ctx.solver_float_vars.remove(var);
+                ctx.solver_string_vars.remove(var);
+                ctx.symbolic_widths.remove(var);
                 restore_binding_membership(ctx, var, saved_var_model);
                 // A VERIFIED for-range invariant holds after the loop: re-model the tracked variables
                 // (constrained by the proved invariants ∧ ¬cond) and admit the post facts, exactly as the
@@ -12436,6 +13108,8 @@ fn analyze_stmts(
                         if v == var || is_seq_var(v, &ctx.solver_int_vars) {
                             continue;
                         }
+                        // Re-modeled from the verified invariant: no longer a havoc.
+                        ctx.solver_int_vars.remove(&havoc_mark(v));
                         if is_float {
                             ctx.solver_float_vars.insert(v.clone());
                         } else {
@@ -12455,6 +13129,9 @@ fn analyze_stmts(
             Stmt::SpecBlock { .. } => effects.push("spec".into()),
         }
     }
+    // The last statement's obligations, classified under this block's own final state — before an
+    // enclosing loop or join re-havocs the variables they mention.
+    mark_over_approx_obligations(ctx);
 }
 
 /// RWC Ch3: comparing HMAC tags with `==` (early-exit) enables timing attacks.
@@ -15462,6 +16139,20 @@ impl SymbolicEngine {
             }];
         }
 
+        let overapprox = |check: SolverCheck| -> SolverCheck {
+            if check.status == "FAIL"
+                && check.model.is_some()
+                && ir.over_approx_obligations.contains(&check.name)
+            {
+                SolverCheck {
+                    detail: OVERAPPROX_UNDECIDED_DETAIL.into(),
+                    model: None,
+                    ..check
+                }
+            } else {
+                check
+            }
+        };
         ir.solver_obligations
             .iter()
             .map(|obl| {
@@ -15556,6 +16247,7 @@ impl SymbolicEngine {
                 }
                 check
             })
+            .map(overapprox)
             .collect()
     }
 }
@@ -16554,6 +17246,15 @@ pub const UNRESOLVED_REQUIRES_PREFIX: &str = "requires-unresolved@";
 /// Detail for an obligation that was never encoded (see [`UNRESOLVED_REQUIRES_PREFIX`]). Distinct from
 /// [`UNDECIDED_DETAIL`], which reports that z3 ran and returned `unknown`: no solver ran here, so no work
 /// budget is involved and raising one cannot help. Classified by exact equality, never by prose.
+/// Detail for an obligation the solver refuted, but only over a value the analysis over-approximates
+/// (see `TypedIR::over_approx_obligations`): the solver's model satisfies the ENCODED query, yet the
+/// encoding admits values execution may never produce, so this is not a checked counterexample. It is
+/// reported as undecided. Classified by exact equality, never by prose.
+pub const OVERAPPROX_UNDECIDED_DETAIL: &str = "undecided: the solver found a candidate counterexample, \
+     but only over a value the analysis over-approximates (a variable changed by a loop or a branch join \
+     is modeled as an arbitrary integer there), so it may not be reachable and is not a disproof. State \
+     a loop invariant, guard the use, or narrow the value explicitly";
+
 pub const UNRESOLVED_PRECONDITION_DETAIL: &str = "undecided without a solver: this precondition could \
      not be encoded (an argument or clause is not modelable, or the function value escapes where the \
      checker cannot follow it), so it was neither proved nor disproved; failing closed rather than \
@@ -16580,7 +17281,8 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
         return AssertionFailKind::Other;
     }
     // Exact equality, not a substring: an unencoded obligation is undecided by construction.
-    if check.detail == UNRESOLVED_PRECONDITION_DETAIL {
+    if check.detail == UNRESOLVED_PRECONDITION_DETAIL || check.detail == OVERAPPROX_UNDECIDED_DETAIL
+    {
         return AssertionFailKind::Undecided;
     }
     if check.detail.contains("ANUBIS_REPLAY_MISMATCH") {
@@ -17146,9 +17848,9 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
     } else if all_undecided {
         // "within solver budget" is only true when a solver ran; an unencoded obligation never
         // reached one.
-        let any_unencoded = fails
-            .iter()
-            .any(|c| c.detail == UNRESOLVED_PRECONDITION_DETAIL);
+        let any_unencoded = fails.iter().any(|c| {
+            c.detail == UNRESOLVED_PRECONDITION_DETAIL || c.detail == OVERAPPROX_UNDECIDED_DETAIL
+        });
         (
             "ANUBIS_ASSERTION_UNDECIDED",
             if any_unencoded {
@@ -17206,6 +17908,12 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                         }
                     }
                 }
+            }
+            AssertionFailKind::Undecided if c.detail == OVERAPPROX_UNDECIDED_DETAIL => {
+                out.push_str(
+                    "\n    (a candidate counterexample exists only over an over-approximated value — not a disproof)",
+                );
+                out.push_str(&format!("\n    detail: {}", c.detail));
             }
             AssertionFailKind::Undecided if c.detail == UNRESOLVED_PRECONDITION_DETAIL => {
                 out.push_str("\n    (not encoded — no solver ran; neither proved nor disproved)");
@@ -17306,6 +18014,425 @@ fn nzdiv_mark(v: &str) -> String {
     format!("\u{1}nzdiv:{v}")
 }
 
+/// The integer values a value-position `if` / `match` / tail-only block may produce, or `None` when any
+/// value-producing arm is not an integer-modelable expression. An arm that diverges (`return`, `break`,
+/// `continue`) produces no value and is skipped. A `match` / `if let` arm whose value mentions one of its
+/// own pattern binders is refused: the binder is not modeled, and an outer modeled variable of the same
+/// name would be mistaken for it. A block with statements is refused (they may shadow names).
+fn int_arm_values(e: &Expr, ctx: &SemanticContext) -> Option<Vec<Expr>> {
+    fn collect(e: &Expr, ctx: &SemanticContext, out: &mut Vec<Expr>, depth: u32) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        match e {
+            Expr::Call { callee, .. }
+                if matches!(callee.as_str(), "return" | "break" | "continue") =>
+            {
+                true
+            }
+            Expr::If { then, else_, .. } => {
+                collect(then, ctx, out, depth + 1) && collect(else_, ctx, out, depth + 1)
+            }
+            Expr::Block { stmts, tail } => match (stmts.is_empty(), tail) {
+                (true, Some(t)) => collect(t, ctx, out, depth + 1),
+                _ => false,
+            },
+            Expr::Match { arms, .. } => arms.iter().all(|arm| {
+                let mut used = BTreeSet::new();
+                collect_expr_vars(&arm.body, &mut used);
+                let binders: BTreeSet<String> = arm.pattern.bound_names().into_iter().collect();
+                used.is_disjoint(&binders) && collect(&arm.body, ctx, out, depth + 1)
+            }),
+            Expr::IfLet {
+                pattern,
+                then,
+                else_,
+                ..
+            } => {
+                let mut used = BTreeSet::new();
+                collect_expr_vars(then, &mut used);
+                let binders: BTreeSet<String> = pattern.bound_names().into_iter().collect();
+                used.is_disjoint(&binders)
+                    && collect(then, ctx, out, depth + 1)
+                    && collect(else_, ctx, out, depth + 1)
+            }
+            other => {
+                if is_int_modelable(other, &ctx.solver_int_vars) {
+                    out.push(other.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+    if !matches!(
+        e,
+        Expr::If { .. } | Expr::Match { .. } | Expr::IfLet { .. } | Expr::Block { .. }
+    ) {
+        return None;
+    }
+    let mut out = Vec::new();
+    (collect(e, ctx, &mut out, 0) && !out.is_empty()).then_some(out)
+}
+
+/// Rewrite every field read off a struct LITERAL (`P { a: e }.a`) to the field's value `e`, applying the
+/// runtime's coercion for the field's declared type. Folds only when that coercion is known: the value's
+/// kind already matches the field, an integer literal into a float field (which the runtime widens:
+/// `7` becomes `7.0`), or a non-negative integer literal that fits an unsigned field. Anything else is
+/// left as it was, so it stays unencodable (and therefore unresolved), never modeled wrongly.
+fn fold_literal_field_reads(e: &Expr, ctx: &SemanticContext) -> Expr {
+    let rec = |x: &Expr| Box::new(fold_literal_field_reads(x, ctx));
+    match e {
+        Expr::FieldAccess { base, field, span } => {
+            let base_f = fold_literal_field_reads(base, ctx);
+            if let Expr::StructLiteral { name, fields, .. } = &base_f {
+                let declared = ctx
+                    .struct_fields
+                    .get(name)
+                    .and_then(|fs| fs.get(field))
+                    .cloned();
+                if let (Some(value), Some(ty)) = (
+                    fields
+                        .iter()
+                        .find(|(f, _)| f == field)
+                        .map(|(_, v)| (**v).clone()),
+                    declared,
+                ) {
+                    if let Some(folded) = coerce_literal_into_field(&value, &ty) {
+                        return folded;
+                    }
+                }
+            }
+            Expr::FieldAccess {
+                base: Box::new(base_f),
+                field: field.clone(),
+                span: *span,
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: rec(lhs),
+            rhs: rec(rhs),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: op.clone(),
+            expr: rec(expr),
+        },
+        Expr::Call { callee, args } => {
+            let args: Vec<Expr> = args
+                .iter()
+                .map(|a| fold_literal_field_reads(a, ctx))
+                .collect();
+            unfold_expr_fn(callee, &args, ctx, 0).unwrap_or(Expr::Call {
+                callee: callee.clone(),
+                args,
+            })
+        }
+        other => other.clone(),
+    }
+}
+
+/// Unfold a call to an expression function (`SemanticContext::expr_fns`) into its body with the
+/// parameters replaced by the arguments, recursively up to a small depth; `None` when `callee` is not
+/// one or the depth is exhausted. A call-position name resolves to a user function first, as at
+/// runtime, so a local of the same name cannot be meant here.
+fn unfold_expr_fn(callee: &str, args: &[Expr], ctx: &SemanticContext, depth: u32) -> Option<Expr> {
+    if depth > 4 {
+        return None;
+    }
+    let (params, body) = ctx.expr_fns.get(callee)?;
+    if params.len() != args.len() {
+        return None;
+    }
+    let sub: BTreeMap<String, Expr> = params.iter().cloned().zip(args.iter().cloned()).collect();
+    let inst = substitute_vars(body, &sub);
+    // Unfold nested expression-function calls in the instantiated body — never the function itself,
+    // so a recursive definition stays an (unencodable) call rather than looping.
+    fn go(e: &Expr, ctx: &SemanticContext, depth: u32, this: &str) -> Expr {
+        match e {
+            Expr::Call { callee, args } => {
+                let args: Vec<Expr> = args.iter().map(|a| go(a, ctx, depth, this)).collect();
+                if callee != this {
+                    if let Some(u) = unfold_expr_fn(callee, &args, ctx, depth + 1) {
+                        return u;
+                    }
+                }
+                Expr::Call {
+                    callee: callee.clone(),
+                    args,
+                }
+            }
+            Expr::Binary { op, lhs, rhs } => Expr::Binary {
+                op: op.clone(),
+                lhs: Box::new(go(lhs, ctx, depth, this)),
+                rhs: Box::new(go(rhs, ctx, depth, this)),
+            },
+            Expr::Unary { op, expr } => Expr::Unary {
+                op: op.clone(),
+                expr: Box::new(go(expr, ctx, depth, this)),
+            },
+            other => other.clone(),
+        }
+    }
+    Some(go(&inst, ctx, depth, callee))
+}
+
+/// The value a struct field of declared type `ty` holds when initialized with `value`, when that is
+/// known statically without evaluating anything; `None` otherwise.
+fn coerce_literal_into_field(value: &Expr, ty: &str) -> Option<Expr> {
+    let ty = ty.trim();
+    match value {
+        Expr::StrLiteral(_) if ty == "string" => Some(value.clone()),
+        Expr::Literal(l) if l == "true" || l == "false" => (ty == "bool").then(|| value.clone()),
+        Expr::Literal(l) => {
+            let is_int = l.parse::<i64>().is_ok();
+            let is_float = !is_int && l.parse::<f64>().is_ok_and(|f| f.is_finite());
+            if is_float_ty(ty) {
+                if is_int {
+                    Some(Expr::Literal(format!("{l}.0")))
+                } else if is_float {
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            } else if is_integer_ty(ty) && is_int {
+                match ty::unsigned_mask_width(ty) {
+                    Some(w) => {
+                        let v: i64 = l.parse().ok()?;
+                        (v >= 0 && (w >= 63 || v < (1i64 << w))).then(|| value.clone())
+                    }
+                    None => Some(value.clone()),
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether `body` directly calls a user function that declares a `requires`.
+fn body_calls_contracted_fn(body: &[Stmt], ctx: &SemanticContext) -> bool {
+    let mut hit = false;
+    visit::each_expr_in_stmts(body, &mut |e| {
+        if let Expr::Call { callee, .. } = e {
+            if ctx
+                .fn_contracts
+                .get(callee)
+                .is_some_and(|(_, requires, _)| !requires.is_empty())
+            {
+                hit = true;
+            }
+        }
+    });
+    hit
+}
+
+/// Record, by name, every obligation built since the last scan whose assertion or assumptions mention a
+/// currently havoced variable (see `havoc_mark`). Called at every statement boundary of
+/// `analyze_stmts` and after each function body, so the havoc state it reads is the one the obligation
+/// was built under (or a later, more havoced one — which only makes it more conservative).
+fn mark_over_approx_obligations(ctx: &mut SemanticContext) {
+    let start = ctx.over_approx_scan.min(ctx.solver_obligations.len());
+    let havoced: BTreeSet<String> = ctx
+        .solver_int_vars
+        .iter()
+        .filter_map(|m| m.strip_prefix("\u{1}havoc:").map(smt_var))
+        .collect();
+    if havoced.is_empty() && ctx.assert_deferred_vars.is_empty() {
+        ctx.over_approx_scan = ctx.solver_obligations.len();
+        return;
+    }
+    // An in-body `assert` is enforced at runtime. Before havoc kept loop/join-written integers modeled
+    // (and before call-site preconditions modeled float/string parameters), an assert over such a value
+    // was never emitted and was left to the runtime; withdrawing it here keeps exactly that behavior,
+    // rather than refusing a program whose assert holds at runtime. Contract obligations (`requires`,
+    // `ensures`) are not runtime-enforced, so they stay, marked over-approximated.
+    //
+    // Withdrawn by renaming IN PLACE (filtered out once, when the typed IR is built): other code holds
+    // index marks into `solver_obligations` across nested analysis, so this must never shift indices.
+    let deferred: BTreeSet<String> = havoced.union(&ctx.assert_deferred_vars).cloned().collect();
+    let len = ctx.solver_obligations.len();
+    let mut over = Vec::new();
+    for obl in &mut ctx.solver_obligations[start..len] {
+        if obl.name.starts_with("assert:")
+            && depends_on_havoc(
+                &obl.assertion,
+                &obl.assumptions,
+                &obl.guard_assumptions,
+                &deferred,
+                HavocDependence::Definitional,
+            )
+        {
+            obl.name = format!("{WITHDRAWN_ASSERT_PREFIX}{}", obl.name);
+            continue;
+        }
+        // A loop-invariant STEP obligation is about an arbitrary state satisfying the invariant by
+        // construction: its counterexample refutes inductiveness itself. The BASE case runs on the real
+        // entry state, which may hold over-approximated values, so it is labeled like anything else.
+        if !obl.name.starts_with("loop-invariant-step")
+            && depends_on_havoc(
+                &obl.assertion,
+                &obl.assumptions,
+                &obl.guard_assumptions,
+                &havoced,
+                HavocDependence::Closure,
+            )
+        {
+            over.push(obl.name.clone());
+        }
+    }
+    ctx.over_approx_obligations.extend(over);
+    ctx.over_approx_scan = len;
+}
+
+/// See `SemanticContext::stmt_states`.
+type StmtState = (Vec<String>, BTreeSet<String>, Vec<String>);
+
+/// An exact definition `(= anb_v e)`: the defined variable and the variables of `e`.
+type SmtDefinition = (String, BTreeSet<String>);
+
+/// How `depends_on_havoc` follows facts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HavocDependence {
+    /// Only through exact definitions (`y = x + 1` depends on `x`). Used where MORE dependence means
+    /// LESS checking — withdrawing an assert to the runtime, exempting an operand from the wrap lint —
+    /// so a merely shared fact (a loop guard `i < p` over a parameter) must not count.
+    Definitional,
+    /// Also through co-occurrence in any fact whose variables are not pinned. Used to LABEL a failure
+    /// undecided rather than disproved: erring toward "may depend" only weakens the label.
+    Closure,
+}
+
+/// Whether the truth of `assertion` under `assumptions` may depend on the value of a variable in `seeds`
+/// (havoced — an arbitrary stand-in for an unknown value).
+///
+/// Exact definitions come only from facts that are NOT path guards (`guards`): `if i == n` restricts
+/// which paths run, it does not compute `i`, so it must not be read as `i := n`.
+///
+/// `D` is the seeds closed under exact definitions: `(= anb_v e)` with `e` mentioning a `D` variable puts
+/// `v` in `D`. A seed that is itself defined exactly over non-seed values (a stale mark) is not a seed.
+/// In `Definitional` mode the answer is whether the assertion's own variables meet `D`. In `Closure`
+/// mode a variable defined exactly over values outside `D` is PINNED (fixed whatever the seeds are), and
+/// the closure from the assertion's variables expands through any fact mentioning an unpinned variable;
+/// the answer is whether that closure meets `D`.
+fn depends_on_havoc(
+    assertion: &str,
+    assumptions: &[String],
+    guards: &[String],
+    seeds: &BTreeSet<String>,
+    mode: HavocDependence,
+) -> bool {
+    let facts: Vec<(BTreeSet<String>, Option<SmtDefinition>)> = assumptions
+        .iter()
+        .map(|a| {
+            let mut vs = BTreeSet::new();
+            collect_vars_from_smt(a, &mut vs);
+            let def = if guards.contains(a) {
+                None
+            } else {
+                a.strip_prefix("(= ").and_then(|rest| {
+                    let (lhs, rhs) = rest.split_once(' ')?;
+                    if !lhs.starts_with("anb_") {
+                        return None;
+                    }
+                    let mut rv = BTreeSet::new();
+                    collect_vars_from_smt(rhs, &mut rv);
+                    (!rv.contains(lhs)).then(|| (lhs.to_string(), rv))
+                })
+            };
+            (vs, def)
+        })
+        .collect();
+    let pinned_over = |v: &str, excluded: &BTreeSet<String>| {
+        facts.iter().any(|(_, def)| {
+            def.as_ref()
+                .is_some_and(|(lhs, rv)| lhs == v && rv.is_disjoint(excluded))
+        })
+    };
+    let seeds: BTreeSet<String> = seeds
+        .iter()
+        .filter(|s| !pinned_over(s, seeds))
+        .cloned()
+        .collect();
+    if seeds.is_empty() {
+        return false;
+    }
+    let mut dep = seeds.clone();
+    loop {
+        let before = dep.len();
+        for (_, def) in &facts {
+            if let Some((lhs, rv)) = def {
+                if !rv.is_disjoint(&dep) {
+                    dep.insert(lhs.clone());
+                }
+            }
+        }
+        if dep.len() == before {
+            break;
+        }
+    }
+    let mut own = BTreeSet::new();
+    collect_vars_from_smt(assertion, &mut own);
+    if mode == HavocDependence::Definitional {
+        return !own.is_disjoint(&dep);
+    }
+    // Whether the obligation's PATH can be reached depends on an arbitrary value when a path guard
+    // mentions one (`if j == i + 1 { h(j) }` with `i` havoced): a counterexample may sit on a path that
+    // never runs, even when the asserted value itself is pinned.
+    let guard_dep = guards.iter().any(|g| {
+        let mut vs = BTreeSet::new();
+        collect_vars_from_smt(g, &mut vs);
+        !vs.is_disjoint(&dep)
+    });
+    if guard_dep {
+        return true;
+    }
+    let pinned: BTreeSet<String> = facts
+        .iter()
+        .filter_map(|(_, def)| def.as_ref())
+        .filter(|(lhs, rv)| !dep.contains(lhs) && rv.is_disjoint(&dep))
+        .map(|(lhs, _)| lhs.clone())
+        .collect();
+    let mut closure = own;
+    loop {
+        let before = closure.len();
+        for (vs, _) in &facts {
+            if vs
+                .iter()
+                .any(|v| closure.contains(v) && !pinned.contains(v))
+            {
+                closure.extend(vs.iter().cloned());
+            }
+        }
+        if closure.len() == before {
+            break;
+        }
+    }
+    !closure.is_disjoint(&dep)
+}
+
+/// Name prefix of an `assert:` obligation withdrawn to the runtime by `mark_over_approx_obligations`.
+/// Such obligations are removed when the typed IR is built and never reach a solver.
+const WITHDRAWN_ASSERT_PREFIX: &str = "\u{1}withdrawn-assert:";
+
+/// Marker: integer parameter `v` is modeled only because the body calls a contracted function (not
+/// because of a contract or an in-body assert of its own). Such a parameter was unmodeled before, so the
+/// wrap-risk lint keeps ignoring arithmetic over it, as for a havoc.
+fn wrapexempt_mark(v: &str) -> String {
+    format!("\u{1}wrapexempt:{v}")
+}
+
+/// Marker: `v` is integer-modeled only as a HAVOC — an unconstrained value kept across a loop or branch
+/// join by `keepable_written_ints` — and has had no definition since. Such a variable was unmodeled
+/// before that precision change, so the wrap-risk lint (which runs over modeled operands) skips it to
+/// keep its previous behavior; contract obligations still see it. Cleared with the rest of the binding's
+/// model, so a later definition (`x = 5`) makes it an ordinary modeled variable again.
+fn havoc_mark(v: &str) -> String {
+    format!("\u{1}havoc:{v}")
+}
+
 /// Parameter/var proven non-negative by `requires` (sound pow2 `/` → `bvlshr`).
 fn nonneg_mark(v: &str) -> String {
     format!("\u{1}nonneg:{v}")
@@ -17345,6 +18472,8 @@ fn seq_fixed_len(v: &str, int_vars: &BTreeSet<String>) -> Option<u64> {
 /// Drop every solver fact / modelability mark for a binding (int, nzdiv, seq, seqlen).
 fn clear_binding_modelability(int_vars: &mut BTreeSet<String>, name: &str) {
     int_vars.remove(name);
+    int_vars.remove(&havoc_mark(name));
+    int_vars.remove(&wrapexempt_mark(name));
     int_vars.remove(&nzdiv_mark(name));
     int_vars.remove(&nonneg_mark(name));
     int_vars.remove(&seq_mark(name));
@@ -17383,6 +18512,8 @@ fn invalidate_binding_facts(ctx: &mut SemanticContext, assumptions: &mut Vec<Str
 /// plain `let` / `LetPattern` shadow is PERMANENT and needs no restore.
 struct BindingMembership {
     int: bool,
+    havoc: bool,
+    wrapexempt: bool,
     nzdiv: bool,
     seq: bool,
     seqlen: Vec<String>,
@@ -17395,6 +18526,8 @@ fn capture_binding_membership(ctx: &SemanticContext, name: &str) -> BindingMembe
     let seqlen_prefix = format!("\u{1}seqlen:{name}:");
     BindingMembership {
         int: ctx.solver_int_vars.contains(name),
+        havoc: ctx.solver_int_vars.contains(&havoc_mark(name)),
+        wrapexempt: ctx.solver_int_vars.contains(&wrapexempt_mark(name)),
         nzdiv: ctx.solver_int_vars.contains(&nzdiv_mark(name)),
         seq: ctx.solver_int_vars.contains(&seq_mark(name)),
         seqlen: ctx
@@ -17412,6 +18545,12 @@ fn capture_binding_membership(ctx: &SemanticContext, name: &str) -> BindingMembe
 fn restore_binding_membership(ctx: &mut SemanticContext, name: &str, m: BindingMembership) {
     if m.int {
         ctx.solver_int_vars.insert(name.to_string());
+    }
+    if m.havoc {
+        ctx.solver_int_vars.insert(havoc_mark(name));
+    }
+    if m.wrapexempt {
+        ctx.solver_int_vars.insert(wrapexempt_mark(name));
     }
     if m.nzdiv {
         ctx.solver_int_vars.insert(nzdiv_mark(name));
@@ -18040,7 +19179,15 @@ fn coerce_int_into_float_slot(
     if is_int_modelable(arg, &ctx.solver_int_vars) {
         if let Some(v) = const_fold_i64(arg) {
             if v.unsigned_abs() <= (1u64 << 53) {
-                return arg.clone(); // exact coercion (`v as f64 == v`) — the int-lane model is sound
+                // The coerced VALUE is exact (`v as f64 == v`), but the argument must still be a FLOAT
+                // in the clause: arithmetic on the parameter is float arithmetic at runtime. Keeping the
+                // integer literal let the clause fall into the integer lane, so `requires(n / 2 == 3)` on
+                // an `f64` parameter was PROVED for `f(7)` (integer 7 / 2 == 3) while the runtime computes
+                // 7.0 / 2 == 3.5.
+                let lit = Expr::Literal(format!("{:.1}", v as f64));
+                if is_float_modelable(&lit, &ctx.solver_float_vars) {
+                    return lit;
+                }
             }
             // |v| > 2^53: model the EXACT coerced double `v as f64` (round-to-even) as a FLOAT-FORM literal.
             // A float-form render (not an i64 literal) is load-bearing: the rounded value is itself > 2^53,
@@ -21497,6 +22644,20 @@ fn drop_written_after_scope(
     snapshot: Vec<String>,
     bodies: &[&[Stmt]],
 ) {
+    drop_written_after_scope_keep(ctx, assumptions, snapshot, bodies, &BTreeSet::new());
+}
+
+/// `drop_written_after_scope`, except that each variable in `keep` stays INTEGER-MODELED after its facts
+/// are dropped: it becomes an unconstrained value (a havoc) instead of an unmodeled one, so later guards
+/// over it still give relief. `keep` must come from `keepable_written_ints`, computed BEFORE the construct
+/// ran, which admits a variable only when every write to it assigns an integer.
+fn drop_written_after_scope_keep(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    snapshot: Vec<String>,
+    bodies: &[&[Stmt]],
+    keep: &BTreeSet<String>,
+) {
     *assumptions = snapshot;
     let mut written = BTreeSet::new();
     for b in bodies {
@@ -21515,6 +22676,11 @@ fn drop_written_after_scope(
     });
     for v in &written {
         clear_binding_modelability(&mut ctx.solver_int_vars, v);
+        if keep.contains(v) {
+            ctx.solver_int_vars.insert(v.clone());
+            ctx.solver_int_vars.insert(havoc_mark(v));
+            ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+        }
     }
 }
 
@@ -21557,6 +22723,17 @@ fn invalidate_embedded_writes(
 /// After havoc, an in-body assertion over a loop-written variable is left to the runtime (which does
 /// enforce `assert`), rather than "proved" from a value the loop has moved past.
 fn havoc_loop_written(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, body: &[Stmt]) {
+    havoc_loop_written_keep(ctx, assumptions, body, &BTreeSet::new());
+}
+
+/// `havoc_loop_written`, keeping each variable in `keep` integer-modeled as an unconstrained value (see
+/// `drop_written_after_scope_keep`).
+fn havoc_loop_written_keep(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    body: &[Stmt],
+    keep: &BTreeSet<String>,
+) {
     let mut written = BTreeSet::new();
     collect_assigned_roots(body, &mut written);
     let mut mangled: BTreeSet<String> = BTreeSet::new();
@@ -21567,12 +22744,223 @@ fn havoc_loop_written(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, 
     }
     for v in &written {
         clear_binding_modelability(&mut ctx.solver_int_vars, v);
+        if keep.contains(v) {
+            ctx.solver_int_vars.insert(v.clone());
+            ctx.solver_int_vars.insert(havoc_mark(v));
+            ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+        }
     }
     assumptions.retain(|a| {
         let mut vs = BTreeSet::new();
         collect_vars_from_smt(a, &mut vs);
         vs.is_disjoint(&mangled)
     });
+}
+
+/// Variables written inside `bodies` that may stay integer-modeled, as unconstrained values, across the
+/// construct instead of being dropped from the model.
+///
+/// Dropping is sound but loses every later fact about the variable: after `let mut x = 3; while x > 0
+/// { x = x - 1; }` a guard `if x < 10 { f(x) }` could not relieve `f`'s precondition, because `x` was no
+/// longer modeled at all. Keeping it as a fresh value is equally sound (no fact about its old value
+/// survives) and keeps guards useful. It is admitted only when that fresh value is certainly an INTEGER:
+/// - the variable is integer-modeled when the construct starts;
+/// - every write to it anywhere inside is a plain `v = rhs` statement, not inside a lambda (which runs
+///   at an unknown time), and it is not re-bound by a `let`, pattern or loop variable inside;
+/// - every such `rhs` is an integer-modelable expression over variables that are themselves still
+///   integer-modeled (a fixpoint), or a direct call to a user function with a declared integer return
+///   type.
+///
+/// Must be computed BEFORE the construct is analyzed: analysis of the body changes the modeled set.
+fn keepable_written_ints(ctx: &SemanticContext, bodies: &[&[Stmt]]) -> BTreeSet<String> {
+    let mut written = BTreeSet::new();
+    for b in bodies {
+        collect_assigned_roots(b, &mut written);
+    }
+    let mut rhs: BTreeMap<String, Vec<Expr>> = BTreeMap::new();
+    let mut disqualified: BTreeSet<String> = BTreeSet::new();
+    for b in bodies {
+        visit::each_stmt(b, &mut |st, in_lambda| match st {
+            Stmt::Assign {
+                target: Expr::Var(v),
+                value,
+            } => {
+                if in_lambda {
+                    disqualified.insert(v.clone());
+                } else {
+                    rhs.entry(v.clone()).or_default().push(value.clone());
+                }
+            }
+            Stmt::Assign { target, .. } => {
+                let mut roots = BTreeSet::new();
+                collect_expr_vars(target, &mut roots);
+                disqualified.extend(roots);
+            }
+            Stmt::Let { name, .. } => {
+                disqualified.insert(name.clone());
+            }
+            Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+                disqualified.extend(pattern.bound_names());
+            }
+            Stmt::For { var, .. } => {
+                disqualified.insert(var.clone());
+            }
+            _ => {}
+        });
+    }
+    let mut keep: BTreeSet<String> = written
+        .iter()
+        .filter(|v| {
+            ctx.solver_int_vars.contains(*v) && !disqualified.contains(*v) && rhs.contains_key(*v)
+        })
+        .cloned()
+        .collect();
+    loop {
+        let mut modelable: BTreeSet<String> = ctx
+            .solver_int_vars
+            .iter()
+            .filter(|m| !written.contains(*m))
+            .cloned()
+            .collect();
+        modelable.extend(keep.iter().cloned());
+        let before = keep.len();
+        keep.retain(|v| {
+            rhs.get(v).is_some_and(|vals| {
+                vals.iter().all(|e| {
+                    is_int_modelable(e, &modelable) || is_integer_returning_user_call(e, ctx)
+                })
+            })
+        });
+        if keep.len() == before {
+            return keep;
+        }
+    }
+}
+
+/// User functions that may end the program instead of returning: their body reaches `panic`, `exit`
+/// or `?` (early error return), directly or by calling another such function. A fixpoint over direct
+/// calls; conservative (any mention counts).
+fn compute_may_exit_fns(items: &[Item]) -> BTreeSet<String> {
+    let mut bodies: Vec<(String, BTreeSet<String>, bool)> = Vec::new();
+    visit::each_fn_item(items, &mut |it| {
+        if let Item::Fn { name, body, .. } = it {
+            let mut calls = BTreeSet::new();
+            let mut exits = false;
+            visit::each_expr_in_stmts(body, &mut |e| match e {
+                Expr::Call { callee, .. } => {
+                    if matches!(callee.as_str(), "panic" | "exit") {
+                        exits = true;
+                    }
+                    calls.insert(callee.clone());
+                }
+                Expr::Try(_) => exits = true,
+                _ => {}
+            });
+            bodies.push((name.clone(), calls, exits));
+        }
+    });
+    let mut out: BTreeSet<String> = bodies
+        .iter()
+        .filter(|(_, _, e)| *e)
+        .map(|(n, _, _)| n.clone())
+        .collect();
+    loop {
+        let before = out.len();
+        for (n, calls, _) in &bodies {
+            if !out.contains(n) && calls.iter().any(|c| out.contains(c)) {
+                out.insert(n.clone());
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
+/// Every name bound anywhere in a function: parameters, `let` / pattern / loop bindings, and lambda
+/// parameters and match / if-let binders inside expressions.
+fn function_bound_names(params: &[(String, String)], body: &[Stmt]) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
+    visit::each_stmt(body, &mut |st, _| match st {
+        Stmt::Let { name, .. } => {
+            out.insert(name.clone());
+        }
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            out.extend(pattern.bound_names());
+        }
+        Stmt::For { var, .. } => {
+            out.insert(var.clone());
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Lambda { params, .. } => out.extend(params.iter().cloned()),
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                out.extend(arm.pattern.bound_names());
+            }
+        }
+        Expr::IfLet { pattern, .. } => out.extend(pattern.bound_names()),
+        _ => {}
+    });
+    out
+}
+
+/// Whether `e` is a direct call to a user function (not shadowed by any binding) whose declared return
+/// type is an integer: its value is certainly an integer, even when the call itself is not encodable.
+fn is_integer_returning_user_call(e: &Expr, ctx: &SemanticContext) -> bool {
+    match e {
+        Expr::Call { callee, .. } => {
+            ctx.user_fn_names.contains(callee)
+                && ctx
+                    .fn_ret_types
+                    .get(callee)
+                    .is_some_and(|t| !t.trim().is_empty() && is_integer_ty(t))
+        }
+        _ => false,
+    }
+}
+
+/// Whether executing `s` to completion always leaves the enclosing block: a `return`, `break` or
+/// `continue`; a call to the diverging builtins `panic(msg)` (a Rust panic: control never reaches the
+/// next statement) or `exit(code)` (`std::process::exit`); or an `if`/`else` whose branches both do.
+/// Conservative: anything else counts as falling through.
+///
+/// `exit` with no argument is NOT diverging (it lowers to a no-op value). And a call-position name
+/// resolves to a user function, then a local, before a builtin, so `panic`/`exit` count only when no
+/// user function and no binding in the program uses that name.
+fn stmt_always_exits(s: &Stmt, ctx: &SemanticContext) -> bool {
+    match s {
+        Stmt::Break | Stmt::Continue => true,
+        Stmt::ExprStmt(Expr::Call { callee, args }) => match callee.as_str() {
+            "return" | "break" | "continue" => true,
+            "panic" | "exit" => {
+                args.len() == 1
+                    && !ctx.user_fn_names.contains(callee)
+                    && !ctx.fn_bound_names.contains(callee)
+            }
+            _ => false,
+        },
+        Stmt::If {
+            then,
+            else_: Some(else_),
+            ..
+        } => block_always_exits(then, ctx) && block_always_exits(else_, ctx),
+        _ => false,
+    }
+}
+
+/// Whether a statement list always leaves the enclosing block: some top-level statement always exits
+/// (statements after it are unreachable; one before it that never finishes never falls through either).
+fn block_always_exits(stmts: &[Stmt], ctx: &SemanticContext) -> bool {
+    stmts.iter().any(|s| stmt_always_exits(s, ctx))
+}
+
+/// Record that the rest of the current block is unreachable: every later obligation in it holds
+/// vacuously. Scoped like any path condition (the enclosing construct restores its snapshot).
+fn push_unreachable(ctx: &mut SemanticContext, assumptions: &mut Vec<String>) {
+    assumptions.push("false".to_string());
+    ctx.active_branch_guards.push("false".to_string());
 }
 
 /// True when statement `s` can break/continue/return OUT of the enclosing loop being analyzed. A
@@ -28850,6 +30238,7 @@ fn empty_ir() -> TypedIR {
         hir: Hir::default(),
         mir: vec![],
         solver_obligations: vec![],
+        over_approx_obligations: BTreeSet::new(),
         symbols: vec![],
         taint_traces: vec![],
         diagnostics: vec![],

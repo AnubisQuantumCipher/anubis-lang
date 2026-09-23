@@ -184,6 +184,196 @@ pub(crate) fn each_expr_in_stmt<'a>(s: &'a Stmt, f: &mut dyn FnMut(&'a Expr)) {
     }
 }
 
+/// Call `f` on every statement reachable from `stmts`, in pre-order, including statements nested
+/// inside expressions (value blocks, `if`/`match`/`if let` expression branches) and lambda bodies.
+/// The flag passed with each statement is `true` when it lies inside a lambda body: such a statement
+/// runs whenever the closure is called, not at its position in the enclosing flow.
+pub(crate) fn each_stmt<'a>(stmts: &'a [Stmt], f: &mut dyn FnMut(&'a Stmt, bool)) {
+    each_stmt_in(stmts, false, f);
+}
+
+fn each_stmt_in<'a>(stmts: &'a [Stmt], in_lambda: bool, f: &mut dyn FnMut(&'a Stmt, bool)) {
+    for s in stmts {
+        f(s, in_lambda);
+        // Nested statement lists of the statement itself.
+        match s {
+            Stmt::WhileLet { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => each_stmt_in(body, in_lambda, f),
+            Stmt::If { then, else_, .. } => {
+                each_stmt_in(then, in_lambda, f);
+                if let Some(e) = else_ {
+                    each_stmt_in(e, in_lambda, f);
+                }
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    each_stmt_in(b, in_lambda, f);
+                }
+            }
+            Stmt::Let { .. }
+            | Stmt::LetPattern { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::SpecBlock { .. }
+            | Stmt::ExprStmt(_) => {}
+        }
+        // Statements nested inside the statement's expressions.
+        let mut nested: Vec<(&'a [Stmt], bool)> = Vec::new();
+        each_expr_in_stmt_shallow(s, &mut |e| {
+            stmts_in_expr(e, in_lambda, &mut nested);
+        });
+        for (ss, lam) in nested {
+            each_stmt_in(ss, lam, f);
+        }
+    }
+}
+
+/// The expressions held directly by statement `s` (not those of its nested statement lists).
+fn each_expr_in_stmt_shallow<'a>(s: &'a Stmt, f: &mut dyn FnMut(&'a Expr)) {
+    match s {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => f(init),
+        Stmt::WhileLet { expr, .. } => f(expr),
+        Stmt::Assign { target, value } => {
+            f(target);
+            f(value);
+        }
+        Stmt::If { cond, .. } => f(cond),
+        Stmt::While {
+            cond, invariant, ..
+        } => {
+            f(cond);
+            for i in invariant {
+                f(i);
+            }
+        }
+        Stmt::Loop { invariant, .. } => {
+            for i in invariant {
+                f(i);
+            }
+        }
+        Stmt::For {
+            source, invariant, ..
+        } => {
+            match source {
+                ForSource::Range { start, end } => {
+                    f(start);
+                    f(end);
+                }
+                ForSource::Collection { expr } => f(expr),
+            }
+            for i in invariant {
+                f(i);
+            }
+        }
+        Stmt::ExprStmt(e) => f(e),
+        Stmt::ResearchBlock { .. }
+        | Stmt::ExploitBlock { .. }
+        | Stmt::HybridBlock { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::SpecBlock { .. } => {}
+    }
+}
+
+/// Collect the statement lists nested (at any depth) inside expression `e`, each tagged with whether it
+/// lies inside a lambda body. Statement lists inside those lists are reached by the caller's recursion.
+fn stmts_in_expr<'a>(e: &'a Expr, in_lambda: bool, out: &mut Vec<(&'a [Stmt], bool)>) {
+    match e {
+        Expr::Block { stmts, tail } => {
+            out.push((stmts, in_lambda));
+            if let Some(t) = tail {
+                stmts_in_expr(t, in_lambda, out);
+            }
+        }
+        Expr::Lambda { body, .. } => stmts_in_expr(body, true, out),
+        Expr::Var(_)
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Other(_) => {}
+        Expr::Call { args, .. } => {
+            for a in args {
+                stmts_in_expr(a, in_lambda, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            stmts_in_expr(callee, in_lambda, out);
+            for a in args {
+                stmts_in_expr(a, in_lambda, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            stmts_in_expr(lhs, in_lambda, out);
+            stmts_in_expr(rhs, in_lambda, out);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Declassify { inner: expr, .. }
+        | Expr::Try(expr) => stmts_in_expr(expr, in_lambda, out),
+        Expr::ArrayLiteral { elements } => {
+            for x in elements {
+                stmts_in_expr(x, in_lambda, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            stmts_in_expr(base, in_lambda, out);
+            stmts_in_expr(index, in_lambda, out);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, x) in fields {
+                stmts_in_expr(x, in_lambda, out);
+            }
+        }
+        Expr::FieldAccess { base, .. } => stmts_in_expr(base, in_lambda, out),
+        Expr::EnumConstruct { fields, .. } => {
+            for x in fields {
+                stmts_in_expr(x, in_lambda, out);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            stmts_in_expr(scrutinee, in_lambda, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    stmts_in_expr(g, in_lambda, out);
+                }
+                stmts_in_expr(&arm.body, in_lambda, out);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        }
+        | Expr::IfLet {
+            scrutinee: cond,
+            then,
+            else_,
+            ..
+        } => {
+            stmts_in_expr(cond, in_lambda, out);
+            stmts_in_expr(then, in_lambda, out);
+            stmts_in_expr(else_, in_lambda, out);
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                stmts_in_expr(k, in_lambda, out);
+                stmts_in_expr(v, in_lambda, out);
+            }
+        }
+    }
+}
+
 /// Call `f` on every function item in `items`: free functions, functions inside modules, impl
 /// methods and trait (default) methods.
 pub(crate) fn each_fn_item<'a>(items: &'a [Item], f: &mut dyn FnMut(&'a Item)) {
@@ -230,6 +420,45 @@ mod tests {
             }
         });
         out
+    }
+
+    /// Every statement is reached, including those inside value blocks and match arms, and statements
+    /// inside a lambda body are flagged.
+    #[test]
+    fn each_stmt_reaches_nested_statements_and_flags_lambdas() {
+        let src = r#"
+fn main() {
+    let mut a = 0;
+    a = 1;
+    let b = if a > 0 { a = 2; 1 } else { 0 };
+    let m = match a { 1 => { a = 3; 1 } _ => 0 };
+    let g = |x| { a = 4; x };
+    while a < 9 { a = 5; }
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let crate::frontend::Item::Fn { body, .. } = &ast.items[0] else {
+            panic!("fn")
+        };
+        let mut writes: Vec<(String, bool)> = Vec::new();
+        each_stmt(body, &mut |s, lam| {
+            if let Stmt::Assign {
+                value: Expr::Literal(v),
+                ..
+            } = s
+            {
+                writes.push((v.clone(), lam));
+            }
+        });
+        writes.sort();
+        let want: Vec<(String, bool)> = vec![
+            ("1".into(), false),
+            ("2".into(), false),
+            ("3".into(), false),
+            ("4".into(), true),
+            ("5".into(), false),
+        ];
+        assert_eq!(writes, want);
     }
 
     /// Every construct that can hold an expression is reached: a name placed in each position must

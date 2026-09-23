@@ -572,6 +572,8 @@ fn decided_under_z3_budget(check: &SolverCheck) -> bool {
         || check.detail == crate::middle::PROVED_DETAIL_CERTIFIED
         // Never encoded, so no solver ran and no budget bounded it.
         || check.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
+        // Refused for over-approximation, not for running out of budget.
+        || check.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL
     {
         return false;
     }

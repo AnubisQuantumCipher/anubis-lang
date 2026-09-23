@@ -1,0 +1,18 @@
+fn f(n) requires(n >= 3) {
+    println(n);
+}
+fn go(c: bool, y) {
+    let mut x = y;
+    if c {
+        println("keep");
+    } else {
+        x = 3;
+        return;
+    }
+    if x > 2 {
+        f(x);
+    }
+}
+fn main() {
+    go(true, 2.5);
+}

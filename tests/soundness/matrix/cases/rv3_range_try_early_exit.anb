@@ -1,0 +1,19 @@
+fn h(x: i64) requires(x != 5) {
+    println(x);
+}
+fn p(i: i64) -> Result<i64, string> {
+    if i == 3 {
+        return Err("stop");
+    }
+    return Ok(i);
+}
+fn go() -> Result<i64, string> {
+    for i in 0..10 {
+        let v = p(i)?;
+        h(i);
+    }
+    return Ok(0);
+}
+fn main() {
+    println(go());
+}

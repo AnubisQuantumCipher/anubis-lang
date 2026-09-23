@@ -1,0 +1,13 @@
+fn h(n: i64) requires(n > 0) {
+    println(n);
+}
+fn go(x: f64) {
+    let z = 3.0;
+    if x > z {
+        assert(z > 5.0);
+    }
+    h(1);
+}
+fn main() {
+    go(4.0);
+}

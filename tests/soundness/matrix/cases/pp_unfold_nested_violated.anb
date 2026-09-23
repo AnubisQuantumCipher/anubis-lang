@@ -1,0 +1,4 @@
+fn pos(x: i64) -> bool { return x > 0; }
+fn big(x: i64) -> bool { return pos(x - 100); }
+fn f(x: i64) -> i64 requires(big(x)) { return x; }
+fn main() { print(f(50)); }

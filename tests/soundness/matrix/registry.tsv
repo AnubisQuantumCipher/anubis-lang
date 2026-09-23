@@ -37,7 +37,7 @@ c38_recursion_ok	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
 c29_safe_only	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
 c30_symbolic_guarded	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
 c31_symbolic_unguarded	F1-contract-carrier	slice	REJ|UNRES	carrier	matrix2 2026-09-22/23
-c39_opaque_arg	F1-contract-carrier	slice	UNRES	carrier	matrix2 2026-09-22/23
+c39_opaque_arg	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23 | RECATEGORIZED 2026-09-23 UNRES->ACCEPT, see recategorizations.tsv
 c41_formal_named_global	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23 | RECATEGORIZED 2026-09-23 REJECT->ACCEPT, see recategorizations.tsv
 c42_idx_carrier	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
 c44_match_arm_live	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
@@ -128,3 +128,113 @@ t_field_closure_clean_arg_ok	F2-sinkarg	slice	ACCEPT	carrier	sinking closure app
 t_field_closure_overwrite_pure_ok	F2-sinkarg	slice	ACCEPT	carrier	strong overwrite with a pure closure removes the sink
 t_field_closure_sibling_pure_ok	F2-sinkarg	slice	ACCEPT	carrier	sibling field holds a pure closure
 c70_formal_named_global_value_pos	F1-contract-carrier	slice	REJECT	carrier	formal named like a user fn, used in VALUE position (apply): the formal wins, as at runtime
+pp_guard_then_reassign_direct	P-PATH	slice	REJECT	carrier	early-exit fact retired by a later write
+pp_while_decrement_then_call	P-PATH	slice	REJ|UNRES	carrier	reaches f(0); counter updated before the call
+pp_for_carried_negative	P-PATH	slice	REJ|UNRES	carrier	loop-carried write drives the value negative | RECATEGORIZED 2026-09-23 REJECT->REJ|UNRES, see recategorizations.tsv
+pp_modular_param_unguarded	P-PATH	slice	REJECT	carrier	no requires on g: a caller may pass k <= 0 (modular)
+pp_for_bound_written_in_body	P-PATH	slice	REJECT	carrier	range bound written in the body: no range fact
+pp_guard_return_proves	P-PATH	slice	ACCEPT	carrier	if k <= 0 { return } then f(k) is proved
+pp_while_guard_proves	P-PATH	slice	ACCEPT	carrier	while x > 0 { f(x); x = x - 1 }
+pp_ifelse_return_proves	P-PATH	slice	ACCEPT	carrier	if k > 0 { return f(k) } else { return 0 }
+pp_counter_no_wrap_lint	P-PATH	slice	ACCEPT	carrier	havoced counter is not flagged by the wrap lint
+pp_join_no_else	P-PATH	slice	ACCEPT	carrier	b is 10 or 20 after the join
+pp_join_both_branches	P-PATH	slice	ACCEPT	carrier	b is 10 or 30 after the join
+pp_join_live_negative	P-PATH	slice	REJECT	carrier	conditional write makes b negative; was a silent accept
+pp_join_else_negative	P-PATH	slice	REJECT	carrier	else branch makes b negative; was a silent accept
+pp_join_field_write	P-PATH	slice	REJ|UNRES	carrier	conditional field write; was a silent accept
+pp_join_branch_local_shadow	P-PATH	slice	ACCEPT	carrier	branch-local let does not affect the outer b
+pp_join_via_branch_local	P-PATH	slice	REJ|UNRES	carrier	value flows through a branch-local; was a silent accept
+pp_join_then_guard_u32	P-PATH	slice	ACCEPT	carrier	joined value, guard and u32 coercion prove the precondition
+pp_match_value_then_guard	P-PATH	slice	ACCEPT	carrier	match-expression value then guard: precision gap (UNDECIDED)
+pp_guard_or_return_proves	P-PATH	slice	ACCEPT	carrier	if k > 100 or k < 0 return; then call
+pp_guard_return_i64	P-PATH	slice	ACCEPT	carrier	if k > 100 return; then call (i64 param)
+pp_modular_declared_requires	P-PATH	slice	ACCEPT	carrier	caller states its own requires
+pp_modular_guarded_call	P-PATH	slice	ACCEPT	carrier	caller guards the call
+pp_modular_param_violation	P-PATH	slice	REJECT	carrier	g(-1) reaches f(-1); was a silent accept
+pp_unfold_predicate_ok	P-PATH	slice	ACCEPT	carrier	expression-function predicate unfolded at the call site
+pp_unfold_predicate_violated	P-PATH	slice	REJECT	carrier	unfolded predicate is false for the argument
+pp_unfold_u32_param_not_unfolded	P-PATH	slice	REJ|UNRES	carrier	u32 parameter masks on entry: never unfolded, so never falsely proved
+pp_unfold_recursive_not_unfolded	P-PATH	slice	REJ|UNRES	carrier	recursive predicate is not unfolded (no loop, no proof)
+pp_unfold_nested_violated	P-PATH	slice	REJECT	carrier	nested expression functions unfold to a real violation
+pp_checked_narrowing_panic	P-PATH	slice	ACCEPT	carrier	panic() diverges: the ensures of a checked-narrowing helper proves
+pp_user_defined_panic_not_diverging	P-PATH	slice	REJECT	carrier	a user fn named panic returns normally: not treated as diverging
+pp_exit_without_arg_not_diverging	P-PATH	slice	REJECT	carrier	exit() with no argument is a no-op: not treated as diverging
+pp_match_value_join_ok	P-PATH	slice	ACCEPT	carrier	let bound to a match over integer arms is one of those values
+pp_match_value_join_violated	P-PATH	slice	REJECT	carrier	one match arm value violates the precondition
+pp_match_binder_shadow_not_joined	P-PATH	slice	REJ|UNRES	carrier	arm value mentions its own binder (shadows outer n): not joined
+pp_match_diverging_arm_skipped	P-PATH	slice	ACCEPT	carrier	a diverging arm produces no value
+pp_if_value_join_ok	P-PATH	slice	ACCEPT	carrier	if-expression value join
+pp_if_value_join_violated	P-PATH	slice	REJECT	carrier	if-expression value join with a violating arm
+pp_conjunct_guard_partial_encoding	P-PATH	slice	ACCEPT	carrier	encodable conjunct of a partly unencodable guard relieves the call
+pp_conjunct_guard_else_not_relieved	P-PATH	slice	REJECT	carrier	the else of a conjunction is a disjunction: no relief
+rv_exit_branch_remodel_float	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F1: an exiting branch's x = 3 must not make a float x integer-modeled after the join
+rv_exit_else_remodel	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F1 variant: exit in the else branch
+rv_exit_break_remodel	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F1 variant: break inside a loop body
+rv_local_panic_not_diverging	REVIEW-2026-09-23	slice	REJECT	carrier	F2: a let panic inside the branch shadows the builtin
+rv_local_exit_not_diverging	REVIEW-2026-09-23	slice	REJECT	carrier	F2: a let exit inside the branch shadows the builtin
+rv_unfold_ret_f64	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F3a: an -> f64 expression function is not unfolded (runtime widens)
+rv_unfold_ret_f64_b	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F3a variant
+rv_unfold_ret_u8	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F3a: an unsigned return masks at runtime: not unfolded
+rv_unfold_ret_f64_argpos	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F3a in argument position
+rv_unfold_param_shadows_len	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F3b: a parameter named len is called in the body: not unfolded
+rv_unfold_param_shadows_abs	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	F3b variant with abs
+rv_unfold_capture_avoiding	REVIEW-2026-09-23	slice	REJECT	carrier	unfolding le(x, y) at g(y, x) keeps argument order (capture-avoiding)
+rv_assert_pinned_not_withdrawn	REVIEW-2026-09-23	slice	REJECT	carrier	F4: assert over a pinned value is checked, not withdrawn
+rv_assert_pinned_not_withdrawn_if	REVIEW-2026-09-23	slice	REJECT	carrier	F4 variant
+rv_assert_pinned_not_withdrawn_str	REVIEW-2026-09-23	slice	REJECT	carrier	F4 variant (string)
+rv_assert_pinned_not_withdrawn_flt	REVIEW-2026-09-23	slice	REJECT	carrier	F4 variant (float)
+rv_assert_pinned_not_withdrawn_noloop	REVIEW-2026-09-23	slice	REJECT	carrier	F4 variant without a loop
+rv_join_pin_via_branch_local	REVIEW-2026-09-23	slice	ACCEPT	carrier	L1: valid (b is 5 on both paths); refused because the then-value flows through a branch-local — precision gap
+rv_join_pin_via_branch_local_assert	REVIEW-2026-09-23	slice	ACCEPT	carrier	L1 assert variant: runtime-deferred, accepted
+rv_wrap_lint_copy_of_havoc	REVIEW-2026-09-23	slice	ACCEPT	carrier	L2: wrap lint ignores copies of havoced values
+rv_wrap_lint_call_only_param	REVIEW-2026-09-23	slice	ACCEPT	carrier	L3: wrap lint ignores params modeled only for call preconditions
+rv_for_range_var_modeled	REVIEW-2026-09-23	slice	ACCEPT	carrier	L4: for i in 0..3 { f(i) } proves
+rv_for_list_var_unmodeled	REVIEW-2026-09-23	slice	ACCEPT	carrier	L4: iterating a literal list; loop var not modeled — precision gap
+rv_join_unencodable_cond_assert	REVIEW-2026-09-23	slice	ACCEPT	carrier	L5: join over an unencodable condition keeps the assert runtime-deferred
+rv_u8_local_join_violation	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	u8 local is inert at runtime; x reaches 300 and violates n < 256
+rv_branch_local_let_float_leak	REVIEW-2026-09-23	slice	REJ|UNRES	carrier	pre-existing: a branch-local let x = 3 leaked int modeling onto the outer float x
+rv_f64_param_int_literal_arg	REVIEW-2026-09-23	slice	REJECT	carrier	pre-existing false proof: an int literal into an f64 slot must be modeled as a float
+rv_f64_param_int_literal_valid	REVIEW-2026-09-23	slice	ACCEPT	carrier	the float-coerced argument proves n / 2 == 3.5
+rv2_assert_param_cooccur_after_loop	REVIEW2-2026-09-23	slice	REJ|UNRES	carrier	A: assert over a param sharing a fact with a havoced counter must not be withdrawn (runtime assert fails)
+rv2_guard_equality_not_definition	REVIEW2-2026-09-23	slice	ACCEPT	carrier	C: `if i == n` is a path guard, not a definition of i; valid (prints 10)
+rv2_assert_param_no_shared_fact	REVIEW2-2026-09-23	slice	REJECT	carrier	A control: no shared fact, still disproved
+rv2_assert_param_while_guard	REVIEW2-2026-09-23	slice	REJ|UNRES	carrier	A: while i < p { assert(p > 5) } must not be withdrawn (runtime assert fails)
+rv2_guard_equality_requires_valid	REVIEW2-2026-09-23	slice	ACCEPT	carrier	C: valid (f(10)); refused undecided — precision gap (loop result)
+rv2_guard_equality_requires_sym	REVIEW2-2026-09-23	slice	ACCEPT	carrier	C symmetric twin: same label either operand order
+rv2_assert_param_join_cooccur	REVIEW2-2026-09-23	slice	REJ|UNRES	carrier	A: join co-occurrence must not withdraw the assert (runtime assert fails)
+rv2_assert_float_deferred_cooccur	REVIEW2-2026-09-23	slice	REJECT	carrier	A float variant: disproved
+rv2_wrap_contract_param_cooccur	REVIEW2-2026-09-23	slice	REJECT	carrier	B: wrap risk on a contracted param stays reported
+rv2_wrap_after_loop	REVIEW2-2026-09-23	slice	REJECT	carrier	B: wrap risk after a loop stays reported
+rv2_havoc_mark_survives_forvar	REVIEW2-2026-09-23	slice	ACCEPT	carrier	D: a for-loop variable of the same name must not drop the havoc mark (valid)
+rv2_havoc_mark_survives_forvar_req	REVIEW2-2026-09-23	slice	ACCEPT	carrier	D: valid (f(10)); refused undecided — needs loop reasoning (gap)
+rv2_wrapexempt_survives_forvar	REVIEW2-2026-09-23	slice	ACCEPT	carrier	D: wrapexempt mark survives a same-name for-loop variable
+rv2_havoc_mark_survives_whilelet	REVIEW2-2026-09-23	slice	ACCEPT	carrier	D: while-let binder must not drop the havoc mark (valid)
+rv2_range_bound_shadowed_in_body	REVIEW2-2026-09-23	slice	ACCEPT	carrier	E: valid (i in 0..3); loop var left unmodeled when a bound is re-bound in the body (gap)
+rv2_range_negative_start_violation	REVIEW2-2026-09-23	slice	REJECT	carrier	range -2..1 reaches f(-2): real violation (old binary accepted)
+rv2_range_break_valid	REVIEW2-2026-09-23	slice	ACCEPT	carrier	valid; body can break, loop var over-approximated -> undecided (gap)
+rv2_range_bound_written_valid	REVIEW2-2026-09-23	slice	ACCEPT	carrier	valid; bound written in the body, no range fact -> undecided (gap)
+rv2_call_only_param_assert_deferred	REVIEW2-2026-09-23	slice	ACCEPT	carrier	F: an unrelated contracted call must not turn a derived assert static
+rv2_loop_local_let_float_leak	REVIEW2-2026-09-23	slice	REJ|UNRES	carrier	pre-existing false proof: body-local let x = 3 leaked int modeling onto outer float x
+rv2_for_local_let_float_leak	REVIEW2-2026-09-23	slice	REJ|UNRES	carrier	pre-existing false proof, for-loop form
+rv2_loop_local_let_int_valid	REVIEW2-2026-09-23	slice	ACCEPT	carrier	valid (i == 10); the old binary refused it with a spurious disproof
+rv2_loop_local_let_float_local	REVIEW2-2026-09-23	slice	REJ|UNRES	carrier	pre-existing false proof over an ill-sorted query
+rv2_invariant_counterexample_label	REVIEW2-2026-09-23	slice	REJECT	carrier	a loop-invariant counterexample is a real refutation: DISPROVED, not over-approximated
+rv2_unfold_free_variable	REVIEW2-2026-09-23	slice	REJ|UNRES	carrier	an expression function with a free variable is not unfolded (no capture of the caller's name)
+rv3_wrap_checked_at_statement	REVIEW3-2026-09-23	slice	REJECT	carrier	wrap check must use the state at the statement, not a later early-exit fact (was certified PASS)
+rv3_wrap_later_assignment	REVIEW3-2026-09-23	slice	REJECT	carrier	pre-existing false PASS: a later assignment justified an earlier wrap
+rv3_wrap_endstate_loop	REVIEW3-2026-09-23	slice	REJECT	carrier	pre-existing false PASS: loop post-state justified an earlier wrap
+rv3_wrap_inbody_invariant_poststate	REVIEW3-2026-09-23	slice	REJECT	carrier	pre-existing false PASS: invariant post facts made in-body wrap checks vacuous
+rv3_invariant_base_over_havoc	REVIEW3-2026-09-23	slice	REJ|UNRES	carrier	invariant base over a loop-carried value: undecided, not a spurious disproof
+rv3_invariant_base_over_havoc_for	REVIEW3-2026-09-23	slice	REJ|UNRES	carrier	for-loop variant
+rv3_guard_reachability_over_havoc	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid (path unreachable at runtime); refused undecided — a guard over a havoced value makes reachability unknown (gap)
+rv3_guard_reachability_assert	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid; undecided rather than a spurious disproof (gap)
+rv3_guard_ground_over_havoc	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid; undecided (gap)
+rv3_guard_reversed_over_havoc	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid; undecided (gap)
+rv3_else_return_over_havoc	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid; undecided (gap)
+rv3_range_try_early_exit	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid (? stops before h(5)); loop var over-approximated -> undecided (gap)
+rv3_range_user_exit	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid; user fn may exit -> loop var over-approximated -> undecided (gap)
+rv3_param_with_inbody_assert_static	REVIEW3-2026-09-23	slice	REJECT	carrier	a param with its own in-body assert keeps static assert checking
+rv3_call_only_param_derived_assert	REVIEW3-2026-09-23	slice	ACCEPT	carrier	derived assert over a call-only param stays runtime-deferred
+rv3_reassigned_param_assert_static	REVIEW3-2026-09-23	slice	REJECT	carrier	a reassigned param's assert is checked statically
+rv3_closure_copy_in_loop	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid (closure writes a copy); undecided — precision gap
+rv3_struct_field_after_loop	REVIEW3-2026-09-23	slice	ACCEPT	carrier	valid; field unmodeled after the loop -> undecided (gap)

@@ -183,6 +183,16 @@ fn clamp_score(x: u32) -> u32
 }
 
 // Policy version identity: accepted versions stay themselves.
+// The charter's policy version is proved only below 1000000 (`policy_id`). The charter reaches the
+// kernel as a parameter, where the checker cannot see the field, so this CHECKS that bound —
+// returning the version unchanged when it holds and failing loudly when it does not.
+fn policy_version_of(v: i64) -> i64 ensures(result >= 0) ensures(result < 1000000) {
+    if v < 0 || v >= 1000000 {
+        panic("charter policy version outside 0..1000000");
+    }
+    return v;
+}
+
 fn policy_id(v: u32) -> u32
     requires(v < 1000000)
     ensures(result == v)
@@ -450,7 +460,7 @@ fn risk_score(kind, taint, path) {
 // L0–L6 adjudicator
 // =============================================================================
 
-fn adjudicate(intent, actors, charter, fuel, receipt, frozen) {
+fn adjudicate(intent, actors, charter, fuel: i64, receipt: i64, frozen) {
     // Engagement freeze (prior Abort)
     if frozen == 1 {
         return Decision::Abort { kill_reason: "engagement_frozen" };
@@ -464,6 +474,11 @@ fn adjudicate(intent, actors, charter, fuel, receipt, frozen) {
     // Fuel exhausted
     if fuel <= 0 {
         return Decision::Deny { code: 100, reason: "fuel_exhausted" };
+    }
+    // The fuel and receipt counters are proved only below 1000000 (`fuel_tick`, `advance_receipt`);
+    // a counter outside that range is refused rather than assumed impossible.
+    if fuel >= 1000000 || receipt < 0 || receipt >= 1000000 {
+        return Decision::Deny { code: 101, reason: "counter_out_of_range" };
     }
 
     // Actor lookup
@@ -657,7 +672,7 @@ fn process_stream(intents, actors0, charter) {
     let mut actors = actors0;
     let mut fuel = charter.max_fuel;
     let mut receipt = 0;
-    let mut chain = policy_id(charter.policy_version);
+    let mut chain = policy_id(policy_version_of(charter.policy_version));
     let mut frozen = 0;
     let mut public_journal = [];
     let mut private_store = [];
@@ -1366,7 +1381,7 @@ fn main() {
     let allow_ok = if allow_n >= 1 { 1 } else { 0 };
 
     // Chain advanced
-    let chain_ok = if chain > policy_id(charter.policy_version) { 1 } else { 0 };
+    let chain_ok = if chain > policy_id(policy_version_of(charter.policy_version)) { 1 } else { 0 };
 
     // Hybrid honesty: executed must be 0
     let hybrid_ok = if hybrid_plan.executed == 0 && hybrid_plan.planned == 1 { 1 } else { 0 };
