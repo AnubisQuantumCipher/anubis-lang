@@ -1951,38 +1951,44 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
 mod pca_tests {
     use super::*;
 
-    fn known_place_assignment_leak() -> &'static str {
-        // This poison fixture MUST be a live known false accept — a program `check` accepts while
-        // it violates a flow policy at runtime — or the three tests below become vacuous (they would
-        // exercise PCA's honesty on an input that was never actually a leak). Its specimen is
-        // therefore repointed each time the previously-named shape is closed. Chain of custody:
-        //
-        //   1. `b.f = key; let g = b.f; print(g());` — the `let`-bound-alias place-assignment
-        //      carrier item 21 first named. CLOSED in Completion Phase 4 (2026-08-15): `fn_alias_of_d`
-        //      gained a `FieldAccess`/`Index` arm reading `field_fn_identities`.
-        //   2. `b.f = key; print(b.f());` — the DIRECT `obj.f()` (`Expr::CallExpr`) variant of the
-        //      same carrier. CLOSED in the item-21 Family-2 slice: the `CallExpr` arm of
-        //      `expr_source` now consults `field_fn_identities` on a `field_closures` miss, so the
-        //      secret AND taint return-carrier both reject.
-        //   3. CURRENT — the TAINT sink-argument place-assign carrier below: a sink closure placed
-        //      into a field via `b.f = g` and applied with an untrusted argument (`b.f(input())`).
-        //      The struct-literal twin (`Box { f: g }`) rejects via the `field_closures` lambda
-        //      descent; the place-assigned twin leaks because the non-`Var` `Stmt::Assign` write
-        //      handler retains-out `field_closures` at the path and stores only an identity set,
-        //      which for a lambda carries no user function name for the closure-body descent to
-        //      follow. A genuine taint leak — which also makes this `taint_clean` test use an
-        //      actual integrity false-accept for the first time. Confirmed accepted-and-leaking on
-        //      this binary. When this shape is closed too, repoint to the then-current open residual
-        //      (or restructure these tests to synthesize an accepted claim without a live leak).
+    /// An ACCEPTED program that handles untrusted input without letting it reach a sink. The three
+    /// tests below use it to build a legitimate bundle.
+    ///
+    /// These tests used to require a LIVE known false accept (a program `check` accepted while it
+    /// leaked at runtime), repointed to the next open specimen each time one was fixed: first
+    /// `b.f = key; let g = b.f; print(g());` (closed in Completion Phase 4), then
+    /// `b.f = key; print(b.f());` (closed by the item-21 Family-2 slice), then the taint
+    /// sink-argument carrier `b.f = |x| shell(x); b.f(input())` (closed by the item-21
+    /// sink-argument slice). A test suite that needs a vulnerability to stay open works against
+    /// fixing it.
+    ///
+    /// The properties do not depend on a leak. The PCA pipeline never derives a `taint_clean`
+    /// guarantee (typecheck success is not a noninterference proof), so a v2 claim must not contain
+    /// one, and `verify_pca` must reject one that was injected and re-hashed — whether or not the
+    /// injected claim happens to be true of the program. That is a stronger statement than "the
+    /// verifier rejects one particular false claim". The fixture reads `input()` so that a taint
+    /// claim is meaningful for it; `pca_fixture_is_accepted_and_nearby_leak_is_not` pins that it is
+    /// accepted and that the same program printing the input is rejected, so it is not vacuously
+    /// clean.
+    fn accepted_untrusted_input_program() -> &'static str {
         r#"
-struct Box { f: u64 }
-fn main() uses(io.read, shell) {
-    let g = |x| shell(x);
-    let b = Box { f: 0 };
-    b.f = g;
-    b.f(input());
+fn main() uses(io.read) {
+    let raw = input();
+    let copy = raw;
+    let n = 2 + 3;
+    print(n);
 }
 "#
+    }
+
+    #[test]
+    fn pca_fixture_is_accepted_and_nearby_leak_is_not() {
+        assert!(derive_claim_block(accepted_untrusted_input_program(), "safe").typecheck_ok);
+        let leaky = "fn main() uses(io.read) {\n    let raw = input();\n    print(raw);\n}\n";
+        assert!(
+            !derive_claim_block(leaky, "safe").typecheck_ok,
+            "the control must be rejected, or the fixture proves nothing about taint"
+        );
     }
 
     fn unique_dir(tag: &str) -> PathBuf {
@@ -2004,15 +2010,14 @@ fn main() uses(io.read, shell) {
     }
 
     #[test]
-    fn pca_v2_does_not_assert_unearned_taint_clean_for_a_known_leak() {
-        // `docs/CLAIMS.md` item 21 records this place-assignment carrier as a current true accept:
-        // check accepts it and the runtime prints the secret. Until the unified total-flow work can
-        // derive a separate taint theorem, the PCA must report the bounded typecheck result without
-        // translating `typecheck returned Ok` into the stronger `taint_clean: true` guarantee.
-        let claim = derive_claim_block(known_place_assignment_leak(), "safe");
+    fn pca_v2_does_not_assert_unearned_taint_clean_for_an_accepted_program() {
+        // Until a separate taint theorem is derived, the PCA must report the bounded typecheck
+        // result without translating `typecheck returned Ok` into the stronger `taint_clean: true`
+        // guarantee — for every accepted program, not only a leaking one.
+        let claim = derive_claim_block(accepted_untrusted_input_program(), "safe");
         assert!(
             claim.typecheck_ok,
-            "the poison must remain a live known false accept, not become a vacuous rejected input"
+            "the fixture must be an accepted program"
         );
         let json = serde_json::to_value(&claim).unwrap();
         assert_eq!(json["pca_version"], 2);
@@ -2026,7 +2031,7 @@ fn main() uses(io.read, shell) {
     fn verify_pca_rejects_legacy_v1_unearned_taint_clean_claim() {
         let base = unique_dir("legacy-taint-claim");
         let bundle = build_evidence_bundle(
-            known_place_assignment_leak(),
+            accepted_untrusted_input_program(),
             "safe",
             None,
             vec![],
@@ -2045,7 +2050,7 @@ fn main() uses(io.read, shell) {
 
         assert!(
             validate_bundle(&bundle.dir).unwrap(),
-            "the poison must pass the hash-only layer before semantic verification"
+            "the forged bundle must pass the hash-only layer before semantic verification"
         );
         assert!(
             !matches!(verify_pca(&bundle.dir), Ok(true)),
@@ -2058,7 +2063,7 @@ fn main() uses(io.read, shell) {
     fn verify_pca_rejects_rehashed_v2_with_a_retired_taint_claim() {
         let base = unique_dir("v2-retired-taint-claim");
         let bundle = build_evidence_bundle(
-            known_place_assignment_leak(),
+            accepted_untrusted_input_program(),
             "safe",
             None,
             vec![],
@@ -2080,7 +2085,7 @@ fn main() uses(io.read, shell) {
 
         assert!(
             validate_bundle(&bundle.dir).unwrap(),
-            "the poison must pass the hash layer before semantic verification"
+            "the forged bundle must pass the hash layer before semantic verification"
         );
         assert!(
             !matches!(verify_pca(&bundle.dir), Ok(true)),

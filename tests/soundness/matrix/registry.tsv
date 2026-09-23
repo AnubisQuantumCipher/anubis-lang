@@ -117,3 +117,13 @@ d9_public_field_ok	F3-type-precision	slice	ACCEPT	carrier	D9 precision twin: pub
 d9_forwarding_chain	F3-type-precision	slice	REJECT	carrier	D9 through a forwarding chain (inference fixpoint)
 d9_other_struct_public_field_ok	F3-type-precision	slice	ACCEPT	carrier	same field name, different struct with a public field
 d9_unknown_arg_type	F3-type-precision	shared	REJECT	carrier	D9 residual: argument type not provable (container element); still open
+t_field_closure_print	F2-sinkarg	slice	REJECT	carrier	place-assigned print closure applied to tainted input; was silent
+t_field_closure_overwrite_to_print	F2-sinkarg	slice	REJECT	carrier	shell closure overwritten by print closure, tainted arg; was silent
+t_field_closure_inline_overwrite	F2-sinkarg	slice	REJECT	carrier	inline shell then inline print closure, tainted arg; was silent
+t_field_closure_literal_then_overwrite	F2-sinkarg	slice	REJECT	carrier	literal field closure overwritten by print closure; was silent
+t_field_closure_inline_shell	F2-sinkarg	slice	REJECT	carrier	inline shell lambda assigned to field; was silent
+t_field_closure_pure_then_sink	F2-sinkarg	slice	REJECT	carrier	pure closure overwritten by shell closure; was silent
+t_index_closure_dynamic_write	F2-sinkarg	slice	REJECT	carrier	weak write through a dynamic index keeps and adds closures
+t_field_closure_clean_arg_ok	F2-sinkarg	slice	ACCEPT	carrier	sinking closure applied to a clean argument
+t_field_closure_overwrite_pure_ok	F2-sinkarg	slice	ACCEPT	carrier	strong overwrite with a pure closure removes the sink
+t_field_closure_sibling_pure_ok	F2-sinkarg	slice	ACCEPT	carrier	sibling field holds a pure closure

@@ -11171,6 +11171,16 @@ fn analyze_stmts(
                     );
                     let assigned_path = flatten_access_path(target).map(|(_, path)| path);
                     let assigned_identity = fn_identities_of(value, scope, ctx);
+                    // The CLOSURE the write stores, if any: a lambda literal, or a local that holds
+                    // one. The field-closure map is what an apply site (`b.f(x)`) consults for the
+                    // closure's parameter-to-sink flow; a place write that only updated the identity
+                    // set dropped it, so `b.f = |x| shell(x); b.f(input())` reached the sink unchecked
+                    // while the literal `Box { f: g }` was rejected.
+                    let assigned_lambda: Option<Box<Expr>> = match value {
+                        Expr::Lambda { .. } => Some(Box::new(value.clone())),
+                        Expr::Var(n) => scope.get(n).and_then(|bb| bb.closure_lambda.clone()),
+                        _ => None,
+                    };
                     // A DYNAMIC index (`xs[i] = v`) resolves to the wildcard segment `*` — see
                     // `flatten_access_path`'s Index arm — meaning "some position, not provably
                     // this one". Treating that like a CONCRETE path (exact overwrite at key `*`,
@@ -11261,12 +11271,26 @@ fn analyze_stmts(
                                         || key.starts_with(&format!("{path}."))
                                         || path.starts_with(&format!("{key}.")))
                                 });
+                                if let Some(lam) = &assigned_lambda {
+                                    b.field_closures.insert(path.clone(), lam.clone());
+                                }
                                 b.field_fn_identities.insert(path, assigned_identity);
                             }
                             Some(path) => {
                                 for identities in b.field_fn_identities.values_mut() {
                                     *identities =
                                         identities.clone().union(assigned_identity.clone());
+                                }
+                                // Weak write: keep every existing closure (any may still be there)
+                                // and add this one; an exact-key read falls back to scanning all
+                                // stored closures, so it is found.
+                                if let Some(lam) = &assigned_lambda {
+                                    let key = if b.field_closures.contains_key(&path) {
+                                        format!("_p{}", b.field_closures.len())
+                                    } else {
+                                        path.clone()
+                                    };
+                                    b.field_closures.insert(key, lam.clone());
                                 }
                                 let existing_wildcard = b.field_fn_identities.get(&path).cloned();
                                 let widened = assigned_identity
@@ -11278,6 +11302,10 @@ fn analyze_stmts(
                                 for identities in b.field_fn_identities.values_mut() {
                                     *identities =
                                         identities.clone().union(assigned_identity.clone());
+                                }
+                                if let Some(lam) = &assigned_lambda {
+                                    let key = format!("_p{}", b.field_closures.len());
+                                    b.field_closures.insert(key, lam.clone());
                                 }
                                 if b.field_fn_identities.is_empty()
                                     && !matches!(&assigned_identity, FnIdentitySet::Known(found) if found.is_empty())

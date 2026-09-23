@@ -1,0 +1,2 @@
+struct Box { f: u64 }
+fn main() uses(io.read, shell) { let b = Box { f: 0 }; b.f = |x| x + 1; b.f = |x| shell(x); b.f(input()); }
