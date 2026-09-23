@@ -1597,6 +1597,30 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-23 (evening) — direct-call preconditions and path precision (`d90082d0`,
+    branch `mission/anubis-1.0`).** A direct call whose `requires` mentions a parameter of a caller
+    that has no `requires` of its own is now checked (M-DIRECT-REQ closed). A clause that cannot be
+    encoded is refused as UNDECIDED (`requires-unresolved@`), not dropped. Matrix cases s01, s03 and
+    s11 now DISPROVE, and s02 and s04 are UNDECIDED; all five were silent accepts before. Checking is
+    path-sensitive, and values that loops and scopes over-approximate are refused as UNDECIDED rather
+    than disproved (SPEC "Contract checking: paths and refusals").
+
+    This fixed three pre-existing false proofs: an int literal into an `f64` slot, float facts
+    leaking out of branch and loop scopes, and wrap checks justified by later facts.
+
+    Soundness matrix at this pin (239 cases, `history.tsv` label `pathprec-final`): 211 PASS,
+    4 silent accepts, 24 wrong-class. The silent accepts are c43, c64, c65 and
+    `d9_unknown_arg_type`, all pre-existing and listed above. The wrong-class cases are valid
+    programs refused UNDECIDED plus c53 and the s09/s10 shadow chains.
+
+    **Still OPEN, new or newly measured:**
+    - an ill-sorted solver query can be filed as a refutation, and no sort check guards it (P-SORT-1,
+      latent);
+    - valid programs refused UNDECIDED (P-PREC-1).
+
+    Accepting a program remains a claim about its checked obligations only; it is not a claim about
+    item 21's class.
+
 Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
 and cannot verify later repairs.
 [receipt-scope: pre-fix-only; head: 0f407853; authority: none]

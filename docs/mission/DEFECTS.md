@@ -67,7 +67,7 @@ its question; S3 precision/over-rejection or crash on input; S4 correctness/qual
 | C-CALLPOS-1 | S3 | carrier lane resolved call-position names scope-first; runtime resolves user functions first -> over-rejection with an unreachable counterexample (c41) | 90b70ff1 | **fixed**; s12/c41 recategorized with runtime witnesses |
 | L-SHADOW-1 | S3 | language: a local/formal does NOT shadow a same-named user function in call position (it does in value position). `let check = strict; check(x)` silently calls a global `check`. Unspecified in SPEC | runtime witnesses in recategorizations.tsv | open — language decision (diagnostic now, lexical scoping via an edition) |
 | L-REPL-1 | S4 | REPL interpreter resolves builtins (`print`, `len`) before user functions and has no closures; native resolves user functions first | compiler/src/interp/mod.rs | open |
-| M-DIRECT-REQ (reproduced) | S1 | `fn g(x: i64) { f(x) }` with `f` requiring `x > 0`, no requires on `g`: `g(-1)` checks clean (g's params are unmodeled, the obligation is never emitted). Untyped variant (s02) is the unmodelable-clause drop | s01/s03, runtime | prototype measured, see mission log |
+| M-DIRECT-REQ (reproduced) | S1 | `fn g(x: i64) { f(x) }` with `f` requiring `x > 0`, no requires on `g`: `g(-1)` checks clean (g's params are unmodeled, the obligation is never emitted). Untyped variant (s02) is the unmodelable-clause drop | s01/s03, runtime | **fixed** d90082d0: s01/s03/s11 DISPROVED, s02/s04 UNDECIDED (`requires-unresolved@`) |
 | ENV-TOOLCHAIN | S5 | since 08:55 2026-09-23 rustup is installed on this host (not by this session): `cargo fmt`/`cargo clippy` resolve to the pinned nightly-2026-05-10 (CI's), builds still use Arch rustc 1.98.1. Pins before and after differ in lint/format tooling, not in the build compiler | ~/.cargo/bin/rustup mtime | recorded |
 | EXT-VERIFY-1 | — | independent bubblewrap verification of the parser fix (another session): old pin aborts, fixed binary diagnoses, 20/20 checks; binary ~/Work/anubis-crash-fix/anubis-fixed sha256 09b8a172…, source between d5ed1d72 and a94537f7, build flags unrecorded — corroboration, not a source-bound pin | ~/Work/anubis-crash-fix/verification.jsonl | recorded |
 | P-FMT-1 | S5 | 76de6d3a/e99db1d1/7465aa46 were committed without `cargo fmt`; the fmt gate failed from 76de6d3a until b7953650 | cargo fmt --check at c87ad1cf rc 0, at 7465aa46 rc 1 | fixed b7953650 |
@@ -82,7 +82,7 @@ HEAD; probe-verified frontend findings must be reconfirmed on the current source
 
 | id | sev | defect | evidence | state |
 |---|---|---|---|---|
-| M-DIRECT-REQ | S1 | an unmodelable `requires` on a DIRECT or method call is dropped with no obligation and no diagnostic: `discharge_call_requires` -> `carrier_unresolved_clause` returns early when `ctx.carrier_origin` is None (mod.rs:8340-8343), which holds for every non-carrier call; callee still assumes the requires, contracts not runtime-enforced (mod.rs:20082). Unmodelable `ensures` is refused, so this is asymmetric | mod.rs:8340,20082 | to-reproduce |
+| M-DIRECT-REQ | S1 | an unmodelable `requires` on a DIRECT or method call is dropped with no obligation and no diagnostic: `discharge_call_requires` -> `carrier_unresolved_clause` returns early when `ctx.carrier_origin` is None (mod.rs:8340-8343), which holds for every non-carrier call; callee still assumes the requires, contracts not runtime-enforced (mod.rs:20082). Unmodelable `ensures` is refused, so this is asymmetric | mod.rs:8340,20082 | **fixed** d90082d0 (see the reproduced row) |
 | M-MATCH-TRUNC | S1 | statement-level `match`/`if let` arms run `ctx.solver_obligations.truncate(obl_mark)` (mod.rs:10673/10719/10771/10801), discarding direct `requires@` and carrier `requires-unresolved@` obligations, not just arm-body asserts | mod.rs:10673+ | **fixed** e99db1d1 (reproduced: rc-0 silent accept pre-fix) |
 | M-IFLET-EXPR | S1 | in `discharge_calls_in_expr` the `if let` then-branch and lambda bodies are never discharged (mod.rs:9084-9092); a value block re-binding a tracked name is skipped (mod.rs:8926) | mod.rs:9084,8926 | statement if-let arm **fixed** e99db1d1; expression-position if-let/lambda/value-block parts still to reproduce |
 | M-GLOBAL-SCOPE | S1 | global name resolved before local scope in `fn_identities_of_d` (740), `fn_alias_of_d` (484), `closure_arity_of` (440), `carrier_mentions_function` (8270); only `carrier_identities` looks at scope first | mod.rs cited | reported |
@@ -95,3 +95,29 @@ Architecture note: `SemanticContext` has ~70 name-keyed fields; a single binding
 "which function is this" records, and trifecta + contract_carrier each keep their own alias map. This
 is the string/name-reasoning surface Stage D must replace with binding-ids, place paths, and typed
 callable summaries.
+
+## Path precision (d90082d0, 2026-09-23)
+
+The change that fixes M-DIRECT-REQ makes contract, assert and wrap checking path-sensitive (SPEC
+"Contract checking: paths and refusals"). It went through three independent adversarial review
+rounds, and every reproducer is a matrix case (`pp_*`, `rv_*`, `rv2_*`, `rv3_*`).
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| P-F64-LIT | S1 | an int literal passed into an `f64` parameter was encoded as a bitvector: the float obligation was ill-sorted, and z3's sort error was filed as a refutation (a false proof) | `rv_f64_param_int_literal_arg` | **fixed** d90082d0 |
+| P-FLOAT-LEAK | S1 | facts about a float `let` inside a branch or loop leaked past its scope and proved obligations after it | `rv_branch_local_let_float_leak`, `rv2_loop_local_let_float_leak`, `rv2_for_local_let_float_leak` | **fixed** d90082d0 |
+| P-WRAP-LATER | S1 | wrap safety was checked under the end-of-body state, so a later assignment, loop post-state or in-body invariant could justify an earlier operation that wraps | `rv3_wrap_later_assignment`, `rv3_wrap_endstate_loop`, `rv3_wrap_inbody_invariant_poststate`, `rv3_wrap_checked_at_statement` | **fixed** d90082d0 |
+| P-EX-WRAP | S3 | shipped example `hall_of_two_truths` failed `ANUBIS_WRAP_RISK` in every pin back to 7220c4b1 (`i + 1` with `i` in `0..len(xs)`) | pin bisection | **fixed** d90082d0 (range variable modeling) |
+| P-EX-NARROW | S4 | six shipped examples (release_gate, core_language_showcase, ennead, nexus, anvil, seshat) relied on unchecked facts | corpus diff | **repaired** with checked narrowing; runtime output byte-identical |
+| P-SORT-1 | S1 | the solver pipeline accepts an ill-sorted query as a proof: z3 reports a sort error (e.g. `bvsgt` on a FloatingPoint term) and the obligation is still filed `rup_refutation`/PASS. P-F64-LIT removed the known producer; no sort check guards the next one | review round 1 | **open** (latent) |
+| P-PREC-1 | S3 | valid programs refused UNDECIDED: loop results and loop-carried values, list-iteration variables, guards over havoced values, closures copied in loops, struct fields after loops, values flowing out through a branch-local, range loops with early exits (`?`, may-exit user functions, `break`) or bounds written or shadowed in the body | matrix pathprec-final: 20 `rv*` wrong-class cases + c17 | **open**: refusals, not silent accepts |
+| P-DIVERGE-1 | S3 | a call to a user function that always panics does not end the caller's path (review finding f5) | SPEC | **open** |
+| P-JOIN-FIELD | S1? | field symbols (`1fld_<root>_<f>_e`) are missing from the join's exclusion sets. This is masked today because field modeling does not survive a join (review round-2 probes fa01–fa05 fail closed UNDECIDED; not matrix cases). It becomes live the moment field facts are joined | review round 2 | **open** (latent) |
+| P-OVERAPPROX-NAME | S4 | over-approximation labels are keyed by obligation name, so identically named obligations share a label; this errs only toward UNDECIDED | review round 2 | open |
+| P-Z3-LOAD | S3 | a z3-trusted float obligation flips with host load: `float_contract_monotonicity_accepts` failed once on the pre-change pin and passes on rerun (see CLAIMS "float contract lane is NON-DETERMINISTIC") | corpus diff | open |
+| P-C53 | S3 | c53 (valid requires-seeded recursion through an untyped parameter) moved from DISPROVED to MIXED: the recursive call's precondition is now refused explicitly instead of dropped, while the pre-existing carrier false counterexample on `f` remains | matrix pathprec-final | open (carrier) |
+| P-CERT-COUNT | S4 | c53's output says "certificates: 2/2 obligations discharged by a machine-checked refutation" while one of the two failures was never sent to a solver (`requires-unresolved@`). The same line appears on the pre-change pin | c53 output | to-investigate (possible evidence overstatement) |
+
+Still open from before this change and unchanged by it: the shared silent accepts c43, c64, c65 and
+`d9_unknown_arg_type`, and the s09/s10 shadow chains (L-SHADOW-1).
+
