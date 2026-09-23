@@ -1,0 +1,1 @@
+fn main() { match 1 { n => { assert(n == 2); } } }

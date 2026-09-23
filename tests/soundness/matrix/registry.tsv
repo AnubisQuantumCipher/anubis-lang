@@ -101,3 +101,8 @@ h_call_violated	F1-builtin-hof	slice	REJECT	carrier	builtin applies carried fn t
 h_call_satisfied	F1-builtin-hof	slice	ACCEPT	carrier	valid twin; must not be refused
 h_map_satisfied	F1-builtin-hof	slice	ACCEPT	carrier	direct map over satisfying list
 h_map_violated	F1-builtin-hof	slice	REJECT	carrier	direct map reaches f(-2)
+m_direct_match_arm_violated	M-MATCH-TRUNC	slice	REJECT	carrier	violated requires in match arm; was silent
+m_direct_match_arm_guarded_ok	M-MATCH-TRUNC	slice	ACCEPT	carrier	arm literal guard establishes precondition
+m_direct_match_arm_dead	M-MATCH-TRUNC	slice	ACCEPT	carrier	unreachable arm; vacuously discharged
+m_direct_iflet_arm_violated	M-IFLET	slice	REJECT	carrier	violated requires in if-let arm; was silent
+m_arm_body_assert_deferred	M-MATCH-TRUNC	slice	ACCEPT	carrier	arm-body assert stays runtime-deferred

@@ -8436,6 +8436,41 @@ fn match_arm_pattern_fact(scrutinee: &Expr, pattern: &crate::frontend::Pattern) 
     }
 }
 
+/// After analyzing a statement-position `match`/`if let` arm — a position where an arm-body `assert`
+/// is deliberately deferred to runtime rather than solver-proved — keep the CALL-PRECONDITION
+/// obligations the arm pushed and drop the rest.
+///
+/// A call inside an arm really executes when that arm is taken, so its callee's `requires` is a real
+/// obligation and must not vanish; the previous blanket `truncate(obl_mark)` discarded those
+/// `requires@` / `requires-unresolved@` obligations along with the arm-body `assert:`/`ensures:` ones,
+/// which silently accepted a violated precondition inside a match/if-let arm (e.g.
+/// `match 1 { 1 => { f(-1); } _ => {} }` with `f` requiring `x > 0`).
+///
+/// An obligation that mentions a pattern binder is still dropped: the binder's value is not modeled
+/// outside the arm, so keeping it could be unsound or spurious. That stays deferred exactly as before
+/// — a narrower residual than dropping everything. The caller pushes the arm's pattern fact (via
+/// `match_arm_pattern_fact`) before analysis so a call whose precondition the arm's own literal guard
+/// establishes still proves rather than being over-rejected.
+fn retain_arm_call_preconditions(
+    ctx: &mut SemanticContext,
+    obl_mark: usize,
+    binder_names: &BTreeSet<String>,
+) {
+    if ctx.solver_obligations.len() <= obl_mark {
+        return;
+    }
+    let binder_smt: BTreeSet<String> = binder_names.iter().map(|n| smt_var(n)).collect();
+    let pushed = ctx.solver_obligations.split_off(obl_mark);
+    for o in pushed {
+        let is_precondition = o.name.starts_with("requires@")
+            || o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX);
+        let mentions_binder = o.vars.iter().any(|v| binder_smt.contains(v));
+        if is_precondition && !mentions_binder {
+            ctx.solver_obligations.push(o);
+        }
+    }
+}
+
 /// Process-unique counter for minting fresh SMT symbols for whole-value match bindings (see the
 /// `Expr::Match` arm of `discharge_calls_in_expr`). Only used to guarantee distinct names; the value
 /// never affects a verdict or reaches the compiled output, so a global counter is fixpoint-safe.
@@ -10704,6 +10739,14 @@ fn analyze_stmts(
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
                     }
                     let mut arm_asm = snap_asm.clone();
+                    // The arm runs only when the scrutinee matches this pattern; for a literal pattern
+                    // that is a modelable equality, so a call whose precondition the guard establishes
+                    // (`match x { 1 => { f(x) } .. }`, `f` requiring `x > 0`) proves rather than being
+                    // over-rejected once we stop discarding its obligation below.
+                    let g0 = ctx.active_branch_guards.len();
+                    if let Some(fact) = match_arm_pattern_fact(scrutinee, &arm.pattern) {
+                        push_branch_path_condition(ctx, &mut arm_asm, &fact, false);
+                    }
                     analyze_value_block(
                         &arm.body,
                         mode,
@@ -10713,10 +10756,15 @@ fn analyze_stmts(
                         &mut arm_asm,
                         ctx,
                     );
+                    ctx.active_branch_guards.truncate(g0);
                     arm_scopes.push(arm_scope);
                 }
                 *assumptions = snap_asm;
-                ctx.solver_obligations.truncate(obl_mark);
+                let arm_binders: BTreeSet<String> = arms
+                    .iter()
+                    .flat_map(|a| a.pattern.bound_names())
+                    .collect();
+                retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
                 merge_taint_over(scope, &refs);
                 merge_fn_alias_over(scope, &refs, &ctx.param_egress, &ctx.param_sinks);
@@ -10784,6 +10832,10 @@ fn analyze_stmts(
                     ctx.known_bindings.insert(n);
                 }
                 let mut then_asm = snap_asm.clone();
+                let g0 = ctx.active_branch_guards.len();
+                if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                    push_branch_path_condition(ctx, &mut then_asm, &fact, false);
+                }
                 analyze_value_block(
                     then,
                     mode,
@@ -10793,6 +10845,7 @@ fn analyze_stmts(
                     &mut then_asm,
                     ctx,
                 );
+                ctx.active_branch_guards.truncate(g0);
                 let mut else_scope = scope.clone();
                 let mut else_asm = snap_asm.clone();
                 analyze_value_block(
@@ -10805,7 +10858,8 @@ fn analyze_stmts(
                     ctx,
                 );
                 *assumptions = snap_asm;
-                ctx.solver_obligations.truncate(obl_mark);
+                let arm_binders: BTreeSet<String> = pattern.bound_names().into_iter().collect();
+                retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
                 merge_fn_alias_over(
                     scope,
