@@ -799,9 +799,10 @@ mod tests {
             "marker binary must exist after lower"
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run marker");
+        let run = crate::backends::run::retry_while_exec_busy(|| {
+            std::process::Command::new(&exe_path).output()
+        })
+        .expect("run marker");
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(
             out.contains("analysis-only artifact") && out.contains("not directly executable"),
@@ -923,9 +924,10 @@ fn trigger() {
             emitted
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run marker");
+        let run = crate::backends::run::retry_while_exec_busy(|| {
+            std::process::Command::new(&exe_path).output()
+        })
+        .expect("run marker");
         let stdout = String::from_utf8_lossy(&run.stdout);
         assert!(
             stdout.contains("taint:"),
@@ -955,9 +957,10 @@ fn trigger() {
             emitted
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run real program");
+        let run = crate::backends::run::retry_while_exec_busy(|| {
+            std::process::Command::new(&exe_path).output()
+        })
+        .expect("run real program");
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(
             out.contains("hello-from-build") && out.contains("42"),

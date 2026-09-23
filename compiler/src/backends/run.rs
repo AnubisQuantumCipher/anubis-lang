@@ -5737,7 +5737,7 @@ fn is_exec_busy(e: &std::io::Error) -> bool {
 /// Every other error is returned on the first try: only `ETXTBSY` is transient,
 /// and retrying anything else would turn a real failure into a slow real
 /// failure.
-fn retry_while_exec_busy<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+pub(crate) fn retry_while_exec_busy<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     let mut left = EXEC_BUSY_RETRIES;
     loop {
         match attempt() {
@@ -6623,12 +6623,14 @@ fn main() {
         let exe = dir.join("anubis_run");
         compile_native_rust_to_exe(&rust_source, &exe)
             .expect("compile via cargo (audited crypto deps)");
-        let mut child = std::process::Command::new(&exe)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn");
+        let mut child = retry_while_exec_busy(|| {
+            std::process::Command::new(&exe)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        })
+        .expect("spawn");
         child.stdin.take().unwrap().write_all(stdin_bytes).unwrap();
         let out = child.wait_with_output().expect("wait");
         let _ = std::fs::remove_dir_all(&dir);
