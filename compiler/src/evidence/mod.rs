@@ -463,6 +463,18 @@ fn build_evidence_bundle_tree_inner(
                     for (i, c) in solver_checks.iter().enumerate() {
                         let stem = format!("obligation_{i:04}");
                         let _ = std::fs::write(pdir.join(format!("{stem}.smt2")), &c.smt);
+                        // Never encoded, so there is no query to prove or refute. Handing its
+                        // comment-only `.smt2` to the native solver would label the row as a
+                        // counterexample or a deferral — both false.
+                        if c.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL {
+                            index.push(serde_json::json!({
+                                "obligation": c.name,
+                                "status": c.status,
+                                "proof": "unresolved_not_encoded",
+                                "smt": format!("analysis/proofs/{stem}.smt2"),
+                            }));
+                            continue;
+                        }
                         match anubis_solver::native_prove_with_artifacts(&c.smt) {
                             Some((anubis_solver::NativeVerdict::Unsat, Some(a))) => {
                                 let _ =
@@ -525,10 +537,18 @@ fn build_evidence_bundle_tree_inner(
                     } else {
                         true
                     };
-                    let replay_json = serde_json::json!({
-                        "status": if replay { "counterexample_replayed" } else { "replay_failed" },
-                        "replay_valid": replay
-                    });
+                    // An unencoded obligation has no counterexample to replay; say so rather than
+                    // reporting a replay that never happened.
+                    let replay_json = if first.detail
+                        == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
+                    {
+                        serde_json::json!({ "status": "not_encoded", "replay_valid": false })
+                    } else {
+                        serde_json::json!({
+                            "status": if replay { "counterexample_replayed" } else { "replay_failed" },
+                            "replay_valid": replay
+                        })
+                    };
                     let _ = std::fs::write(
                         dir.join("analysis").join("solver_replay.json"),
                         serde_json::to_string_pretty(&replay_json).unwrap(),

@@ -12,6 +12,7 @@ pub(crate) mod capability;
 /// variant BREAKS THE BUILD until someone states what it can carry — the forcing function that
 /// keeps the false-accept class from reopening silently.
 pub mod carrier;
+mod contract_carrier;
 /// Fall-through analysis: does a block definitely NOT continue to the next statement? Lets
 /// wrap-safety read an early-return guard the programmer already wrote.
 pub mod diverge;
@@ -2970,13 +2971,6 @@ impl SemanticContext {
 /// Named so `method_contracts` stays readable; the shape mirrors `fn_contracts`' value type.
 type MethodContract = (Vec<String>, Vec<Expr>, Vec<Expr>);
 
-#[derive(Debug, Clone)]
-struct ParamContractApplication {
-    callee: Expr,
-    param_indices: BTreeSet<usize>,
-    args: Vec<Expr>,
-}
-
 #[derive(Debug, Default)]
 struct SemanticContext {
     hir: Hir,
@@ -3079,9 +3073,21 @@ struct SemanticContext {
     /// postcondition — the composition that makes contracts chain.
     #[allow(clippy::type_complexity)]
     fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
-    /// User function -> (formal names, unconditional applications of function-valued formals).
-    /// This is policy-neutral call-shape data; the contract policy supplies identity and discharge.
-    fn_param_contract_apps: BTreeMap<String, (Vec<String>, Vec<ParamContractApplication>)>,
+    /// User function -> (formal names, every carrier site of its function-valued formals). Call-shape
+    /// data collected once per definition; `discharge_carried_call_requires` resolves and discharges it
+    /// at each call site.
+    fn_carrier_items: BTreeMap<String, (Vec<String>, Vec<contract_carrier::CarrierItem>)>,
+    /// Carrier frames currently being discharged: `(callee|argument identities, generic)`. A key seen
+    /// again runs one generic frame; a key whose generic frame is already on the stack is covered.
+    carrier_stack: Vec<(String, bool)>,
+    /// Carrier frames discharged so far in this program (bounded by `CARRIER_FRAME_BUDGET`).
+    carrier_frames: usize,
+    /// Counter for fresh carrier symbols, so names are deterministic in program order.
+    carrier_fresh: usize,
+    /// Set while discharging carrier sites: the function whose parameter carried the contract. A
+    /// `requires` clause that cannot be encoded in this context becomes an explicit unresolved
+    /// obligation instead of being dropped.
+    carrier_origin: Option<String>,
     /// #76: impl-METHOD contracts, keyed by bare method name with `self` at parameter index 0.
     /// `None` marks an AMBIGUOUS name (declared by more than one impl), where a call site cannot know
     /// statically which contract applies.
@@ -3858,24 +3864,15 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     }
                 }
                 {
+                    // Item 21 Family 1: every site where a function-valued parameter's contract can
+                    // be reached (see `contract_carrier`), discharged at each call site.
                     let param_names: Vec<String> =
                         params.iter().map(|(param, _)| param.clone()).collect();
-                    let param_indices: BTreeMap<String, usize> = param_names
-                        .iter()
-                        .enumerate()
-                        .map(|(index, param)| (param.clone(), index))
-                        .collect();
-                    let shadowed = ctx.fn_param_shadowed.get(name).cloned().unwrap_or_default();
-                    let mut applications =
-                        collect_unconditional_param_contract_applications(body, &param_indices);
-                    applications.retain(|application| {
-                        application
-                            .param_indices
-                            .iter()
-                            .all(|index| !shadowed.contains(index))
-                    });
-                    ctx.fn_param_contract_apps
-                        .insert(name.clone(), (param_names, applications));
+                    let items = contract_carrier::collect_carrier_items(name, &param_names, body);
+                    if !items.is_empty() {
+                        ctx.fn_carrier_items
+                            .insert(name.clone(), (param_names, items));
+                    }
                 }
                 // Flat function namespace: a redefinition is an error.
                 if !ctx.all_fns.insert(name.clone()) {
@@ -7599,6 +7596,41 @@ fn compose_inline_int_call_argument(
     Some((Expr::Var(fresh.clone()), facts, fresh))
 }
 
+/// Bind a callee's formals to call-site arguments exactly as the runtime coerces them on entry: an
+/// integer into a float slot rounds (`anubis_coerce_float_param`, #40) and an unsigned slot masks to
+/// `[0, 2^w)` (A1, task #50). Shared by every discharge that substitutes arguments for formals — a copy
+/// that forgot one coercion certified `requires` against a value the callee never sees.
+///
+/// The caller owns `havoc_names`: the fresh float symbols minted for symbolic-int / overflow float-param
+/// arguments must be removed from `solver_float_vars` once the discharge is done.
+fn coerce_call_args(
+    ctx: &mut SemanticContext,
+    callee: &str,
+    pnames: &[String],
+    args: &[Expr],
+    havoc_names: &mut Vec<String>,
+) -> BTreeMap<String, Expr> {
+    let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
+    let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+    for (i, (pname, arg)) in pnames.iter().zip(args.iter()).enumerate() {
+        // is_float_ty (f32/f64/float) — parity with the runtime `anubis_coerce_float_param`; the literal
+        // "f64" spelling let a `float`/`f32` param bypass the int→f64 arg-coercion model (the #40 twin).
+        let is_float_param = ptypes.get(i).map(|t| is_float_ty(t)).unwrap_or(false);
+        let coerced = if is_float_param {
+            coerce_int_into_float_slot(ctx, arg, &format!("p{i}"), havoc_names)
+        } else if let Some(w) = ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
+            // A1 (task #50): the callee masks a u32 param to [0, 2^w) at runtime, so discharge its
+            // `requires` against the MASKED arg — else `g(3*x)` with `requires(y < 100)` would check
+            // the raw `3*x` while the runtime sees `(3*x) mod 2^32` (a mismatch when the arg overflows).
+            coerce_uint_arg(arg, w, &ctx.solver_int_vars)
+        } else {
+            arg.clone()
+        };
+        sub.insert(pname.clone(), coerced);
+    }
+    sub
+}
+
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -7636,25 +7668,8 @@ fn discharge_call_requires(
     // precondition and trapping a mirroring body `assert` (a check-accept / run-trap false accept). Model
     // the coercion per f64 param via the shared `coerce_int_into_float_slot` (see its doc for the full
     // case table; #41 reuses it on the RETURN side).
-    let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
     let mut havoc_names: Vec<String> = Vec::new();
-    let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
-    for (i, (pname, arg)) in pnames.iter().zip(args.iter()).enumerate() {
-        // is_float_ty (f32/f64/float) — parity with the runtime `anubis_coerce_float_param`; the literal
-        // "f64" spelling let a `float`/`f32` param bypass the int→f64 arg-coercion model (the #40 twin).
-        let is_float_param = ptypes.get(i).map(|t| is_float_ty(t)).unwrap_or(false);
-        let coerced = if is_float_param {
-            coerce_int_into_float_slot(ctx, arg, &format!("p{i}"), &mut havoc_names)
-        } else if let Some(w) = ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
-            // A1 (task #50): the callee masks a u32 param to [0, 2^w) at runtime, so discharge its
-            // `requires` against the MASKED arg — else `g(3*x)` with `requires(y < 100)` would check
-            // the raw `3*x` while the runtime sees `(3*x) mod 2^32` (a mismatch when the arg overflows).
-            coerce_uint_arg(arg, w, &ctx.solver_int_vars)
-        } else {
-            arg.clone()
-        };
-        sub.insert(pname.clone(), coerced);
-    }
+    let sub = coerce_call_args(ctx, callee, &pnames, args, &mut havoc_names);
     // CROSS-CALL shadow scope (review Finding: a caller-local shadow leaking into the callee's requires):
     // the callee's `requires` resolves its builtin tokens (`abs`/`min`/`max`/`len`/`contains`/…) in the
     // CALLEE's scope, not the caller's. A CALLER-LOCAL shadow — a param/`let` named `max` in THIS function —
@@ -7805,9 +7820,16 @@ fn discharge_call_requires(
                     });
                 } else {
                     all_requires_checkable = false;
+                    carrier_unresolved_clause(
+                        ctx,
+                        callee,
+                        clause,
+                        "its string length is not covered",
+                    );
                 }
             } else {
                 all_requires_checkable = false;
+                carrier_unresolved_clause(ctx, callee, clause, "it is not modelable");
             }
         }
     }
@@ -7836,6 +7858,20 @@ fn discharge_call_requires(
     all_requires_checkable
 }
 
+/// Upper bound on carrier frames discharged per program. Fan-out such as `a_k(g){ a_{k-1}(g); a_{k-1}(g) }`
+/// is exponential in call sites; exhausting the budget is reported as unresolved, never as a pass.
+const CARRIER_FRAME_BUDGET: usize = 256;
+
+/// Discharge, at a call site, the `requires` of every function passed as an argument wherever the callee
+/// can reach it (item 21 Family 1). The sites come from `contract_carrier::collect_carrier_items`; this
+/// substitutes the call-site arguments, pushes each site's stable guards as scoped path conditions, and
+/// discharges the resolved function's precondition under the caller's facts. Anything that cannot be
+/// resolved or encoded becomes an explicit `requires-unresolved@…` obligation. Returns false when any
+/// obligation was not encodable.
+///
+/// `depth` is threaded for parity with the resolved-call lane; recursion here is bounded by the
+/// per-program `carrier_frames` budget and the `(callee, identities)` stack, not by `depth`.
+#[allow(clippy::only_used_in_recursion)]
 fn discharge_carried_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -7844,33 +7880,492 @@ fn discharge_carried_call_requires(
     outer_args: &[Expr],
     depth: u32,
 ) -> bool {
-    let Some((formal_names, applications)) = ctx.fn_param_contract_apps.get(outer_callee).cloned()
-    else {
+    let Some((formals, items)) = ctx.fn_carrier_items.get(outer_callee).cloned() else {
         return true;
     };
-    if formal_names.len() != outer_args.len() {
+    if formals.len() != outer_args.len() {
         return true;
     }
-    let substitutions: BTreeMap<String, Expr> = formal_names
-        .into_iter()
-        .zip(outer_args.iter().cloned())
+    let idents: Vec<FnIdentitySet> = outer_args
+        .iter()
+        .map(|a| carrier_identities(a, scope, ctx))
         .collect();
-    applications.into_iter().fold(true, |all, application| {
-        let concrete_callee = substitute_vars(&application.callee, &substitutions);
-        let concrete_args: Vec<Expr> = application
-            .args
+    // Skip unless some argument could actually carry a function. Every formal is seeded as a
+    // potential carrier at collection time (no types there), so a call passing only plain values —
+    // the overwhelmingly common case, including ordinary stdlib code — would otherwise be walked and
+    // could mis-report a value flow. "Could carry a function" is: a known non-empty identity, an
+    // argument that syntactically names a user function (covers a nested `[f]` / `S { h: f }`), or an
+    // unknown identity that is not a declared scalar. A function hidden behind a LOCAL holding a
+    // container (`let xs = [f]; app(xs)`) whose binding exposes neither is NOT caught here — that is
+    // the container-element-through-a-local residual, tracked with the other SHARED cases.
+    // Fire only when an argument actually carries a KNOWN function identity, or syntactically names a
+    // user function (a nested `[f]` / `S { h: f }`). An `Unknown` value is NOT assumed to be a
+    // contracted function — the same principle the singleton contract policy already applies (item 11:
+    // an unknown value is neither assumed to violate nor to satisfy). Treating every untracked value
+    // (a call result, a cross-function value) as a possible function floods ordinary code with
+    // refusals; a genuinely untrackable function identity is a documented residual, like the item-10
+    // join and the return-out lane.
+    let could_carry = |a: &Expr, s: &FnIdentitySet| -> bool {
+        matches!(s, FnIdentitySet::Known(n) if !n.is_empty()) || carrier_mentions_function(a, ctx)
+    };
+    if !outer_args
+        .iter()
+        .zip(idents.iter())
+        .any(|(a, s)| could_carry(a, s))
+    {
+        return true;
+    }
+    // Recursion: keyed by the callee and the identities of EVERY argument, so a frame that shuffles
+    // which formal holds which function is a different key (review R1).
+    let key = format!(
+        "{outer_callee}|{}",
+        idents
             .iter()
-            .map(|arg| substitute_vars(arg, &substitutions))
-            .collect();
-        discharge_resolved_call_requires_d(
+            .map(|s| match s {
+                FnIdentitySet::Known(n) => n.iter().cloned().collect::<Vec<_>>().join("+"),
+                FnIdentitySet::Unknown => "?".into(),
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let generic = match ctx
+        .carrier_stack
+        .iter()
+        .filter(|(k, _)| *k == key)
+        .map(|(_, g)| *g)
+        .collect::<Vec<_>>()
+    {
+        v if v.iter().any(|g| *g) => return true, // covered by the generic frame on the stack
+        v if !v.is_empty() => true,
+        _ => false,
+    };
+    ctx.carrier_frames += 1;
+    if ctx.carrier_frames > CARRIER_FRAME_BUDGET {
+        carrier_unresolved(
             ctx,
-            assumptions,
-            scope,
-            &concrete_callee,
-            &concrete_args,
-            depth + 1,
-        ) && all
-    })
+            outer_callee,
+            "carrier-budget".into(),
+            format!(
+                "the {CARRIER_FRAME_BUDGET}-frame budget for checking preconditions carried through \
+                 function-valued parameters was exhausted at a call to `{outer_callee}`"
+            ),
+        );
+        return false;
+    }
+    ctx.carrier_stack.push((key, generic));
+    let prev_origin = ctx.carrier_origin.replace(outer_callee.to_string());
+
+    // Arguments as the callee sees them.
+    let mut minted_int: Vec<String> = Vec::new();
+    let mut frame_facts: Vec<String> = Vec::new();
+    let mut args: Vec<Expr> = outer_args.to_vec();
+    // N1: an argument that writes a caller variable makes every fact about that variable stale for the
+    // arguments evaluated after it; do not use them.
+    let mut written = BTreeSet::new();
+    for a in &args {
+        expr_assigned_roots(a, &mut written);
+    }
+    if !written.is_empty() {
+        let stale: BTreeMap<String, Expr> = written
+            .iter()
+            .map(|w| {
+                ctx.carrier_fresh += 1;
+                (
+                    w.clone(),
+                    Expr::Var(format!(
+                        "{}stale_{}",
+                        contract_carrier::UNMODELED_PREFIX,
+                        ctx.carrier_fresh
+                    )),
+                )
+            })
+            .collect();
+        args = args.iter().map(|a| substitute_vars(a, &stale)).collect();
+    }
+    for (i, a) in args.iter_mut().enumerate() {
+        // A scalar-typed argument is a value, never a function — even though a plain parameter's
+        // identity set defaults to `Unknown`. An argument that names a function (`Known` non-empty or a
+        // literal function name) or whose identity is genuinely unknown and is NOT scalar-typed is
+        // treated as function-valued and left alone, so a function is never replaced by an integer
+        // symbol (which would drop its carried contract).
+        let scalar_typed = matches!(a, Expr::Var(v)
+            if scope.get(v).and_then(|b| b.info.ty.as_deref()).map(|t| {
+                let t = normalize_ty(t);
+                is_integer_ty(&t) || is_float_ty(&t) || t == "bool" || t == "string"
+            }).unwrap_or(false));
+        let function_valued = !scalar_typed
+            && (!matches!(&idents[i], FnIdentitySet::Known(n) if n.is_empty())
+                || carrier_mentions_function(a, ctx));
+        if function_valued {
+            continue;
+        }
+        if generic {
+            // Generic frame: every value is arbitrary. Integers become fresh unconstrained symbols;
+            // anything else is not modeled.
+            let sym = carrier_mint(
+                ctx,
+                if is_int_modelable(a, &ctx.solver_int_vars) {
+                    "int"
+                } else {
+                    "unmodeled"
+                },
+            );
+            if !sym.starts_with(contract_carrier::UNMODELED_PREFIX) {
+                ctx.solver_int_vars.insert(sym.clone());
+                ctx.symbolic_widths.insert(sym.clone(), 64);
+                minted_int.push(sym.clone());
+            }
+            *a = Expr::Var(sym);
+            continue;
+        }
+        // Concrete frame. A bare caller VARIABLE that the solver does not already model is an
+        // arbitrary value (a caller input is universally quantified), so a fresh unconstrained symbol
+        // is both sound and lets a guard over it be used — and a counterexample over it is real. A
+        // CALL RESULT or other compound unmodeled term is a specific unknown value: modeling it as
+        // arbitrary would fabricate a counterexample, so it is left unmodeled and its clause becomes
+        // an explicit unresolved (item 11 — an unknown value is neither assumed to violate nor to
+        // satisfy). An already-modelable argument (a literal, or an expression over modeled vars) is
+        // kept as-is so no precision is lost.
+        if is_int_modelable(a, &ctx.solver_int_vars) {
+            continue;
+        }
+        if let Expr::Var(v) = a {
+            if !ctx.solver_int_vars.contains(v) {
+                let ty = scope.get(v).and_then(|b| b.info.ty.clone());
+                // A declared non-integer variable is not modeled in the integer lane; leave it so its
+                // clause (if any) refuses rather than inventing an integer.
+                if ty
+                    .as_deref()
+                    .map(|t| !is_integer_ty(&normalize_ty(t)))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let sym = carrier_mint(ctx, "int");
+                ctx.solver_int_vars.insert(sym.clone());
+                ctx.symbolic_widths.insert(sym.clone(), 64);
+                minted_int.push(sym.clone());
+                if let Some(w) = ty.as_deref().and_then(ty::unsigned_mask_width) {
+                    let sm = smt_var(&sym);
+                    frame_facts.push(format!("(bvsge {sm} (_ bv0 64))"));
+                    if w < 64 {
+                        frame_facts.push(format!("(bvslt {sm} (_ bv{} 64))", 1u128 << w));
+                    }
+                }
+                *a = Expr::Var(sym);
+            }
+        }
+    }
+    let mut havoc_names: Vec<String> = Vec::new();
+    let sub = coerce_call_args(ctx, outer_callee, &formals, &args, &mut havoc_names);
+
+    let mut ok = true;
+    for item in &items {
+        let mut asm: Vec<String> = assumptions.to_vec();
+        asm.extend(frame_facts.iter().cloned());
+        let guard_mark = ctx.active_branch_guards.len();
+        let mut declared: Vec<String> = Vec::new();
+        for fv in &item.for_vars {
+            let start = substitute_vars(&fv.start, &sub);
+            let end = substitute_vars(&fv.end, &sub);
+            if is_int_modelable(&start, &ctx.solver_int_vars)
+                && is_int_modelable(&end, &ctx.solver_int_vars)
+            {
+                ctx.solver_int_vars.insert(fv.sym.clone());
+                ctx.symbolic_widths.insert(fv.sym.clone(), 64);
+                declared.push(fv.sym.clone());
+                let k = Expr::Var(fv.sym.clone());
+                for (op, l, r) in [
+                    ("<=", start.clone(), k.clone()),
+                    ("<", k, end.clone()),
+                    ("<", start, end),
+                ] {
+                    let fact = Expr::Binary {
+                        op: op.into(),
+                        lhs: Box::new(l),
+                        rhs: Box::new(r),
+                    };
+                    push_branch_path_condition(ctx, &mut asm, &fact, false);
+                }
+            }
+        }
+        for g in &item.guards {
+            let ge = substitute_vars(&g.expr, &sub);
+            if contract_carrier::mentions_unmodeled(&ge) {
+                continue;
+            }
+            push_branch_path_condition(ctx, &mut asm, &ge, g.negate);
+        }
+        match &item.kind {
+            contract_carrier::CarrierKind::Apply {
+                callee,
+                args: cargs,
+            } => {
+                let c = substitute_vars(callee, &sub);
+                let a: Vec<Expr> = cargs.iter().map(|x| substitute_vars(x, &sub)).collect();
+                match carrier_identities(&c, scope, ctx) {
+                    FnIdentitySet::Known(names) if !names.is_empty() => {
+                        for f in names {
+                            ok &= discharge_call_requires(ctx, &asm, &f, &a);
+                            ok &= discharge_carried_call_requires(
+                                ctx,
+                                &asm,
+                                scope,
+                                &f,
+                                &a,
+                                depth + 1,
+                            );
+                        }
+                    }
+                    FnIdentitySet::Known(_) => {
+                        // Resolved to no function. Only a data access over a value that holds a
+                        // function (`S { h: f }.h`) can still be a call of one (review N2).
+                        if matches!(c, Expr::FieldAccess { .. } | Expr::Index { .. })
+                            && carrier_mentions_function(&c, ctx)
+                        {
+                            ok = false;
+                            carrier_unresolved_expr(
+                                ctx,
+                                outer_callee,
+                                &c,
+                                "is called but cannot be resolved to a function",
+                            );
+                        }
+                    }
+                    FnIdentitySet::Unknown => {
+                        // Item 11: an unknown callee is not assumed to be a contracted function.
+                    }
+                }
+            }
+            contract_carrier::CarrierKind::CallNamed {
+                callee,
+                args: cargs,
+            } => {
+                let a: Vec<Expr> = cargs.iter().map(|x| substitute_vars(x, &sub)).collect();
+                if ctx.fn_params.contains_key(callee) {
+                    ok &= discharge_carried_call_requires(ctx, &asm, scope, callee, &a, depth + 1);
+                } else {
+                    for x in &a {
+                        ok &= carrier_escape(ctx, scope, outer_callee, x, "is passed to a builtin");
+                    }
+                }
+            }
+            contract_carrier::CarrierKind::Escape { value, reason } => {
+                let v = substitute_vars(value, &sub);
+                ok &= carrier_escape(ctx, scope, outer_callee, &v, reason);
+            }
+            contract_carrier::CarrierKind::Return { value } => {
+                // The caller side resolves the identity a param forwarder or a sole-return function
+                // hands back; any other return of a function value is not followed.
+                if !(ctx.fn_returns_param.contains_key(outer_callee)
+                    || ctx.fn_sole_return.contains_key(outer_callee))
+                {
+                    let v = substitute_vars(value, &sub);
+                    ok &= carrier_escape(
+                        ctx,
+                        scope,
+                        outer_callee,
+                        &v,
+                        "is returned where the caller cannot follow it",
+                    );
+                }
+            }
+        }
+        ctx.active_branch_guards.truncate(guard_mark);
+        for d in declared {
+            ctx.solver_int_vars.remove(&d);
+            ctx.symbolic_widths.remove(&d);
+        }
+    }
+    for hv in havoc_names {
+        ctx.solver_float_vars.remove(&hv);
+    }
+    for m in minted_int {
+        ctx.solver_int_vars.remove(&m);
+        ctx.symbolic_widths.remove(&m);
+    }
+    ctx.carrier_origin = prev_origin;
+    ctx.carrier_stack.pop();
+    ok
+}
+
+/// A fresh carrier symbol, deterministic in program order. `kind == "unmodeled"` yields a placeholder the
+/// solver never models.
+fn carrier_mint(ctx: &mut SemanticContext, kind: &str) -> String {
+    ctx.carrier_fresh += 1;
+    if kind == "unmodeled" {
+        format!(
+            "{}arg_{}",
+            contract_carrier::UNMODELED_PREFIX,
+            ctx.carrier_fresh
+        )
+    } else {
+        format!("anubis_carrier_{kind}_{}", ctx.carrier_fresh)
+    }
+}
+
+/// Function identities of a call-site value, resolving a plain name from the CALLER's scope before the
+/// global function table (a local `let safe = f` must mean `f`, not the global `safe` — review N5). A
+/// compound expression that mentions such a shadowed name cannot be resolved correctly by
+/// `fn_identities_of`, which looks globals up first, so it is `Unknown`. Carrier placeholders and symbols
+/// are values, except the alias placeholder, which stands for an unexpressible function value.
+fn carrier_identities(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> FnIdentitySet {
+    if let Expr::Var(n) = e {
+        if n.starts_with(contract_carrier::UNMODELED_PREFIX) {
+            return if n.contains("_alias_") {
+                FnIdentitySet::Unknown
+            } else {
+                FnIdentitySet::empty()
+            };
+        }
+        if n.starts_with(contract_carrier::FOR_VAR_PREFIX) || n.starts_with("anubis_carrier_") {
+            return FnIdentitySet::empty();
+        }
+        if let Some(b) = scope.get(n) {
+            return b.fn_identities.clone();
+        }
+        return fn_identities_of(e, scope, ctx);
+    }
+    // Resolve a function nested in a literal the collector substituted inline: `[f][0]`, `S { h: f }.h`.
+    // `fn_identities_of` reads these through a scope binding, not a raw literal, so do it here.
+    if let Expr::Index { base, index } = e {
+        if let (Expr::ArrayLiteral { elements }, Expr::Literal(i)) = (base.as_ref(), index.as_ref())
+        {
+            if let Ok(i) = i.parse::<usize>() {
+                if let Some(el) = elements.get(i) {
+                    return carrier_identities(el, scope, ctx);
+                }
+            }
+        }
+    }
+    if let Expr::FieldAccess { base, field, .. } = e {
+        if let Expr::StructLiteral { fields, .. } = base.as_ref() {
+            if let Some((_, v)) = fields.iter().find(|(k, _)| k == field) {
+                return carrier_identities(v, scope, ctx);
+            }
+        }
+    }
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    if vars
+        .iter()
+        .any(|v| ctx.fn_params.contains_key(v) && scope.contains_key(v))
+    {
+        return FnIdentitySet::Unknown;
+    }
+    if vars
+        .iter()
+        .any(|v| v.starts_with(contract_carrier::UNMODELED_PREFIX) && v.contains("_alias_"))
+    {
+        return FnIdentitySet::Unknown;
+    }
+    fn_identities_of(e, scope, ctx)
+}
+
+/// Whether `e` names a user function anywhere.
+fn carrier_mentions_function(e: &Expr, ctx: &SemanticContext) -> bool {
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    vars.iter().any(|v| ctx.fn_params.contains_key(v))
+}
+
+/// A formal-derived value that reaches a place the analysis cannot follow. Unresolved when it may hold
+/// a function whose contract matters: a known function with a `requires` or carrier sites of its own, or
+/// an unknown value that is not declared scalar.
+fn carrier_escape(
+    ctx: &mut SemanticContext,
+    scope: &BTreeMap<String, ScopeBinding>,
+    origin: &str,
+    value: &Expr,
+    reason: &str,
+) -> bool {
+    let relevant = match carrier_identities(value, scope, ctx) {
+        FnIdentitySet::Known(names) => names.iter().any(|f| {
+            ctx.fn_contracts
+                .get(f)
+                .is_some_and(|(_, req, _)| !req.is_empty())
+                || ctx.fn_carrier_items.contains_key(f)
+        }),
+        // Item 11: an unknown value is not assumed to be a contracted function that escapes.
+        FnIdentitySet::Unknown => false,
+    };
+    if relevant {
+        carrier_unresolved_expr(ctx, origin, value, reason);
+        return false;
+    }
+    true
+}
+
+/// Render an expression for a user-facing carrier diagnostic, rewriting the analysis's internal
+/// placeholder symbols (`__anubis_carrier_*`, `anubis_carrier_*`) to a readable `<unmodeled value>`
+/// token so no sentinel name leaks into an obligation name, message, or the evidence bundle.
+fn carrier_display(e: &Expr) -> String {
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    let map: BTreeMap<String, Expr> = vars
+        .into_iter()
+        .filter(|n| {
+            n.starts_with(contract_carrier::UNMODELED_PREFIX)
+                || n.starts_with(contract_carrier::FOR_VAR_PREFIX)
+                || n.starts_with("anubis_carrier_")
+        })
+        .map(|n| (n, Expr::Var("<unmodeled value>".to_string())))
+        .collect();
+    let shown = if map.is_empty() {
+        e.clone()
+    } else {
+        substitute_vars(e, &map)
+    };
+    crate::fmt::fmt_expr(&shown)
+}
+
+fn carrier_unresolved_expr(ctx: &mut SemanticContext, origin: &str, e: &Expr, what: &str) {
+    let shown = carrier_display(e);
+    carrier_unresolved(
+        ctx,
+        origin,
+        format!("{shown} {what}"),
+        format!(
+            "`{shown}`, derived from a function-valued parameter of `{origin}`, {what}; its \
+             precondition cannot be checked where it runs"
+        ),
+    );
+}
+
+/// A `requires` clause reached through a function-valued parameter that could not be encoded.
+fn carrier_unresolved_clause(ctx: &mut SemanticContext, callee: &str, clause: &Expr, why: &str) {
+    let Some(origin) = ctx.carrier_origin.clone() else {
+        return;
+    };
+    let shown = carrier_display(clause);
+    carrier_unresolved(
+        ctx,
+        callee,
+        format!("{shown} via {origin}"),
+        format!(
+            "precondition `{shown}` of `{callee}`, passed as a function-valued argument to \
+             `{origin}`, could not be encoded because {why}"
+        ),
+    );
+}
+
+fn carrier_unresolved(ctx: &mut SemanticContext, subject: &str, key: String, statement: String) {
+    let name = format!("{UNRESOLVED_REQUIRES_PREFIX}{subject}:{key}");
+    if ctx.solver_obligations.iter().any(|o| o.name == name) {
+        return;
+    }
+    ctx.solver_obligations.push(SolverObligation {
+        name,
+        assumptions: Vec::new(),
+        assertion: statement,
+        vars: Vec::new(),
+        strings: false,
+        guard_assumptions: Vec::new(),
+    });
 }
 
 fn discharge_resolved_call_requires(
@@ -14789,6 +15284,19 @@ impl SymbolicEngine {
         ir.solver_obligations
             .iter()
             .map(|obl| {
+                // An obligation the checker could not encode is refused as undecided here, before any
+                // SMT is built, so neither z3 nor the native lane decides it and the two cannot
+                // disagree about it. The prefix lists below (`is_contract`,
+                // `obligation_undecided_is_unsound`) never see it for the same reason.
+                if obl.name.starts_with(UNRESOLVED_REQUIRES_PREFIX) {
+                    return SolverCheck {
+                        name: obl.name.clone(),
+                        status: "FAIL".into(),
+                        detail: UNRESOLVED_PRECONDITION_DETAIL.into(),
+                        model: None,
+                        smt: unresolved_obligation_smt_comment(obl),
+                    };
+                }
                 // Faithful complete smt with defs from ir + obligation
                 let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
                 let mut body = String::new();
@@ -15851,10 +16359,48 @@ pub const UNDECIDED_DETAIL: &str = "solver could not decide this contract within
      division/remainder); failing closed — an undecided postcondition is not a proof. Restate it as a \
      simpler or better-bounded obligation";
 
+/// Name prefix of an obligation the checker knows it must discharge but could not ENCODE: a
+/// precondition carried through a function-valued parameter whose argument or clause is not
+/// modelable, or whose function value escapes to a place this analysis cannot follow.
+///
+/// It used to be dropped silently — `discharge_call_requires` cleared a boolean and emitted nothing,
+/// so the verdict was indistinguishable from a proof. An obligation with this prefix is never handed to
+/// z3 or the native solver: `check_obligations` turns it straight into an undecided refusal carrying
+/// [`UNRESOLVED_PRECONDITION_DETAIL`]. Its `assertion` field holds a human-readable statement of what
+/// could not be encoded, not SMT.
+pub const UNRESOLVED_REQUIRES_PREFIX: &str = "requires-unresolved@";
+
+/// Detail for an obligation that was never encoded (see [`UNRESOLVED_REQUIRES_PREFIX`]). Distinct from
+/// [`UNDECIDED_DETAIL`], which reports that z3 ran and returned `unknown`: no solver ran here, so no work
+/// budget is involved and raising one cannot help. Classified by exact equality, never by prose.
+pub const UNRESOLVED_PRECONDITION_DETAIL: &str = "undecided without a solver: this precondition could \
+     not be encoded (an argument or clause is not modelable, or the function value escapes where the \
+     checker cannot follow it), so it was neither proved nor disproved; failing closed rather than \
+     assuming it holds. Make the argument modelable, guard the call, or state the precondition on the \
+     enclosing function";
+
+/// The `.smt` recorded for an unencoded obligation: comment lines only, so no consumer can mistake it
+/// for a query (it contains no `check-sat`), and the evidence bundle can still publish what was not
+/// encoded, and why.
+fn unresolved_obligation_smt_comment(obl: &SolverObligation) -> String {
+    let mut out =
+        String::from("; not encoded: precondition refused as undecided without a solver\n");
+    for line in format!("{}\n{}", obl.name, obl.assertion).lines() {
+        out.push_str("; ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// Classify one failed `SolverCheck` without guessing from free-form prose alone.
 pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     if check.status != "FAIL" {
         return AssertionFailKind::Other;
+    }
+    // Exact equality, not a substring: an unencoded obligation is undecided by construction.
+    if check.detail == UNRESOLVED_PRECONDITION_DETAIL {
+        return AssertionFailKind::Undecided;
     }
     if check.detail.contains("ANUBIS_REPLAY_MISMATCH") {
         return AssertionFailKind::ReplayMismatch;
@@ -16417,11 +16963,20 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
             format!("{n} obligation(s) failed (contract disproof and/or wrap risk):"),
         )
     } else if all_undecided {
+        // "within solver budget" is only true when a solver ran; an unencoded obligation never
+        // reached one.
+        let any_unencoded = fails
+            .iter()
+            .any(|c| c.detail == UNRESOLVED_PRECONDITION_DETAIL);
         (
             "ANUBIS_ASSERTION_UNDECIDED",
-            format!(
-                "{n} assertion(s) undecided within solver budget (not a proof, not a counterexample):"
-            ),
+            if any_unencoded {
+                format!("{n} assertion(s) undecided (not a proof, not a counterexample):")
+            } else {
+                format!(
+                    "{n} assertion(s) undecided within solver budget (not a proof, not a counterexample):"
+                )
+            },
         )
     } else if any_replay
         && kinds.iter().all(|k| {
@@ -16470,6 +17025,15 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                         }
                     }
                 }
+            }
+            AssertionFailKind::Undecided if c.detail == UNRESOLVED_PRECONDITION_DETAIL => {
+                out.push_str("\n    (not encoded — no solver ran; neither proved nor disproved)");
+                if !c.smt.is_empty() {
+                    for line in c.smt.lines().skip(1) {
+                        out.push_str(&format!("\n    {}", line.trim_start_matches("; ")));
+                    }
+                }
+                out.push_str(&format!("\n    detail: {}", c.detail));
             }
             AssertionFailKind::Undecided => {
                 out.push_str(
@@ -18788,239 +19352,6 @@ fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
     let mut m = BTreeMap::new();
     m.insert("result".to_string(), repl.clone());
     substitute_vars(e, &m)
-}
-
-fn contract_application_param_indices(
-    callee: &Expr,
-    params: &BTreeMap<String, usize>,
-) -> BTreeSet<usize> {
-    let mut names = BTreeSet::new();
-    collect_expr_vars(callee, &mut names);
-    names
-        .into_iter()
-        .filter_map(|name| params.get(&name).copied())
-        .collect()
-}
-
-/// Collect applications of function-valued formals that execute whenever the enclosing function
-/// executes. Conditional branches, short-circuit RHS expressions, and loop bodies are intentionally
-/// omitted: charging a contract from a path that may not run would be an over-rejection.
-fn collect_unconditional_param_contract_applications(
-    body: &[Stmt],
-    params: &BTreeMap<String, usize>,
-) -> Vec<ParamContractApplication> {
-    let mut out = Vec::new();
-    collect_unconditional_param_contract_stmts(body, params, &mut out);
-    out
-}
-
-fn collect_unconditional_param_contract_stmts(
-    body: &[Stmt],
-    params: &BTreeMap<String, usize>,
-    out: &mut Vec<ParamContractApplication>,
-) {
-    use crate::frontend::ForSource;
-    for stmt in body {
-        match stmt {
-            Stmt::Let {
-                name: _,
-                ty: _,
-                init,
-                span: _,
-            }
-            | Stmt::LetPattern {
-                pattern: _,
-                init,
-                span: _,
-            } => collect_unconditional_param_contract_expr(init, params, out),
-            Stmt::WhileLet {
-                pattern: _,
-                expr,
-                body: _,
-            } => collect_unconditional_param_contract_expr(expr, params, out),
-            Stmt::Assign { target, value } => {
-                collect_unconditional_param_contract_expr(target, params, out);
-                collect_unconditional_param_contract_expr(value, params, out);
-            }
-            Stmt::If {
-                cond,
-                then: _,
-                else_: _,
-            }
-            | Stmt::While {
-                cond,
-                body: _,
-                invariant: _,
-            } => collect_unconditional_param_contract_expr(cond, params, out),
-            Stmt::For {
-                var: _,
-                source,
-                body: _,
-                invariant: _,
-            } => match source {
-                ForSource::Range { start, end } => {
-                    collect_unconditional_param_contract_expr(start, params, out);
-                    collect_unconditional_param_contract_expr(end, params, out);
-                }
-                ForSource::Collection { expr } => {
-                    collect_unconditional_param_contract_expr(expr, params, out)
-                }
-            },
-            Stmt::ExprStmt(expr) => {
-                collect_unconditional_param_contract_expr(expr, params, out);
-                if matches!(expr, Expr::Call { callee, .. } if callee == "return") {
-                    break;
-                }
-            }
-            Stmt::Loop {
-                body: _,
-                invariant: _,
-            }
-            | Stmt::ResearchBlock { intent: _, body: _ }
-            | Stmt::ExploitBlock { intent: _, body: _ }
-            | Stmt::HybridBlock {
-                gpu: _,
-                cpu: _,
-                prove: _,
-            }
-            | Stmt::SpecBlock { forall: _ } => {}
-            Stmt::Break | Stmt::Continue => break,
-        }
-    }
-}
-
-fn collect_unconditional_param_contract_expr(
-    expr: &Expr,
-    params: &BTreeMap<String, usize>,
-    out: &mut Vec<ParamContractApplication>,
-) {
-    match expr {
-        Expr::Call { callee, args } => {
-            let callee_expr = Expr::Var(callee.clone());
-            let param_indices = contract_application_param_indices(&callee_expr, params);
-            if !param_indices.is_empty() {
-                out.push(ParamContractApplication {
-                    callee: callee_expr,
-                    param_indices,
-                    args: args.clone(),
-                });
-            }
-            for arg in args {
-                collect_unconditional_param_contract_expr(arg, params, out);
-            }
-        }
-        Expr::CallExpr { callee, args } => {
-            // `recv.method(args)` is method dispatch, not application of the receiver as a
-            // function-valued parameter. Method contracts stay in their separate namespace and
-            // are discharged by `discharge_method_requires`; recording `recv` here made every
-            // method call through a formal look like an unresolved free-function application.
-            if !matches!(callee.as_ref(), Expr::FieldAccess { .. }) {
-                let param_indices = contract_application_param_indices(callee, params);
-                if !param_indices.is_empty() {
-                    out.push(ParamContractApplication {
-                        callee: callee.as_ref().clone(),
-                        param_indices,
-                        args: args.clone(),
-                    });
-                }
-            }
-            collect_unconditional_param_contract_expr(callee, params, out);
-            for arg in args {
-                collect_unconditional_param_contract_expr(arg, params, out);
-            }
-        }
-        Expr::Binary { op, lhs, rhs } => {
-            collect_unconditional_param_contract_expr(lhs, params, out);
-            if op != "&&" && op != "||" {
-                collect_unconditional_param_contract_expr(rhs, params, out);
-            }
-        }
-        Expr::Unary { op: _, expr } | Expr::Cast { expr, ty: _ } => {
-            collect_unconditional_param_contract_expr(expr, params, out)
-        }
-        Expr::Tainted { ty: _, inner }
-        | Expr::Declassify {
-            inner,
-            policy: _,
-            reason: _,
-        }
-        | Expr::Assume(inner)
-        | Expr::Assert(inner)
-        | Expr::Try(inner) => collect_unconditional_param_contract_expr(inner, params, out),
-        Expr::ArrayLiteral { elements } => {
-            for element in elements {
-                collect_unconditional_param_contract_expr(element, params, out);
-            }
-        }
-        Expr::Index { base, index } => {
-            collect_unconditional_param_contract_expr(base, params, out);
-            collect_unconditional_param_contract_expr(index, params, out);
-        }
-        Expr::StructLiteral {
-            name: _,
-            fields,
-            span: _,
-        } => {
-            for (_, value) in fields {
-                collect_unconditional_param_contract_expr(value, params, out);
-            }
-        }
-        Expr::FieldAccess {
-            base,
-            field: _,
-            span: _,
-        } => collect_unconditional_param_contract_expr(base, params, out),
-        Expr::EnumConstruct {
-            enum_name: _,
-            variant: _,
-            fields,
-            field_names: _,
-            span: _,
-        } => {
-            for field in fields {
-                collect_unconditional_param_contract_expr(field, params, out);
-            }
-        }
-        Expr::MapLiteral { entries, span: _ } => {
-            for (key, value) in entries {
-                collect_unconditional_param_contract_expr(key, params, out);
-                collect_unconditional_param_contract_expr(value, params, out);
-            }
-        }
-        Expr::Match {
-            scrutinee,
-            arms: _,
-            span: _,
-        }
-        | Expr::If {
-            cond: scrutinee,
-            then: _,
-            else_: _,
-            span: _,
-        }
-        | Expr::IfLet {
-            pattern: _,
-            scrutinee,
-            then: _,
-            else_: _,
-            span: _,
-        } => collect_unconditional_param_contract_expr(scrutinee, params, out),
-        Expr::Block { stmts, tail } => {
-            collect_unconditional_param_contract_stmts(stmts, params, out);
-            if let Some(tail) = tail {
-                collect_unconditional_param_contract_expr(tail, params, out);
-            }
-        }
-        Expr::Lambda { params: _, body: _ }
-        | Expr::Var(_)
-        | Expr::Literal(_)
-        | Expr::StrLiteral(_)
-        | Expr::Symbolic { ty: _ }
-        | Expr::TaintSource { label: _ }
-        | Expr::UnifiedBuffer { ty: _ }
-        | Expr::RawPtr { mutable: _ }
-        | Expr::Other(_) => {}
-    }
 }
 
 /// Task #48-A: scan a function body at its OWN execution level for (a) a direct application `p(...)`
@@ -24733,8 +25064,9 @@ fn expr_source(
             // an `Unknown`/empty set or an unresolvable path yields nothing — the prior behaviour.
             if stored_closure.is_none() {
                 if let Some((root, path)) = flatten_access_path(callee) {
-                    if let Some(FnIdentitySet::Known(names)) =
-                        scope.get(&root).and_then(|b| b.field_fn_identities.get(&path))
+                    if let Some(FnIdentitySet::Known(names)) = scope
+                        .get(&root)
+                        .and_then(|b| b.field_fn_identities.get(&path))
                     {
                         if let Some(target) = names.iter().find(|n| lane_fns.contains(n.as_str())) {
                             return Some(format!("return value of `{target}`"));
@@ -28987,7 +29319,27 @@ mod fn_identity_spine_tests {
             }),
             args: vec![Expr::Var("value".into())],
         })];
-        assert!(collect_unconditional_param_contract_applications(&body, &params).is_empty());
+        // A method call on a formal receiver is recorded as a call ON the field access, resolved at
+        // the call site; the receiver itself is never applied as a function.
+        let items = contract_carrier::collect_carrier_items(
+            "t",
+            &["receiver".into(), "value".into()],
+            &body,
+        );
+        let applies: Vec<&Expr> = items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                contract_carrier::CarrierKind::Apply { callee, .. } => Some(callee),
+                _ => None,
+            })
+            .collect();
+        assert!(applies
+            .iter()
+            .all(|c| !matches!(c, Expr::Var(n) if n == "receiver")));
+        assert!(applies
+            .iter()
+            .all(|c| matches!(c, Expr::FieldAccess { field, .. } if field == "method")));
+        let _ = params;
     }
 
     #[test]
@@ -29000,9 +29352,18 @@ mod fn_identity_spine_tests {
             }),
             args: vec![Expr::Literal("1".into())],
         })];
-        let applications = collect_unconditional_param_contract_applications(&body, &params);
-        assert_eq!(applications.len(), 1);
-        assert_eq!(applications[0].param_indices, BTreeSet::from([0]));
+        let items = contract_carrier::collect_carrier_items("t", &["functions".into()], &body);
+        let applies: Vec<&Expr> = items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                contract_carrier::CarrierKind::Apply { callee, .. } => Some(callee),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(applies.len(), 1);
+        assert!(matches!(applies[0], Expr::Index { base, .. }
+            if matches!(base.as_ref(), Expr::Var(n) if n == "functions")));
+        let _ = params;
     }
 }
 

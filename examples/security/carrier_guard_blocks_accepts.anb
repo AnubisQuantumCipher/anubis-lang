@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Item-21 Family-1 over-rejection guard: a guard that blocks the violating call
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn app(g, y) { if y > 0 { g(y); } }
+fn main() { app(f, -1); }

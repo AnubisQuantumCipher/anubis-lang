@@ -570,6 +570,8 @@ fn classify(check: &SolverCheck) -> (String, Family, Status, DefectLocus, AgentA
 fn decided_under_z3_budget(check: &SolverCheck) -> bool {
     if check.detail == crate::middle::DISPROVED_DETAIL_NATIVE
         || check.detail == crate::middle::PROVED_DETAIL_CERTIFIED
+        // Never encoded, so no solver ran and no budget bounded it.
+        || check.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
     {
         return false;
     }
