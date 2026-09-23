@@ -17,6 +17,7 @@ mod contract_carrier;
 /// wrap-safety read an early-return guard the programmer already wrote.
 pub mod diverge;
 pub(crate) mod effects;
+mod infer_params;
 pub mod loopctl;
 pub mod proptest;
 /// Security research HIR types (Phase 3 stubs — profiles, scoped targets, effect IR).
@@ -24,6 +25,7 @@ pub mod research_profile;
 pub(crate) mod security_label;
 pub(crate) mod trifecta;
 pub(crate) mod ty;
+mod visit;
 
 /// Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer for
 /// `SecurityLabel`. Emits one canonical TSV row per (op, args) tuple over the DECLARED
@@ -3355,6 +3357,11 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
 /// Typecheck with an explicit verification-lane flag (Phase-3 C5). Prefer `typecheck` for the
 /// default lane; pass `verified=true` for `--verified` / fail-closed effect declarations.
 pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
+    // Item-21 D9: give an unannotated free-function parameter the struct type every one of its
+    // (visible, direct) callers passes, so a declared field qualifier read through it is honored
+    // exactly as for the annotated spelling. Analysis copy only: lowering uses its own AST.
+    let mut ast = ast;
+    infer_params::infer_unannotated_struct_params(&mut ast.items);
     let bmode = match mode {
         Mode::Safe => BuildMode::Safe,
         Mode::Research => BuildMode::Research,

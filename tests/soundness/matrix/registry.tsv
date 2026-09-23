@@ -113,3 +113,7 @@ parse_eof_midexpr	F-PARSE	slice	MALFORMED	carrier	malformed source must not chec
 limit_nesting_1000	F-PARSE	slice	LIMIT	carrier	1000-deep parens: valid syntax over MAX_PARSE_DEPTH=256 (deliberate limit, pre-limit compilers accepted it)
 limit_nesting_20000	F-PARSE	slice	LIMIT	carrier	20000-deep parens: pre-limit compilers aborted with a stack overflow (SIGABRT 134)
 parse_nesting_below_bound	F-PARSE	slice	ACCEPT	carrier	240-deep nesting still checks
+d9_public_field_ok	F3-type-precision	slice	ACCEPT	carrier	D9 precision twin: public field through an inferred formal
+d9_forwarding_chain	F3-type-precision	slice	REJECT	carrier	D9 through a forwarding chain (inference fixpoint)
+d9_other_struct_public_field_ok	F3-type-precision	slice	ACCEPT	carrier	same field name, different struct with a public field
+d9_unknown_arg_type	F3-type-precision	shared	REJECT	carrier	D9 residual: argument type not provable (container element); still open

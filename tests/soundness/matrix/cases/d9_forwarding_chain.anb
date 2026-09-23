@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn leak(s) { print(s.k); }
+fn mid(s) { leak(s); }
+fn main() { mid(S { k: 42, pub_n: 1 }); }
