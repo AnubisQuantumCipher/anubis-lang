@@ -1,0 +1,10 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn a0(g) { g(-1); }
+fn a1(g) { a0(g); a0(g); }
+fn a2(g) { a1(g); a1(g); }
+fn a3(g) { a2(g); a2(g); }
+fn a4(g) { a3(g); a3(g); }
+fn a5(g) { a4(g); a4(g); }
+fn a6(g) { a5(g); a5(g); }
+fn main() { a6(f); }

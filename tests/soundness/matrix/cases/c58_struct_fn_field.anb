@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+struct S { h: u64 }
+fn app(b, y) { b.h(-1); }
+fn main() { app(S { h: f }, 1); }

@@ -1,0 +1,103 @@
+id	family	category	intent	forms	notes
+c01_uncond	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c02_if_live	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c03_if_dead	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c04_satisfied	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c05_while	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c06_for	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c07_loop_break	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c08_for_zero	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c09_while_false	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c10_alias	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c11_alias_to_safe	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c12_alias_from_safe	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c13_formal_shadowed	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+c14_alias_in_branch	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c15_guard_then_reassign	F1-contract-carrier	slice	REJ|UNRES	carrier,direct	matrix2 2026-09-22/23
+c16_loop_carried	F1-contract-carrier	slice	REJ|UNRES	carrier,direct	matrix2 2026-09-22/23
+c17_loop_carried_ok	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c18_guard_blocks	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c19_guard_passes	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c20_guard_too_weak	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c21_unguarded_param	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c22_nested_dead	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c23_nested_live	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c24_else_live	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c25_shortcirc_dead	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c26_shortcirc_live	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c32_uncond_satisfied	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c33_while_cond_calls	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c34_for_end_calls	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c35_for_zero_param	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c36_while_guard_ok	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c37_early_return	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+c27_chain	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c28_recursion	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c38_recursion_ok	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+c29_safe_only	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+c30_symbolic_guarded	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+c31_symbolic_unguarded	F1-contract-carrier	slice	REJ|UNRES	carrier	matrix2 2026-09-22/23
+c39_opaque_arg	F1-contract-carrier	slice	UNRES	carrier	matrix2 2026-09-22/23
+c41_formal_named_global	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c42_idx_carrier	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c44_match_arm_live	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c45_match_arm_dead	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c46_match_scrutinee	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c47_iflet_scrutinee	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c48_lambda_apply	F1-contract-carrier	slice	REJ|UNRES	carrier,direct	matrix2 2026-09-22/23
+c49_builtin_map	F1-contract-carrier	slice	REJ|UNRES	carrier,direct	matrix2 2026-09-22/23
+c50_valueblock_reassign	F1-contract-carrier	slice	REJ|UNRES	carrier,direct	matrix2 2026-09-22/23
+c51_alias_loop_widen	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c52_u32_coercion	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c53_requires_seeded_rec	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+c54_fanout	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c55_id_forwarder	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c56_mutual_rec	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c57_arg_embedded_write	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c58_struct_fn_field	F1-contract-carrier	slice	REJ|UNRES	carrier	matrix2 2026-09-22/23
+c60_identity_builtin	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
+c61_user_forwarder	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c62_caller_local_named_global	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c63_tuple_key_recursion	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c66_u32_caller_var	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+c67_for_var_relief	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
+c68_join_arg	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c69_let_call_guard	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
+s01_param_arg_violated	direct-lane	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+s02_untyped_param	direct-lane	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+s03_u32_param_zero	direct-lane	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+s04_loop_carried_direct	direct-lane	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+s05_for_zero_direct	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
+s06_while_false_direct	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
+s07_after_if_return	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
+s08_after_return	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
+s09_shadow_chain_direct	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
+s10_shadow_chain_carrier	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
+s11_arg_embedded_write_direct	direct-lane	shared	REJECT	carrier	matrix2 2026-09-22/23
+s12_direct_local_named_global	direct-lane	shared	REJECT	carrier	matrix2 2026-09-22/23
+c64_multi_return_escape	return-join	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+c65_return_via_local	return-join	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+c43_let_list_arg	F1-container-carrier	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+c59_push_into_list	F1-container-carrier	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
+r01_c_struct_field_letbound	repro-row6	repro	REJECT	carrier	secret; control closed pre-branch
+r02_c_clean_letbound	repro-row6	repro	ACCEPT	carrier	clean twin
+r03_b_placeassign_callexpr	F2-callee-identity	repro	REJECT	carrier	original leak; closed 13373e31
+r04_b_literal_callexpr	F2-callee-identity	repro	REJECT	carrier	literal control
+r05_d8_unannotated_array	F3-type-precision	repro	REJECT	carrier	original leak; closed 029d5538
+r06_d8_annotated_array	F3-type-precision	repro	REJECT	carrier	annotated control
+r07_d9_unannotated_formal	F3-type-precision	repro	REJECT	carrier	original leak D9; OPEN
+r08_d9_annotated_formal	F3-type-precision	repro	REJECT	carrier	annotated control
+r09_d10_unannotated_return	F3-type-precision	repro	REJECT	carrier	original leak; closed 029d5538
+r10_d10_declared_return	F3-type-precision	repro	REJECT	carrier	declared control
+r11_t_direct	taint	repro	REJECT	carrier	taint control
+r12_t_return_carrier_letbound	F2-callee-identity	repro	REJECT	carrier	taint row6 dual control
+r13_t_return_carrier_callexpr	F2-callee-identity	repro	REJECT	carrier	original leak; closed 13373e31
+r14_t_sinkarg_placeassign_callexpr	F2-sinkarg	repro	REJECT	carrier	original leak; OPEN
+r15_t_sinkarg_literal_callexpr	F2-sinkarg	repro	REJECT	carrier	literal control
+r16_cap_placeassign_callexpr	capability	repro	REJECT	carrier	capability control
+h_apply_violated	F1-builtin-hof	slice	REJECT	carrier	builtin applies carried fn to -1
+h_apply_satisfied	F1-builtin-hof	slice	ACCEPT	carrier	valid twin; must not be refused
+h_call_violated	F1-builtin-hof	slice	REJECT	carrier	builtin applies carried fn to -1
+h_call_satisfied	F1-builtin-hof	slice	ACCEPT	carrier	valid twin; must not be refused
+h_map_satisfied	F1-builtin-hof	slice	ACCEPT	carrier	direct map over satisfying list
+h_map_violated	F1-builtin-hof	slice	REJECT	carrier	direct map reaches f(-2)

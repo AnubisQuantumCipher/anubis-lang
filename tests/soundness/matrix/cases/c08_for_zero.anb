@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn app(g, y) { for _k in 0..0 { g(-1); } }
+fn main() { app(f, 0); }

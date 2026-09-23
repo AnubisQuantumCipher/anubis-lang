@@ -1,0 +1,3 @@
+struct S { k: secret<i64> }
+fn mk() -> S { return S { k: 42 }; }
+fn main() { let a = mk(); print(a.k); }
