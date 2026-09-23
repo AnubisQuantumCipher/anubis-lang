@@ -8144,6 +8144,18 @@ fn discharge_carried_call_requires(
                 let a: Vec<Expr> = cargs.iter().map(|x| substitute_vars(x, &sub)).collect();
                 if ctx.fn_params.contains_key(callee) {
                     ok &= discharge_carried_call_requires(ctx, &asm, scope, callee, &a, depth + 1);
+                } else if crate::backends::run::is_builtin_name(callee) {
+                    // A carried function handed to a higher-order builtin (`apply(g, ..)`,
+                    // `map([..], g)`): discharge its `requires` against what the builtin applies it to,
+                    // the same as a direct HOF call, now that the formal is substituted to the actual.
+                    // Any argument that is ITSELF a carried function still escapes.
+                    discharge_builtin_hof_requires(ctx, &asm, scope, callee, &a);
+                    let closure_pos = effects::higher_order_closure_args(callee);
+                    for (i, x) in a.iter().enumerate() {
+                        if !closure_pos.contains(&i) {
+                            ok &= carrier_escape(ctx, scope, outer_callee, x, "is passed to a builtin");
+                        }
+                    }
                 } else {
                     for x in &a {
                         ok &= carrier_escape(ctx, scope, outer_callee, x, "is passed to a builtin");
@@ -8389,6 +8401,15 @@ fn discharge_resolved_call_requires_d(
     if depth > FN_ALIAS_MAX_DEPTH {
         return true;
     }
+    // A higher-order BUILTIN (map/apply/...) applies a function this resolver would otherwise ignore
+    // (the builtin has no user contract). Discharge the applied function's `requires` against the
+    // values the builtin applies it to. Every discharge path reaches here, so the direct lane, a
+    // `let r = map(..)` initializer, and the carrier lane all get it.
+    if let Expr::Var(name) = callee {
+        if crate::backends::run::is_builtin_name(name) {
+            discharge_builtin_hof_requires(ctx, assumptions, scope, name, args);
+        }
+    }
     let Some(candidate) = fn_identities_of(callee, scope, ctx).into_singleton() else {
         return true;
     };
@@ -8626,6 +8647,60 @@ fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
 /// STILL DEFERRED (the residual): `if let`/block/lambda bodies, and a `match` arm whose bound sub-values
 /// (enum/struct/list pattern) would constrain the call — those are unmodeled. Every discharged call is as
 /// sound as a direct call: the same `assumptions` (including the pushed path condition) are in scope.
+/// Discharge the `requires` of a contracted function that a higher-order BUILTIN applies, against the
+/// values the builtin applies it to. A builtin has no user contract of its own, so nothing discharged
+/// the function it runs: `apply(f, -1)` and `map([1, -2], f)` with `f` requiring `x > 0` both checked
+/// clean. `apply`/`call` apply the function to the remaining arguments; the element-wise list builtins
+/// apply it to each element, which is discharged precisely when the collection is a literal.
+///
+/// An UNKNOWN collection (`map(xs, f)` with `xs` not a literal) is out of scope for this pass: proving
+/// `f`'s precondition for an arbitrary element needs element-type reasoning, so it stays a recorded
+/// residual rather than a silent accept-or a blanket over-rejection. A function with no `requires`
+/// produces nothing, so ordinary data processing (`map(xs, plain)`) is unaffected. `reduce`/`compose`/
+/// `fold` (accumulator/binary application) are likewise deferred.
+fn discharge_builtin_hof_requires(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &str,
+    args: &[Expr],
+) {
+    let applications: Vec<(usize, Vec<Expr>)> = match callee {
+        "apply" | "call" if !args.is_empty() => vec![(0, args[1..].to_vec())],
+        "map" | "filter" | "each" | "find" | "any" | "all" | "count" | "sort_by" | "flat_map"
+        | "take_while" | "drop_while" | "position" | "min_by" | "max_by" | "partition"
+        | "map_values"
+            if args.len() >= 2 =>
+        {
+            match &args[0] {
+                Expr::ArrayLiteral { elements } => {
+                    elements.iter().cloned().map(|e| (1usize, vec![e])).collect()
+                }
+                // Unknown collection: recorded residual, not handled here.
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    for (fn_pos, call_args) in applications {
+        let Some(fn_arg) = args.get(fn_pos) else {
+            continue;
+        };
+        if let FnIdentitySet::Known(names) = fn_identities_of(fn_arg, scope, ctx) {
+            for name in names {
+                let has_requires = ctx
+                    .fn_contracts
+                    .get(&name)
+                    .map(|(_, req, _)| !req.is_empty())
+                    .unwrap_or(false);
+                if has_requires {
+                    discharge_call_requires(ctx, assumptions, &name, &call_args);
+                }
+            }
+        }
+    }
+}
+
 fn discharge_calls_in_expr(
     ctx: &mut SemanticContext,
     assumptions: &mut Vec<String>,
