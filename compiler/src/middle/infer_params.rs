@@ -230,7 +230,7 @@ fn collect_free_fns(items: &[Item], f: &mut FreeFnVisitor<'_>) {
     }
 }
 
-fn free_fn_names(items: &[Item]) -> BTreeSet<String> {
+pub(super) fn free_fn_names(items: &[Item]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     collect_free_fns(items, &mut |n, _, _| {
         out.insert(n.to_string());

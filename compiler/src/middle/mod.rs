@@ -3123,6 +3123,11 @@ struct SemanticContext {
     fn_declared_effects: BTreeMap<String, Vec<String>>,
     /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
     all_fns: BTreeSet<String>,
+    /// Every user-defined free function name in the program, complete before registration starts
+    /// (`all_fns` fills in as registration proceeds). A CALL-position name resolves to one of these
+    /// before any local or parameter of the same name — the native runtime's order
+    /// (`backends/run.rs` `Expr::Call`: user functions, then locals, then builtins).
+    user_fn_names: BTreeSet<String>,
     /// Interprocedural taint summary: functions whose RETURN value carries INTERNAL taint (from a
     /// `taint_source()`/`tainted<T>` local, or a return of another such function), computed by a
     /// monotone fixpoint pre-pass before per-function analysis. `expr_taint_source`'s `Call` arm
@@ -3380,6 +3385,7 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         ctx.declared_method_names
             .extend(impl_methods.into_iter().map(|(name, _, _)| name));
     }
+    ctx.user_fn_names = infer_params::free_fn_names(&ast.items);
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
     // Task #48: close `fn_applies_param` under transitive user-fn forwarding (a closure laundered through
@@ -3875,7 +3881,12 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     // be reached (see `contract_carrier`), discharged at each call site.
                     let param_names: Vec<String> =
                         params.iter().map(|(param, _)| param.clone()).collect();
-                    let items = contract_carrier::collect_carrier_items(name, &param_names, body);
+                    let items = contract_carrier::collect_carrier_items(
+                        name,
+                        &param_names,
+                        body,
+                        &ctx.user_fn_names,
+                    );
                     if !items.is_empty() {
                         ctx.fn_carrier_items
                             .insert(name.clone(), (param_names, items));
@@ -29495,6 +29506,7 @@ mod fn_identity_spine_tests {
             "t",
             &["receiver".into(), "value".into()],
             &body,
+            &BTreeSet::new(),
         );
         let applies: Vec<&Expr> = items
             .iter()
@@ -29522,7 +29534,12 @@ mod fn_identity_spine_tests {
             }),
             args: vec![Expr::Literal("1".into())],
         })];
-        let items = contract_carrier::collect_carrier_items("t", &["functions".into()], &body);
+        let items = contract_carrier::collect_carrier_items(
+            "t",
+            &["functions".into()],
+            &body,
+            &BTreeSet::new(),
+        );
         let applies: Vec<&Expr> = items
             .iter()
             .filter_map(|i| match &i.kind {

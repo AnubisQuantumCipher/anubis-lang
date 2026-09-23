@@ -38,7 +38,7 @@ c29_safe_only	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
 c30_symbolic_guarded	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23
 c31_symbolic_unguarded	F1-contract-carrier	slice	REJ|UNRES	carrier	matrix2 2026-09-22/23
 c39_opaque_arg	F1-contract-carrier	slice	UNRES	carrier	matrix2 2026-09-22/23
-c41_formal_named_global	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
+c41_formal_named_global	F1-contract-carrier	slice	ACCEPT	carrier	matrix2 2026-09-22/23 | RECATEGORIZED 2026-09-23 REJECT->ACCEPT, see recategorizations.tsv
 c42_idx_carrier	F1-contract-carrier	slice	REJECT	carrier	matrix2 2026-09-22/23
 c44_match_arm_live	F1-contract-carrier	slice	REJECT	carrier,direct	matrix2 2026-09-22/23
 c45_match_arm_dead	F1-contract-carrier	slice	ACCEPT	carrier,direct	matrix2 2026-09-22/23
@@ -74,7 +74,7 @@ s08_after_return	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
 s09_shadow_chain_direct	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
 s10_shadow_chain_carrier	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23
 s11_arg_embedded_write_direct	direct-lane	shared	REJECT	carrier	matrix2 2026-09-22/23
-s12_direct_local_named_global	direct-lane	shared	REJECT	carrier	matrix2 2026-09-22/23
+s12_direct_local_named_global	direct-lane	shared	ACCEPT	carrier	matrix2 2026-09-22/23 | RECATEGORIZED 2026-09-23 REJECT->ACCEPT, see recategorizations.tsv
 c64_multi_return_escape	return-join	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
 c65_return_via_local	return-join	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
 c43_let_list_arg	F1-container-carrier	shared	REJ|UNRES	carrier	matrix2 2026-09-22/23
@@ -127,3 +127,4 @@ t_index_closure_dynamic_write	F2-sinkarg	slice	REJECT	carrier	weak write through
 t_field_closure_clean_arg_ok	F2-sinkarg	slice	ACCEPT	carrier	sinking closure applied to a clean argument
 t_field_closure_overwrite_pure_ok	F2-sinkarg	slice	ACCEPT	carrier	strong overwrite with a pure closure removes the sink
 t_field_closure_sibling_pure_ok	F2-sinkarg	slice	ACCEPT	carrier	sibling field holds a pure closure
+c70_formal_named_global_value_pos	F1-contract-carrier	slice	REJECT	carrier	formal named like a user fn, used in VALUE position (apply): the formal wins, as at runtime

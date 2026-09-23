@@ -104,6 +104,9 @@ struct Collector<'a> {
     out: Vec<CarrierItem>,
     counter: usize,
     fn_name: &'a str,
+    /// User-defined free function names: in CALL position these win over any same-named local or
+    /// formal, exactly as the runtime resolves them.
+    user_fns: &'a BTreeSet<String>,
 }
 
 /// Collect every carrier site of `body`, the body of function `fn_name` with the given formals.
@@ -111,6 +114,7 @@ pub(super) fn collect_carrier_items(
     fn_name: &str,
     formals: &[String],
     body: &[Stmt],
+    user_fns: &BTreeSet<String>,
 ) -> Vec<CarrierItem> {
     let formal_set: BTreeSet<String> = formals.iter().cloned().collect();
     let mut reassigned = BTreeSet::new();
@@ -126,7 +130,7 @@ pub(super) fn collect_carrier_items(
     // callee is treated as a user function that might apply its argument); the call-site early-out and
     // the recursion, which returns cleanly when a callee has no carrier items, keep that from causing a
     // false rejection.
-    let func_like = function_like_formals(&formal_set, body);
+    let func_like = function_like_formals(&formal_set, body, user_fns);
     let mut c = Collector {
         reassigned,
         scopes: vec![BTreeMap::new()],
@@ -135,6 +139,7 @@ pub(super) fn collect_carrier_items(
         out: Vec::new(),
         counter: 0,
         fn_name,
+        user_fns,
     };
     for f in formals {
         if !func_like.contains(f) {
@@ -189,6 +194,18 @@ impl Collector<'_> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
 
+    /// The local binding a CALL-position name `name(..)` goes through, or `None` when the call is a
+    /// direct call. A user-defined function of that name wins over any local or formal: the runtime
+    /// calls the function (`fn app(safe) { safe(-1) }` calls the global `safe`, not the argument).
+    /// Value positions still use `lookup`, where the local wins, as at runtime.
+    fn call_binding(&self, name: &str) -> Option<&Binding> {
+        if self.user_fns.contains(name) {
+            None
+        } else {
+            self.lookup(name)
+        }
+    }
+
     fn push(&mut self, kind: CarrierKind) {
         self.out.push(CarrierItem {
             kind,
@@ -224,7 +241,7 @@ impl Collector<'_> {
             },
             Expr::Call { callee, args } => {
                 let args = args.iter().map(|a| self.resolve(a)).collect();
-                match self.lookup(callee) {
+                match self.call_binding(callee) {
                     // A call through a local: keep it as a first-class call on the local's value.
                     Some(_) => Expr::CallExpr {
                         callee: Box::new(self.resolve(&Expr::Var(callee.clone()))),
@@ -356,7 +373,8 @@ impl Collector<'_> {
             Expr::Var(n) => self.name_carries(n),
             Expr::Lambda { .. } => false,
             Expr::Call { callee, args } => {
-                self.name_carries(callee) || args.iter().any(|a| self.carries(a))
+                (self.call_binding(callee).is_some() && self.name_carries(callee))
+                    || args.iter().any(|a| self.carries(a))
             }
             _ => {
                 let mut found = false;
@@ -377,7 +395,7 @@ impl Collector<'_> {
             Expr::Lambda { .. } => false,
             Expr::Call { callee, args } => {
                 matches!(
-                    self.lookup(callee),
+                    self.call_binding(callee),
                     Some(Binding::Reassigned { denot, .. }) if denot.carries_formal()
                 ) || args.iter().any(|a| self.mentions_reassigned_carrier(a))
             }
@@ -472,7 +490,7 @@ impl Collector<'_> {
                     }
                     return;
                 }
-                if self.lookup(callee).is_some() {
+                if self.call_binding(callee).is_some() {
                     let d = self.denot_of(&Expr::Var(callee.clone()));
                     if d.carries_formal() {
                         self.record_apply(&d, args);
@@ -1126,7 +1144,11 @@ fn for_each_child_expr<'e>(e: &'e Expr, f: &mut dyn FnMut(&'e Expr)) {
 /// A formal used only as data — an index base, a `len`/`push`/`print` argument, an arithmetic operand —
 /// is excluded. Flow-insensitive and deliberately over-approximate: an unknown callee counts as a user
 /// function. Missing a genuine function use would be unsound, so every non-data use marks the formal.
-fn function_like_formals(formals: &BTreeSet<String>, body: &[Stmt]) -> BTreeSet<String> {
+fn function_like_formals(
+    formals: &BTreeSet<String>,
+    body: &[Stmt],
+    user_fns: &BTreeSet<String>,
+) -> BTreeSet<String> {
     // Local `let` alias closure: a name that may denote a formal.
     let mut alias: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for f in formals {
@@ -1149,6 +1171,7 @@ fn function_like_formals(formals: &BTreeSet<String>, body: &[Stmt]) -> BTreeSet<
         out: &mut out,
         roots: &roots,
         mark: &mut mark,
+        user_fns,
     };
     visit.stmts(body);
     out
@@ -1213,6 +1236,8 @@ struct FnLikeVisitor<'a> {
     out: &'a mut BTreeSet<String>,
     roots: &'a dyn Fn(&str) -> BTreeSet<String>,
     mark: &'a mut dyn FnMut(&Expr, &mut BTreeSet<String>),
+    /// A call `name(..)` to a user function is a direct call even when a formal shares the name.
+    user_fns: &'a BTreeSet<String>,
 }
 
 impl FnLikeVisitor<'_> {
@@ -1281,8 +1306,9 @@ impl FnLikeVisitor<'_> {
     fn expr(&mut self, e: &Expr) {
         match e {
             Expr::Call { callee, args } => {
-                // `callee` is a name; if it is a formal/alias it is applied.
-                if self.roots_nonempty(callee) {
+                // `callee` is a name; if it is a formal/alias it is applied — unless a user function
+                // of that name exists, which the runtime calls instead.
+                if !self.user_fns.contains(callee) && self.roots_nonempty(callee) {
                     if let Some(set) = Some((self.roots)(callee)) {
                         for r in set {
                             self.out.insert(r);
