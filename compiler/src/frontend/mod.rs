@@ -1802,7 +1802,19 @@ struct Parser {
     /// Monotonic counter for compiler-generated temporaries (e.g. compound-assignment index
     /// hoisting). Names use the `__anubis_ca_N` prefix, which user source cannot collide with.
     temp_counter: usize,
+    /// Current syntactic nesting depth (expressions, statements, patterns). Bounded by
+    /// `MAX_PARSE_DEPTH` so hostile or generated input gets a diagnostic instead of exhausting the
+    /// stack: every recursive parse path goes through `enter_nested`.
+    depth: usize,
+    /// Set once the depth bound is hit. The parser then skips to end of input and suppresses
+    /// follow-on diagnostics, so the single "nested too deeply" error is the one reported.
+    depth_exceeded: bool,
 }
+
+/// Maximum syntactic nesting the parser accepts. Far above hand-written code, and low enough that
+/// the parser and every later recursive pass (resolution, analysis, lowering) stay within the
+/// default main-thread stack on an AST of this depth. Deeper input is rejected with a diagnostic.
+const MAX_PARSE_DEPTH: usize = 256;
 
 impl Parser {
     fn new(tokens: Vec<SpannedToken>) -> Self {
@@ -1822,6 +1834,8 @@ impl Parser {
             diagnostics: vec![],
             no_struct: false,
             temp_counter: 0,
+            depth: 0,
+            depth_exceeded: false,
         }
     }
 
@@ -2271,6 +2285,15 @@ impl Parser {
 
     /// Parse a single (non-or) pattern.
     fn parse_pattern_atom(&mut self) -> Pattern {
+        if !self.enter_nested() {
+            return Pattern::Wildcard;
+        }
+        let p = self.parse_pattern_atom_inner();
+        self.leave_nested();
+        p
+    }
+
+    fn parse_pattern_atom_inner(&mut self) -> Pattern {
         // List pattern `[p, p, …]`.
         if self.check_token(&Token::LBracket) {
             self.bump();
@@ -2613,6 +2636,15 @@ impl Parser {
         let mut stmts: Vec<Stmt> = Vec::new();
         let mut tail: Option<Box<Expr>> = None;
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            // A bare `;` here is an empty statement / a terminator a preceding statement did not
+            // consume (`if c { .. } else { .. };`). Skip it before any expression parse, so it never
+            // reaches `parse_primary` — which now reports an unexpected token, and would otherwise
+            // reject this valid shape. A `;` in a REQUIRED expression position (a binary RHS,
+            // `let x = 1 + ;`) is reached through `parse_expr` directly and still errors.
+            if self.check_token(&Token::Semi) {
+                self.bump();
+                continue;
+            }
             // Statement-introducing keywords are always statements. `if` is included so a bare
             // no-else `if` (a guard) parses as a statement; a trailing `if/else` is recovered as
             // the block's value by `Expr::Block` lowering (via split_tail_expr).
@@ -3145,6 +3177,12 @@ impl Parser {
         let _ = self.expect_token(Token::LBrace, "expected `{`");
         let mut body = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            // Skip a stray/empty `;` an earlier statement left unconsumed, before `parse_stmt`
+            // reaches `parse_primary` (which now reports an unexpected token on it).
+            if self.check_token(&Token::Semi) {
+                self.bump();
+                continue;
+            }
             if let Some(stmt) = self.parse_stmt() {
                 body.push(stmt);
             } else {
@@ -3156,6 +3194,15 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
+        if !self.enter_nested() {
+            return None;
+        }
+        let s = self.parse_stmt_inner();
+        self.leave_nested();
+        s
+    }
+
+    fn parse_stmt_inner(&mut self) -> Option<Stmt> {
         // A statement-position `@name { ... }` whose name is not a real block attribute used to
         // report "expected : in struct lit": the lexer DROPS `@`, so `@reserach { ... }` reaches the
         // parser as `reserach { ... }`, which looks exactly like a struct literal. A one-letter typo
@@ -3673,7 +3720,14 @@ impl Parser {
     /// Parse a standalone expression from an interpolation fragment, forwarding any diagnostics.
     fn parse_embedded_expr(&mut self, src: &str) -> Expr {
         let mut sub = Parser::new(lex_spanned(src));
+        // Nested interpolation (`"${ "${ .. }" }"`) re-enters through a fresh parser; carry the
+        // depth so the bound covers it too.
+        sub.depth = self.depth;
         let e = sub.parse_expr(0);
+        if sub.depth_exceeded && !self.depth_exceeded {
+            self.depth_exceeded = true;
+            self.pos = self.tokens.len().saturating_sub(1);
+        }
         self.diagnostics.extend(sub.diagnostics);
         e
     }
@@ -3731,6 +3785,15 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Expr {
+        if !self.enter_nested() {
+            return Expr::Other("nested-too-deep".into());
+        }
+        let e = self.parse_primary_inner();
+        self.leave_nested();
+        e
+    }
+
+    fn parse_primary_inner(&mut self) -> Expr {
         // Prefix unary operators: `-expr` (negation) and `!expr` (logical not).
         if self.check_token(&Token::Minus) {
             self.bump();
@@ -3791,6 +3854,10 @@ impl Parser {
             };
         }
         let Some(mut tok) = self.bump() else {
+            self.diagnostic(
+                "unexpected end of input where an expression was expected",
+                self.current_span(),
+            );
             return Expr::Other("eof".into());
         };
         // Soft research keywords (`symbolic`/`unified`/`taint_source`/`declassify`/`tainted`/
@@ -4039,7 +4106,17 @@ impl Parser {
                 Expr::ArrayLiteral { elements }
             }
             Token::LBrace => self.parse_map_literal(tok.span),
-            other => Expr::Other(format!("{:?}", other)),
+            // An unexpected token in expression position is a parse error, not a silently tolerated
+            // placeholder: without a diagnostic, `parse_source` returns Ok and `check` reports
+            // `verdict:"pass"` on malformed source (`let x = );`, `let x = 1 + ;`, `"${1 + }"`).
+            // Record it so the DIAGNOSTICS_JSON invariant holds: a check that did not parse fails.
+            other => {
+                self.diagnostic(
+                    format!("unexpected token in expression: {:?}", other),
+                    tok.span,
+                );
+                Expr::Other(format!("{:?}", other))
+            }
         };
         // Unified postfix chain: `.field` and `[index]` interleaved and repeated, so
         // `a[i].b`, `a.b[i]`, `a.b.c[i].d`, and `foo().bar[0]` all parse.
@@ -4393,7 +4470,35 @@ impl Parser {
         }
     }
 
+    /// Enter one level of syntactic nesting. Returns false (after reporting once and skipping to
+    /// end of input so every enclosing loop terminates) when the bound is exceeded; the caller then
+    /// returns a placeholder without recursing. Pair every `true` with `leave_nested`.
+    fn enter_nested(&mut self) -> bool {
+        if self.depth_exceeded {
+            return false;
+        }
+        if self.depth >= MAX_PARSE_DEPTH {
+            let span = self.current_span();
+            self.diagnostic(
+                format!("program is nested too deeply (more than {MAX_PARSE_DEPTH} levels)"),
+                span,
+            );
+            self.depth_exceeded = true;
+            self.pos = self.tokens.len().saturating_sub(1);
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    fn leave_nested(&mut self) {
+        self.depth -= 1;
+    }
+
     fn diagnostic(&mut self, message: impl Into<String>, span: Span) {
+        if self.depth_exceeded {
+            return;
+        }
         self.diagnostics.push(ParseDiagnostic {
             message: message.into(),
             span,
@@ -4781,5 +4886,116 @@ mod list_type_annotation_tests {
             struct_field_ty("struct S { m: Map<int, string> }\n", "S", "m"),
             "Map<int, string>"
         );
+    }
+}
+
+#[cfg(test)]
+mod robustness_tests {
+    use super::*;
+
+    fn diags(src: &str) -> Vec<String> {
+        parse_source_detailed(src)
+            .diagnostics
+            .into_iter()
+            .map(|d| d.message)
+            .collect()
+    }
+
+    /// Hostile or generated nesting must produce a diagnostic, never exhaust the stack. Each shape
+    /// below reaches a different recursive parse path (primary, statement, pattern, interpolation
+    /// sub-parser); 200_000 levels aborted the process with a stack overflow before the bound.
+    #[test]
+    fn deep_nesting_is_a_diagnostic_not_a_stack_overflow() {
+        let n = 200_000;
+        let shapes = [
+            format!(
+                "fn main() {{ let x = {}1{}; }}",
+                "(".repeat(n),
+                ")".repeat(n)
+            ),
+            format!("fn main() {{ let x = {}1; }}", "-".repeat(n)),
+            format!(
+                "fn main() {{ let x = {}1{}; }}",
+                "[".repeat(n),
+                "]".repeat(n)
+            ),
+            format!(
+                "fn main() {{ {}print(1); {}}}",
+                "if 1 == 1 { ".repeat(n),
+                "} ".repeat(n)
+            ),
+            format!(
+                "fn main() {{ match [1] {{ {}x{} => {{ }} _ => {{ }} }} }}",
+                "[".repeat(n),
+                "]".repeat(n)
+            ),
+            format!(
+                "fn main() {{ let s = {}1{}; }}",
+                "\"${ ".repeat(2000),
+                " }\"".repeat(2000)
+            ),
+        ];
+        // The parser recurses a bounded number of frames, but each is large in an unoptimized test
+        // build; run on a thread with an explicit stack so the test measures the bound, not the
+        // harness's default test-thread stack.
+        let handle = std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(move || {
+                for src in &shapes {
+                    let d = diags(src);
+                    assert_eq!(d.len(), 1, "exactly one diagnostic, got {d:?}");
+                    assert!(d[0].contains("nested too deeply"), "got {d:?}");
+                }
+            })
+            .unwrap();
+        handle.join().unwrap();
+    }
+
+    /// Nesting below the bound still parses cleanly.
+    #[test]
+    fn nesting_below_the_bound_still_parses() {
+        let n = MAX_PARSE_DEPTH - 16;
+        let handle = std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(move || {
+                let src = format!(
+                    "fn main() {{ let x = {}1{}; print(x); }}",
+                    "(".repeat(n),
+                    ")".repeat(n)
+                );
+                assert!(diags(&src).is_empty());
+                let src = format!(
+                    "fn main() {{ {}print(1); {}}}",
+                    "if 1 == 1 { ".repeat(n / 2),
+                    "} ".repeat(n / 2)
+                );
+                assert!(diags(&src).is_empty());
+            })
+            .unwrap();
+        handle.join().unwrap();
+    }
+
+    /// Malformed expressions are parse errors, not silently tolerated placeholders (a check used
+    /// to report `verdict: pass` on these), while a stray `;` after a statement stays valid.
+    #[test]
+    fn malformed_expressions_are_diagnosed_and_stray_semicolons_are_not() {
+        for bad in [
+            "fn main() { let x = ); }",
+            "fn main() { let x = 1 + ; }",
+            "fn main() { let s = \"a ${ 1 + } b\"; }",
+            "fn main() { let x = 1 +",
+        ] {
+            assert!(!diags(bad).is_empty(), "expected a diagnostic for {bad:?}");
+        }
+        for ok in [
+            "fn main() { print(1);; let y = 2; ; print(y); }",
+            "fn f() { let g = |x| { if x == 1 { 1 } else { 0 }; }; g(0); }",
+        ] {
+            assert!(
+                diags(ok).is_empty(),
+                "unexpected diagnostic for {ok:?}: {:?}",
+                diags(ok)
+            );
+        }
     }
 }

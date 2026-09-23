@@ -8,6 +8,8 @@
 #   ACCEPT     must check clean (rc 0)
 #   UNRES      must be an explicit ANUBIS_ASSERTION_UNDECIDED (never rc 0)
 #   REJ|UNRES  any refusal except an invalid-input error (never rc 0)
+#   MALFORMED  syntactically invalid: an ordinary diagnostic exit (1); a crash or silent pass fails
+#   LIMIT      valid syntax over a documented implementation limit: same required outcome as MALFORMED
 # An invalid-input / tool error (parse, type, unknown function, panic) is NEVER counted as a
 # rejection: a parser error is not a security result.
 #
@@ -19,6 +21,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 BIN=${1:?usage: run.sh <anubis-binary> [--record <label> <source-commit>]}
 LABEL=""; SRC=""
 if [[ "${2:-}" == "--record" ]]; then LABEL=${3:?label}; SRC=${4:?source commit}; fi
+# A grader must not pass by not asking: refuse a missing binary, and prove it runs, before grading.
+[[ -f "$BIN" && -x "$BIN" ]] || { echo "run.sh: not an executable file: $BIN" >&2; exit 2; }
+"$BIN" --version >/dev/null 2>&1 || { echo "run.sh: binary does not run: $BIN" >&2; exit 2; }
 SHA=$(sha256sum "$BIN" | cut -d' ' -f1)
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/anubis-matrix.XXXXXX")
 
@@ -41,6 +46,11 @@ meets() { # intent class
     REJECT) [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT ]] ;;
     UNRES) [[ $2 == UNDECIDED ]] ;;
     'REJ|UNRES') [[ $2 == DISPROVED || $2 == MIXED || $2 == SEC_REJECT || $2 == UNDECIDED ]] ;;
+    # Malformed source must be refused with an ordinary diagnostic exit (1): a crash (SIGABRT 134,
+    # SIGSEGV 139), a timeout, or a missing tool is not a refusal.
+    MALFORMED) [[ $2 == INVALID:* && $3 -eq 1 ]] ;;
+    # Over a documented implementation limit: same required outcome as MALFORMED (a diagnostic).
+    LIMIT) [[ $2 == INVALID:* && $3 -eq 1 ]] ;;
     *) return 1 ;;
   esac
 }
@@ -55,6 +65,10 @@ tail -n +2 "$HERE/registry.tsv" | while IFS=$'\t' read -r id fam cat intent form
     obs=$(classify $rc "$OUT/$id.$form.out")
     # The direct twin is a comparison column, not an oracle; only the primary form is graded.
     if [[ $form == direct ]]; then res=compare
+    elif [[ $intent == MALFORMED || $intent == LIMIT ]]; then
+      if meets "$intent" "$obs" "$rc"; then res=PASS
+      elif [[ $obs == ACCEPT ]]; then res=FAIL-silent-accept
+      else res=FAIL-not-a-diagnostic; fi
     elif [[ $obs == INVALID:* ]]; then res=INVALID
     elif meets "$intent" "$obs"; then res=PASS
     elif [[ $obs == ACCEPT ]]; then res=FAIL-silent-accept

@@ -106,3 +106,10 @@ m_direct_match_arm_guarded_ok	M-MATCH-TRUNC	slice	ACCEPT	carrier	arm literal gua
 m_direct_match_arm_dead	M-MATCH-TRUNC	slice	ACCEPT	carrier	unreachable arm; vacuously discharged
 m_direct_iflet_arm_violated	M-IFLET	slice	REJECT	carrier	violated requires in if-let arm; was silent
 m_arm_body_assert_deferred	M-MATCH-TRUNC	slice	ACCEPT	carrier	arm-body assert stays runtime-deferred
+parse_unexpected_paren	F-PARSE	slice	MALFORMED	carrier	malformed source must not check-pass
+parse_trailing_operator	F-PARSE	slice	MALFORMED	carrier	malformed source must not check-pass
+parse_bad_interpolation	F-PARSE	slice	MALFORMED	carrier	malformed source must not check-pass
+parse_eof_midexpr	F-PARSE	slice	MALFORMED	carrier	malformed source must not check-pass
+limit_nesting_1000	F-PARSE	slice	LIMIT	carrier	1000-deep parens: valid syntax over MAX_PARSE_DEPTH=256 (deliberate limit, pre-limit compilers accepted it)
+limit_nesting_20000	F-PARSE	slice	LIMIT	carrier	20000-deep parens: pre-limit compilers aborted with a stack overflow (SIGABRT 134)
+parse_nesting_below_bound	F-PARSE	slice	ACCEPT	carrier	240-deep nesting still checks
