@@ -1597,6 +1597,21 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-23 (later) — callee values, follow-up (`8424dc0c`).** Six more adversarial
+    review rounds on the callee-value lane closed 66 more silent accepts:
+    - closures whose arity or body shape the checker did not follow;
+    - value blocks and arm bodies that were never discharged;
+    - calls through struct fields;
+    - early returns of methods and trait defaults;
+    - whole structs with a `secret` field reaching `print`.
+
+    The model replay no longer mis-reports counterexamples over containers. A runtime defect was
+    found: `p["key"]` on a struct returns its first field (RT-STRIDX). The checker is conservative
+    about it for now, and the runtime fix is next.
+
+    Matrix at this pin: 420 cases, 364 PASS, 18 silent accepts (all `open_*`; the previous pin has
+    84 on the same matrix), 38 wrong-class (valid programs refused; DEFECTS FV-OVERREFUSE-2).
+
     **UPDATE 2026-09-23 (late night) — callee values (`1b40f653`).** A call through a function
     VALUE the checker cannot resolve is no longer read as "calls no function": when a contracted
     function escapes as a value, such a call is refused UNDECIDED. Early returns are joined into the
