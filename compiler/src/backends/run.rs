@@ -5138,10 +5138,20 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             let mut vars = std::collections::BTreeSet::new();
             let mut callees = std::collections::BTreeSet::new();
             collect_free_expr(body, &bound, &mut vars, &mut callees);
-            // Capture every value-use (always a local, even if its name shadows a builtin), plus
+            // Capture every value-use of a LOCAL (even one whose name shadows a builtin), plus
             // callee-uses that name a closure-valued local (a local binding, or a name that is
-            // neither a user function nor a builtin).
-            let mut to_capture = vars;
+            // neither a user function nor a builtin). A user function or builtin named as a value
+            // (`|v| f`) is lowered by `var_as_value` inside the body and is not captured: cloning it
+            // as a local failed to compile (E0425, RT-LAMBDA-FNNAME).
+            let mut to_capture: std::collections::BTreeSet<String> = vars
+                .into_iter()
+                .filter(|v| {
+                    ctx.locals.contains(v)
+                        || !(ctx.fns.contains(v)
+                            || ctx.fn_arities.contains_key(v)
+                            || is_builtin_name(v))
+                })
+                .collect();
             for c in callees {
                 if ctx.locals.contains(&c) || (!ctx.fns.contains(&c) && !is_builtin_name(&c)) {
                     to_capture.insert(c);
