@@ -1597,6 +1597,17 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-24 (evening) — whole-struct routes through list builtins, callbacks and
+    formals (`9aadfe41`).**
+    - A whole struct with a `secret` field is now followed through element-passing list builtins,
+      `map`/`flat_map` callbacks, local closure arguments, methods that return a formal, calls
+      through unresolved values, let-pattern binders, and a returned local list.
+    - This closes 15 of the 16 FV-OPEN-3 routes.
+    - Matrix at this pin: 512 cases, 466 PASS, 5 silent accepts (`open_whole2_B2` and FV-OPEN-4;
+      the pre-change pin has 22 on the same matrix), 41 wrong-class.
+    - **Still OPEN:** those 5, and ten more pre-existing pass-through shapes found in review
+      (FV-OPEN-5).
+
     **UPDATE 2026-09-24 (later) — lowering and check-time fixes (`d70eb2ed`, `6fe90617`).**
     - A closure that names a function as a value now compiles.
     - Recursive fan-out no longer blows up check time: 40 functions went from about 33 s to
