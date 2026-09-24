@@ -1597,6 +1597,14 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-24 (later) — lowering and check-time fixes (`d70eb2ed`, `6fe90617`).**
+    - A closure that names a function as a value now compiles.
+    - Recursive fan-out no longer blows up check time: 40 functions went from about 33 s to
+      about 5 s.
+    - The secret lane's fallback scan resolves arguments through the caller's scope.
+    - Matrix at this pin: 509 cases, 448 PASS, 20 silent accepts (all `open_*`; the pre-change pin
+      has 173 on the same matrix), 41 wrong-class.
+
     **UPDATE 2026-09-24 — whole-struct secrets, field-value calls, alias-lane unknowns
     (`3b90cd4b`, `c527a48d`).**
     - `3b90cd4b` fixed a runtime defect: a struct string index read the first field

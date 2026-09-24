@@ -202,5 +202,16 @@ all 16 are `open_whole2_*` and silent on both earlier pins.
 | FV-ALIAS-UNKNOWN | S1 | the secret/taint alias lane fell back to the tail answer when a return value could not be rewritten or the re-entrancy guard stopped, losing secrets through assigned locals, helper chains, methods, pushes and map writes | `rv14_reentry_*`, `rv15_reentry_*`, `rv17_helper_*`, `rv19_helper_*`, `rv20_helper_*` | **fixed** c527a48d (`scan_for_secret_fn`, `return_feeding`, `helper_labeled`) |
 | FV-OPEN-3 | S1 | still open, pre-existing: 16 whole-struct routes from review round 12 (closure parameters, method formals, let-patterns, list builtins passing elements through, a local list returned) | `open_whole2_*` | **open** (next unit) |
 | FV-OVERREFUSE-3 | S3 | an untyped formal stored in a field may be a function, so a method call named like that field on a receiver of unknown type is refused when a contracted function escapes | `rv17_valid_builder_formal_plain_value` | open (documented) |
-| PERF-FANOUT | S3 | check time on mutually recursive fan-out (4 functions × 3 recursive calls ≈ 10 s; 40 ≈ 33 s) since the re-entrancy guard (8424dc0c); the program is refused on every pin, time only | review round 13 T1 | open |
-| RT-LAMBDA-FNNAME | S3 | RUNTIME/lowering: a closure naming a user function as a value (`\|v\| f`) fails to compile (E0425: the capture block clones `f` as a local); `check` accepts the program | review round 19 | open (next) |
+| PERF-FANOUT | S3 | check time on mutually recursive fan-out (4 functions × 3 recursive calls ≈ 10 s; 40 ≈ 33 s) since the re-entrancy guard (8424dc0c); refused on every pin, time only | review round 13 T1, rounds 22–25 | **fixed** 6fe90617 (one frame per function, a per-function budget on deep expansion, an exact memo; 40 functions ≈ 5 s) |
+| RT-LAMBDA-FNNAME | S3 | RUNTIME/lowering: a closure naming a user function or builtin as a value (`\|v\| f`) failed to compile (E0425) although `check` accepted it | tools/anubis/tests/closure_names_function_value.rs | **fixed** d70eb2ed; residual: a name that is also a `let` local elsewhere in the function still fails to compile (fails closed) |
+
+### Follow-up: d70eb2ed, 6fe90617 (review rounds 21–25)
+
+Matrix (509 cases): silent accepts 173 on anubis-sortchk12, 20 at anubis-perf4 (6fe90617), all
+`open_*` and silent on every earlier pin.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| FV-ALIAS-SCAN | S1 | the secret lane's over-approximating scan missed a secret held in a caller local, a helper handed in as an argument, and anything past an expansion cut-off | `rv21_*`, `rv22_*`, `rv23_*` | **fixed** 6fe90617 |
+| FV-OPEN-4 | S1 | still open, pre-existing: a closure capturing a secret function passed as a formal; a local reassigned to a secret function after its use in a loop; a struct field set to a secret function after an earlier use; a closure returning a secret function value | `open_reentry_closure_capturing_secret`, `open_loop_reassign_after_use_secret`, `open_struct_field_reassigned_after_use_secret`, `open_closure_returning_secret_fn` | **open** |
+| DIAG-ARITY-SELFFIELD | S4 | a method returning `self.g` whose result is called gets a false ANUBIS_ARITY_MISMATCH naming the callee; fails closed | review round 25 B1 | open |
