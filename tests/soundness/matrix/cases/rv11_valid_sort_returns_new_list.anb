@@ -1,0 +1,2 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() { let ys = [1, 2, 3]; let zs = sort(ys); print(map(ys, f)); print(zs); }

@@ -3183,6 +3183,26 @@ fn bad() {
         ));
     }
 
+    #[test]
+    fn replay_accepts_array_only_witness_and_still_pins_scalars() {
+        // A container's backing array is the only declared constant: z3's model gives it as an
+        // array value the replay does not parse. The violation is ground, so the counterexample is
+        // real and must replay (it was reported REPLAY_MISMATCH).
+        let arrays_only = "(set-logic QF_ABV)\n\
+            (declare-fun xs__arr () (Array (_ BitVec 64) (_ BitVec 64)))\n\
+            (assert (not (bvsgt (bvneg (_ bv1 64)) (_ bv0 64))))\n(check-sat)\n";
+        let model = "sat\n(\n  (define-fun xs__arr () (Array (_ BitVec 64) (_ BitVec 64))\n    \
+            ((as const (Array (_ BitVec 64) (_ BitVec 64))) #x0000000000000000))\n)";
+        assert!(middle::replay_counterexample(arrays_only, model));
+        // A scalar constant with no parsed witness still fails closed, array or not.
+        let with_scalar = "(set-logic QF_ABV)\n\
+            (declare-fun xs__arr () (Array (_ BitVec 64) (_ BitVec 64)))\n\
+            (declare-const x (_ BitVec 64))\n(assert (bvsgt x (_ bv0 64)))\n(check-sat)\n";
+        assert!(!middle::replay_counterexample(with_scalar, model));
+        // Garbage model text on an array-only query fails closed.
+        assert!(!middle::replay_counterexample(arrays_only, "not a model"));
+    }
+
     /// Regression lock (2026-07-25): a sat model is DISPROVED with a pretty-printed witness,
     /// never the conflated `ANUBIS_ASSERTION_UNPROVEN` "or undecided" message.
     #[test]

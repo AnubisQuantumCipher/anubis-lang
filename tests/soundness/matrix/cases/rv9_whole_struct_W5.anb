@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { s: S }
+fn main() { let w = W { s: S { k: 42, pub_n: 1 } }; print(w); }

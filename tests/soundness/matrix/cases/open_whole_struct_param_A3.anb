@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { let g = |v| print(v); g(s); }
+fn main() { show(S { k: 42, pub_n: 1 }); }

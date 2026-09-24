@@ -1,0 +1,6 @@
+fn f(x: i64) -> i64 requires(x > 0) { print("f entered with ${x}"); return x; }
+fn safe(x: i64) -> i64 { return x; }
+struct A { n: i64 }
+impl A { fn pick(self, c) { if c < 5 { return safe; } return safe; } }
+fn pk(c) { return f; }
+fn main() { let m = { "pick": pk }; let g = m.pick(1); print(g(-1)); }

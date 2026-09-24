@@ -290,14 +290,14 @@ rv5_lambda_body_literal_violation	FN-VALUE-JOIN	slice	REJECT	carrier	S15: let g 
 rv5_valid_alias_of_formal	FN-VALUE-JOIN	slice	ACCEPT	carrier	P1 control
 rv5_valid_formal_list_elem	FN-VALUE-JOIN	slice	ACCEPT	carrier	P2 control
 rv5_valid_lambda_join_plus_escape	FN-VALUE-JOIN	slice	ACCEPT	carrier	P4 control
-open_carrier_lambda_join_inline	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): lambda join passed to a carrier
-open_carrier_lambda_join_local	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing)
-open_fieldcall_struct	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): s.h(-1) field call never reaches the callee resolver
-open_fieldcall_map	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing)
-open_for_over_formal_list	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): for g in gs { g(-1) }
-open_match_arm_expr_unchecked	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): expression-bodied match arm call not checked
-open_whole_struct_print_secret	OPEN-IFC	slice	REJECT	carrier	OPEN (pre-existing): printing a whole struct with a secret field
-open_string_index_secret_field	OPEN-IFC	slice	REJECT	carrier	OPEN (pre-existing): s["k"] reads a secret field
+rv7_carrier_lambda_join_inline	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): lambda join passed to a carrier
+rv7_carrier_lambda_join_local	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing)
+rv7_fieldcall_struct	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): s.h(-1) field call never reaches the callee resolver
+rv7_fieldcall_map	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing)
+rv7_for_over_formal_list	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): for g in gs { g(-1) }
+rv7_match_arm_expr_unchecked	OPEN-FN-VALUE	slice	REJ|UNRES	carrier	OPEN (pre-existing): expression-bodied match arm call not checked
+rv7_whole_struct_print_secret	OPEN-IFC	slice	REJECT	carrier	OPEN (pre-existing): printing a whole struct with a secret field
+rv7_string_index_secret_field	OPEN-IFC	slice	REJECT	carrier	OPEN (pre-existing): s["k"] reads a secret field
 rv6_join_callee_local_capture	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW esc3 E1: a join of return values resolved in the CALLER's scope misread a callee local; values are now rewritten into the caller's terms or Unknown
 rv6_join_param_alias_local	FN-VALUE-JOIN	slice	REJECT	carrier	E2: a callee let-alias of a formal is followed before the formal is substituted
 rv6_ifc_lambda_join_arity	FN-VALUE-JOIN	slice	REJECT	carrier	E3: closures of another arity in the join must not erase the tail closure (secret lane)
@@ -314,26 +314,108 @@ rv6_closure_captures_callee_local	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E13: a r
 rv6_closure_capture_through_carrier	FN-VALUE-JOIN	slice	REJECT	carrier	E14: a closure argument is applied by the carrier lane (it was minted as an int symbol)
 rv6_formal_shadowed_by_let	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E15: a formal re-bound by let loses the carrier exemption
 rv6_formal_shadowed_by_match	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E17: a formal re-bound by a match pattern loses the exemption
-open_formal_shadowed_by_for	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E16 OPEN: for over a formal list rebinding the formal's name; same class as open_for_over_formal_list (element application of a formal container is not a carrier item)
+rv7_formal_shadowed_by_for	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	E16 (fixed): for over a formal list rebinding the formal's name; same class as open_for_over_formal_list (element application of a formal container is not a carrier item)
 rv6_valid_join_unreachable_closure	FN-VALUE-JOIN	slice	ACCEPT	carrier	P7 KNOWN IMPRECISION: a join's unreachable closure branch is checked without its path condition (as named-function joins are), so a valid program is DISPROVED
 rv6_forwarder_bare_loop_rejects	FN-VALUE-JOIN	slice	REJECT	carrier	esc3 G1 regression guard: a loop forwarder with a fall-through 0 keeps forwarder status
 rv6_forwarder_for_loop_rejects	FN-VALUE-JOIN	slice	REJECT	carrier	esc3 G1 regression guard: a loop forwarder with a fall-through 0 keeps forwarder status
 rv6_forwarder_while_loop_rejects	FN-VALUE-JOIN	slice	REJECT	carrier	esc3 G1 regression guard: a loop forwarder with a fall-through 0 keeps forwarder status
-open_r4_arity_closure_to_carrier	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F10 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_arity_closure_in_list	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F11 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_arity_closure_through_identity	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F12 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_method_early_return_contract	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F13 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_method_early_return_secret	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW round 4 F14 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_ifc_early_return_callee_local	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW round 4 F15 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_map_builtin_with_closure	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F16 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_match_body_param_captured_by_caller	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F1 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_block_body_param_captured_by_caller	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F2 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_block_body_param_callee_captured	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F3 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_block_body_capture_shadowed	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F4 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_block_body_capture_shadowed_in_if	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F5 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_block_body_via_list	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F6 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_shadowed_capture_in_expr_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F7 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_arity_join_dropped_leaf	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F8 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
-open_r4_arity_join_tail_wider	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F9 OPEN (pre-existing in OLD): see DEFECTS FV-* rows
+rv7_arity_closure_to_carrier	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F10 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_arity_closure_in_list	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F11 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_arity_closure_through_identity	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F12 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_method_early_return_contract	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F13 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_method_early_return_secret	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW round 4 F14 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_ifc_early_return_callee_local	FN-VALUE-JOIN	slice	REJECT	carrier	REVIEW round 4 F15 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_map_builtin_with_closure	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F16 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_match_body_param_captured_by_caller	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F1 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_block_body_param_captured_by_caller	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F2 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_block_body_param_callee_captured	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F3 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_block_body_capture_shadowed	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F4 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_block_body_capture_shadowed_in_if	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F5 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_block_body_via_list	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F6 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_shadowed_capture_in_expr_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F7 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_arity_join_dropped_leaf	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F8 (pre-existing in OLD; fixed in the round-4 unit)
+rv7_arity_join_tail_wider	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	REVIEW round 4 F9 (pre-existing in OLD; fixed in the round-4 unit)
 rv6_valid_block_closure_stable_capture	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 4 P9: valid block-bodied closure over a stable capture (runtime prints 4)
 rv6_valid_closure_captures_for_var	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 4 P10: valid closure capturing the for variable, defined and called in the same iteration
+rv7_block_shadow_call_unchecked	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	BLOCK-SHADOW: a contracted call inside a value block that re-binds a modeled name was skipped entirely (runtime: f entered with -1); now refused
+rv7_match_arm_bare_expr_wildcard	FN-VALUE-JOIN	slice	REJECT	carrier	VALUE-POS: a statement match arm with a bare expression body (`_ => print(f(-1))`) was analyzed for effects only, never discharged
+rv8_join_named_fn_dropped	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	review round 5 G1: a merged closure hid a named-function leaf of the join (runtime: f entered with -1)
+rv8_join_named_fn_early	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	G2: named function returned early, closure in the tail
+rv8_join_named_fn_via_carrier	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	G3: same, through a carrier
+rv8_join_callee_local_fn	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	G4: callee-local list element alongside a closure
+rv8_method_name_on_field_value	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	G5: a method name that is also a struct field: the runtime may call the field's value
+rv8_trait_default_secret	FN-VALUE-JOIN	slice	REJECT	carrier	G6: every definition of a method name (trait defaults included) is unioned; the old first-writer registry hid the secret
+rv8_reentry_secret	FN-VALUE-JOIN	slice	REJECT	carrier	G7: one re-expansion of a recursive multi-return call
+rv8_map_local_list_closure	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	map over a local list with a closure (was unchecked)
+rv8_map_local_list_named	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	map over a local list with a contracted function (was unchecked)
+open_fieldcall_method_name	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	OPEN: obj.m(args) where m is a method of some type but obj's type lacks it: the runtime calls the field's value
+rv8_valid_block_closure_no_contracts	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 5 R-1: a block-bodied closure in a program with no contracts must pass
+rv8_valid_block_shadow_call	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 5 P12: valid block that re-binds a modeled name and calls f; refused (sound, imprecise)
+rv8_valid_enum_payload_arm	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 5 P13: valid arm call over an enum payload; refused (payloads are not modeled)
+rv8_whole_struct_print_direct	FN-VALUE-JOIN	slice	REJECT	carrier	print(p) of a struct with a secret field prints the field (runtime: S { k: 42, .. })
+rv8_struct_string_index_secret	FN-VALUE-JOIN	slice	REJECT	carrier	p["k"] reads the secret field
+rv8_valid_struct_public_reads	FN-VALUE-JOIN	slice	ACCEPT	carrier	public field reads (by dot), a copy, a list element's public field and len() of a list of such structs
+rv8_match_arm_m1	FN-VALUE-JOIN	slice	REJECT	carrier	statement match arm variants over f(-1)
+rv8_match_arm_m3	FN-VALUE-JOIN	slice	REJECT	carrier	statement match arm variants over f(-1)
+rv8_match_arm_m4	FN-VALUE-JOIN	slice	REJECT	carrier	statement match arm variants over f(-1)
+rv9_mapkey_named_like_method	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	review round 6 H1: a map key named like a method; the runtime calls the map value
+rv9_reentry_depth3_secret	FN-VALUE-JOIN	slice	REJECT	carrier	H2: a secret rotated in on the third recursive frame
+rv9_reentry_depth4_secret	FN-VALUE-JOIN	slice	REJECT	carrier	H3: fourth frame
+rv9_whole_struct_W5	FN-VALUE-JOIN	slice	REJECT	carrier	round 6 W5: whole struct with a secret field reaches print through a constructor / interpolation / str / forwarder
+rv9_whole_struct_W10	FN-VALUE-JOIN	slice	REJECT	carrier	round 6 W10: whole struct with a secret field reaches print through a constructor / interpolation / str / forwarder
+rv9_whole_struct_W11	FN-VALUE-JOIN	slice	REJECT	carrier	round 6 W11: whole struct with a secret field reaches print through a constructor / interpolation / str / forwarder
+rv9_whole_struct_W13	FN-VALUE-JOIN	slice	REJECT	carrier	round 6 W13: whole struct with a secret field reaches print through a constructor / interpolation / str / forwarder
+rv9_whole_struct_W14	FN-VALUE-JOIN	slice	REJECT	carrier	round 6 W14: whole struct with a secret field reaches print through a constructor / interpolation / str / forwarder
+rv9_whole_struct_W16	FN-VALUE-JOIN	slice	REJECT	carrier	round 6 W16: whole struct with a secret field reaches print through a constructor / interpolation / str / forwarder
+rv9_whole_struct_X3	FN-VALUE-JOIN	slice	REJECT	carrier	round 6 X3: whole struct with a secret field reaches print through a constructor / interpolation / str / forwarder
+open_whole_struct_W7	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 6 W7: whole struct via a method return / closure return / push / for binding (pre-existing)
+open_whole_struct_W8	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 6 W8: whole struct via a method return / closure return / push / for binding (pre-existing)
+open_whole_struct_W15	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 6 W15: whole struct via a method return / closure return / push / for binding (pre-existing)
+open_whole_struct_W18	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 6 W18: whole struct via a method return / closure return / push / for binding (pre-existing)
+rv9_valid_map_local_range	FN-VALUE-JOIN	slice	ACCEPT	carrier	Q-2: map over a local range, elements modeled a <= e < b
+rv9_valid_map_range	FN-VALUE-JOIN	slice	ACCEPT	carrier	map(range(1, 5), f) with f requiring x > 0
+rv9_valid_map_local_range_closure	FN-VALUE-JOIN	slice	ACCEPT	carrier	closure over a local range
+rv9_map_range_violation	FN-VALUE-JOIN	slice	REJECT	carrier	map(range(0, 5), f): element 0 violates
+rv9_map_local_range_closure_violation	FN-VALUE-JOIN	slice	REJECT	carrier	closure over range(-2, 3): x + 1 can be <= 0
+rv9_valid_map_param_list_named_fn	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 6 P15: valid map over a list whose elements are not modeled; refused UNDECIDED (documented)
+rv9_valid_map_derived_list	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 6 P16: valid map over a list whose elements are not modeled; refused UNDECIDED (documented)
+rv9_valid_map_filtered_list	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 6 P17: valid map over a list whose elements are not modeled; refused UNDECIDED (documented)
+rv9_valid_interproc_public_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	Q-1: a formal released only by a public field read is not a whole-struct release
+rv10_range_bound_shadowed	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	review round 7 R1: a range bound re-bound by a later let is not the bound the list was built with (a draft of the range model accepted it; runtime f entered with -3)
+rv10_user_fn_named_range	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	R2: a user function named range is not the builtin
+rv10_range_list_pushed	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	R3: push after the let changes the list
+rv10_whole_struct_main_B1	FN-VALUE-JOIN	slice	REJECT	carrier	round 7 B1: a string key on a map (or a struct-typed field) yields the whole struct
+rv10_whole_struct_main_B2	FN-VALUE-JOIN	slice	REJECT	carrier	round 7 B2: a string key on a map (or a struct-typed field) yields the whole struct
+rv10_whole_struct_main_B5	FN-VALUE-JOIN	slice	REJECT	carrier	round 7 B5: a string key on a map (or a struct-typed field) yields the whole struct
+rv10_whole_struct_param_A13	FN-VALUE-JOIN	slice	REJECT	carrier	round 7 A13: map read by string key through a formal
+open_whole_struct_main_B3	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 B3: whole struct through a match / if-let binding (pre-existing)
+open_whole_struct_main_B4	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 B4: whole struct through a match / if-let binding (pre-existing)
+open_whole_struct_param_A2	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 A2: whole struct released through a formal by a route param_whole_egress does not follow (pre-existing)
+open_whole_struct_param_A3	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 A3: whole struct released through a formal by a route param_whole_egress does not follow (pre-existing)
+open_whole_struct_param_A5	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 A5: whole struct released through a formal by a route param_whole_egress does not follow (pre-existing)
+open_whole_struct_param_A6	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 A6: whole struct released through a formal by a route param_whole_egress does not follow (pre-existing)
+open_whole_struct_param_A7	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 A7: whole struct released through a formal by a route param_whole_egress does not follow (pre-existing)
+open_whole_struct_param_A8	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 A8: whole struct released through a formal by a route param_whole_egress does not follow (pre-existing)
+open_whole_struct_param_A11	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 A11: whole struct released through a formal by a route param_whole_egress does not follow (pre-existing)
+open_reentry_assigned_local_secret	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 S1: the alias lane has no unknown state; a guard trip cannot see an assigned local's secret
+open_reentry_secret_via_helper_call	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 7 S2: same, secret returned by a helper call in the argument
+rv10_valid_range_negative_step	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 7 P19: valid map over a range form the model does not cover; refused UNDECIDED (documented)
+rv10_valid_range_three_arg	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 7 P20: valid map over a range form the model does not cover; refused UNDECIDED (documented)
+rv10_valid_range_alias	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 7 P21: valid map over a range form the model does not cover; refused UNDECIDED (documented)
+rv11_struct_string_index_public_key	FN-VALUE-JOIN	slice	REJECT	carrier	RT-STRIDX: native p["pub_n"] on a struct returns its FIRST declared field (the secret k); runtime prints 42
+rv11_struct_string_index_first_field	FN-VALUE-JOIN	slice	REJECT	carrier	review round 8 X5
+rv11_struct_string_index_let	FN-VALUE-JOIN	slice	REJECT	carrier	X6: let q = p["pub_n"]; print(q) prints the secret
+rv11_local_closure_named_range	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	X1: a local closure named range is not the builtin
+rv11_list_shadowed_in_expr_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	round 8 X2: a function handed to a higher-order builtin inside a block that re-binds a modeled name was skipped
+rv11_range_shadowed_in_expr_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	round 8 X3: a function handed to a higher-order builtin inside a block that re-binds a modeled name was skipped
+rv11_list_shadowed_in_match_arm_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	round 8 X4: a function handed to a higher-order builtin inside a block that re-binds a modeled name was skipped
+open_map_dot_access_whole_struct	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 8 X7: whole struct out of a map by a route whole_value_source does not follow (pre-existing)
+rv12_map_entry_assigned_whole_struct	FN-VALUE-JOIN	slice	REJECT	carrier	round 8 X8 (fixed by the unknown-base string-index rule): a map entry assigned later and read by string key
+open_map_values_whole_struct	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 8 X9: whole struct out of a map by a route whole_value_source does not follow (pre-existing)
+rv11_valid_list_passed_to_user_fn	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 8 P22: lists are values; a user function cannot change the caller's list (runtime witness: push in a callee leaves [1, 2])
+rv11_valid_sort_returns_new_list	FN-VALUE-JOIN	slice	ACCEPT	carrier	P23: sort returns a new list
+rv11_valid_range_untyped_formal_bound	FN-VALUE-JOIN	slice	ACCEPT	carrier	P24: range bound from an untyped formal is not int-modelable; refused UNDECIDED (documented; annotate n: i64)
+rv12_user_fn_push_statement	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	review round 9 Y1: a statement push(v, x) is lowered to the in-place builtin even when a user fn push exists (runtime: f entered with -7)
+rv12_strindex_unknown_base	FN-VALUE-JOIN	slice	REJECT	carrier	Y2: string index on an unknown-typed struct value reads its first field (RT-STRIDX; runtime prints 42)
+rv12_valid_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 9 P25: a local map read whose key names some struct's secret field; refused (conservative until RT-STRIDX is fixed)
+rv12_valid_formal_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	P26: same through a formal

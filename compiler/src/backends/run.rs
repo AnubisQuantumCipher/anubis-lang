@@ -3919,7 +3919,7 @@ pub fn is_builtin_name(name: &str) -> bool {
 /// Collect the free identifiers of an expression, split into value uses (`vars`, always captured
 /// by a lambda) and callee uses (`callees`, captured only when they are not a user function or a
 /// builtin — i.e. when they name a closure-valued local). A name used as a value takes precedence.
-fn collect_free_expr(
+pub(crate) fn collect_free_expr(
     e: &Expr,
     bound: &std::collections::BTreeSet<String>,
     vars: &mut std::collections::BTreeSet<String>,
