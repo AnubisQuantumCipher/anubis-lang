@@ -490,6 +490,7 @@ fn fn_alias_of_d(
     depth: u32,
 ) -> Option<String> {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return None;
     }
     match init {
@@ -794,6 +795,7 @@ fn fn_identities_of_d(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     match expr {
@@ -1055,6 +1057,7 @@ fn fn_identities_at_path_expr(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     if let Some((root, path)) = flatten_access_path(expr) {
@@ -1104,6 +1107,7 @@ fn fn_identities_at_contract_path(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     if path.is_empty() {
@@ -1309,6 +1313,7 @@ fn builtin_gate_tags_of_d(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     match expr {
@@ -1428,6 +1433,7 @@ fn builtin_gate_tags_carried_by_value_d(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     let mut observations = vec![builtin_gate_tags_of_d(expr, scope, ctx, depth + 1)];
@@ -1534,6 +1540,7 @@ fn builtin_gate_tags_at_path_expr(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     if let Some((root, path)) = flatten_access_path(expr) {
@@ -1608,6 +1615,7 @@ fn builtin_gate_tags_at_path(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     if path.is_empty() {
@@ -1919,6 +1927,7 @@ fn collect_container_builtin_gate_tags_d(
     depth: u32,
 ) {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return;
     }
     let path = |segment: &str| {
@@ -2261,6 +2270,7 @@ fn collect_container_fn_identities_d(
     depth: u32,
 ) {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return;
     }
     let path = |segment: &str| {
@@ -6010,6 +6020,7 @@ fn analyze_function(
     ctx.current_fn_let_inits = single_let_inits(body);
     ctx.current_fn_assigned = assigned_roots(body);
     ctx.current_fn_rebound = function_bound_names(&[], body);
+    reset_return_values_budget();
     ctx.current_fn_nonlet_bound = non_let_bound_names(body);
     ctx.current_fn_list_mutated = {
         let mut out = BTreeSet::new();
@@ -8988,6 +8999,7 @@ fn discharge_resolved_call_requires_d(
     depth: u32,
 ) -> bool {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return true;
     }
     // A higher-order BUILTIN (map/apply/...) applies a function this resolver would otherwise ignore
@@ -16447,6 +16459,7 @@ fn fn_identities_carried_by_value_d(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     match value {
@@ -24470,6 +24483,12 @@ fn return_value_in_caller(
         Expr::Var(n) => Expr::Var(rv.alias.get(n).cloned().unwrap_or_else(|| n.clone())),
         other => other.clone(),
     };
+    if args
+        .iter()
+        .any(|a| expr_node_count(a) > REWRITTEN_VALUE_NODE_LIMIT)
+    {
+        return None;
+    }
     // Rewrite through the callee's stable locals (`let t = [g]; … return t[0]`), bounded.
     for _ in 0..4 {
         let sub: BTreeMap<String, Expr> = free_names(&v)
@@ -24484,6 +24503,9 @@ fn return_value_in_caller(
             break;
         }
         v = substitute_vars(&v, &sub);
+        if expr_node_count(&v) > REWRITTEN_VALUE_NODE_LIMIT {
+            return None;
+        }
     }
     if !substitution_complete(&v, &rv.params) {
         return None;
@@ -24509,7 +24531,24 @@ fn return_value_in_caller(
         .cloned()
         .zip(args.iter().cloned())
         .collect();
-    Some(substitute_vars(&v, &sub))
+    let out = substitute_vars(&v, &sub);
+    // On recursive fan-out, inlined locals and substituted arguments nest calls inside calls and the
+    // rewritten value grows with every level (PERF-FANOUT). A value past a fixed size is not
+    // rewritten: the caller treats it as unknown (identity Unknown, alias lane over-approximated).
+    if expr_node_count(&out) > REWRITTEN_VALUE_NODE_LIMIT {
+        return None;
+    }
+    Some(out)
+}
+
+/// See `return_value_in_caller` (PERF-FANOUT).
+const REWRITTEN_VALUE_NODE_LIMIT: usize = 256;
+
+/// The number of expression nodes in `e`.
+fn expr_node_count(e: &Expr) -> usize {
+    let mut n = 0usize;
+    visit::each_expr(e, &mut |_| n += 1);
+    n
 }
 
 /// Identities one return value contributes to a call's result (see `fn_return_values`). A closure is
@@ -24539,15 +24578,112 @@ thread_local! {
     /// exponential (a shipped example stopped terminating). The re-entered call is unresolved.
     static RETURN_VALUES_ACTIVE: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Expansions made in the current function's analysis (see `RETURN_VALUES_BUDGET`).
+    static RETURN_VALUES_SPENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Times an expansion was cut short (guard, budget, depth limit). A result computed while this
+    /// did not move is exact and may be memoized (`RETURN_VALUES_MEMO`).
+    static RETURN_VALUES_TRIPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Exact multi-return results for the current function's analysis, by `return_values_memo_key`.
+    static RETURN_VALUES_MEMO: std::cell::RefCell<BTreeMap<String, MemoValue>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+/// A memoized multi-return result (see `RETURN_VALUES_MEMO`).
+#[derive(Clone)]
+enum MemoValue {
+    Identities(FnIdentitySet),
+    Alias(Result<Option<String>, ()>),
+}
+
+/// Record that an expansion was cut short, so nothing computed around it is memoized.
+fn note_return_values_trip() {
+    RETURN_VALUES_TRIPS.with(|c| c.set(c.get() + 1));
+}
+
+fn return_values_trips() -> u64 {
+    RETURN_VALUES_TRIPS.with(|c| c.get())
+}
+
+/// The memo key of a multi-return query: the lane, the callee, which definition, the arguments as
+/// written, and every variable the arguments mention paired with what its binding holds (so a
+/// re-bound name is a different key).
+fn return_values_memo_key(
+    lane: &str,
+    key: &str,
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> String {
+    // `rv` identifies WHICH definition: every definition of a method name shares `key`.
+    let mut out = format!("{lane}|{key}|{:p}", rv as *const ReturnValues);
+    // Every argument exactly as written: even a literal can select what comes back
+    // (`sel(fs, 0)` vs `sel(fs, 1)` pick different elements; a draft that abstracted literals shared
+    // one cached answer and leaked, review L43/L44).
+    for a in args {
+        out.push_str(&format!("|{a:?}"));
+    }
+    for n in args.iter().flat_map(free_names) {
+        if let Some(b) = scope.get(&n) {
+            out.push_str(&format!(
+                "|{n}={:?}/{:?}/{:?}",
+                b.fn_identities, b.fn_alias, b.field_fn_identities
+            ));
+        }
+    }
+    out
+}
+
+/// Look up, or compute and (when exact) store, a memoized multi-return result.
+fn with_return_values_memo(mkey: String, f: impl FnOnce() -> MemoValue) -> MemoValue {
+    if let Some(v) = RETURN_VALUES_MEMO.with(|m| m.borrow().get(&mkey).cloned()) {
+        return v;
+    }
+    let before = return_values_trips();
+    let v = f();
+    if return_values_trips() == before {
+        RETURN_VALUES_MEMO.with(|m| m.borrow_mut().insert(mkey, v.clone()));
+    }
+    v
+}
+
+/// The most return-value expansions the analysis of ONE function may make (reset per function by
+/// `reset_return_values_budget`). The per-key guard bounds the DEPTH of recursion, not its breadth,
+/// and every carrier frame starts new queries: 40 mutually recursive functions took ~23 s with a
+/// per-query budget (PERF-FANOUT). Past the budget an expansion is treated exactly like a guard trip
+/// (identity Unknown, alias lane over-approximated), so the budget can only turn an answer into a
+/// refusal.
+const RETURN_VALUES_BUDGET: usize = 1024;
+
+/// Nesting at which a return-value expansion starts to count toward `RETURN_VALUES_BUDGET`.
+const RETURN_VALUES_DEEP: usize = 4;
+
+/// Start a fresh return-value expansion budget and memo (at the start of each function's analysis).
+fn reset_return_values_budget() {
+    RETURN_VALUES_SPENT.with(|c| c.set(0));
+    RETURN_VALUES_MEMO.with(|m| m.borrow_mut().clear());
 }
 
 /// Run `f` with `key` marked active; `None` when `key` is already active.
 fn with_return_values_active<T>(key: &str, f: impl FnOnce() -> T) -> Option<T> {
+    // Only DEEP expansions count: the blow-up is recursion through many functions (fan-out), while
+    // a busy function making many shallow queries is linear in its size (review P49: a budget on
+    // every expansion refused a valid function-value call after 60 distinct queries).
+    let deep = RETURN_VALUES_ACTIVE.with(|a| a.borrow().len() >= RETURN_VALUES_DEEP);
+    let over_budget = deep
+        && RETURN_VALUES_SPENT.with(|c| {
+            c.set(c.get() + 1);
+            c.get() > RETURN_VALUES_BUDGET
+        });
+    if over_budget {
+        note_return_values_trip();
+        return None;
+    }
     let fresh = RETURN_VALUES_ACTIVE.with(|a| {
         let mut a = a.borrow_mut();
-        // One re-expansion is allowed (a recursive call whose argument carries the value that
-        // matters, `a(c + 1, getsec)`, is resolved one level down); a third frame is not.
-        if a.iter().filter(|k| *k == key).count() >= 2 {
+        // A function already being expanded is not expanded again. A second frame (allowed by
+        // 8424dc0c for `a(c + 1, getsec)`) made mutually recursive fan-out take ~10 s (PERF-FANOUT);
+        // the secret that frame found is now found by `scan_for_secret_fn` / `helper_labeled`.
+        if a.iter().any(|k| k == key) {
             false
         } else {
             a.push(key.to_string());
@@ -24555,6 +24691,7 @@ fn with_return_values_active<T>(key: &str, f: impl FnOnce() -> T) -> Option<T> {
         }
     });
     if !fresh {
+        note_return_values_trip();
         return None;
     }
     struct Pop;
@@ -24606,12 +24743,20 @@ fn return_values_identities(
     if rv.params.len() != args.len() || rv.values.is_empty() {
         return FnIdentitySet::Unknown;
     }
-    with_return_values_active(key, || {
-        rv.values.iter().fold(FnIdentitySet::empty(), |acc, v| {
-            acc.union(return_value_identities(v, rv, args, scope, ctx, depth))
-        })
-    })
-    .unwrap_or(FnIdentitySet::Unknown)
+    let mkey = return_values_memo_key("id", key, rv, args, scope);
+    match with_return_values_memo(mkey, || {
+        MemoValue::Identities(
+            with_return_values_active(key, || {
+                rv.values.iter().fold(FnIdentitySet::empty(), |acc, v| {
+                    acc.union(return_value_identities(v, rv, args, scope, ctx, depth))
+                })
+            })
+            .unwrap_or(FnIdentitySet::Unknown),
+        )
+    }) {
+        MemoValue::Identities(ids) => ids,
+        MemoValue::Alias(_) => FnIdentitySet::Unknown,
+    }
 }
 
 /// The alias-lane answer for a multi-return call: a secret or tainting function among the values if
@@ -24628,10 +24773,18 @@ fn return_values_alias(
     if rv.params.len() != args.len() {
         return Err(());
     }
-    with_return_values_active(key, || {
-        return_values_alias_inner(rv, args, scope, ctx, depth)
-    })
-    .unwrap_or_else(|| scan_for_secret_fn(rv, args, ctx).map(Some).ok_or(()))
+    let mkey = return_values_memo_key("alias", key, rv, args, scope);
+    match with_return_values_memo(mkey, || {
+        MemoValue::Alias(
+            with_return_values_active(key, || {
+                return_values_alias_inner(rv, args, scope, ctx, depth)
+            })
+            .unwrap_or_else(|| scan_for_secret_fn(rv, args, scope, ctx).map(Some).ok_or(())),
+        )
+    }) {
+        MemoValue::Alias(r) => r,
+        MemoValue::Identities(_) => Err(()),
+    }
 }
 
 /// Functions (by name) and methods (`impl <name>`, every definition) whose return values hand back a
@@ -24702,7 +24855,12 @@ fn helper_labeled(ctx: &SemanticContext) -> std::cell::Ref<'_, BTreeMap<String, 
 /// they call (one syntactic level, no expansion). The over-approximation used when the alias lane
 /// cannot name every return value (a value through an assigned local, or recursion deeper than the
 /// guard), instead of falling back to the tail answer.
-fn scan_for_secret_fn(rv: &ReturnValues, args: &[Expr], ctx: &SemanticContext) -> Option<String> {
+fn scan_for_secret_fn(
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<String> {
     if ctx.secret_fns.is_empty() && ctx.tainting_fns.is_empty() {
         return None;
     }
@@ -24719,13 +24877,38 @@ fn scan_for_secret_fn(rv: &ReturnValues, args: &[Expr], ctx: &SemanticContext) -
         helper_labeled(ctx).get(&key).cloned()
     };
     let mut hit: Option<String> = None;
-    for e in rv
+    let body_exprs = rv
         .values
         .iter()
         .chain(rv.locals.values())
         .chain(rv.evaluated.iter())
-        .chain(args.iter())
-    {
+        .map(|e| (e, false));
+    // An argument's variables mean what the CALLER's bindings hold (`let s = getsec; a(1, pub1, s)`):
+    // their recorded function identities and aliases, read without any expansion (review L38–L42).
+    for n in args.iter().flat_map(free_names) {
+        let Some(b) = scope.get(&n) else {
+            continue;
+        };
+        let mut names: Vec<String> = Vec::new();
+        names.extend(b.fn_alias.iter().cloned());
+        if let FnIdentitySet::Known(k) = &b.fn_identities {
+            names.extend(k.iter().cloned());
+        }
+        for ids in b.field_fn_identities.values() {
+            if let FnIdentitySet::Known(k) = ids {
+                names.extend(k.iter().cloned());
+            }
+        }
+        for m in names {
+            if labeled(&m) {
+                return Some(m);
+            }
+            if let Some(h) = helper_labeled(ctx).get(&m) {
+                return Some(h.clone());
+            }
+        }
+    }
+    for (e, is_arg) in body_exprs.chain(args.iter().map(|e| (e, true))) {
         visit::each_expr(e, &mut |x| {
             if hit.is_some() {
                 return;
@@ -24734,6 +24917,12 @@ fn scan_for_secret_fn(rv: &ReturnValues, args: &[Expr], ctx: &SemanticContext) -
                 // A secret function as a VALUE (not merely called: `declassify(getsec(), ..)`
                 // calls it and hands no function value on).
                 Expr::Var(n) if labeled(n) => hit = Some(n.clone()),
+                // A helper handed IN as an argument (`a(c + 1, h(), h)` called with `mk`): the callee
+                // may apply it and yield its result (review L35–L37). Named elsewhere in the body
+                // (an unused list, `len(map(..))`) it hands nothing on (review round 20 O1/O2/O5).
+                Expr::Var(n) if is_arg && ctx.fn_params.contains_key(n) => {
+                    hit = helper_labeled(ctx).get(n).cloned();
+                }
                 Expr::Call { callee, .. }
                     if ctx.fn_params.contains_key(callee) && !labeled(callee) =>
                 {
@@ -24783,7 +24972,7 @@ fn return_values_alias_inner(
     } else if unknown {
         // A value the lane cannot name may be the one that matters: over-approximate before the
         // tail-based paths answer (a secret through an assigned local, `t = getsec; … return t`).
-        match scan_for_secret_fn(rv, args, ctx) {
+        match scan_for_secret_fn(rv, args, scope, ctx) {
             Some(n) => Ok(Some(n)),
             None => Err(()),
         }
