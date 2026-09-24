@@ -3310,6 +3310,15 @@ struct SemanticContext {
     /// cannot be one of them, and the call needs no precondition check; when it is not, such a call is
     /// an explicit unresolved refusal, never a silent accept (see `unresolved_callee_value`).
     escaping_contracted_fns: BTreeSet<String>,
+    /// See `compute_fn_valued_field_names`.
+    fn_valued_field_names: BTreeSet<String>,
+    /// Per function (by name) and method (`impl <name>`, every definition): the expressions that may
+    /// flow into its return values (`return_feeding_exprs`).
+    return_feeding: BTreeMap<String, Vec<Expr>>,
+    /// See `helper_labeled` (computed on first use).
+    /// Keyed by the sizes of `secret_fns` / `tainting_fns` when computed, so a lookup during their
+    /// own fixpoint never freezes a stale answer.
+    helper_labeled_cache: std::cell::RefCell<Option<HelperLabeled>>,
     /// The formal parameters of the function being analyzed. A call THROUGH a formal is checked by the
     /// carrier lane at each outer call site, where the actual argument is known.
     current_fn_formals: BTreeSet<String>,
@@ -3419,6 +3428,11 @@ struct SemanticContext {
     param_egress: BTreeMap<String, BTreeSet<usize>>,
     /// Formals whose WHOLE value reaches an egress (see `compute_param_whole_egress`).
     param_whole_egress: BTreeMap<String, BTreeSet<usize>>,
+    /// Formals a function's return values carry whole (`compute_fn_returns_param_whole`).
+    fn_returns_param_whole: BTreeMap<String, BTreeSet<usize>>,
+    /// Free functions / bare-named methods returning a whole struct with a secret field.
+    fn_returns_whole: BTreeSet<String>,
+    method_returns_whole: BTreeSet<String>,
     /// Interprocedural param→sink / param→egress summaries for IMPL METHODS, keyed by BARE method name
     /// and UNIONED across every impl that declares that name (receiver static type is generally
     /// unrecoverable, so bare-name + union is the fail-closed choice). SEPARATE from `param_sinks`/
@@ -3664,7 +3678,18 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
             &mut ctx.param_egress,
             &mut ctx.method_param_egress,
         );
-        ctx.param_whole_egress = compute_param_whole_egress(&free_fns, &ctx.fn_returns_param);
+        ctx.fn_returns_param_whole =
+            compute_fn_returns_param_whole(&free_fns, &ctx.fn_returns_param);
+        let (rw_fns, rw_methods) =
+            compute_returns_whole(&free_fns, &impl_methods, &ctx.struct_fields);
+        ctx.fn_returns_whole = rw_fns;
+        ctx.method_returns_whole = rw_methods;
+        ctx.param_whole_egress = compute_param_whole_egress(
+            &free_fns,
+            &impl_methods,
+            &ctx.fn_returns_param,
+            &ctx.fn_returns_param_whole,
+        );
     }
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
@@ -3682,6 +3707,7 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // Non-exportable sealedness: program summary before per-fn linearity.
     ctx.cap_summary = capability::program_summary(&ast.items);
     ctx.escaping_contracted_fns = compute_escaping_contracted_fns(&ast.items, &ctx);
+    ctx.fn_valued_field_names = compute_fn_valued_field_names(&ast.items, &ctx);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -3895,6 +3921,8 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     // Every distinct return value, for `fn_return_values`.
                     {
                         let all = all_return_values(body);
+                        ctx.return_feeding
+                            .insert(name.clone(), return_feeding_exprs(body, &all));
                         if all.len() > 1 {
                             ctx.fn_return_values.insert(
                                 name.clone(),
@@ -4293,6 +4321,13 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                             }
                             let pnames: Vec<String> =
                                 params.iter().map(|(n, _)| n.clone()).collect();
+                            {
+                                let all = all_return_values(body);
+                                ctx.return_feeding
+                                    .entry(format!("impl {name}"))
+                                    .or_default()
+                                    .extend(return_feeding_exprs(body, &all));
+                            }
                             // Method twin of `fn_return_values`: every definition of the bare name.
                             ctx.method_return_values
                                 .entry(name.clone())
@@ -9389,8 +9424,31 @@ fn discharge_calls_in_expr(
             // `obj.h(args)` where no impl defines a method `h`: the runtime reads the field (or map
             // entry) `h` and calls the closure it holds (run.rs, `Expr::CallExpr`), so it is a call
             // through that VALUE and is checked like one.
-            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
-                if !ctx.method_arities.contains_key(field) {
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                // Also when `h` IS a method of some type: the runtime dispatches on the receiver's
+                // type and falls back to the field's value when that type lacks the method. A
+                // receiver whose struct declares a field `h`, or whose `h` provably holds a named
+                // function, is such a value call.
+                let struct_has_field = place_struct_type(base, scope, &ctx.place_types())
+                    .and_then(|t| ctx.struct_fields.get(t.trim()))
+                    .is_some_and(|fs| fs.contains_key(field));
+                let ids = fn_identities_of(callee, scope, ctx);
+                let holds_function = matches!(&ids, FnIdentitySet::Known(n) if !n.is_empty());
+                // A receiver of unknown type may be a struct of a type that declares a field `h`
+                // (`mk(1).h(-1)` with a join of struct types): a value call, refused when a
+                // contracted function escapes (its identity there is not proven).
+                let receiver_type_known = place_struct_type(base, scope, &ctx.place_types())
+                    .is_some_and(|t| ctx.struct_fields.contains_key(t.trim()));
+                let maybe_field_value = !receiver_type_known
+                    && !holds_function
+                    && !ctx.escaping_contracted_fns.is_empty()
+                    && (ctx.fn_valued_field_names.contains(field)
+                        || ctx.fn_valued_field_names.contains("*"));
+                if !ctx.method_arities.contains_key(field)
+                    || struct_has_field
+                    || holds_function
+                    || maybe_field_value
+                {
                     discharge_resolved_call_requires(ctx, assumptions, scope, callee, args);
                 }
             }
@@ -10574,8 +10632,7 @@ fn analyze_stmts(
                     SourceLane::Secret,
                 );
                 // See `ScopeBinding::whole_struct`.
-                let init_whole =
-                    whole_value_source(init, scope, &ctx.place_types(), &ctx.fn_returns_param);
+                let init_whole = whole_value_source(init, scope, ctx);
                 let declass_source = declassify_source(
                     init,
                     scope,
@@ -11658,6 +11715,13 @@ fn analyze_stmts(
                         ctx,
                     );
                     propagate_pattern_closures(&mut arm_scope, scrutinee, &arm.pattern);
+                    if let Some(src) = whole_value_source(scrutinee, scope, ctx) {
+                        for n in whole_binders(&arm.pattern) {
+                            if let Some(b) = arm_scope.get_mut(&n) {
+                                b.whole_struct.get_or_insert(src.clone());
+                            }
+                        }
+                    }
                     // The arm's pattern binds names (`Shape::Box { center, .. }`) that the arm body reads;
                     // seed them so `analyze_stmts`' unknown-variable check does not false-fire on a valid
                     // destructured binding.
@@ -11765,6 +11829,13 @@ fn analyze_stmts(
                     ctx,
                 );
                 propagate_pattern_closures(&mut then_scope, scrutinee, pattern);
+                if let Some(src) = whole_value_source(scrutinee, scope, ctx) {
+                    for n in whole_binders(pattern) {
+                        if let Some(b) = then_scope.get_mut(&n) {
+                            b.whole_struct.get_or_insert(src.clone());
+                        }
+                    }
+                }
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
                 }
@@ -11828,6 +11899,22 @@ fn analyze_stmts(
                     ctx,
                 );
                 check_expr_semantics(expr, scope, ctx);
+                // `push(xs, p)` (and the other in-place inserts) stores a whole struct into `xs`.
+                if let Expr::Call { callee, args } = expr {
+                    if matches!(callee.as_str(), "push" | "insert" | "append" | "unshift") {
+                        if let Some(Expr::Var(xs)) = args.first() {
+                            if let Some(src) = args
+                                .iter()
+                                .skip(1)
+                                .find_map(|a| whole_value_source(a, scope, ctx))
+                            {
+                                if let Some(b) = scope.get_mut(xs) {
+                                    b.whole_struct.get_or_insert(src);
+                                }
+                            }
+                        }
+                    }
+                }
                 // A bare `match`/`if`-expression statement (or a `return <expr>` — parsed as
                 // `ExprStmt(Call{"return", …})`) can hide a write to an outer variable in an arm/branch
                 // body. That write is invisible to the statement-level frame sweep, so invalidate the
@@ -11846,9 +11933,7 @@ fn analyze_stmts(
                 // A whole struct with a `secret` field stored into a variable or one of its
                 // elements/entries (`m["a"] = p`, `xs[0] = p`, `q = p`): the root now holds it
                 // (monotone; see `ScopeBinding::whole_struct`).
-                if let Some(src) =
-                    whole_value_source(value, scope, &ctx.place_types(), &ctx.fn_returns_param)
-                {
+                if let Some(src) = whole_value_source(value, scope, ctx) {
                     let mut root = target;
                     while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = root {
                         root = base;
@@ -13450,10 +13535,17 @@ fn analyze_stmts(
                     declassified: false,
                     span: None,
                 };
+                // An element of a collection holding a struct with a secret field is one.
+                let for_whole = match source {
+                    crate::frontend::ForSource::Collection { expr } => {
+                        whole_value_source(expr, scope, ctx)
+                    }
+                    crate::frontend::ForSource::Range { .. } => None,
+                };
                 scope.insert(
                     var.clone(),
                     ScopeBinding {
-                        whole_struct: None,
+                        whole_struct: for_whole,
                         info: info.clone(),
                         closure_arity: None,
                         closure_lambda: None,
@@ -14784,9 +14876,8 @@ fn analyze_expr_effect(
                         &ctx.place_types(),
                         SourceLane::Secret,
                     )
-                    .or_else(|| {
-                        whole_value_source(arg, scope, &ctx.place_types(), &ctx.fn_returns_param)
-                    }) {
+                    .or_else(|| whole_value_source(arg, scope, ctx))
+                    {
                         ctx.emit(
                             SemanticDiagnostic {
                                 code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
@@ -14988,14 +15079,7 @@ fn analyze_expr_effect(
                                 ctx.param_whole_egress
                                     .get(resolved_callee)
                                     .is_some_and(|w| w.contains(&i))
-                                    .then(|| {
-                                        whole_value_source(
-                                            arg,
-                                            scope,
-                                            &ctx.place_types(),
-                                            &ctx.fn_returns_param,
-                                        )
-                                    })
+                                    .then(|| whole_value_source(arg, scope, ctx))
                                     .flatten()
                             }) {
                                 ctx.emit(
@@ -19226,6 +19310,10 @@ fn mark_over_approx_obligations(ctx: &mut SemanticContext) {
     ctx.over_approx_scan = len;
 }
 
+/// See `SemanticContext::helper_labeled_cache`: (secret_fns size, tainting_fns size, helper → the
+/// secret or tainting function value it hands back).
+type HelperLabeled = (usize, usize, BTreeMap<String, String>);
+
 /// See `SemanticContext::fn_return_values`.
 #[derive(Clone, Debug)]
 struct ReturnValues {
@@ -19241,6 +19329,9 @@ struct ReturnValues {
     /// Every name the body binds or assigns (locals, re-bound or assigned formals): such a name in a
     /// return value means the callee's binding, not a caller's or a global.
     bound: BTreeSet<String>,
+    /// Every expression the body evaluates as an assigned value or a call (for the over-approximating
+    /// scan when recursion stops expansion; see `return_values_alias`).
+    evaluated: Vec<Expr>,
 }
 
 impl ReturnValues {
@@ -19250,12 +19341,24 @@ impl ReturnValues {
         let non_let = non_let_bound_names(body);
         let mut locals = single_let_inits(body);
         locals.retain(|n, _| !non_let.contains(n) && !params.contains(n));
+        let mut evaluated = Vec::new();
+        visit::each_stmt(body, &mut |st, _| match st {
+            Stmt::Assign { value, .. } => evaluated.push(value.clone()),
+            Stmt::Let { init, .. } => evaluated.push(init.clone()),
+            _ => {}
+        });
+        visit::each_expr_in_stmts(body, &mut |e| {
+            if matches!(e, Expr::Call { .. }) {
+                evaluated.push(e.clone());
+            }
+        });
         ReturnValues {
             params,
             values,
             alias: identity_let_alias_map(body),
             locals,
             bound,
+            evaluated,
         }
     }
 }
@@ -23960,6 +24063,354 @@ fn compute_escaping_contracted_fns(items: &[Item], ctx: &SemanticContext) -> BTr
     out
 }
 
+/// What the "may this value be a function" tests know about the program (see
+/// `compute_fn_valued_field_names`).
+struct CallableFacts<'a> {
+    ctx: &'a SemanticContext,
+    /// Field / map-key names some write may give a function (or a container holding one); `*` =
+    /// any name.
+    fn_fields: &'a BTreeSet<String>,
+}
+
+impl CallableFacts<'_> {
+    fn field_may_carry(&self, name: &str) -> bool {
+        self.fn_fields.contains(name) || self.fn_fields.contains("*")
+    }
+
+    /// Only integer and float return types are ENFORCED by the runtime (a `-> bool` or `-> string`
+    /// function may return a closure; struct field types are not enforced at all).
+    fn enforced_scalar(t: &str) -> bool {
+        let t = normalize_ty(t);
+        is_integer_ty(&t) || is_float_ty(&t)
+    }
+
+    /// The recorded return values of a user function or method call; `None` when the callee is not
+    /// a user function or method; `Some(empty)` when nothing is recorded.
+    fn call_returns(&self, e: &Expr) -> Option<(bool, Vec<&Expr>)> {
+        let ctx = self.ctx;
+        match e {
+            Expr::Call { callee, .. } if ctx.fn_params.contains_key(callee) => {
+                let scalar = ctx
+                    .fn_ret_types
+                    .get(callee)
+                    .is_some_and(|t| Self::enforced_scalar(t));
+                let mut v: Vec<&Expr> = Vec::new();
+                if let Some(rv) = ctx.fn_return_values.get(callee) {
+                    v.extend(rv.values.iter());
+                } else if let Some((_, r)) = ctx.fn_sole_return.get(callee) {
+                    v.push(r);
+                }
+                Some((scalar, v))
+            }
+            Expr::CallExpr { callee, .. } => match callee.as_ref() {
+                Expr::FieldAccess { field, .. } => {
+                    let scalar = ctx
+                        .method_ret_types
+                        .get(field)
+                        .is_some_and(|t| !t.is_empty() && Self::enforced_scalar(t));
+                    let mut v: Vec<&Expr> = Vec::new();
+                    if let Some(defs) = ctx.method_return_values.get(field) {
+                        for d in defs {
+                            v.extend(d.values.iter());
+                        }
+                    } else if let Some((_, r)) = ctx.method_sole_return.get(field) {
+                        v.push(r);
+                    }
+                    Some((scalar, v))
+                }
+                _ => Some((false, Vec::new())),
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether `v` may evaluate to a FUNCTION value.
+    fn may_be(&self, v: &Expr, locals: &BTreeMap<String, Expr>, depth: u32) -> bool {
+        if depth > 6 {
+            return true;
+        }
+        match v {
+            Expr::Literal(_)
+            | Expr::StrLiteral(_)
+            | Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::Cast { .. }
+            | Expr::ArrayLiteral { .. }
+            | Expr::StructLiteral { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::EnumConstruct { .. } => false,
+            Expr::Var(n) => {
+                if self.ctx.fn_params.contains_key(n) {
+                    return true;
+                }
+                match locals.get(n) {
+                    Some(init) => self.may_be(init, locals, depth + 1),
+                    None => true,
+                }
+            }
+            Expr::If { then, else_, .. } => {
+                self.may_be(then, locals, depth + 1) || self.may_be(else_, locals, depth + 1)
+            }
+            // An element may be a function only if the container may hold one.
+            Expr::Index { base, .. } => self.may_carry(base, locals, depth + 1),
+            // A field (or map entry read by dot) holds only what some write gave it, and every write
+            // is enumerated by the fixpoint (`fn_fields`).
+            Expr::FieldAccess { field, .. } => self.field_may_carry(field),
+            Expr::Call { args, .. } | Expr::CallExpr { args, .. } => {
+                match self.call_returns(v) {
+                    Some((true, _)) => false,
+                    Some((false, vals)) => {
+                        let none = BTreeMap::new();
+                        vals.is_empty() || vals.iter().any(|x| self.may_be(x, &none, depth + 1))
+                    }
+                    // A builtin hands back a function only by passing one through, possibly out of a
+                    // container (`first(xs)`, `get(m, k, d)`).
+                    None => args.iter().any(|a| self.may_carry(a, locals, depth + 1)),
+                }
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether a callback handed to a builtin may RETURN a function (a closure whose body may be one,
+    /// or a function whose recorded return values may be one).
+    fn callback_may_return(&self, cb: &Expr, locals: &BTreeMap<String, Expr>) -> bool {
+        match cb {
+            Expr::Lambda { body, .. } => self.may_be(body, locals, 1),
+            Expr::Var(n) if self.ctx.fn_params.contains_key(n) => self.may_be(
+                &Expr::Call {
+                    callee: n.clone(),
+                    args: Vec::new(),
+                },
+                locals,
+                1,
+            ),
+            _ => true,
+        }
+    }
+
+    /// Whether `v` may be, or may CONTAIN, a function value.
+    fn may_carry(&self, v: &Expr, locals: &BTreeMap<String, Expr>, depth: u32) -> bool {
+        if depth > 6 {
+            return true;
+        }
+        match v {
+            Expr::ArrayLiteral { elements } => elements
+                .iter()
+                .any(|x| self.may_carry(x, locals, depth + 1)),
+            Expr::MapLiteral { entries, .. } => entries
+                .iter()
+                .any(|(_, x)| self.may_carry(x, locals, depth + 1)),
+            Expr::StructLiteral { fields, .. } => fields
+                .iter()
+                .any(|(_, x)| self.may_carry(x, locals, depth + 1)),
+            Expr::EnumConstruct { fields, .. } => {
+                fields.iter().any(|x| self.may_carry(x, locals, depth + 1))
+            }
+            Expr::Var(n) if !self.ctx.fn_params.contains_key(n) => match locals.get(n) {
+                Some(init) => self.may_carry(init, locals, depth + 1),
+                None => true,
+            },
+            Expr::Call { args, .. } | Expr::CallExpr { args, .. } => match self.call_returns(v) {
+                Some((true, _)) => false,
+                Some((false, vals)) => {
+                    let none = BTreeMap::new();
+                    vals.is_empty() || vals.iter().any(|x| self.may_carry(x, &none, depth + 1))
+                }
+                None => args.iter().any(|a| self.may_carry(a, locals, depth + 1)),
+            },
+            other => self.may_be(other, locals, depth + 1),
+        }
+    }
+}
+
+/// Builtins that store a value under a key of a map (`insert(m, "h", f)`); the key is argument 1.
+fn is_map_writing_builtin(callee: &str) -> bool {
+    matches!(callee, "insert" | "set" | "put")
+}
+
+/// Builtins that change their first argument in place.
+fn is_in_place_list_builtin(callee: &str) -> bool {
+    matches!(
+        callee,
+        "push"
+            | "pop"
+            | "insert"
+            | "remove"
+            | "append"
+            | "extend"
+            | "clear"
+            | "set"
+            | "swap"
+            | "truncate"
+            | "shift"
+            | "unshift"
+            | "splice"
+            | "retain"
+            | "drain"
+    )
+}
+
+/// Field (and map-key) names that some write gives a value that MAY be or contain a function: a
+/// struct literal field, a map literal entry, `x.h = v`, `m[k] = v`, or a map-writing builtin. A
+/// dynamic key records the wildcard `*`. A LEAST fixpoint: a field read counts as possibly a
+/// function only once some write to that name does (field types are not enforced, and a struct or
+/// map field can only get a value through such a write). Only such a name can be a field-value call
+/// when it is also a method name (`obj.h(..)`, see `discharge_calls_in_expr`).
+fn compute_fn_valued_field_names(items: &[Item], ctx: &SemanticContext) -> BTreeSet<String> {
+    let key_name = |k: &Expr| match k {
+        Expr::StrLiteral(n) => n.clone(),
+        _ => "*".to_string(),
+    };
+    // Per function: its trusted locals (single `let`, never re-bound, never changed in place).
+    let mut bodies: Vec<(&[Stmt], BTreeMap<String, Expr>)> = Vec::new();
+    visit::each_fn_item(items, &mut |item| {
+        let Item::Fn { body, .. } = item else {
+            return;
+        };
+        let mut locals = single_let_inits(body);
+        let non_let = non_let_bound_names(body);
+        let mut mutated: BTreeSet<String> = BTreeSet::new();
+        visit::each_expr_in_stmts(body, &mut |e| {
+            if let Expr::Call { callee, args } = e {
+                if is_in_place_list_builtin(callee) {
+                    if let Some(Expr::Var(v)) = args.first() {
+                        mutated.insert(v.clone());
+                    }
+                }
+            }
+        });
+        locals.retain(|n, _| !non_let.contains(n) && !mutated.contains(n));
+        bodies.push((body.as_slice(), locals));
+    });
+    let mut fn_fields: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let facts = CallableFacts {
+            ctx,
+            fn_fields: &fn_fields,
+        };
+        let mut out: BTreeSet<String> = fn_fields.clone();
+        for (body, locals) in &bodies {
+            let carry = |v: &Expr| facts.may_carry(v, locals, 0);
+            visit::each_expr_in_stmts(body, &mut |e| match e {
+                Expr::StructLiteral { fields, .. } => {
+                    for (n, v) in fields {
+                        if carry(v) {
+                            out.insert(n.clone());
+                        }
+                    }
+                }
+                Expr::MapLiteral { entries, .. } => {
+                    for (k, v) in entries {
+                        if carry(v) {
+                            out.insert(key_name(k));
+                        }
+                    }
+                }
+                Expr::Call { callee, args }
+                    if is_map_writing_builtin(callee) && args.iter().skip(2).any(carry) =>
+                {
+                    out.insert(args.get(1).map(key_name).unwrap_or_else(|| "*".into()));
+                }
+                // `map_values(m, cb)` stores `cb`'s result under every key of `m`: a write the
+                // program never spells out (review L29–L32).
+                Expr::Call { callee, args }
+                    if callee == "map_values"
+                        && args
+                            .get(1)
+                            .is_none_or(|cb| facts.callback_may_return(cb, locals)) =>
+                {
+                    match args.first() {
+                        Some(Expr::MapLiteral { entries, .. }) => {
+                            for (k, _) in entries {
+                                out.insert(key_name(k));
+                            }
+                        }
+                        _ => {
+                            out.insert("*".to_string());
+                        }
+                    }
+                }
+                _ => {}
+            });
+            visit::each_stmt(body, &mut |st, _| {
+                if let Stmt::Assign { target, value } = st {
+                    if !carry(value) {
+                        return;
+                    }
+                    match target {
+                        Expr::FieldAccess { field, .. } => {
+                            out.insert(field.clone());
+                        }
+                        Expr::Index { index, .. } => {
+                            out.insert(key_name(index));
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+        if out == fn_fields {
+            return out;
+        }
+        fn_fields = out;
+    }
+}
+
+/// Every expression whose value may flow into one of `values` (a function's return values) within
+/// `body`: the values themselves, the initializer of a local they name, what is assigned, pushed
+/// or index-written into such a local, and the collection a `for` variable they name iterates —
+/// closed under the locals those expressions name in turn.
+fn return_feeding_exprs(body: &[Stmt], values: &[Expr]) -> Vec<Expr> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for v in values {
+        names.extend(free_names(v));
+    }
+    let mut out: Vec<Expr> = values.to_vec();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let before = names.len();
+        let mut add: Vec<Expr> = Vec::new();
+        visit::each_stmt(body, &mut |st, _| match st {
+            Stmt::Let { name, init, .. } if names.contains(name) => add.push(init.clone()),
+            Stmt::Assign { target, value } => {
+                let mut root = target;
+                while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = root {
+                    root = base;
+                }
+                if matches!(root, Expr::Var(r) if names.contains(r)) {
+                    add.push(value.clone());
+                }
+            }
+            Stmt::For {
+                var,
+                source: crate::frontend::ForSource::Collection { expr },
+                ..
+            } if names.contains(var) => add.push(expr.clone()),
+            _ => {}
+        });
+        visit::each_expr_in_stmts(body, &mut |e| {
+            if let Expr::Call { callee, args } = e {
+                if (is_in_place_list_builtin(callee) || is_map_writing_builtin(callee))
+                    && matches!(args.first(), Some(Expr::Var(v)) if names.contains(v))
+                {
+                    add.extend(args.iter().skip(1).cloned());
+                }
+            }
+        });
+        for e in add {
+            let key = format!("{e:?}");
+            if seen.insert(key) {
+                names.extend(free_names(&e));
+                out.push(e);
+            }
+        }
+        if names.len() == before {
+            return out;
+        }
+    }
+}
+
 /// See `SemanticContext::current_fn_let_inits`: locals with exactly one `let` (lambda bodies
 /// included, so a shadowing inner `let` disqualifies the name) and no assignment anywhere.
 fn single_let_inits(body: &[Stmt]) -> BTreeMap<String, Expr> {
@@ -24081,19 +24532,6 @@ fn return_value_identities(
     }
 }
 
-/// The single function name one return value names for the alias lanes (secret / taint).
-fn return_value_alias(
-    v: &Expr,
-    rv: &ReturnValues,
-    args: &[Expr],
-    scope: &BTreeMap<String, ScopeBinding>,
-    ctx: &SemanticContext,
-    depth: u32,
-) -> Option<String> {
-    let inst = return_value_in_caller(v, rv, args, ctx)?;
-    fn_alias_of_d(&inst, scope, ctx, depth + 1)
-}
-
 thread_local! {
     /// Multi-return functions whose values are being resolved on this thread's stack. A function
     /// reached again while its own values are being resolved (recursion, directly or through others)
@@ -24193,34 +24631,123 @@ fn return_values_alias(
     with_return_values_active(key, || {
         return_values_alias_inner(rv, args, scope, ctx, depth)
     })
-    .unwrap_or_else(|| {
-        // Expansion stopped (recursion deeper than the guard). Falling back to the tail would lose
-        // a value that arrives further down (`a(c + 1, h, getsec)` rotating a secret in on the third
-        // frame), so any secret or tainting function the callee's values, its locals or this call's
-        // arguments mention is the answer (an over-approximation).
-        let mut hit: Option<String> = None;
-        for e in rv
-            .values
+    .unwrap_or_else(|| scan_for_secret_fn(rv, args, ctx).map(Some).ok_or(()))
+}
+
+/// Functions (by name) and methods (`impl <name>`, every definition) whose return values hand back a
+/// secret or tainting FUNCTION VALUE, directly or through further helpers: a fixpoint over the whole
+/// program, computed once per check and cached (a per-call-site walk was exponential on method
+/// chains).
+fn helper_labeled(ctx: &SemanticContext) -> std::cell::Ref<'_, BTreeMap<String, String>> {
+    let stamp = (ctx.secret_fns.len(), ctx.tainting_fns.len());
+    let fresh = matches!(&*ctx.helper_labeled_cache.borrow(), Some((a, b, _)) if (*a, *b) == stamp);
+    if !fresh {
+        let labeled = |n: &str| ctx.secret_fns.contains(n) || ctx.tainting_fns.contains(n);
+        // Everything that may flow into each helper's return values (`return_feeding`): its values,
+        // the locals they name and what is assigned, pushed or written into them — but not a local
+        // that only a declassified use reads.
+        let entries: Vec<(String, Vec<&Expr>)> = ctx
+            .return_feeding
             .iter()
-            .chain(rv.locals.values())
-            .chain(args.iter())
-        {
-            visit::each_expr(e, &mut |x| {
-                let n = match x {
-                    Expr::Var(n) => n,
-                    Expr::Call { callee, .. } => callee,
-                    _ => return,
-                };
-                if hit.is_none() && (ctx.secret_fns.contains(n) || ctx.tainting_fns.contains(n)) {
-                    hit = Some(n.clone());
+            .map(|(k, v)| (k.clone(), v.iter().collect()))
+            .collect();
+        let mut out: BTreeMap<String, String> = BTreeMap::new();
+        loop {
+            let mut changed = false;
+            for (key, vals) in &entries {
+                if out.contains_key(key) {
+                    continue;
                 }
-            });
+                let mut hit: Option<String> = None;
+                for v in vals {
+                    visit::each_expr(v, &mut |x| {
+                        if hit.is_some() {
+                            return;
+                        }
+                        match x {
+                            Expr::Var(n) if labeled(n) => hit = Some(n.clone()),
+                            // A helper handed on as a value (`map([0], getsec_v)`) yields its
+                            // result wherever it is applied (review L33/L34).
+                            Expr::Var(n) if out.contains_key(n) => hit = out.get(n).cloned(),
+                            Expr::Call { callee, .. } if !labeled(callee) => {
+                                hit = out.get(callee).cloned();
+                            }
+                            Expr::CallExpr { callee, .. } => {
+                                if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                                    hit = out.get(&format!("impl {field}")).cloned();
+                                }
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+                if let Some(h) = hit {
+                    out.insert(key.clone(), h);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
         }
-        match hit {
-            Some(n) => Ok(Some(n)),
-            None => Err(()),
-        }
+        *ctx.helper_labeled_cache.borrow_mut() = Some((stamp.0, stamp.1, out));
+    }
+    std::cell::Ref::map(ctx.helper_labeled_cache.borrow(), |c| {
+        &c.as_ref().expect("computed above").2
     })
+}
+
+/// Any secret or tainting function that a multi-return function's values, its bound or assigned
+/// values, its calls or this call's arguments name — directly, or as the return value of a helper
+/// they call (one syntactic level, no expansion). The over-approximation used when the alias lane
+/// cannot name every return value (a value through an assigned local, or recursion deeper than the
+/// guard), instead of falling back to the tail answer.
+fn scan_for_secret_fn(rv: &ReturnValues, args: &[Expr], ctx: &SemanticContext) -> Option<String> {
+    if ctx.secret_fns.is_empty() && ctx.tainting_fns.is_empty() {
+        return None;
+    }
+    let labeled = |n: &str| ctx.secret_fns.contains(n) || ctx.tainting_fns.contains(n);
+    let helper_returns = |call: &Expr| -> Option<String> {
+        let key = match call {
+            Expr::Call { callee, .. } => callee.clone(),
+            Expr::CallExpr { callee, .. } => match callee.as_ref() {
+                Expr::FieldAccess { field, .. } => format!("impl {field}"),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        helper_labeled(ctx).get(&key).cloned()
+    };
+    let mut hit: Option<String> = None;
+    for e in rv
+        .values
+        .iter()
+        .chain(rv.locals.values())
+        .chain(rv.evaluated.iter())
+        .chain(args.iter())
+    {
+        visit::each_expr(e, &mut |x| {
+            if hit.is_some() {
+                return;
+            }
+            match x {
+                // A secret function as a VALUE (not merely called: `declassify(getsec(), ..)`
+                // calls it and hands no function value on).
+                Expr::Var(n) if labeled(n) => hit = Some(n.clone()),
+                Expr::Call { callee, .. }
+                    if ctx.fn_params.contains_key(callee) && !labeled(callee) =>
+                {
+                    hit = helper_returns(x);
+                }
+                Expr::CallExpr { .. } => hit = helper_returns(x),
+                _ => {}
+            }
+        });
+        if hit.is_some() {
+            break;
+        }
+    }
+    hit
 }
 
 fn return_values_alias_inner(
@@ -24232,8 +24759,16 @@ fn return_values_alias_inner(
 ) -> Result<Option<String>, ()> {
     let mut first: Option<String> = None;
     let mut all_named = true;
+    // A value that cannot even be rewritten into the caller's terms (it goes through an assigned or
+    // re-bound callee local) is UNKNOWN; one that is rewritten but names no function is not.
+    let mut unknown = false;
     for v in &rv.values {
-        match return_value_alias(v, rv, args, scope, ctx, depth) {
+        let Some(inst) = return_value_in_caller(v, rv, args, ctx) else {
+            all_named = false;
+            unknown = true;
+            continue;
+        };
+        match fn_alias_of_d(&inst, scope, ctx, depth + 1) {
             Some(n) => {
                 if ctx.secret_fns.contains(&n) || ctx.tainting_fns.contains(&n) {
                     return Ok(Some(n));
@@ -24245,6 +24780,13 @@ fn return_values_alias_inner(
     }
     if all_named && first.is_some() {
         Ok(first)
+    } else if unknown {
+        // A value the lane cannot name may be the one that matters: over-approximate before the
+        // tail-based paths answer (a secret through an assigned local, `t = getsec; … return t`).
+        match scan_for_secret_fn(rv, args, ctx) {
+            Some(n) => Ok(Some(n)),
+            None => Err(()),
+        }
     } else {
         Err(())
     }
@@ -28121,20 +28663,36 @@ fn whole_struct_source(
 }
 
 /// The whole-value struct source of `expr` (see `ScopeBinding::whole_struct`): a struct literal or
-/// struct-typed value whose declaration has a `secret` field, a container of them, or a binding that
-/// holds one. Consulted ONLY where the whole value leaves the program (the egress checks); ordinary
-/// secret propagation never sees it, so reading another field, destructuring a public field or taking
-/// a length stays public.
+/// struct-typed value whose declaration has a `secret` field, a container of them, a binding that
+/// holds one, or a call whose result is one. Consulted ONLY where the whole value leaves the program
+/// (the egress checks) and for bindings; ordinary secret propagation never sees it, so reading
+/// another field, destructuring a public field or taking a length stays public.
 fn whole_value_source(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
-    struct_fields: &PlaceTypes<'_>,
-    fwd: &BTreeMap<String, (Vec<String>, usize)>,
+    ctx: &SemanticContext,
 ) -> Option<String> {
-    let rec = |e: &Expr| whole_value_source(e, scope, struct_fields, fwd);
+    whole_value_source_d(expr, scope, ctx, 0)
+}
+
+fn whole_value_source_d(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    let struct_fields = &ctx.place_types();
+    let rec = |e: &Expr| whole_value_source_d(e, scope, ctx, depth + 1);
     let typed = || {
         place_struct_type(expr, scope, struct_fields)
             .and_then(|t| whole_struct_source(&t, struct_fields, SourceLane::Secret))
+    };
+    let known_struct = |base: &Expr| {
+        place_struct_type(base, scope, struct_fields)
+            .is_some_and(|t| struct_fields.fields.contains_key(t.trim()))
     };
     match expr {
         Expr::StructLiteral { name, fields, .. } => {
@@ -28152,42 +28710,105 @@ fn whole_value_source(
         Expr::Index { base, index } if !matches!(index.as_ref(), Expr::StrLiteral(_)) => {
             rec(base).or_else(typed)
         }
-        // A string key reads a FIELD of a struct (its declared type decides) or an ENTRY of a map
-        // (which may hold such a struct).
-        Expr::Index { base, index } => {
-            let Expr::StrLiteral(key) = index.as_ref() else {
-                return typed();
-            };
-            let base_struct = place_struct_type(base, scope, struct_fields)
-                .is_some_and(|t| struct_fields.fields.contains_key(t.trim()));
-            if base_struct {
-                let as_field = Expr::FieldAccess {
-                    base: base.clone(),
-                    field: key.clone(),
-                    span: Default::default(),
-                };
-                place_struct_type(&as_field, scope, struct_fields)
-                    .and_then(|t| whole_struct_source(&t, struct_fields, SourceLane::Secret))
+        // A string key / dot name reads a FIELD of a struct (its declared type decides) or an ENTRY
+        // of a map (which may hold such a struct).
+        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
+            // A dot name that some struct declares reads that FIELD even when the base's type is
+            // unknown (`xs[0].pub_n`); any other dot name is a map entry. (A map key spelled like a
+            // declared field is read as the field: a recorded residual.)
+            let declared_field_name = matches!(expr, Expr::FieldAccess { field, .. }
+                if struct_fields.fields.values().any(|fs| fs.contains_key(field)));
+            if known_struct(base) || declared_field_name {
+                typed().or_else(|| {
+                    let Expr::Index { index, .. } = expr else {
+                        return None;
+                    };
+                    let Expr::StrLiteral(key) = index.as_ref() else {
+                        return None;
+                    };
+                    let as_field = Expr::FieldAccess {
+                        base: base.clone(),
+                        field: key.clone(),
+                        span: Default::default(),
+                    };
+                    place_struct_type(&as_field, scope, struct_fields)
+                        .and_then(|t| whole_struct_source(&t, struct_fields, SourceLane::Secret))
+                })
             } else {
                 rec(base).or_else(typed)
             }
         }
-        Expr::If { then, else_, .. } => rec(then).or_else(|| rec(else_)),
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            rec(then).or_else(|| rec(else_))
+        }
+        // A `match` yields an arm's value; an arm may yield a binder of the scrutinee.
+        Expr::Match {
+            scrutinee, arms, ..
+        } => arms.iter().find_map(|a| rec(&a.body)).or_else(|| {
+            arms.iter()
+                .any(|a| !a.pattern.bound_names().is_empty())
+                .then(|| rec(scrutinee))
+                .flatten()
+        }),
+        Expr::Block { tail, .. } => tail.as_deref().and_then(rec),
         // `+` renders a struct operand in full (string interpolation desugars to it).
         Expr::Binary { op, lhs, rhs } if op == "+" => rec(lhs).or_else(|| rec(rhs)),
         Expr::Call { callee, args } => {
-            if is_whole_rendering_builtin(callee) {
-                return args.iter().find_map(rec);
+            if !ctx.fn_params.contains_key(callee) && !scope.contains_key(callee) {
+                if is_whole_rendering_builtin(callee) {
+                    return args.iter().find_map(rec);
+                }
+                return typed();
             }
-            // An identity forwarder hands its argument back whole.
-            if let Some((pnames, j)) = fwd.get(callee) {
+            // A closure bound here: the value its body yields.
+            if let Some(Expr::Lambda { body, .. }) =
+                scope.get(callee).and_then(|b| b.closure_lambda.as_deref())
+            {
+                return rec(body);
+            }
+            if ctx.fn_returns_whole.contains(callee) {
+                return Some(format!(
+                    "{WHOLE_STRUCT_SOURCE}the result of `{callee}`, a struct with a secret field"
+                ));
+            }
+            // A function that returns a formal (or a container holding it) hands it back whole.
+            if let Some(js) = ctx.fn_returns_param_whole.get(callee) {
+                if let Some(src) = js.iter().find_map(|j| args.get(*j).and_then(rec)) {
+                    return Some(src);
+                }
+            }
+            if let Some((pnames, j)) = ctx.fn_returns_param.get(callee) {
                 if pnames.len() == args.len() {
-                    return args.get(*j).and_then(rec);
+                    if let Some(src) = args.get(*j).and_then(rec) {
+                        return Some(src);
+                    }
+                }
+            }
+            typed()
+        }
+        Expr::CallExpr { callee, .. } => {
+            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                if ctx.method_returns_whole.contains(field) {
+                    return Some(format!(
+                        "{WHOLE_STRUCT_SOURCE}the result of method `{field}`, a struct with a \
+                         secret field"
+                    ));
                 }
             }
             typed()
         }
         _ => typed(),
+    }
+}
+
+/// The names a pattern binds to the WHOLE scrutinee or to a payload of it (`q`, `Some(q)`, `[q]`),
+/// excluding struct-field destructuring (`S { pub_n }` binds one field, not the whole value).
+fn whole_binders(p: &crate::frontend::Pattern) -> Vec<String> {
+    use crate::frontend::Pattern;
+    match p {
+        Pattern::Struct { .. } => Vec::new(),
+        Pattern::Or(alts) => alts.iter().flat_map(whole_binders).collect(),
+        other => other.bound_names(),
     }
 }
 
@@ -28207,6 +28828,12 @@ fn is_whole_rendering_builtin(callee: &str) -> bool {
             | "join"
             | "identity"
             | "secret_source"
+            | "values"
+            | "Some"
+            | "Ok"
+            | "Err"
+            | "flatten"
+            | "to_list"
     )
 }
 
@@ -28216,8 +28843,9 @@ fn whole_position_mentions(
     e: &Expr,
     names: &BTreeSet<String>,
     fwd: &BTreeMap<String, (Vec<String>, usize)>,
+    ret_whole: &BTreeMap<String, BTreeSet<usize>>,
 ) -> bool {
-    let rec = |x: &Expr| whole_position_mentions(x, names, fwd);
+    let rec = |x: &Expr| whole_position_mentions(x, names, fwd, ret_whole);
     match e {
         Expr::Var(v) => names.contains(v),
         Expr::Index { base, index } if !matches!(index.as_ref(), Expr::StrLiteral(_)) => rec(base),
@@ -28225,7 +28853,11 @@ fn whole_position_mentions(
         Expr::MapLiteral { entries, .. } => entries.iter().any(|(_, v)| rec(v)),
         Expr::EnumConstruct { fields, .. } => fields.iter().any(rec),
         Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| rec(v)),
-        Expr::If { then, else_, .. } => rec(then) || rec(else_),
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => rec(then) || rec(else_),
+        Expr::Match {
+            scrutinee, arms, ..
+        } => arms.iter().any(|a| rec(&a.body)) || rec(scrutinee),
+        Expr::Block { tail, .. } => tail.as_deref().is_some_and(rec),
         Expr::Binary { op, lhs, rhs } if op == "+" => rec(lhs) || rec(rhs),
         Expr::Call { callee, args } => {
             if is_whole_rendering_builtin(callee) {
@@ -28236,17 +28868,88 @@ fn whole_position_mentions(
                     return true;
                 }
             }
-            false
+            ret_whole
+                .get(callee)
+                .is_some_and(|js| js.iter().any(|j| args.get(*j).is_some_and(rec)))
         }
         _ => false,
     }
 }
 
-/// `param_whole_egress`: per free function, the formals whose WHOLE value reaches an egress sink —
-/// directly, through a container / concatenation / rendering builtin / identity forwarder, through a
-/// local alias, or through another function's whole-egress formal (fixpoint). A formal only a FIELD
-/// of which is released (`print(s.pub_n)`) is not in it.
-fn compute_param_whole_egress(
+/// The names in `body` that hold the WHOLE value of a name in `seed`: `let` aliases, `for`
+/// variables over it, `match` / `if let` binders of it, and lists it was pushed into.
+fn whole_alias_closure(
+    body: &[Stmt],
+    seed: BTreeSet<String>,
+    fwd: &BTreeMap<String, (Vec<String>, usize)>,
+    ret_whole: &BTreeMap<String, BTreeSet<usize>>,
+) -> BTreeSet<String> {
+    let mut names = seed;
+    loop {
+        let before = names.len();
+        let mut add: Vec<String> = Vec::new();
+        visit::each_stmt(body, &mut |st, _| match st {
+            Stmt::Let { name, init, .. }
+                if whole_position_mentions(init, &names, fwd, ret_whole) =>
+            {
+                add.push(name.clone());
+            }
+            Stmt::For {
+                var,
+                source: crate::frontend::ForSource::Collection { expr },
+                ..
+            } if whole_position_mentions(expr, &names, fwd, ret_whole) => {
+                add.push(var.clone());
+            }
+            Stmt::Assign { target, value }
+                if whole_position_mentions(value, &names, fwd, ret_whole) =>
+            {
+                let mut root = target;
+                while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = root {
+                    root = base;
+                }
+                if let Expr::Var(r) = root {
+                    add.push(r.clone());
+                }
+            }
+            _ => {}
+        });
+        visit::each_expr_in_stmts(body, &mut |e| match e {
+            Expr::Match {
+                scrutinee, arms, ..
+            } if whole_position_mentions(scrutinee, &names, fwd, ret_whole) => {
+                for a in arms {
+                    add.extend(whole_binders(&a.pattern));
+                }
+            }
+            Expr::IfLet {
+                pattern, scrutinee, ..
+            } if whole_position_mentions(scrutinee, &names, fwd, ret_whole) => {
+                add.extend(whole_binders(pattern));
+            }
+            Expr::Call { callee, args }
+                if matches!(callee.as_str(), "push" | "insert" | "append" | "unshift")
+                    && args
+                        .iter()
+                        .skip(1)
+                        .any(|a| whole_position_mentions(a, &names, fwd, ret_whole)) =>
+            {
+                if let Some(Expr::Var(v)) = args.first() {
+                    add.push(v.clone());
+                }
+            }
+            _ => {}
+        });
+        names.extend(add);
+        if names.len() == before {
+            return names;
+        }
+    }
+}
+
+/// Per free function, the formals whose value its return values carry WHOLE (`fn wrap(s) { return
+/// [s]; }`), fixpoint over calls.
+fn compute_fn_returns_param_whole(
     free_fns: &[(String, Vec<String>, &[Stmt])],
     fwd: &BTreeMap<String, (Vec<String>, usize)>,
 ) -> BTreeMap<String, BTreeSet<usize>> {
@@ -28254,43 +28957,198 @@ fn compute_param_whole_egress(
     loop {
         let mut changed = false;
         for (name, params, body) in free_fns {
+            let rets = all_return_values(body);
             for (i, p) in params.iter().enumerate() {
                 if out.get(name).is_some_and(|s| s.contains(&i)) {
                     continue;
                 }
-                // The formal and every local bound (by `let`) to a whole-position use of it.
-                let mut names: BTreeSet<String> = [p.clone()].into_iter().collect();
-                loop {
-                    let before = names.len();
-                    visit::each_stmt(body, &mut |st, _| {
-                        if let Stmt::Let { name, init, .. } = st {
-                            if whole_position_mentions(init, &names, fwd) {
-                                names.insert(name.clone());
+                let names = whole_alias_closure(body, [p.clone()].into_iter().collect(), fwd, &out);
+                if rets
+                    .iter()
+                    .any(|r| whole_position_mentions(r, &names, fwd, &out))
+                {
+                    out.entry(name.clone()).or_default().insert(i);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return out;
+        }
+    }
+}
+
+/// Whether `e`, a value computed in a body with no caller context, is certainly a whole struct with a
+/// `secret` field: a literal of such a struct (or a container of them), a local bound to one, or a
+/// call to a function / method known to return one.
+fn literal_whole(
+    e: &Expr,
+    locals: &BTreeMap<String, Expr>,
+    struct_fields: &BTreeMap<String, BTreeMap<String, String>>,
+    fns: &BTreeSet<String>,
+    methods: &BTreeSet<String>,
+    depth: u32,
+) -> bool {
+    if depth > 6 {
+        return false;
+    }
+    let rec = |x: &Expr| literal_whole(x, locals, struct_fields, fns, methods, depth + 1);
+    match e {
+        Expr::StructLiteral { name, fields, .. } => {
+            struct_fields
+                .get(name)
+                .is_some_and(|fs| fs.values().any(|t| is_secret_type(Some(t))))
+                || fields.iter().any(|(_, v)| rec(v))
+        }
+        Expr::ArrayLiteral { elements } => elements.iter().any(rec),
+        Expr::MapLiteral { entries, .. } => entries.iter().any(|(_, v)| rec(v)),
+        Expr::EnumConstruct { fields, .. } => fields.iter().any(rec),
+        Expr::Var(v) => locals.get(v).is_some_and(rec),
+        Expr::If { then, else_, .. } => rec(then) || rec(else_),
+        Expr::Call { callee, args } => {
+            fns.contains(callee) || (is_whole_rendering_builtin(callee) && args.iter().any(rec))
+        }
+        Expr::CallExpr { callee, .. } => {
+            matches!(callee.as_ref(), Expr::FieldAccess { field, .. } if methods.contains(field))
+        }
+        _ => false,
+    }
+}
+
+/// Free functions and (bare-named) methods that return a whole struct with a `secret` field.
+fn compute_returns_whole(
+    free_fns: &[(String, Vec<String>, &[Stmt])],
+    impl_methods: &[(String, Vec<String>, &[Stmt])],
+    struct_fields: &BTreeMap<String, BTreeMap<String, String>>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut fns: BTreeSet<String> = BTreeSet::new();
+    let mut methods: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for (is_method, list) in [(false, free_fns), (true, impl_methods)] {
+            for (name, _params, body) in list {
+                let set = if is_method { &methods } else { &fns };
+                if set.contains(name) {
+                    continue;
+                }
+                let locals = single_let_inits(body);
+                let hit = all_return_values(body)
+                    .iter()
+                    .any(|r| literal_whole(r, &locals, struct_fields, &fns, &methods, 0));
+                if hit {
+                    if is_method {
+                        methods.insert(name.clone());
+                    } else {
+                        fns.insert(name.clone());
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return (fns, methods);
+        }
+    }
+}
+
+/// `param_whole_egress` (and its method twin): per function, the formals whose WHOLE value reaches
+/// an egress sink — directly, through a container / literal / concatenation / rendering builtin /
+/// forwarder, through a local alias, `for` variable, `match` / `if let` binder or pushed-into list,
+/// through a local closure that releases its argument, or through another function's or method's
+/// whole-egress formal (fixpoint). A formal only a FIELD of which is released (`print(s.pub_n)`) is
+/// not in it. Method keys are `impl <name>` with `self` at index 0.
+fn compute_param_whole_egress(
+    free_fns: &[(String, Vec<String>, &[Stmt])],
+    impl_methods: &[(String, Vec<String>, &[Stmt])],
+    fwd: &BTreeMap<String, (Vec<String>, usize)>,
+    ret_whole: &BTreeMap<String, BTreeSet<usize>>,
+) -> BTreeMap<String, BTreeSet<usize>> {
+    let mut out: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let all: Vec<(String, &Vec<String>, &[Stmt])> = free_fns
+        .iter()
+        .map(|(n, p, b)| (n.clone(), p, *b))
+        .chain(
+            impl_methods
+                .iter()
+                .map(|(n, p, b)| (format!("impl {n}"), p, *b)),
+        )
+        .collect();
+    loop {
+        let mut changed = false;
+        for (key, params, body) in &all {
+            for (i, p) in params.iter().enumerate() {
+                if out.get(key).is_some_and(|s| s.contains(&i)) {
+                    continue;
+                }
+                let names =
+                    whole_alias_closure(body, [p.clone()].into_iter().collect(), fwd, ret_whole);
+                // Local closures that release their own argument whole.
+                let mut releasing_closures: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+                visit::each_stmt(body, &mut |st, _| {
+                    if let Stmt::Let {
+                        name,
+                        init:
+                            Expr::Lambda {
+                                params: lp,
+                                body: lb,
+                            },
+                        ..
+                    } = st
+                    {
+                        for (j, q) in lp.iter().enumerate() {
+                            let qn: BTreeSet<String> = [q.clone()].into_iter().collect();
+                            let mut hit = false;
+                            visit::each_expr(lb, &mut |x| {
+                                if let Expr::Call { callee, args } = x {
+                                    if is_egress_sink(callee)
+                                        && args.iter().any(|a| {
+                                            whole_position_mentions(a, &qn, fwd, ret_whole)
+                                        })
+                                    {
+                                        hit = true;
+                                    }
+                                }
+                            });
+                            if hit {
+                                releasing_closures
+                                    .entry(name.clone())
+                                    .or_default()
+                                    .insert(j);
                             }
                         }
-                    });
-                    if names.len() == before {
-                        break;
                     }
-                }
+                });
                 let mut hit = false;
                 visit::each_expr_in_stmts(body, &mut |e| {
                     if hit {
                         return;
                     }
-                    if let Expr::Call { callee, args } = e {
-                        if is_egress_sink(callee) {
-                            hit = args.iter().any(|a| whole_position_mentions(a, &names, fwd));
-                        } else if let Some(js) = out.get(callee) {
-                            hit = js.iter().any(|j| {
-                                args.get(*j)
-                                    .is_some_and(|a| whole_position_mentions(a, &names, fwd))
-                            });
+                    let wm = |a: &Expr| whole_position_mentions(a, &names, fwd, ret_whole);
+                    match e {
+                        Expr::Call { callee, args } => {
+                            if is_egress_sink(callee) {
+                                hit = args.iter().any(wm);
+                            } else if let Some(js) =
+                                out.get(callee).or_else(|| releasing_closures.get(callee))
+                            {
+                                hit = js.iter().any(|j| args.get(*j).is_some_and(wm));
+                            }
                         }
+                        Expr::CallExpr { callee, args } => {
+                            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                                if let Some(js) = out.get(&format!("impl {field}")) {
+                                    // Method formal j ≥ 1 is call argument j - 1 (self is 0).
+                                    hit = js
+                                        .iter()
+                                        .any(|j| *j >= 1 && args.get(j - 1).is_some_and(wm));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 });
                 if hit {
-                    out.entry(name.clone()).or_default().insert(i);
+                    out.entry(key.clone()).or_default().insert(i);
                     changed = true;
                 }
             }

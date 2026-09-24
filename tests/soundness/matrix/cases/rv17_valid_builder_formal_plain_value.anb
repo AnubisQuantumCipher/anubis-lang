@@ -1,0 +1,6 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+struct Row { id: i64, label: string }
+struct User { id: i64 }
+impl User { fn label(self) { return "u${self.id}"; } }
+fn mk(id, lab) { return Row { id: id, label: lab }; }
+fn main() { let r = mk(1, "x"); print(r.label); let us = [User { id: 1 }]; for u in us { print(u.label()); } print(map([1], f)); }

@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mk(n) { return S { k: 42, pub_n: n }; }
+fn main() { let ys = map([1], mk); print(ys); }

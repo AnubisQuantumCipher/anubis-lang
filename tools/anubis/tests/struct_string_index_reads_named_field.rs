@@ -58,5 +58,8 @@ fn public_string_key_does_not_release_a_secret_first_field() {
         !out.contains("42"),
         "p[\"pub_n\"] must not print the secret first field; got stdout {out:?}"
     );
-    assert!(out.contains('1'), "p[\"pub_n\"] must print 1; got stdout {out:?}");
+    assert!(
+        out.contains('1'),
+        "p[\"pub_n\"] must print 1; got stdout {out:?}"
+    );
 }
