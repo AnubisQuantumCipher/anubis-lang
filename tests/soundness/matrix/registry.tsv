@@ -402,9 +402,9 @@ open_reentry_secret_via_helper_call	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN roun
 rv10_valid_range_negative_step	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 7 P19: valid map over a range form the model does not cover; refused UNDECIDED (documented)
 rv10_valid_range_three_arg	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 7 P20: valid map over a range form the model does not cover; refused UNDECIDED (documented)
 rv10_valid_range_alias	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 7 P21: valid map over a range form the model does not cover; refused UNDECIDED (documented)
-rv11_struct_string_index_public_key	FN-VALUE-JOIN	slice	REJECT	carrier	RT-STRIDX: native p["pub_n"] on a struct returns its FIRST declared field (the secret k); runtime prints 42
-rv11_struct_string_index_first_field	FN-VALUE-JOIN	slice	REJECT	carrier	review round 8 X5
-rv11_struct_string_index_let	FN-VALUE-JOIN	slice	REJECT	carrier	X6: let q = p["pub_n"]; print(q) prints the secret
+rv11_struct_string_index_public_key	FN-VALUE-JOIN	slice	ACCEPT	carrier	RT-STRIDX: native p["pub_n"] on a struct returns its FIRST declared field (the secret k); runtime prints 42
+rv11_struct_string_index_first_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	review round 8 X5
+rv11_struct_string_index_let	FN-VALUE-JOIN	slice	ACCEPT	carrier	X6: let q = p["pub_n"]; print(q) prints the secret
 rv11_local_closure_named_range	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	X1: a local closure named range is not the builtin
 rv11_list_shadowed_in_expr_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	round 8 X2: a function handed to a higher-order builtin inside a block that re-binds a modeled name was skipped
 rv11_range_shadowed_in_expr_block	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	round 8 X3: a function handed to a higher-order builtin inside a block that re-binds a modeled name was skipped
@@ -416,6 +416,8 @@ rv11_valid_list_passed_to_user_fn	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 8 P22
 rv11_valid_sort_returns_new_list	FN-VALUE-JOIN	slice	ACCEPT	carrier	P23: sort returns a new list
 rv11_valid_range_untyped_formal_bound	FN-VALUE-JOIN	slice	ACCEPT	carrier	P24: range bound from an untyped formal is not int-modelable; refused UNDECIDED (documented; annotate n: i64)
 rv12_user_fn_push_statement	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	review round 9 Y1: a statement push(v, x) is lowered to the in-place builtin even when a user fn push exists (runtime: f entered with -7)
-rv12_strindex_unknown_base	FN-VALUE-JOIN	slice	REJECT	carrier	Y2: string index on an unknown-typed struct value reads its first field (RT-STRIDX; runtime prints 42)
-rv12_valid_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 9 P25: a local map read whose key names some struct's secret field; refused (conservative until RT-STRIDX is fixed)
-rv12_valid_formal_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	P26: same through a formal
+rv12_strindex_unknown_base	FN-VALUE-JOIN	slice	ACCEPT	carrier	Y2: string index on an unknown-typed struct value reads its first field (RT-STRIDX; runtime prints 42)
+rv12_valid_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 9 P25: a local map read whose key names some struct's secret field; refused by the unknown-base per-key rule (d9)
+rv12_valid_formal_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	P26: same through a formal; refused by the unknown-base per-key rule (d9)
+rv13_valid_assign_elem_then_other_elem_refused	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 11 P29: whole-struct assignment tracking marks the whole root and never clears it; refused (documented precision cost)
+rv13_valid_assign_overwrite_monotone_refused	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 11 P30: whole-struct assignment tracking marks the whole root and never clears it; refused (documented precision cost)

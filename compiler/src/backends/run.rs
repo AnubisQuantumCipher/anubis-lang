@@ -1678,7 +1678,14 @@ impl AnubisValue {
             }
             // A+: struct field order supports list-style r[0] (TargetRun and friends).
             // Kept as a compat accessor: a missing struct index/key stays 0 (documented list-view semantics).
+            // A STRING key reads the field of that name. It used to be tried as a position first, and
+            // a non-numeric string parses to 0, so `p["pub_n"]` returned the FIRST field (a secret
+            // one, in the case that found it). Positions are for integer indexes only.
             AnubisValue::Struct { fields, .. } => {
+                if let AnubisValue::Str(_) = &i {
+                    let key = i.display_string();
+                    return fields.iter().find(|(k, _)| k == &key).map(|(_, v)| v.clone()).unwrap_or(AnubisValue::Int(0));
+                }
                 let idx = i.as_i64();
                 if idx >= 0 && (idx as usize) < fields.len() {
                     fields[idx as usize].1.clone()

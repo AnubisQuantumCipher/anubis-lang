@@ -11843,6 +11843,22 @@ fn analyze_stmts(
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
+                // A whole struct with a `secret` field stored into a variable or one of its
+                // elements/entries (`m["a"] = p`, `xs[0] = p`, `q = p`): the root now holds it
+                // (monotone; see `ScopeBinding::whole_struct`).
+                if let Some(src) =
+                    whole_value_source(value, scope, &ctx.place_types(), &ctx.fn_returns_param)
+                {
+                    let mut root = target;
+                    while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = root {
+                        root = base;
+                    }
+                    if let Expr::Var(r) = root {
+                        if let Some(b) = scope.get_mut(r) {
+                            b.whole_struct.get_or_insert(src);
+                        }
+                    }
+                }
                 // A contracted call in ASSIGN-value position (`y = g(x);`, `y = h(g(x));`) — discharge its
                 // precondition under the pre-assignment assumptions (with any branch guard in scope). The
                 // TARGET place-expression is also evaluated (`arr[g(i)] = x;` computes the index/base), so
@@ -28480,11 +28496,8 @@ fn expr_source(
             }
         }
         Expr::TaintSource { label } => lane.taint_source_label(label),
-        // `p["k"]` on a struct carries the declared qualifier of field `k`, as `p.k` does, and more:
-        // the native runtime answers a string index on a struct with its FIRST declared field
-        // whatever the key (`p["pub_n"]` printed the secret `k`; DEFECTS RT-STRIDX). The
-        // declaration order is not kept here, so a known struct type with ANY field carrying the
-        // lane's qualifier makes the read carry it.
+        // `p["k"]` on a struct reads field `k` (the runtime looks the key up by name), so it carries
+        // that field's declared qualifier exactly like `p.k` (including the unknown-base rule).
         Expr::Index { base, index } if matches!(index.as_ref(), Expr::StrLiteral(_)) => {
             let Expr::StrLiteral(key) = index.as_ref() else {
                 return None;
@@ -28514,32 +28527,6 @@ fn expr_source(
                     struct_fields,
                     lane,
                 )
-            })
-            .or_else(|| {
-                // A known struct type: any of its fields. An UNKNOWN base may be a struct of any
-                // declared type, so any qualified field of any declared struct.
-                match place_struct_type(base, scope, struct_fields)
-                    .filter(|t| struct_fields.fields.contains_key(t.trim()))
-                {
-                    Some(t) => struct_fields.fields.get(t.trim())?.iter().find_map(|(f, ty)| {
-                        lane.declared_field_source(f, ty).map(|src| {
-                            format!(
-                                "{src} (a string index on struct `{}` may read any of its fields)",
-                                t.trim()
-                            )
-                        })
-                    }),
-                    None => struct_fields.fields.iter().find_map(|(sn, fs)| {
-                        fs.iter().find_map(|(f, ty)| {
-                            lane.declared_field_source(f, ty).map(|src| {
-                                format!(
-                                    "{src} of struct `{sn}` (a string index on a value of unknown \
-                                     type may read any field of any declared struct)"
-                                )
-                            })
-                        })
-                    }),
-                }
             })
         }
         Expr::Index { base, index } => expr_source(
