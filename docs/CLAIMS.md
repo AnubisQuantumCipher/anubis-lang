@@ -1597,6 +1597,15 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-24 — whole-struct secrets, field-value calls, alias-lane unknowns
+    (`3b90cd4b`, `c527a48d`).**
+    - `3b90cd4b` fixed a runtime defect: a struct string index read the first field
+      (RT-STRIDX).
+    - `c527a48d` closed 52 more silent accepts over nine more adversarial review rounds.
+    - Matrix at this pin: 489 cases, 432 PASS, 16 silent accepts (all `open_whole2_*`; the
+      pre-change pin has 161 on the same matrix), 41 wrong-class.
+    - **Still OPEN:** those 16 (FV-OPEN-3), PERF-FANOUT and RT-LAMBDA-FNNAME.
+
     **UPDATE 2026-09-23 (later) — callee values, follow-up (`8424dc0c`).** Six more adversarial
     review rounds on the callee-value lane closed 66 more silent accepts:
     - closures whose arity or body shape the checker did not follow;
