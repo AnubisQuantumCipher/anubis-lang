@@ -421,22 +421,22 @@ rv12_valid_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	ro
 rv12_valid_formal_map_key_named_like_secret_field	FN-VALUE-JOIN	slice	ACCEPT	carrier	P26: same through a formal; refused by the unknown-base per-key rule (d9)
 rv13_valid_assign_elem_then_other_elem_refused	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 11 P29: whole-struct assignment tracking marks the whole root and never clears it; refused (documented precision cost)
 rv13_valid_assign_overwrite_monotone_refused	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 11 P30: whole-struct assignment tracking marks the whole root and never clears it; refused (documented precision cost)
-open_whole2_B11	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B11: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B12	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B12: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B13	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B13: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B14	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B14: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B16	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B16: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B18	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B18: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B1	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B1: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B20	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B20: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B21	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B21: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
+rv24_whole2_B11	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B11 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B12	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B12 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B13	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B13 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B14	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B14 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B16	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B16 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B18	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B18 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B1	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B1 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B20	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B20 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B21	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B21 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
 open_whole2_B2	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B2: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B3	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B3: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B5	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B5: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B6	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B6: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B7	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B7: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_B8	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_B8: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
-open_whole2_F10	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN review round 12 L_F10: whole struct with a secret field reaches print by a route not followed yet (pre-existing)
+rv24_whole2_B3	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B3 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B5	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B5 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B6	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B6 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B7	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B7 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_B8	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_B8 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
+rv24_whole2_F10	FN-VALUE-JOIN	slice	REJECT	carrier	review round 12 L_F10 (fixed): whole struct with a secret field reaches print through a list builtin, a callback, a closure argument, a method formal, a let-pattern or a pushed local list
 rv15_fieldcall_unknown_receiver_join	FN-VALUE-JOIN	slice	REJ|UNRES	carrier	review round 13 L1: a receiver of unknown type (a join of struct types) may hold a function in field h; the runtime calls f(-1)
 rv15_valid_scan_declassified_call	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 13 P31: a secret function merely CALLED (declassify(getsec(), ..)) is not a function value; the returned value is public (runtime 42 1, the 42 declassified)
 rv15_valid_scan_declassified_call_param	FN-VALUE-JOIN	slice	ACCEPT	carrier	round 13 P32: same with a formal
@@ -508,3 +508,6 @@ open_reentry_closure_capturing_secret	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN ro
 open_loop_reassign_after_use_secret	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 24 L46: a local reassigned to a secret function after its use in a loop (runtime 1 42; pre-existing)
 open_struct_field_reassigned_after_use_secret	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 25 L47: a struct field set to a secret function after an earlier use of the struct is not picked up by the secret lane (runtime 42; pre-existing, no memo involved)
 open_closure_returning_secret_fn	FN-VALUE-JOIN	slice	REJECT	carrier	OPEN round 25 L48: a closure returning a secret function value, forwarded and applied (runtime 42; pre-existing)
+rv24_get_on_list_of_secret_structs	FN-VALUE-JOIN	slice	REJECT	carrier	get(xs, 0, 0) on a list of structs with a secret field hands back the struct (runtime prints it)
+rv24_valid_get_on_struct_secret_key	FN-VALUE-JOIN	slice	ACCEPT	carrier	get(p, "k", 0) on a STRUCT returns the default: the runtime's get reads lists and maps only (runtime 0)
+rv24_whole_struct_closure_arg_via_aliases	FN-VALUE-JOIN	slice	REJECT	carrier	a whole struct through two let-aliases into an identity closure (runtime prints it)

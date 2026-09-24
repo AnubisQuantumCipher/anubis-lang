@@ -3690,8 +3690,12 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         );
         ctx.fn_returns_param_whole =
             compute_fn_returns_param_whole(&free_fns, &ctx.fn_returns_param);
-        let (rw_fns, rw_methods) =
-            compute_returns_whole(&free_fns, &impl_methods, &ctx.struct_fields);
+        let (rw_fns, rw_methods) = compute_returns_whole(
+            &free_fns,
+            &impl_methods,
+            &ctx.struct_fields,
+            &ctx.return_feeding,
+        );
         ctx.fn_returns_whole = rw_fns;
         ctx.method_returns_whole = rw_methods;
         ctx.param_whole_egress = compute_param_whole_egress(
@@ -11409,6 +11413,7 @@ fn analyze_stmts(
                     SourceLane::Secret,
                 )
                 .is_some();
+                let pattern_whole = whole_value_source(init, scope, ctx);
                 seed_effect_pattern(
                     scope,
                     pattern,
@@ -11418,6 +11423,15 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
+                // A destructured element of a container holding a struct with a secret field is one
+                // (`let [q] = xs`, `let (q, n) = (xs[0], 1)`); a struct-field pattern is not.
+                if let Some(src) = pattern_whole {
+                    for n in whole_binders(pattern) {
+                        if let Some(b) = scope.get_mut(&n) {
+                            b.whole_struct.get_or_insert(src.clone());
+                        }
+                    }
+                }
                 // Patch each bound name's span to the real `let`-pattern span. `seed_effect_pattern`
                 // inserts `span: None`, but `merge_taint_over` disambiguates a branch SHADOW from a
                 // reassignment by span identity — so without a real, distinct span a statement-position
@@ -28939,7 +28953,25 @@ fn whole_value_source_d(
                 .then(|| rec(scrutinee))
                 .flatten()
         }),
-        Expr::Block { tail, .. } => tail.as_deref().and_then(rec),
+        // A block's value; a closure the block binds and then calls yields its body's value.
+        Expr::Block { stmts, tail } => {
+            let tail = tail.as_deref()?;
+            if let Expr::Call { callee, .. } = tail {
+                for st in stmts {
+                    if let Stmt::Let {
+                        name,
+                        init: Expr::Lambda { body, .. },
+                        ..
+                    } = st
+                    {
+                        if name == callee {
+                            return rec(body);
+                        }
+                    }
+                }
+            }
+            rec(tail)
+        }
         // `+` renders a struct operand in full (string interpolation desugars to it).
         Expr::Binary { op, lhs, rhs } if op == "+" => rec(lhs).or_else(|| rec(rhs)),
         Expr::Call { callee, args } => {
@@ -28947,13 +28979,53 @@ fn whole_value_source_d(
                 if is_whole_rendering_builtin(callee) {
                     return args.iter().find_map(rec);
                 }
+                // Builtins that hand back elements of their first argument.
+                if is_element_passing_builtin(callee) {
+                    // `get` on a STRUCT returns its default, never a field (the runtime's `get`
+                    // reads lists and maps only); `get(m, k, default)` may hand back the default.
+                    let get_on_struct = callee == "get"
+                        && args
+                            .first()
+                            .and_then(|b| place_struct_type(b, scope, struct_fields))
+                            .is_some_and(|t| struct_fields.fields.contains_key(t.trim()));
+                    let from_container = if get_on_struct {
+                        None
+                    } else {
+                        args.first().and_then(rec)
+                    };
+                    return from_container.or_else(|| {
+                        (callee == "get")
+                            .then(|| args.get(2).and_then(rec))
+                            .flatten()
+                    });
+                }
+                // `map` / `flat_map`: what the callback returns for each element.
+                if matches!(callee.as_str(), "map" | "flat_map") {
+                    let elem = args.first().and_then(rec);
+                    return args
+                        .get(1)
+                        .and_then(|cb| whole_callback_result(cb, elem, scope, ctx, depth + 1));
+                }
                 return typed();
             }
-            // A closure bound here: the value its body yields.
-            if let Some(Expr::Lambda { body, .. }) =
+            // A closure bound here: the value its body yields, its parameters meaning the arguments.
+            if let Some(Expr::Lambda { params, body }) =
                 scope.get(callee).and_then(|b| b.closure_lambda.as_deref())
             {
-                return rec(body);
+                if let Some(src) = rec(body) {
+                    return Some(src);
+                }
+                let fwd = &ctx.fn_returns_param;
+                let ret_whole = &ctx.fn_returns_param_whole;
+                for (p, a) in params.iter().zip(args.iter()) {
+                    let names: BTreeSet<String> = [p.clone()].into_iter().collect();
+                    if whole_position_mentions(body, &names, fwd, ret_whole) {
+                        if let Some(src) = rec(a) {
+                            return Some(src);
+                        }
+                    }
+                }
+                return None;
             }
             if ctx.fn_returns_whole.contains(callee) {
                 return Some(format!(
@@ -28975,16 +29047,32 @@ fn whole_value_source_d(
             }
             typed()
         }
-        Expr::CallExpr { callee, .. } => {
-            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+        Expr::CallExpr { callee, args } => {
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
                 if ctx.method_returns_whole.contains(field) {
                     return Some(format!(
                         "{WHOLE_STRUCT_SOURCE}the result of method `{field}`, a struct with a \
                          secret field"
                     ));
                 }
+                // A method that returns one of its formals hands that argument back (`self` is 0).
+                if let Some((pnames, j)) = ctx.method_returns_param.get(field) {
+                    if pnames.len() == args.len() + 1 {
+                        let forwarded = if *j == 0 {
+                            Some(base.as_ref())
+                        } else {
+                            args.get(j - 1)
+                        };
+                        if let Some(src) = forwarded.and_then(rec) {
+                            return Some(src);
+                        }
+                    }
+                }
+                return typed();
             }
-            typed()
+            // A call through a value the lane cannot resolve (`fs[0](p)`) may hand back any
+            // argument.
+            args.iter().find_map(rec).or_else(typed)
         }
         _ => typed(),
     }
@@ -28998,6 +29086,81 @@ fn whole_binders(p: &crate::frontend::Pattern) -> Vec<String> {
         Pattern::Struct { .. } => Vec::new(),
         Pattern::Or(alts) => alts.iter().flat_map(whole_binders).collect(),
         other => other.bound_names(),
+    }
+}
+
+/// Builtins that hand back elements of their first argument unchanged.
+fn is_element_passing_builtin(callee: &str) -> bool {
+    matches!(
+        callee,
+        "filter"
+            | "first"
+            | "last"
+            | "reverse"
+            | "sort"
+            | "sort_by"
+            | "take"
+            | "skip"
+            | "slice"
+            | "pop"
+            | "find"
+            | "min_by"
+            | "max_by"
+            | "get"
+            | "take_while"
+            | "drop_while"
+            | "unique"
+            | "dedup"
+            | "partition"
+    )
+}
+
+/// The whole-struct source of what callback `cb` returns when applied to elements whose source is
+/// `elem` (`map(xs, cb)`): a closure whose body builds or captures such a struct, or passes its
+/// argument on whole; a function known to return one, or to return its argument.
+fn whole_callback_result(
+    cb: &Expr,
+    elem: Option<String>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> Option<String> {
+    match cb {
+        Expr::Lambda { params, body } => {
+            whole_value_source_d(body, scope, ctx, depth + 1).or_else(|| {
+                let p = params.first()?;
+                let names: BTreeSet<String> = [p.clone()].into_iter().collect();
+                whole_position_mentions(
+                    body,
+                    &names,
+                    &ctx.fn_returns_param,
+                    &ctx.fn_returns_param_whole,
+                )
+                .then(|| elem.clone())
+                .flatten()
+            })
+        }
+        Expr::Var(n) if ctx.fn_params.contains_key(n) => {
+            if ctx.fn_returns_whole.contains(n) {
+                return Some(format!(
+                    "{WHOLE_STRUCT_SOURCE}the result of `{n}`, a struct with a secret field"
+                ));
+            }
+            let forwards = ctx
+                .fn_returns_param_whole
+                .get(n)
+                .is_some_and(|js| js.contains(&0))
+                || ctx.fn_returns_param.get(n).is_some_and(|(_, j)| *j == 0);
+            forwards.then_some(elem).flatten()
+        }
+        // A closure bound to a local.
+        Expr::Var(n) => match scope.get(n).and_then(|b| b.closure_lambda.as_deref()) {
+            Some(lam @ Expr::Lambda { .. }) => {
+                whole_callback_result(lam, elem, scope, ctx, depth + 1)
+            }
+            _ => elem,
+        },
+        _ => elem,
     }
 }
 
@@ -29209,6 +29372,7 @@ fn compute_returns_whole(
     free_fns: &[(String, Vec<String>, &[Stmt])],
     impl_methods: &[(String, Vec<String>, &[Stmt])],
     struct_fields: &BTreeMap<String, BTreeMap<String, String>>,
+    return_feeding: &BTreeMap<String, Vec<Expr>>,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut fns: BTreeSet<String> = BTreeSet::new();
     let mut methods: BTreeSet<String> = BTreeSet::new();
@@ -29221,7 +29385,18 @@ fn compute_returns_whole(
                     continue;
                 }
                 let locals = single_let_inits(body);
-                let hit = all_return_values(body)
+                // Everything that flows into the returns (`return_feeding`): a local list pushed a
+                // struct and returned counts (`let xs = []; push(xs, S { .. }); return xs`).
+                let feeding_key = if is_method {
+                    format!("impl {name}")
+                } else {
+                    name.clone()
+                };
+                let feeding: Vec<Expr> = return_feeding
+                    .get(&feeding_key)
+                    .cloned()
+                    .unwrap_or_else(|| all_return_values(body));
+                let hit = feeding
                     .iter()
                     .any(|r| literal_whole(r, &locals, struct_fields, &fns, &methods, 0));
                 if hit {
