@@ -283,3 +283,19 @@ reporting change, five pre-existing reporting gaps.
 | CHK-HARD-EXIT-JSON | S3 | pre-existing: the hard memory exit left `--message-format json` output empty (indistinguishable from a clean run to a consumer counting findings) and its message implied ANUBIS_ANALYSIS_MEMORY_MIB was set | review R6 (`elifs_1000` at 600 MB) | **fixed** eac6baf7: a JSON refusal prepared before the check is written on that exit; no evidence bundle can be written there (documented) |
 | CHK-VERIFY-LIMIT | S3 | pre-existing: `verify` re-derives a bundle's claim under the analysis budget; on a busier machine a genuine bundle printed "bundle valid: false", indistinguishable from tampering | review R7 | **fixed** eac6baf7: it reports that the claim could not be re-derived (an error); a tampered bundle still never verifies |
 | CHK-RENDER-CONTROL | S3 | pre-existing: a parse error's rendered source line copied control characters verbatim, so a file's escape sequences reached the terminal or CI log of whoever checked it | review R8 (`h6_escape`) | **fixed** eac6baf7: escaped (`\u{1b}`), the caret still under its column |
+
+### Follow-up: b72244c7 (review round 36)
+
+Review round 36 of the whole-struct lane (pin whole12h) confirmed 24 findings (18 leaks, six of them
+symmetric with the ordinary lane; 3 over-refusals; 3 costs); a design pass and a cross-check added
+three pre-existing leaks. Matrix at b72244c7: 1145 cases, 1041 PASS, 29 silent accepts (all `open_*`),
+75 wrong-class.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| FV-WHOLE-R36 | S1 | round 36's leaks: a specialization shared by a sure and a merely declared receiver of one type; `?` on a user enum read as unwrapping, and `?` early returns ignored by the accumulator rule; a join's inferred receiver type trusted; closures chosen by expressions reading their names at the call; a use_scope closure's unwritten path joining with nothing; function values dropped at a name that also held a value, at identity sets of several functions, through call/apply, block last statements and arms; apply past 64 positions; a loop whose step budget was spent before its first iteration | `rv36_*` (17) | **fixed** b72244c7 |
+| OR-WHOLE-R36 | S3 | round 36's over-refusals and costs: max of a struct literal; a field declassify releasing every secret type; a method name shared by two types losing the accumulator's type; staleness exponential in the binding graph (2^24 ladders, factorial cliques) | `rv36_valid_*` (5) | **fixed** b72244c7 |
+| TY-SHADOW-RETYPE | S1 | still open, pre-existing: the retype tables are keyed by name, so a later `let` shadowing a name changes the declared type read for an earlier binding's part or receiver (and, as an over-refusal, a name bound again under another type is stale) | `open_whole13_rv36x_sp2`, `open_whole13_rv36x_rs1` | open |
+| FV-OPEN-6 (container, shadow) | S1 | still open, pre-existing: a closure fetched from a list or map whose captured name is shadowed before the call | `open_whole13_rv36x_c1`, `open_whole13_rv36x_c2` | open |
+| IFC-ORDINARY-RETURN | S1 | still open, pre-existing, ordinary lane: a field-read secret assigned in a nested block of a callee and returned is lost; a call through a joined function alias checks one of its functions | `open_whole13_r36_r36_spec_3`, `open_whole13_rv36x_oh3` | open (its own unit: a fix to the returns alone turns `rv36x_oh1` and oh2, rejected today, into accepts) |
+| PERF-STEP-SIZE | S3 | still open: the interpreter's step budget counts steps, not the size of the values each step copies (a 201-entry record in 22 names: 15 s a query) | review round 36 spec-4 | open (documented) |

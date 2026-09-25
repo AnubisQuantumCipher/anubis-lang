@@ -1597,6 +1597,13 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — whole-struct lane, review round 36 (`b72244c7`).**
+    - Round 36 confirmed 24 findings in the lane; 17 leaks and all 3 over-refusals and 2 of the 3
+      costs are fixed, each a matrix case with a runtime witness.
+    - Matrix at this pin: 1145 cases, 1041 PASS, 29 silent accepts (all `open_*`), 75 wrong-class.
+    - **Still OPEN:** TY-SHADOW-RETYPE, FV-OPEN-6 (a closure from a container, its name shadowed),
+      IFC-ORDINARY-RETURN (the ordinary lane's returns and joined aliases), PERF-STEP-SIZE.
+
     **UPDATE 2026-09-24 (night) — checker limits (`66ac16ce`).**
     - `anubis check` refuses (`ANUBIS_ANALYSIS_LIMIT`) instead of overflowing its stack or exhausting
       the machine's memory: a stack guard at every recursive analysis walker, a bound on nested
