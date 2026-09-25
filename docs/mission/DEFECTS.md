@@ -384,3 +384,23 @@ all six landed, merged. Matrix at 8ea94c78: 1286 cases, 1131 PASS, 65 silent acc
 | TY-UNENFORCED (literal fields) | S1 | still open: a declared field type trusted for a struct literal (or list of them) holding another type | `open_rv37x_f_*` (8) | open |
 | FV-OPEN-6 (container, coincidence) | S1 | still open: a function taken out of a container; the lane catches w1 only through a name coincidence | `open_rv37x_w1_nocoinc` | open |
 | IFC-ALIAS-RESOLUTION (expression writes) | S1 | still open, ordinary lane: a function written in expression position in a callee, called with a secret field | `open_rv37x_ra_callee_pk`, `_stmt` | open (the ordinary unit) |
+
+### Follow-up: 1696925b (fixes for the review of 9dc7be91)
+
+Four fix designs and a cross-check for the 33 findings recorded at 28d21d21; merged and corrected as
+the cross-check laid out. Matrix at 1696925b: 1364 cases, 1242 PASS, 34 silent accepts (all
+`open_*`), 88 wrong-class.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| IFC-ALIAS-PREFERENCE | S1 | the two regressions of 9dc7be91 (Unknown identity set, flipped preferred alias) and two more the cross-check found (binders holding `abs`) | `open_ro1_alias_regression_*`, `ro2x_q_*_abs`, `rv36p_alias_reg_*` | **fixed** 1696925b: every resolvable candidate (FnMay), open by default |
+| IFC-ALIAS-RESOLUTION | S1 | unresolvable branches, value-block tails, value-position function writes, lambda-and-name joins, call-result field types, a local named like a user function | `open_ro1_*` (8) | **fixed** 1696925b |
+| IFC-SUMMARY-GAPS | S1 | the return summary and a local holding a function, expression-position push/insert, `?` as an exit (and under a secret condition), a field holding a function in a branch, a read after a value-block write, a lambda writing a captured name, secret keys in assignment targets | `open_ro1_ret_*`, `open_ro1_implicit_flow_*`, `open_ro1_enforcing_*`, `open_ro1_sym_*` (3) | **fixed** 1696925b |
+| IFC-HOF-NAMED | S1 | named functions given to builtin and user HOFs, their capabilities, loop reassignment after the call | `open_ro1_hof_*`, `open_ro1_user_hof_*`, `open_ro1_loop_*`, `open_loop_reassign_after_use_secret` | **fixed** 1696925b |
+| IFC-JOIN-BREAK-SHADOW | S1 | joins kept end states and skipped shadowing paths in the enforcing, value-block and parameter-return walkers | `open_rv36o_sib_*` (7), `rv37j_*` (26 leaks) | **fixed** 1696925b: ordered walks with break/continue exits and shadow keys |
+| OR-ORDRET-CLOSURE | S3 | the order-free closure's over-refusals and per-level cost (9dc7be91) | `ro1_or1..3`, `rv36o_or_*` (4), review perf findings | **fixed** 1696925b |
+| OR-SUMMARY-FNVALUE | S4 | documented over-refusal: in a summary a bare function name reads as its return, so a helper returning a secret-returning function is secret-returning (a list of such helpers, `len(map([1], getsec_v))`) | `rv21_valid_helper_value_unused_O1/O2/O5` (wrong-class) | documented |
+| OR-OPEN-BINDERS | S4 | documented precision loss: a pattern, arm or loop binder over named functions is open (as before 9dc7be91) | `ro2x_q_for_twin`, `_twin1` (wrong-class) | documented |
+| OR-ORDRET-OLD | S4 | older imprecisions the ordered walk no longer spreads: a declassify inside a helper, a field read on an unannotated let, field-insensitive root labels | `ro1_or4..6` (wrong-class) | open |
+| TY-UNENFORCED (annotations) | S1 | a declared struct annotation trusted for a value of another type | `open_ro1_sym_mistyped_struct_annotation` | open |
+| FV-CLOSURE-RETURNS-FN | S1 | a local closure returning a function | `open_ro1_closure_returning_function` | open |
