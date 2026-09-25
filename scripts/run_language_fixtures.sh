@@ -133,7 +133,10 @@ for f in "${fixtures[@]}"; do
     # The command line's echo of the command (`anubis check <path> …`) and every path naming the
     # fixture or its output directory are not diagnostics: `ANUBIS` matched `anubis check`, and a
     # word of the fixture's name matched its path (found by review, 2026-09-24).
-    said=$( { sed '1{/^anubis check /d}' "$outd/run.log" 2>/dev/null || true
+    # awk, not `sed '1{/…/d}'`: BSD sed (macOS) rejects a command before `}` without a `;`, and
+    # with the error hidden the text searched was empty, so every needle missed on the hosted gate.
+    # The run log always exists; failing to read it must fail the fixture, not empty the search.
+    said=$( { awk 'NR == 1 && /^anubis check / { next } { print }' "$outd/run.log"
               cat "$outd/check_diagnostics.txt" 2>/dev/null || true; } \
       | sed -e "s#$(printf '%s' "$f" | sed 's/[#.[\*^$/]/\\&/g')##g" \
             -e "s#$(printf '%s' "$outd" | sed 's/[#.[\*^$/]/\\&/g')##g" \

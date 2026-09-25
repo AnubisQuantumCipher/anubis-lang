@@ -153,7 +153,9 @@ DEFERRED_FIELDS: dict[tuple[str, str, str], DeferredDisposition] = {
                 r"Expr::Call\s*\{\s*callee\s*,\s*args\s*\}\s*=>\s*\{"
                 r".*?if\s+!fns\.contains\s*\(\s*callee\s*\).*?&&\s*!bound\.contains\s*\(\s*callee\s*\)"
                 r".*?&&\s*!crate::backends::run::is_builtin_name\s*\(\s*callee\s*\).*?"
-                r"ctx\.diagnostics\.push",
+                # Every enforcing diagnostic goes through `push_diag` (which marks where the ones a
+                # limit leaves behind begin, 0275f5f3); a direct push is still accepted.
+                r"ctx\.(?:diagnostics\.push|push_diag)\s*\(",
             ),
         ),
     ),
