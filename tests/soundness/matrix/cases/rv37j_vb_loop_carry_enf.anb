@@ -1,0 +1,5 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let y = if true { let x = 0; let w = 0; let i = 0; while i < 3 { x = w; w = k; i = i + 1; } x } else { 0 };
+    println(y);
+}

@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q: S) {
+    let y = if true { let x = 0; let w = 0; let i = 0; while i < 2 { i = i + 1; x = w; if i == 1 { w = q.k; continue; } w = 0; } x } else { 0 };
+    return y;
+}
+fn main() { let p = S { k: 42, pub_n: 3 }; println(f(p)); }

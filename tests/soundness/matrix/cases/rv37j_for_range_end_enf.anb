@@ -1,0 +1,1 @@
+fn main() { let k: secret<i64> = 42; for i in 0..k { if i + 1 == k { println(i); } } }

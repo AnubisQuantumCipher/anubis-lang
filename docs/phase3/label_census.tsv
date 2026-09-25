@@ -63,9 +63,6 @@ seed_effect_pattern	declassified	1	0	constructor	3	ScopeBinding/BindingInfo lite
 seed_effect_pattern	secret	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 seed_effect_pattern	taint_source	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 seed_effect_pattern	tainted	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-seed_loop_carried_labels	secret	0	4	loop_seeder	3	loop-body fixpoint seed (Slice 3)
-seed_loop_carried_labels	taint_source	0	1	loop_seeder	3	loop-body fixpoint seed (Slice 3)
-seed_loop_carried_labels	tainted	0	4	loop_seeder	3	loop-body fixpoint seed (Slice 3)
 seed_loop_var_callable	declassified	2	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 seed_loop_var_callable	secret	2	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 seed_loop_var_callable	taint_source	2	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
@@ -90,10 +87,6 @@ seed_qualifier_params	declassified	1	0	constructor	3	ScopeBinding/BindingInfo li
 seed_qualifier_params	secret	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 seed_qualifier_params	taint_source	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 seed_qualifier_params	tainted	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-seed_while_let_binders	declassified	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-seed_while_let_binders	secret	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-seed_while_let_binders	taint_source	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-seed_while_let_binders	tainted	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 set_secret_label	secret	1	0	lattice_adapter	3	lattice setter derives legacy adapter (Slice 3)
 set_taint_label	declassified	1	0	lattice_adapter	3	lattice setter derives legacy adapter (Slice 3)
 set_taint_label	taint_source	1	0	lattice_adapter	3	lattice setter derives legacy adapter (Slice 3)
@@ -107,4 +100,4 @@ unknown_taint_label_promotes_to_labeled_view	tainted	0	1	lattice_adapter	3	Slice
 var_source	secret	0	1	reader	5	expr_source Var arm reader (Slice 5)
 var_source	taint_source	0	1	reader	5	expr_source Var arm reader (Slice 5)
 var_source	tainted	0	1	reader	5	expr_source Var arm reader (Slice 5)
-__totals__	-	92	46	-	-	totals
+__totals__	-	88	37	-	-	totals

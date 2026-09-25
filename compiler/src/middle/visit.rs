@@ -192,6 +192,17 @@ pub(crate) fn each_stmt<'a>(stmts: &'a [Stmt], f: &mut dyn FnMut(&'a Stmt, bool)
     each_stmt_in(stmts, false, f);
 }
 
+/// Call `f` on every statement nested inside expression `e` (value blocks, `match` / `if let` arm and
+/// branch bodies, lambda bodies), at any depth, in pre-order — but not on any statement that holds
+/// `e`. The flag is as in [`each_stmt`].
+pub(crate) fn each_stmt_in_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Stmt, bool)) {
+    let mut nested: Vec<(&'a [Stmt], bool)> = Vec::new();
+    stmts_in_expr(e, false, &mut nested);
+    for (ss, lam) in nested {
+        each_stmt_in(ss, lam, f);
+    }
+}
+
 fn each_stmt_in<'a>(stmts: &'a [Stmt], in_lambda: bool, f: &mut dyn FnMut(&'a Stmt, bool)) {
     for s in stmts {
         f(s, in_lambda);

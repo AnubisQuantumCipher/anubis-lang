@@ -224,6 +224,9 @@ struct ScopeBinding {
     /// user-function identity and keeps `Unknown` distinct from a proven-empty set. Existing
     /// label-lane consumers continue to use `fn_alias` unchanged.
     fn_identities: FnIdentitySet,
+    /// Every named function this binding may hold as far as any branch, arm or block tail resolves,
+    /// kept where `fn_identities` is `Unknown` ([`FnMay`], [`fn_may_of`]). Read by [`call_targets`].
+    fn_may: FnMay,
     /// Named-function identities stored at concrete aggregate access paths (`"0"`, `"field.1"`).
     /// Separate from `field_closures`: eta expansion is useful for body descent but loses the
     /// original set-valued identity required by contracts.
@@ -387,6 +390,52 @@ impl FnIdentitySet {
             Self::Known(candidates) if candidates.len() == 1 => candidates.into_iter().next(),
             Self::Known(_) | Self::Unknown => None,
         }
+    }
+}
+
+/// The named functions a callable value MAY be, for the call-site summaries ([`call_targets`]).
+///
+/// `fn_alias` keeps ONE name and prefers a secret- or taint-returning one, and `fn_identities`
+/// becomes `Unknown` as soon as one branch is unresolvable (a builtin call, a value-block tail read
+/// in the enclosing scope). So `let f = if c { h2 } else { if d { let t = h2; t } else { h1 } }`
+/// offered the egress, sink and capability checks only `h1` once `h1` returned a secret, and the
+/// printing `h2` went unchecked (review ordret1, ALIAS-REGRESSION-UNKNOWN-SET-*). `names` keeps every
+/// name a branch resolves to, whatever another branch does; `open` records that some branch may hold
+/// a callable no name covers (a builtin value, a lambda, a value nothing resolves), so a check that
+/// needs the WHOLE set (a returned argument) cannot take `names` for it. A lower bound on what a call
+/// may run, never a contract identity: `fn_identities` stays the exact spine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FnMay {
+    names: BTreeSet<String>,
+    open: bool,
+}
+
+/// A binding nothing has resolved may hold any callable: open until a `let` or an assignment says
+/// what it holds ([`fn_may_of`]). A pattern binder, a loop variable, a parameter or any other seeded
+/// binding stays open, so a check that needs the whole set falls back to what it did before the set
+/// existed (review of the ordinary-lane designs, U3: a closed default let `let (g, h) = if c { (abs,
+/// zero) } else { .. }` and a `Some(g)` arm binder pass `abs` as a function returning nothing).
+impl Default for FnMay {
+    fn default() -> Self {
+        Self {
+            names: BTreeSet::new(),
+            open: true,
+        }
+    }
+}
+
+impl FnMay {
+    /// Nothing yet: where [`FnMay`]s are gathered and joined.
+    fn closed() -> Self {
+        Self {
+            names: BTreeSet::new(),
+            open: false,
+        }
+    }
+
+    fn join(&mut self, other: &FnMay) {
+        self.names.extend(other.names.iter().cloned());
+        self.open |= other.open;
     }
 }
 
@@ -789,20 +838,34 @@ fn join_fn_alias<'a>(
     first
 }
 
-/// Every user function a call to `callee` may run: a local binding's single-name alias and every
-/// function its identity set names, or `callee` itself when no binding of that name holds one.
+/// Every user function a call to `callee` may run.
+///
+/// A CALL-position name resolves to a user function before a local or parameter of the same name
+/// (the runtime's order, `backends/run.rs` `Expr::Call`: user functions, then locals, then builtins;
+/// matrix recategorizations s12/c41), so when `user_fn` says `callee` names one, it is the only
+/// target: `let h = pubfn; h(k)` runs the user `h`, and resolving through the local checked `pubfn`'s
+/// summaries instead (LOCAL-SHADOWS-USER-FN-NAME). Otherwise a local binding's single-name alias,
+/// every name of a Known identity set and every name of its may-set ([`FnMay`]), or `callee` itself
+/// when no binding of that name holds one.
 ///
 /// A per-parameter summary (`param_egress`, `param_sinks`, `param_return_taint`) of a call through a
 /// join (`let f = if c { h2 } else { h1 }; f(x)`) is the union over these. `fn_alias` keeps ONE name
 /// and prefers a secret- or taint-returning candidate, so a join of a printing `h2` and a
-/// secret-returning `h1` resolved to `h1`, and `h2`'s egress of the argument was never checked. An
-/// `Unknown` identity set adds nothing beyond the alias, as before.
-fn call_targets(callee: &str, scope: &BTreeMap<String, ScopeBinding>) -> BTreeSet<String> {
+/// secret-returning `h1` resolved to `h1`, and `h2`'s egress of the argument was never checked; an
+/// `Unknown` identity set (one unresolvable branch) then offered nothing but that one name.
+fn call_targets(
+    callee: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    user_fn: bool,
+) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    if let Some(b) = scope.get(callee) {
-        out.extend(b.fn_alias.iter().cloned());
-        if let FnIdentitySet::Known(ns) = &b.fn_identities {
-            out.extend(ns.iter().cloned());
+    if !user_fn {
+        if let Some(b) = scope.get(callee) {
+            out.extend(b.fn_alias.iter().cloned());
+            if let FnIdentitySet::Known(ns) = &b.fn_identities {
+                out.extend(ns.iter().cloned());
+            }
+            out.extend(b.fn_may.names.iter().cloned());
         }
     }
     if out.is_empty() {
@@ -828,7 +891,8 @@ fn union_over_targets(
     found
 }
 
-/// Whether `b` may hold a function in `fns`: its single-name alias or any name in its identity set.
+/// Whether `b` may hold a function in `fns`: its single-name alias, any name in its identity set, or
+/// any name in its may-set.
 fn binding_may_call<'a>(b: &'a ScopeBinding, fns: &BTreeSet<String>) -> Option<&'a String> {
     let known = match &b.fn_identities {
         FnIdentitySet::Known(ns) => Some(ns),
@@ -837,7 +901,566 @@ fn binding_may_call<'a>(b: &'a ScopeBinding, fns: &BTreeSet<String>) -> Option<&
     b.fn_alias
         .iter()
         .chain(known.into_iter().flatten())
+        .chain(b.fn_may.names.iter())
         .find(|n| fns.contains(n.as_str()))
+}
+
+/// What a name bound or assigned inside a value block (or a statement) may hold there.
+#[derive(Clone, Copy)]
+enum BlockFnDef<'a> {
+    /// `let n = v` / `n = v`: the value itself.
+    Value(&'a Expr),
+    /// A pattern, `for`, `while let`, `match`-arm or `if let` binder over `v`: a part of `v`, or all
+    /// of it.
+    Part(&'a Expr),
+}
+
+/// Every name a block binds or assigns, with every [`BlockFnDef`] it is given there (order-free).
+type BlockFnDefs<'a> = BTreeMap<String, Vec<BlockFnDef<'a>>>;
+
+/// Record what `s` itself binds or assigns into `defs` (its nested statements are visited by the
+/// caller).
+fn record_fn_def<'a>(s: &'a Stmt, defs: &mut BlockFnDefs<'a>) {
+    match s {
+        Stmt::Let { name, init, .. } => defs
+            .entry(name.clone())
+            .or_default()
+            .push(BlockFnDef::Value(init)),
+        Stmt::Assign {
+            target: Expr::Var(name),
+            value,
+        } => defs
+            .entry(name.clone())
+            .or_default()
+            .push(BlockFnDef::Value(value)),
+        Stmt::LetPattern { pattern, init, .. } => {
+            for n in pattern.bound_names() {
+                defs.entry(n).or_default().push(BlockFnDef::Part(init));
+            }
+        }
+        Stmt::WhileLet { pattern, expr, .. } => {
+            for n in pattern.bound_names() {
+                defs.entry(n).or_default().push(BlockFnDef::Part(expr));
+            }
+        }
+        Stmt::For { var, source, .. } => {
+            let src = match source {
+                crate::frontend::ForSource::Range { start, .. } => start,
+                crate::frontend::ForSource::Collection { expr } => expr,
+            };
+            defs.entry(var.clone())
+                .or_default()
+                .push(BlockFnDef::Part(src));
+        }
+        Stmt::Assign { .. }
+        | Stmt::If { .. }
+        | Stmt::While { .. }
+        | Stmt::Loop { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::ResearchBlock { .. }
+        | Stmt::ExploitBlock { .. }
+        | Stmt::HybridBlock { .. }
+        | Stmt::SpecBlock { .. }
+        | Stmt::ExprStmt(_) => {}
+    }
+}
+
+/// Record the binders of a `match` arm or an `if let` in `x` (each a part of its scrutinee).
+fn record_fn_binders<'a>(x: &'a Expr, defs: &mut BlockFnDefs<'a>) {
+    match x {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            for arm in arms {
+                for n in arm.pattern.bound_names() {
+                    defs.entry(n).or_default().push(BlockFnDef::Part(scrutinee));
+                }
+            }
+        }
+        Expr::IfLet {
+            pattern, scrutinee, ..
+        } => {
+            for n in pattern.bound_names() {
+                defs.entry(n).or_default().push(BlockFnDef::Part(scrutinee));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`record_fn_def`] over `stmts` and the statement lists nested in them (not their expressions,
+/// which the caller's expression walk reaches on its own).
+fn record_stmt_list_defs<'a>(stmts: &'a [Stmt], defs: &mut BlockFnDefs<'a>) {
+    for s in stmts {
+        record_fn_def(s, defs);
+        match s {
+            Stmt::WhileLet { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => record_stmt_list_defs(body, defs),
+            Stmt::If { then, else_, .. } => {
+                record_stmt_list_defs(then, defs);
+                if let Some(e) = else_ {
+                    record_stmt_list_defs(e, defs);
+                }
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    record_stmt_list_defs(b, defs);
+                }
+            }
+            Stmt::Let { .. }
+            | Stmt::LetPattern { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::SpecBlock { .. }
+            | Stmt::ExprStmt(_) => {}
+        }
+    }
+}
+
+/// The [`FnMay`] of a value: the set-valued twin of [`fn_alias_of`]. Every branch, arm and block
+/// tail contributes the names it resolves to, and one that resolves to nothing, or to a callable
+/// no name covers, sets `open` instead of erasing the others. A value block's own `let`s and
+/// assignments are read as the values they bind: `if c { let t = h2; t } else { zero }` may be `h2`,
+/// where both resolvers read `t` in the enclosing scope, found nothing, and kept only `zero`
+/// (VALUE-BLOCK-TAIL-IDENTITY).
+///
+/// What every block, arm and binder inside `e` binds or assigns is collected ONCE, order-free and
+/// name-keyed (a name bound in two blocks is one name here, which can only add candidates), so the
+/// walk stays linear in the size of `e` however deeply its blocks nest.
+fn fn_may_of(e: &Expr, scope: &BTreeMap<String, ScopeBinding>, ctx: &SemanticContext) -> FnMay {
+    let mut defs: BlockFnDefs<'_> = BTreeMap::new();
+    visit::each_expr(e, &mut |x| {
+        if let Expr::Block { stmts, .. } = x {
+            record_stmt_list_defs(stmts, &mut defs);
+        }
+        record_fn_binders(x, &mut defs);
+    });
+    let mut out = FnMay::closed();
+    fn_may_into(e, scope, ctx, &defs, &mut BTreeSet::new(), 0, &mut out);
+    out
+}
+
+/// Core of [`fn_may_of`]. `defs` holds what the value's blocks and binders bind (complete before the
+/// walk starts); `seen` holds the names whose defs this walk has already expanded, so each name is
+/// expanded once (a self-referential `t = t` ends there) and the walk is linear in the defs;
+/// `depth` bounds the resolvers exactly as [`fn_alias_of_d`] does.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_into<'a>(
+    e: &'a Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
+        out.open = true;
+        return;
+    }
+    match e {
+        Expr::Var(n) => fn_may_of_name(n, scope, ctx, defs, seen, depth, out),
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            fn_may_into(then, scope, ctx, defs, seen, depth + 1, out);
+            fn_may_into(else_, scope, ctx, defs, seen, depth + 1, out);
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                fn_may_into(&arm.body, scope, ctx, defs, seen, depth + 1, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            let mut candidates: Vec<&'a Expr> = Vec::new();
+            collect_block_fn_alias_candidates(stmts, tail.as_deref(), &mut candidates);
+            for c in candidates {
+                fn_may_into(c, scope, ctx, defs, seen, depth + 1, out);
+            }
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            fn_may_into(inner, scope, ctx, defs, seen, depth + 1, out)
+        }
+        // A closure is callable but names no function; its body is the closure lanes' business.
+        Expr::Lambda { .. } => out.open = true,
+        // A pass-through builtin hands its argument back (as in `fn_alias_of_d`).
+        Expr::Call { callee, args }
+            if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 =>
+        {
+            fn_may_into(&args[0], scope, ctx, defs, seen, depth + 1, out);
+            fn_may_resolved(e, scope, ctx, defs, seen, depth, out);
+        }
+        Expr::Call { .. }
+        | Expr::CallExpr { .. }
+        | Expr::FieldAccess { .. }
+        | Expr::Index { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::Try(_)
+        | Expr::Other(_) => fn_may_resolved(e, scope, ctx, defs, seen, depth, out),
+    }
+}
+
+/// A value [`fn_may_into`] does not take apart: whatever the single-name and set-valued resolvers
+/// name, and always `open`: a set the set-valued resolver calls `Known` is no evidence that nothing
+/// else is held (it maps a builtin name to no identity at all), so only a name, or a join of names,
+/// is ever closed (review of the ordinary-lane designs, U3). Both resolvers read names in the
+/// enclosing scope, so when `e` reads a name the enclosing value block binds (`{ let t = h2;
+/// fwd(t) }`), every value of that name counts too.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_resolved<'a>(
+    e: &'a Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    out.open = true;
+    out.names.extend(fn_alias_of_d(e, scope, ctx, depth + 1));
+    if let FnIdentitySet::Known(ns) = fn_identities_of_d(e, scope, ctx, depth + 1) {
+        out.names.extend(ns);
+    }
+    if defs.is_empty() {
+        return;
+    }
+    let mut read: BTreeSet<String> = BTreeSet::new();
+    visit::each_expr(e, &mut |x| match x {
+        Expr::Var(n) | Expr::Call { callee: n, .. } if defs.contains_key(n) => {
+            read.insert(n.clone());
+        }
+        _ => {}
+    });
+    for n in read {
+        out.open = true;
+        fn_may_of_name(&n, scope, ctx, defs, seen, depth, out);
+    }
+}
+
+/// The [`FnMay`] of the name `n` read as a VALUE: every value the enclosing value blocks give it,
+/// the user function (or builtin sink/egress, as `fn_alias_of` records it) of that name, and what a
+/// binding of that name may hold. In value position a local shadows a user function of the same
+/// name at runtime (`backends/run.rs` `var_as_value`) while `fn_alias_of` / `fn_identities_of` read
+/// the user function first; both are kept.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_of_name<'a>(
+    n: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    // Every value the name is given, once per walk: the defs are complete and name-keyed, so a
+    // second read of the name adds nothing (and a self-referential `t = t` ends here).
+    if let Some(ds) = defs.get(n) {
+        if seen.insert((n.to_string(), false)) {
+            for d in ds.iter().copied() {
+                match d {
+                    BlockFnDef::Value(v) => fn_may_into(v, scope, ctx, defs, seen, depth + 1, out),
+                    BlockFnDef::Part(v) => fn_may_part(v, scope, ctx, defs, seen, depth + 1, out),
+                }
+            }
+        }
+    }
+    let user_fn = ctx.fn_params.contains_key(n);
+    if user_fn || is_sink(n) || is_egress_sink(n) {
+        out.names.insert(n.to_string());
+    }
+    match scope.get(n) {
+        Some(b) => {
+            out.names.extend(b.fn_alias.iter().cloned());
+            if let FnIdentitySet::Known(ns) = &b.fn_identities {
+                out.names.extend(ns.iter().cloned());
+            }
+            out.join(&b.fn_may);
+            // A lambda, or a binding nothing names, may be a callable no name covers.
+            if b.closure_lambda.is_some()
+                || (matches!(b.fn_identities, FnIdentitySet::Unknown)
+                    && b.fn_alias.is_none()
+                    && b.fn_may.names.is_empty())
+            {
+                out.open = true;
+            }
+        }
+        // A builtin value, or a name nothing resolves.
+        None if !user_fn && !defs.contains_key(n) => out.open = true,
+        None => {}
+    }
+}
+
+/// What a binder over `src` (a pattern, loop or arm binder) may hold: `src` itself (a binder that
+/// takes the whole value), or any function `src` carries as an element, a field or a payload.
+/// Always `open`: which part is taken is not modeled.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_part<'a>(
+    src: &'a Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    out.open = true;
+    fn_may_into(src, scope, ctx, defs, seen, depth, out);
+    if let FnIdentitySet::Known(ns) = fn_identities_carried_by_value_d(src, scope, ctx, depth + 1) {
+        out.names.extend(ns);
+    }
+    // A container the enclosing block binds, read by name (`let xs = [h2]; for g in xs { .. }`).
+    if let Expr::Var(m) = src {
+        if !seen.insert((m.clone(), true)) {
+            return;
+        }
+        for d in defs.get(m).into_iter().flatten().copied() {
+            if let BlockFnDef::Value(v) = d {
+                if let FnIdentitySet::Known(ns) =
+                    fn_identities_carried_by_value_d(v, scope, ctx, depth + 1)
+                {
+                    out.names.extend(ns);
+                }
+            }
+        }
+    }
+}
+
+/// Before the ordered walk of `stmt`: a function assigned to an outer binding anywhere nested in
+/// `stmt` (a branch, a loop body, a `match` arm, a value block) may be what the binding holds after
+/// it, and in a loop at the next iteration, so it joins the binding's [`FnMay`].
+///
+/// The joins after a branch or a loop keep only END states and skip a path that shadows the name
+/// (`merge_fn_alias_over`), a loop body is walked once from the pre-loop state, and a value block is
+/// walked in a discarded scope. So `let z = if c { f = h2; 1 } else { 2 }; f(k)`
+/// (FN-ASSIGNED-IN-VALUE-BLOCK-LOST), `loop { f = h2; if d { break; } f = zero; } f(k)`,
+/// `if c { f = h2; let f = zero; } f(k)` and `while c { f(k); f = h2; }` all lost `h2` (the
+/// function-identity siblings of IFC-JOIN-BREAK-SHADOW). Order-free and only ever adding names, so
+/// a function assigned and then overwritten inside ONE nested statement still counts (a documented
+/// over-refusal, the trade `nested_may_labels` makes). The statement's own top-level assignment is
+/// left to the ordered walk, which replaces the set.
+fn join_nested_fn_writes(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    let mut defs: BlockFnDefs<'_> = BTreeMap::new();
+    let mut assigned: BTreeSet<&str> = BTreeSet::new();
+    visit::each_stmt(std::slice::from_ref(stmt), &mut |s, in_lambda| {
+        if in_lambda || std::ptr::eq(s, stmt) {
+            return;
+        }
+        record_fn_def(s, &mut defs);
+        if let Stmt::Assign {
+            target: Expr::Var(n),
+            ..
+        } = s
+        {
+            assigned.insert(n.as_str());
+        }
+    });
+    if assigned.is_empty() {
+        return;
+    }
+    visit::each_expr_in_stmts(std::slice::from_ref(stmt), &mut |x| {
+        record_fn_binders(x, &mut defs)
+    });
+    for n in assigned {
+        if !scope.contains_key(n) {
+            continue;
+        }
+        let mut may = FnMay::closed();
+        let mut seen = BTreeSet::from([(n.to_string(), false)]);
+        // A builtin assigned there (`f = print`) carries its gate tags, and a function its
+        // identities, as `merge_fn_alias_over` joins them: the builtin egress, sink and capability
+        // checks read those, not the names (review of the ordinary-lane designs, C8).
+        let mut tags = Vec::new();
+        let mut ids = FnIdentitySet::empty();
+        for d in defs.get(n).into_iter().flatten().copied() {
+            if let BlockFnDef::Value(v) = d {
+                fn_may_into(v, scope, ctx, &defs, &mut seen, 0, &mut may);
+                tags.push(builtin_gate_tags_of(v, scope, ctx));
+                ids = ids.union(fn_identities_of(v, scope, ctx));
+            }
+        }
+        if let Some(b) = scope.get_mut(n) {
+            b.fn_may.join(&may);
+            b.builtin_gate_tags = BuiltinGateTags::union_concrete(
+                std::iter::once(b.builtin_gate_tags.clone()).chain(tags),
+            );
+            b.fn_identities = b.fn_identities.clone().union(ids);
+        }
+    }
+}
+
+/// Every function a higher-order call may run when it applies the callback `arg`.
+///
+/// A name no local binding holds is itself: a user function or a builtin (`each(xs, h2)`,
+/// `app(print, k)`). A local is what it may hold: its alias and every name of a Known identity set,
+/// the set a direct call through it already checks ([`call_targets`]); the local's own name is not
+/// a function, so it is not a target. Any other expression (a join written in place, an element or
+/// field, a call returning a function) is its alias and Known identity set. A lambda names none: its
+/// body is descended where it is applied.
+fn applied_callback_targets(
+    arg: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    match arg {
+        Expr::Lambda { .. } => {}
+        Expr::Var(name) => match scope.get(name) {
+            Some(b) => {
+                out.extend(b.fn_alias.iter().cloned());
+                if let FnIdentitySet::Known(names) = &b.fn_identities {
+                    out.extend(names.iter().cloned());
+                }
+                // Every name a branch of it resolves to, where the identity set went Unknown.
+                out.extend(b.fn_may.names.iter().cloned());
+            }
+            None => {
+                out.insert(name.clone());
+            }
+        },
+        _ => {
+            out.extend(fn_alias_of(arg, scope, ctx));
+            if let FnIdentitySet::Known(names) = fn_identities_of(arg, scope, ctx) {
+                out.extend(names);
+            }
+            out.extend(fn_may_of(arg, scope, ctx).names);
+        }
+    }
+    out
+}
+
+/// Check a callback that a higher-order call (`via`) applies to data labelled `taint` / `secret`
+/// against every function the callback may be: a builtin egress or sink (by name, or by the gate
+/// tags that also resolve a local holding one and a join of several), and each user function's
+/// parameter egress and sink summaries ([`applied_callback_targets`]).
+///
+/// The builtin appliers checked only a bare name that no local held, and a user function applying
+/// its formal descended only a lambda argument, so `let f = h2; each([k], f)`,
+/// `each([k], if c { h2 } else { h1 })` and `app(h2, k)` with `fn app(g, x) { g(x) }` all printed
+/// the secret while `each([k], h2)` and `app(|x| h2(x), k)` were rejected (review ordret1
+/// HOF-BUILTIN-LOCAL-FN-BINDING, USER-HOF-NAMED-FN-ARG). Fail-closed like the lambda descent: the
+/// labelled data may reach any parameter of the applied function.
+fn check_applied_callback(
+    arg: &Expr,
+    via: &str,
+    taint: Option<&str>,
+    secret: bool,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    if mode != Mode::Safe || (taint.is_none() && !secret) {
+        return;
+    }
+    let targets = applied_callback_targets(arg, scope, ctx);
+    let tags = builtin_gate_tags_of(arg, scope, ctx);
+    let shown = match arg {
+        Expr::Var(n) => n.clone(),
+        _ => "a callback".to_string(),
+    };
+    let summary_hit = |summary: &BTreeMap<String, BTreeSet<usize>>| {
+        targets
+            .iter()
+            .find(|t| summary.get(t.as_str()).is_some_and(|s| !s.is_empty()))
+            .cloned()
+    };
+    if secret {
+        let egress = targets
+            .iter()
+            .find(|t| is_egress_sink(t.as_str()))
+            .cloned()
+            .or_else(|| {
+                tags.contains(&BuiltinGateTag::EgressSink)
+                    .then(|| shown.clone())
+            });
+        if let Some(sink) = egress {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
+                    message: format!("safe mode confidentiality violation: a secret element flows through `{via}` into egress `{sink}` without declassify"),
+                    span: None,
+                },
+                false,
+            );
+        }
+        if let Some(f) = summary_hit(&ctx.param_egress) {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                    message: format!("safe mode confidentiality violation: a secret element flows through `{via}` into `{f}`, which reaches an egress without declassify"),
+                    span: None,
+                },
+                false,
+            );
+        }
+    }
+    if let Some(src) = taint {
+        let sink = targets
+            .iter()
+            .find(|t| is_sink(t.as_str()))
+            .cloned()
+            .or_else(|| {
+                tags.contains(&BuiltinGateTag::IntegritySink)
+                    .then(|| shown.clone())
+            });
+        if let Some(sink) = sink {
+            ctx.push_diag(SemanticDiagnostic {
+                code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
+                message: format!("safe mode tainted flow from `{src}` through `{via}` into sink `{sink}` without declassify"),
+                span: None,
+            });
+        }
+        if let Some(f) = summary_hit(&ctx.param_sinks) {
+            ctx.push_diag(SemanticDiagnostic {
+                code: Some("ANUBIS_INTERPROC_SINK".into()),
+                message: format!("safe mode tainted flow from `{src}` through `{via}` into `{f}`, which reaches a sink without declassify"),
+                span: None,
+            });
+        }
+    }
+}
+
+/// Charge the declared `uses(...)` of every user function a higher-order builtin may apply as the
+/// callback `arg` ([`applied_callback_targets`]), as a direct call of it would; a builtin callback's
+/// own capability is charged from its gate tags. `each([1], w)` with `fn w(x) uses(fs.write)` wrote
+/// the file from a function that declares nothing, while `w(1)` was rejected (review ordret1
+/// HOF-BUILTIN-CAPABILITY-NOT-CHARGED).
+fn charge_applied_callback_capabilities(
+    arg: &Expr,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    for name in applied_callback_targets(arg, scope, ctx) {
+        if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned() {
+            for raw in caps {
+                apply_inherited_capability(raw, mode, effects, ctx);
+            }
+        }
+    }
 }
 
 /// Additive, set-valued function-identity spine. Existing `fn_alias_of` callers intentionally remain
@@ -2692,6 +3315,7 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                             closure_lambda: None,
                             field_closures: BTreeMap::new(),
                             fn_alias: None,
+                            fn_may: FnMay::default(),
                             fn_identities: FnIdentitySet::Unknown,
                             field_fn_identities: BTreeMap::new(),
                             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -2820,6 +3444,7 @@ fn seed_loop_var_callable(
                     closure_lambda: None,
                     field_closures: fc,
                     fn_alias: None,
+                    fn_may: FnMay::default(),
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -2856,6 +3481,7 @@ fn seed_loop_var_callable(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -2956,29 +3582,56 @@ const ETA_PARAM_PREFIX: &str = "_eta";
 /// machinery a form it recognises instead of teaching a second code path the same facts. A second
 /// path that must be kept in sync with the first is how this file grew its walker-parity defects.
 ///
-/// Resolves through `fn_alias`, so an alias chain (`let g = key; app(g)`) expands to the same lambda.
-/// Returns `None` for anything that is not a known free function, which can only fail to reject.
+/// Resolves through a binding of that name, so an alias chain (`let g = key; app(g)`) expands to the
+/// same lambda. Returns `None` for anything that is not a known free function, which can only fail to
+/// reject.
+///
+/// A binding that may hold SEVERAL functions expands to a lambda that may apply any of them: an `if`
+/// on an opaque condition, which every closure-body walker takes both ways. It used to expand through
+/// the one preferred `fn_alias`, so once `h1` returned a secret, `Box { g: f }` / `[f]` with
+/// `let f = if c { w } else { .. h1 }` stored `|x| h1(x)` and dropped `w`'s `uses(fs.write)` (a
+/// regression of 9dc7be91). In value position a local shadows a user function of its name at runtime
+/// (`var_as_value`), so a binding of that name counts as well as the function.
 fn eta_expand_fn_ref(
     name: &str,
     scope: &BTreeMap<String, ScopeBinding>,
     fn_params: &BTreeMap<String, Vec<String>>,
 ) -> Option<Expr> {
-    let target = if fn_params.contains_key(name) {
-        name.to_string()
-    } else {
-        scope.get(name).and_then(|b| b.fn_alias.clone())?
-    };
-    let arity = fn_params.get(&target)?.len();
+    let mut targets: BTreeSet<String> = BTreeSet::new();
+    if fn_params.contains_key(name) {
+        targets.insert(name.to_string());
+    }
+    if let Some(b) = scope.get(name) {
+        targets.extend(b.fn_alias.iter().cloned());
+        if let FnIdentitySet::Known(ns) = &b.fn_identities {
+            targets.extend(ns.iter().cloned());
+        }
+        targets.extend(b.fn_may.names.iter().cloned());
+    }
+    let mut calls: Vec<(String, usize)> = targets
+        .into_iter()
+        .filter_map(|t| fn_params.get(&t).map(|ps| (t, ps.len())))
+        .collect();
+    let arity = calls.iter().map(|(_, a)| *a).max()?;
     let params: Vec<String> = (0..arity)
         .map(|i| format!("{ETA_PARAM_PREFIX}{i}"))
         .collect();
-    let args = params.iter().map(|p| Expr::Var(p.clone())).collect();
+    let call = |(callee, a): (String, usize)| Expr::Call {
+        callee,
+        args: params[..a].iter().map(|p| Expr::Var(p.clone())).collect(),
+    };
+    let mut body = call(calls.pop()?);
+    while let Some(c) = calls.pop() {
+        body = Expr::If {
+            cond: Box::new(Expr::Symbolic { ty: "bool".into() }),
+            then: Box::new(call(c)),
+            else_: Box::new(body),
+            span: Span::default(),
+        };
+    }
     Some(Expr::Lambda {
         params,
-        body: Box::new(Expr::Call {
-            callee: target,
-            args,
-        }),
+        body: Box::new(body),
     })
 }
 
@@ -6278,6 +6931,7 @@ fn analyze_function(
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_may: FnMay::default(),
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
                         builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -6394,6 +7048,7 @@ fn analyze_function(
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
                     fn_alias: None,
+                    fn_may: FnMay::default(),
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -8026,6 +8681,12 @@ fn merge_fn_alias_over(
             .fold(FnIdentitySet::empty(), |set, binding| {
                 set.union(binding.fn_identities.clone())
             });
+        // The may-set ([`FnMay`]) of every path, with each path's single-name alias.
+        let fn_may = effective.iter().fold(FnMay::closed(), |mut may, binding| {
+            may.join(&binding.fn_may);
+            may.names.extend(binding.fn_alias.iter().cloned());
+            may
+        });
         let field_names: BTreeSet<String> = effective
             .iter()
             .flat_map(|binding| binding.field_fn_identities.keys().cloned())
@@ -8066,6 +8727,7 @@ fn merge_fn_alias_over(
         }
         if let Some(binding) = scope.get_mut(&name) {
             binding.fn_identities = identities;
+            binding.fn_may = fn_may;
             binding.field_fn_identities = fields;
             binding.builtin_gate_tags = builtin_gate_tags;
             binding.field_builtin_gate_tags = builtin_fields;
@@ -10349,16 +11011,31 @@ fn place_struct_type(
         // perform rather than adding a second one. Without this, R1's declared-field-qualifier lookup
         // stopped at the call and a `secret` field read straight off a factory result went unlabelled
         // — runtime-proven, it printed the value.
+        //
+        // Every function the call may run ([`call_targets`]; a user function before a local of its
+        // name, `fn_ret` holding an entry for each), and they must agree: typed by the one preferred
+        // alias, `let g = if c { mk_t } else { mk_s }; g().k` read `T`'s public `k` while the
+        // runtime ran `mk_s` (STRUCT-TYPE-SINGLE-ALIAS-AT-JOIN). Candidates that disagree, one with
+        // no declared type, or a binding that may hold a function no name covers leave the type
+        // unknown, so a field read off it counts every declaration (`FieldAccess`'s fallback).
         Expr::Call { callee, .. } => {
-            let target = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
-            struct_fields
-                .fn_ret
-                .get(target)
-                .filter(|t| !t.is_empty())
-                .cloned()
+            let user_fn = struct_fields.fn_ret.contains_key(callee.as_str());
+            if !user_fn
+                && scope.get(callee).is_some_and(|b| {
+                    b.fn_may.open || matches!(b.fn_identities, FnIdentitySet::Unknown)
+                })
+            {
+                return None;
+            }
+            let mut ty: Option<&String> = None;
+            for t in call_targets(callee, scope, user_fn) {
+                let r = struct_fields.fn_ret.get(&t).filter(|r| !r.is_empty())?;
+                if ty.is_some_and(|prev| prev != r) {
+                    return None;
+                }
+                ty = Some(r);
+            }
+            ty.cloned()
         }
         // D2: the impl-method twin — `v.make().k`. Bare-name keyed like every other method registry,
         // and an empty entry means unknown or ambiguous across impls, which stays fail-open rather
@@ -10659,6 +11336,7 @@ fn labelled_param_binding(
         closure_lambda: None,
         field_closures: BTreeMap::new(),
         fn_alias: None,
+        fn_may: FnMay::default(),
         fn_identities: FnIdentitySet::Unknown,
         field_fn_identities: BTreeMap::new(),
         builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -10704,11 +11382,14 @@ fn analyze_value_block(
             };
             analyze_stmts(stmts, mode, scope, fn_symbols, effects, assumptions, ctx);
             if let Some(t) = tail {
+                // The tail runs after the statements: a write nested in it reaches the scope too.
+                seed_value_nested_labels(&[t], scope, ctx);
                 analyze_expr_effect(t, mode, scope, effects, ctx);
                 discharge_calls_in_expr(ctx, assumptions, scope, t);
             }
         }
         other => {
+            seed_value_nested_labels(&[other], scope, ctx);
             analyze_expr_effect(other, mode, scope, effects, ctx);
             discharge_calls_in_expr(ctx, assumptions, scope, other);
         }
@@ -10837,6 +11518,11 @@ fn analyze_stmts(
         }
         prev_exits = stmt_always_exits(stmt, ctx);
         whole_expression_writes(stmt, scope, ctx);
+        // Function identities first: the label closure below resolves calls through them.
+        join_nested_fn_writes(stmt, scope, ctx);
+        // The label lanes' twin: a write inside the statement's own expressions (a value block, an
+        // expression-position arm) reaches the outer binding before the statement's own effect.
+        seed_expression_nested_labels(stmt, scope, ctx);
         match stmt {
             Stmt::Let {
                 name,
@@ -11202,6 +11888,7 @@ fn analyze_stmts(
                 }
                 let fal = fn_alias_of(init, scope, ctx);
                 let fn_identities = fn_identities_of(init, scope, ctx);
+                let fn_may = fn_may_of(init, scope, ctx);
                 let builtin_gate_tags = builtin_gate_tags_of(init, scope, ctx);
                 let field_fn_identities = match init {
                     Expr::Var(source) => scope
@@ -11303,6 +11990,7 @@ fn analyze_stmts(
                         field_closures: fclos,
                         fn_alias: fal,
                         fn_identities,
+                        fn_may,
                         field_fn_identities,
                         builtin_gate_tags,
                         field_builtin_gate_tags,
@@ -11748,11 +12436,34 @@ fn analyze_stmts(
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 effects.push("hybrid".into());
+                // The backend picks which lanes run and in what order: each lane is analyzed from what
+                // any lane may have written (the label walk's fixpoint over the lanes, seeded like a
+                // loop's head), and the state after the block joins every lane. The lanes' writes used
+                // to be dropped with their `let`s, so a secret assigned in a lane reached a later sink
+                // unlabelled (IFC-JOIN-BREAK-SHADOW).
+                let snap_scope = scope.clone();
+                let lane_exits = seed_loop_carried_labels(
+                    stmt,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                );
+                let seeded = scope.clone();
+                let mut lane_scopes = Vec::new();
                 for block in [gpu, cpu, prove].into_iter().flatten() {
-                    let snap_scope = scope.clone();
                     analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx);
-                    restore_block_scope(scope, &snap_scope);
+                    lane_scopes.push(scope.clone());
+                    restore_block_scope(scope, &seeded);
                 }
+                restore_block_scope(scope, &snap_scope);
+                let mut paths = vec![&snap_scope];
+                paths.extend(&lane_scopes);
+                paths.extend(&lane_exits);
+                merge_taint_over(scope, &paths);
             }
             Stmt::ExprStmt(Expr::Assume(expr)) => {
                 // A contracted call inside the assumed expression (`assume(g(x) == 0)`) is evaluated —
@@ -11998,9 +12709,13 @@ fn analyze_stmts(
                 // `qfs_binding_shadow` test locks it in); the scope-level taint/secret/fn_alias tracking we
                 // DO keep (that is the leak fix).
                 let obl_mark = ctx.solver_obligations.len();
+                let before = scope.clone();
+                // Arms are tried in order: a guard that runs and fails leaves what it wrote to the
+                // arms after it.
+                let mut tried = scope.clone();
                 let mut arm_scopes = Vec::new();
                 for arm in arms {
-                    let mut arm_scope = scope.clone();
+                    let mut arm_scope = tried.clone();
                     seed_effect_pattern(
                         &mut arm_scope,
                         &arm.pattern,
@@ -12034,6 +12749,12 @@ fn analyze_stmts(
                             scope,
                             ctx,
                         );
+                        if expr_nests_stmts(guard) {
+                            seed_value_nested_labels(&[guard], &mut arm_scope, ctx);
+                            for domain in enforcing_label_domains(ctx) {
+                                label_join(domain, &mut tried, &arm_scope);
+                            }
+                        }
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
                     }
                     let mut arm_asm = snap_asm.clone();
@@ -12064,6 +12785,7 @@ fn analyze_stmts(
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
                 merge_taint_over(scope, &refs);
                 merge_fn_alias_over(scope, &refs, &ctx.param_egress, &ctx.param_sinks);
+                relabel_shadowing_join(stmt, &before, &refs, scope, ctx);
                 // A variable REASSIGNED in an arm body (`match c { 0 => { y = 100; } }`) must invalidate its
                 // stale solver fact — else `y`'s pre-match `let y = 2` survives and a `result == 2`
                 // postcondition is falsely PROVED (this is exactly what the generic `ExprStmt` path did via
@@ -12113,6 +12835,7 @@ fn analyze_stmts(
                 }
                 let snap_asm = assumptions.clone();
                 let obl_mark = ctx.solver_obligations.len();
+                let before = scope.clone();
                 let mut then_scope = scope.clone();
                 seed_effect_pattern(
                     &mut then_scope,
@@ -12169,6 +12892,7 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
+                relabel_shadowing_join(stmt, &before, &[&then_scope, &else_scope], scope, ctx);
                 invalidate_embedded_writes(ctx, assumptions, iflet_expr);
                 check_expr_semantics(iflet_expr, scope, ctx);
             }
@@ -12256,6 +12980,34 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     SourceLane::Taint,
                 );
+                // A labelled KEY or INDEX of the place decides where the value lands
+                // (`m["${p.k}"] = 1` stores the secret as a key of `m`), so it labels the root the
+                // way the value does ([`place_key_exprs`]).
+                let mut place_keys = Vec::new();
+                place_key_exprs(target, &mut place_keys);
+                let place_key_taint = place_keys.iter().find_map(|k| {
+                    expr_source(
+                        k,
+                        scope,
+                        &ctx.tainting_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_tainting_fns,
+                        &ctx.place_types(),
+                        SourceLane::Taint,
+                    )
+                });
+                let place_key_secret = place_keys.iter().any(|k| {
+                    expr_source(
+                        k,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                        &ctx.place_types(),
+                        SourceLane::Secret,
+                    )
+                    .is_some()
+                });
                 if let (Some(source), Expr::Var(name)) = (&value_taint, target) {
                     ctx.taint_traces.push(TaintTrace {
                         source: source.clone(),
@@ -12281,7 +13033,10 @@ fn analyze_stmts(
                         b.fn_identities = reassigned_ids;
                         b.field_fn_identities = reassigned_fields;
                     }
-                } else if let (Some(src), Some(root)) = (&value_taint, assign_target_root(target)) {
+                } else if let (Some(src), Some(root)) = (
+                    value_taint.as_ref().or(place_key_taint.as_ref()),
+                    assign_target_root(target),
+                ) {
                     // A non-`Var` place-assignment (`buf[0] = k`, `obj.f = k`) is a MAY-update of the ROOT
                     // container binding: with whole-binding taint granularity, writing a tainted value
                     // into ANY element/field taints the container (SET-only — never CLEAR, since the
@@ -12365,7 +13120,7 @@ fn analyze_stmts(
                             span: None,
                         });
                     }
-                    if value_secret {
+                    if value_secret || place_key_secret {
                         if let Some(b) = scope.get_mut(root) {
                             b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(
                                 true,
@@ -12822,6 +13577,7 @@ fn analyze_stmts(
                         // reassignment resolves through the CURRENT target — no stale-alias false reject.
                         let fal = fn_alias_of(value, scope, ctx);
                         let fn_identities = fn_identities_of(value, scope, ctx);
+                        let fn_may = fn_may_of(value, scope, ctx);
                         let builtin_gate_tags = builtin_gate_tags_of(value, scope, ctx);
                         // Refresh the container-closure paths so a reassignment `b = Box { f: h }`
                         // (h capturing a secret) is tracked — otherwise the stale field-closure of the
@@ -12875,6 +13631,7 @@ fn analyze_stmts(
                             b.whole_captures = captures;
                             b.fn_alias = fal;
                             b.fn_identities = fn_identities;
+                            b.fn_may = fn_may;
                             b.field_closures = new_fclos;
                             b.field_fn_identities = new_field_fn_identities;
                             b.builtin_gate_tags = builtin_gate_tags;
@@ -13040,6 +13797,8 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
+                // A branch that shadowed an outer name after assigning it (IFC-JOIN-BREAK-SHADOW).
+                relabel_shadowing_join(stmt, &snap_scope, &[&then_scope, &else_scope], scope, ctx);
                 let snapshot_facts = snapshot.clone();
                 ctx.solver_int_vars = model_snap.0;
                 ctx.solver_float_vars = model_snap.1;
@@ -13270,8 +14029,12 @@ fn analyze_stmts(
                 let snap_scope = scope.clone();
                 let keep = keepable_written_ints(ctx, &[body]);
                 havoc_loop_written_keep(ctx, assumptions, body, &keep);
-                seed_loop_carried_labels(
-                    body,
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -13289,17 +14052,20 @@ fn analyze_stmts(
                 ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
                 ctx.solver_int_vars = model_snap_loop.0;
                 ctx.solver_float_vars = model_snap_loop.1;
                 ctx.solver_string_vars = model_snap_loop.2;
@@ -13441,8 +14207,12 @@ fn analyze_stmts(
                 }
                 havoc_loop_written(ctx, assumptions, body);
                 seed_loop_carried_whole(stmt, scope, ctx);
-                seed_loop_carried_labels(
-                    body,
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -13454,17 +14224,20 @@ fn analyze_stmts(
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
                 ctx.solver_int_vars = model_snap_loop.0;
                 ctx.solver_float_vars = model_snap_loop.1;
                 ctx.solver_string_vars = model_snap_loop.2;
@@ -13499,8 +14272,12 @@ fn analyze_stmts(
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 seed_loop_carried_whole(stmt, scope, ctx);
-                seed_loop_carried_labels(
-                    body,
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -13512,17 +14289,20 @@ fn analyze_stmts(
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
                 ctx.solver_int_vars = model_snap_loop.0;
                 ctx.solver_float_vars = model_snap_loop.1;
                 ctx.solver_string_vars = model_snap_loop.2;
@@ -13861,6 +14641,7 @@ fn analyze_stmts(
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_may: FnMay::default(),
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
                         builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -13896,8 +14677,12 @@ fn analyze_stmts(
                 let keep = keepable_written_ints(ctx, &[body]);
                 havoc_loop_written_keep(ctx, assumptions, body, &keep);
                 seed_loop_carried_whole(stmt, scope, ctx);
-                seed_loop_carried_labels(
-                    body,
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -14042,17 +14827,20 @@ fn analyze_stmts(
                 ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
                 ctx.solver_int_vars = model_snap_loop.0;
                 ctx.solver_float_vars = model_snap_loop.1;
                 ctx.solver_string_vars = model_snap_loop.2;
@@ -14453,10 +15241,18 @@ fn resolve_closure_value(
             // g(|x| print(k))(0)` looked up the registries under the raw AST text `"g"`, missed, and
             // laundered the forwarded closure — while calling `fwd` directly was correctly rejected.
             // Same walker-desync class as #74: one lane learned to resolve aliases, its sibling did not.
-            let callee: &str = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
+            // A user function of this name runs before a local of the same name (the runtime's call
+            // order), so its own registry entry wins over the local's alias.
+            let callee: &str = if fn_returns_lambda.contains_key(callee.as_str())
+                || fn_returns_param.contains_key(callee.as_str())
+            {
+                callee.as_str()
+            } else {
+                scope
+                    .get(callee)
+                    .and_then(|b| b.fn_alias.as_deref())
+                    .unwrap_or(callee.as_str())
+            };
             if let Some((pnames, Expr::Lambda { params, body })) = fn_returns_lambda.get(callee) {
                 if pnames.len() == args.len() {
                     let mut sub: BTreeMap<String, Expr> =
@@ -14836,6 +15632,7 @@ fn scope_with_closure_params(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -14862,6 +15659,12 @@ fn closure_frame() -> Option<analysis_limit::Frame> {
 
 /// What `expr_source` answers past an analysis limit: the value may hold anything.
 const ANALYSIS_LIMIT_SOURCE: &str = "a value past the analysis limit";
+
+/// A scope key no identifier can spell, present only in a return-summary scope
+/// (`fn_returns_secret` / `fn_returns_taint`): there `expr_source` reads an unbound function name as
+/// that function's return (its `Var` arm). Every scope a summary derives (a branch, a closure body,
+/// a value block, the nested may-scope) is a copy of it, so it carries the key.
+const RETURN_SUMMARY_SCOPE: &str = "\u{0}return summary";
 
 /// `analyze_expr_effect` on a closure body, bounded by `analysis_limit`.
 fn analyze_closure_body_effect(
@@ -15019,11 +15822,20 @@ fn analyze_expr_effect(
             // no `uses(shell)` while the identical `shell("id");` was correctly rejected
             // ANUBIS_EFFECT_FORBIDDEN_IN_MODE (confirmed false accept, probe `H_cap_alias_launder`,
             // 2026-07-26). The same held for a user function carrying a `uses` clause. Non-alias calls
-            // are unaffected — `sink_callee == callee`.
-            let sink_callee: &str = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
+            // are unaffected — `sink_callee == callee`. A user function of this name is what runs,
+            // whatever a local of the same name holds ([`call_targets`]).
+            let user_fn = ctx.user_fn_names.contains(callee.as_str());
+            let sink_callee: &str = if user_fn {
+                callee.as_str()
+            } else {
+                scope
+                    .get(callee)
+                    .and_then(|b| b.fn_alias.as_deref())
+                    .unwrap_or(callee.as_str())
+            };
+            // Every user function the call may run: the summaries and the inherited `uses(...)`
+            // below are the union over them.
+            let targets = call_targets(callee, scope, user_fn);
             // A local callable binding may carry builtin gate tags even when it has no user-function
             // alias. Charge only that stored, concrete value; direct builtin names continue through the
             // existing name-keyed arms below and are not double-counted.
@@ -15100,10 +15912,14 @@ fn analyze_expr_effect(
             // the *caller* never saw the capability. Fail-closed: same Safe/verified gates as a
             // direct builtin of that capability.
             // #74: keyed on the ALIAS-RESOLVED name, so `let g = privileged; g();` inherits the
-            // callee's declared `uses(...)` instead of laundering it.
-            if let Some(caps) = ctx.fn_declared_effects.get(sink_callee).cloned() {
-                for raw in caps {
-                    apply_inherited_capability(raw, mode, effects, ctx);
+            // callee's declared `uses(...)` instead of laundering it. Every target, not the one
+            // preferred alias: `let f = if c { w } else { h1 }` preferred a secret-returning `h1`
+            // and dropped `w`'s `uses(fs.write)` (ALIAS-REGRESSION-UNKNOWN-SET-CAPABILITY).
+            for t in &targets {
+                if let Some(caps) = ctx.fn_declared_effects.get(t).cloned() {
+                    for raw in caps {
+                        apply_inherited_capability(raw, mode, effects, ctx);
+                    }
                 }
             }
             // A local callable extracted from a container (`let f = xs[0]; f(...)`) carries the
@@ -15153,9 +15969,7 @@ fn analyze_expr_effect(
             // candidate's declared capabilities at this call site; a pure container therefore stays
             // accepted, while `app([leak])` charges the caller for `leak`'s fs.write. A call through
             // a join applies the formals of every function it may be ([`call_targets`]).
-            if let Some(applied_params) =
-                union_over_targets(&ctx.param_sinks, &call_targets(callee, scope))
-            {
+            if let Some(applied_params) = union_over_targets(&ctx.param_sinks, &targets) {
                 for i in applied_params {
                     if let Some(arg) = args.get(i) {
                         let mut projected = BTreeMap::new();
@@ -15292,9 +16106,8 @@ fn analyze_expr_effect(
             // interproc summary, not the (absent) summary of the local var `f`. Direct calls are
             // unaffected (no binding ⇒ the target is `callee`). Soundness hunt 2026-07-19: the alias
             // laundered a secret/tainted argument past ANUBIS_INTERPROC_EXFILTRATION / _SINK. A
-            // binding that may hold several functions (a join) takes the union of their summaries:
-            // one preferred name dropped the others' sinks and egress.
-            let targets = call_targets(callee, scope);
+            // binding that may hold several functions (a join) takes the union of their summaries
+            // (`targets`, above): one preferred name dropped the others' sinks and egress.
             if let Some(sink_params) = union_over_targets(&ctx.param_sinks, &targets) {
                 for i in sink_params {
                     if let Some(arg) = args.get(i) {
@@ -15516,6 +16329,7 @@ fn analyze_expr_effect(
                     if let Some(arg) = args.get(i) {
                         let tags = builtin_gate_tags_of(arg, scope, ctx);
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+                        charge_applied_callback_capabilities(arg, mode, scope, effects, ctx);
                     }
                     // The closure param(s) stand for the COLLECTION ELEMENT the builtin binds to them
                     // (`each([input()], |x| shell(x))` runs with x = the tainted element). Compute the
@@ -15582,59 +16396,28 @@ fn analyze_expr_effect(
                         } else {
                             analyze_closure_body_effect(body, mode, &local, effects, ctx);
                         }
-                    } else if let Some(Expr::Var(fname)) = args.get(i) {
-                        // The closure arg is a NAMED function / builtin (`each(xs, shell)`, `apply(store, t)`,
-                        // `map(xs, snd)`) — the builtin applies it to each element, so the ELEMENT flows to
-                        // `fname`'s parameter. This is the named-fn analog of the lambda descent (convergence
-                        // hunt `wf_095bd48b`: `each([input()], shell)` was command injection accepted). Only
-                        // fires when `fname` is NOT a local binding (a real named fn / builtin — a local
-                        // closure var was resolved above). Fail-closed over-approximation: if `fname` sinks or
-                        // egresses ANY parameter and the element is labelled, the element may reach it.
-                        if !scope.contains_key(fname.as_str()) {
-                            if mode == Mode::Safe && is_egress_sink(fname) && elem_secret {
-                                ctx.emit(
-                                    SemanticDiagnostic {
-                                        code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
-                                        message: format!("safe mode confidentiality violation: a secret element flows through `{callee}` into egress `{fname}` without declassify"),
-                                        span: None,
-                                    },
-                                    false,
-                                );
-                            }
-                            if mode == Mode::Safe && is_sink(fname) {
-                                if let Some(src) = &elem_taint {
-                                    ctx.push_diag(SemanticDiagnostic {
-                                        code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
-                                        message: format!("safe mode tainted flow from `{src}` through `{callee}` into sink `{fname}` without declassify"),
-                                        span: None,
-                                    });
-                                }
-                            }
-                            if mode == Mode::Safe
-                                && elem_secret
-                                && ctx.param_egress.get(fname).is_some_and(|s| !s.is_empty())
-                            {
-                                ctx.emit(
-                                    SemanticDiagnostic {
-                                        code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
-                                        message: format!("safe mode confidentiality violation: a secret element flows through `{callee}` into `{fname}`, which reaches an egress without declassify"),
-                                        span: None,
-                                    },
-                                    false,
-                                );
-                            }
-                            if mode == Mode::Safe
-                                && ctx.param_sinks.get(fname).is_some_and(|s| !s.is_empty())
-                            {
-                                if let Some(src) = &elem_taint {
-                                    ctx.push_diag(SemanticDiagnostic {
-                                        code: Some("ANUBIS_INTERPROC_SINK".into()),
-                                        message: format!("safe mode tainted flow from `{src}` through `{callee}` into `{fname}`, which reaches a sink without declassify"),
-                                        span: None,
-                                    });
-                                }
-                            }
-                        }
+                    }
+                    // The closure arg is a NAMED function / builtin (`each(xs, shell)`, `apply(store, t)`,
+                    // `map(xs, snd)`) — the builtin applies it to each element, so the ELEMENT flows to its
+                    // parameter. This is the named-fn analog of the lambda descent (convergence hunt
+                    // `wf_095bd48b`: `each([input()], shell)` was command injection accepted). It is checked
+                    // for every function the argument may be, not only a bare name no local holds: a local
+                    // alias or join (`let f = if c { h2 } else { h1 }; each([k], f)`), a join written in
+                    // place, an element or a call returning a function reached the same parameter unchecked
+                    // (review ordret1 HOF-BUILTIN-LOCAL-FN-BINDING). A lambda, or a local holding only one,
+                    // names no function here; its body was descended above. Fail-closed over-approximation:
+                    // if a candidate sinks or egresses ANY parameter and the element is labelled, the element
+                    // may reach it.
+                    if let Some(arg) = args.get(i) {
+                        check_applied_callback(
+                            arg,
+                            callee,
+                            elem_taint.as_deref(),
+                            elem_secret,
+                            mode,
+                            scope,
+                            ctx,
+                        );
                     }
                 }
             }
@@ -15739,21 +16522,26 @@ fn analyze_expr_effect(
                                 }
                             }
                             for path in paths {
-                                let ids = if path.is_empty() {
-                                    fn_identities_of(arg, scope, ctx)
-                                } else if path == "*" {
-                                    fn_identities_carried_by_value(arg, scope, ctx)
+                                // The argument itself: every function it may be ([`FnMay`]), not
+                                // only a Known identity set, which one unresolvable branch erased.
+                                let names = if path.is_empty() {
+                                    fn_may_of(arg, scope, ctx).names
                                 } else {
-                                    fn_identities_at_contract_path(arg, path, scope, ctx, 0)
+                                    let ids = if path == "*" {
+                                        fn_identities_carried_by_value(arg, scope, ctx)
+                                    } else {
+                                        fn_identities_at_contract_path(arg, path, scope, ctx, 0)
+                                    };
+                                    match ids {
+                                        FnIdentitySet::Known(names) => names,
+                                        FnIdentitySet::Unknown => BTreeSet::new(),
+                                    }
                                 };
-                                if let FnIdentitySet::Known(names) = ids {
-                                    for name in names {
-                                        if let Some(caps) =
-                                            ctx.fn_declared_effects.get(&name).cloned()
-                                        {
-                                            for raw in caps {
-                                                apply_inherited_capability(raw, mode, effects, ctx);
-                                            }
+                                for name in names {
+                                    if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned()
+                                    {
+                                        for raw in caps {
+                                            apply_inherited_capability(raw, mode, effects, ctx);
                                         }
                                     }
                                 }
@@ -15773,18 +16561,76 @@ fn analyze_expr_effect(
                             // producer said "the formal itself", the consumer read "nothing to
                             // charge". This is the same shape as every carrier defect in this file,
                             // in the one place that decides the verdict.
-                            let ids = fn_identities_of(arg, scope, ctx);
-                            if let FnIdentitySet::Known(names) = ids {
-                                for name in names {
-                                    if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned()
-                                    {
-                                        for raw in caps {
-                                            apply_inherited_capability(raw, mode, effects, ctx);
-                                        }
+                            // Every function the argument may be ([`FnMay`]): `app(f, 1)` with
+                            // `let f = if c { w } else { if d { let t = w; t } else { h1 } }` had an
+                            // `Unknown` identity set and charged nothing.
+                            for name in fn_may_of(arg, scope, ctx).names {
+                                if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned() {
+                                    for raw in caps {
+                                        apply_inherited_capability(raw, mode, effects, ctx);
                                     }
                                 }
                             }
                         }
+                    }
+                    // The callee applies this formal to ITS OWN parameters, which are bound to the
+                    // caller's OTHER arguments — so what it applies receives those arguments' labels.
+                    // Binding a closure's params unlabelled (as this did) meant `apply(f, v) { f(v); }`
+                    // called as `apply(|v| shell(v), input())` charged NOTHING: command injection
+                    // through a higher-order function, while the direct `g(input())` was correctly
+                    // rejected. Same hole in the secret lane. GROK-SEKHMET round 9 surfaced this via an
+                    // enum payload; it is general.
+                    //
+                    // Conservative JOIN over the other arguments rather than tracking which one the
+                    // callee forwards: that would need a param→param application summary, and
+                    // over-approximating here can only over-charge a callback whose sibling argument is
+                    // labelled — the fail-closed direction, matching this file's convention for
+                    // summaries.
+                    let mut arg_taint: Option<String> = None;
+                    let mut arg_secret = false;
+                    for (j, a) in args.iter().enumerate() {
+                        if j == i {
+                            continue;
+                        }
+                        if arg_taint.is_none() {
+                            arg_taint = expr_source(
+                                a,
+                                scope,
+                                &ctx.tainting_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_tainting_fns,
+                                &ctx.place_types(),
+                                SourceLane::Taint,
+                            );
+                        }
+                        arg_secret = arg_secret
+                            || expr_source(
+                                a,
+                                scope,
+                                &ctx.secret_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_secret_fns,
+                                &ctx.place_types(),
+                                SourceLane::Secret,
+                            )
+                            .is_some();
+                    }
+                    // A NAMED function passed here — or a local, a join, an element or a call that
+                    // holds one — is applied to those arguments exactly as a lambda is: `app(h2, k)`
+                    // with `fn app(g, x) { g(x) }` runs `h2(k)`. Only a lambda was descended (below),
+                    // so the eta-equivalent `app(|x| h2(x), k)` was rejected while the name, an alias
+                    // and a join printed the secret (review ordret1 USER-HOF-NAMED-FN-ARG). Checked
+                    // against every function the argument may be, as the builtin appliers are.
+                    if let Some(arg) = args.get(i) {
+                        check_applied_callback(
+                            arg,
+                            callee,
+                            arg_taint.as_deref(),
+                            arg_secret,
+                            mode,
+                            scope,
+                            ctx,
+                        );
                     }
                     let resolved = args.get(i).and_then(|arg| {
                         resolve_closure_value(
@@ -15801,48 +16647,6 @@ fn analyze_expr_effect(
                         let Expr::Lambda { params, body } = boxed.as_ref() else {
                             continue;
                         };
-                        // The callee applies this closure to ITS OWN parameters, which are bound to
-                        // the caller's OTHER arguments — so the closure's params must carry those
-                        // arguments' labels. Binding them unlabelled (as this did) meant
-                        // `apply(f, v) { f(v); }` called as `apply(|v| shell(v), input())` charged
-                        // NOTHING: command injection through a higher-order function, while the
-                        // direct `g(input())` was correctly rejected. Same hole in the secret lane.
-                        // GROK-SEKHMET round 9 surfaced this via an enum payload; it is general.
-                        //
-                        // Conservative JOIN over the other arguments rather than tracking which one
-                        // the callee forwards: that would need a param→param application summary,
-                        // and over-approximating here can only over-charge a closure whose sibling
-                        // argument is labelled — the fail-closed direction, matching this file's
-                        // convention for summaries.
-                        let mut arg_taint: Option<String> = None;
-                        let mut arg_secret = false;
-                        for (j, a) in args.iter().enumerate() {
-                            if j == i {
-                                continue;
-                            }
-                            if arg_taint.is_none() {
-                                arg_taint = expr_source(
-                                    a,
-                                    scope,
-                                    &ctx.tainting_fns,
-                                    &ctx.param_return_taint,
-                                    &ctx.method_tainting_fns,
-                                    &ctx.place_types(),
-                                    SourceLane::Taint,
-                                );
-                            }
-                            arg_secret = arg_secret
-                                || expr_source(
-                                    a,
-                                    scope,
-                                    &ctx.secret_fns,
-                                    &ctx.param_return_taint,
-                                    &ctx.method_secret_fns,
-                                    &ctx.place_types(),
-                                    SourceLane::Secret,
-                                )
-                                .is_some();
-                        }
                         let mut local = scope.clone();
                         for pp in params {
                             local.insert(
@@ -15865,6 +16669,7 @@ fn analyze_expr_effect(
                                     closure_lambda: None,
                                     field_closures: BTreeMap::new(),
                                     fn_alias: None,
+                                    fn_may: FnMay::default(),
                                     fn_identities: FnIdentitySet::Unknown,
                                     field_fn_identities: BTreeMap::new(),
                                     builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -16911,6 +17716,8 @@ fn walk_block_effects(
     ctx: &mut SemanticContext,
 ) {
     for (i, stmt) in stmts.iter().enumerate() {
+        // No join below keeps a nested write; the functions it may assign are kept here.
+        join_nested_fn_writes(stmt, scope, ctx);
         // Without an explicit tail, the block's last statement is its value (the runtime's
         // `split_tail_expr`): a `push` there is an ordinary call, not an in-place write.
         let valued = tail.is_none()
@@ -16920,6 +17727,10 @@ fn walk_block_effects(
         match stmt {
             Stmt::Let { name, ty, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
+                // The function a block-local binding holds, as the statement `let` records it: a
+                // call through `let f = h2; f(k)` inside a value block checked nothing.
+                let fal = fn_alias_of(init, scope, ctx);
+                let fn_may = fn_may_of(init, scope, ctx);
                 let init_whole = whole::whole_value_source(init, scope, ctx);
                 let init_list =
                     whole::is_list_expr(init, scope, ctx) && !ctx.whole_not_list.contains(name);
@@ -16957,6 +17768,8 @@ fn walk_block_effects(
                     b.whole_captures = init_captures;
                     b.whole_list = init_list;
                     b.whole_map = init_map;
+                    b.fn_alias = fal;
+                    b.fn_may = fn_may;
                 }
             }
             Stmt::LetPattern { pattern, init, .. } => {
@@ -17012,12 +17825,16 @@ fn walk_block_effects(
                     SourceLane::Secret,
                 )
                 .is_some();
+                let fal = fn_alias_of(value, scope, ctx);
+                let fn_may = fn_may_of(value, scope, ctx);
                 if let Some(b) = scope.get_mut(name) {
                     b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
                         t.is_some(),
                         t,
                     ));
                     b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(s));
+                    b.fn_alias = fal;
+                    b.fn_may = fn_may;
                 }
             }
             Stmt::Assign { target, value } => {
@@ -17091,6 +17908,7 @@ fn walk_block_effects(
                 }
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 let snap = scope.clone();
+                seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
@@ -17109,12 +17927,14 @@ fn walk_block_effects(
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 let snap = scope.clone();
                 seed_loop_carried_whole(stmt, scope, ctx);
+                seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
             Stmt::Loop { body, .. } => {
                 let snap = scope.clone();
                 seed_loop_carried_whole(stmt, scope, ctx);
+                seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
@@ -17153,6 +17973,7 @@ fn walk_block_effects(
                 }
                 let snap = scope.clone();
                 seed_loop_carried_whole(stmt, scope, ctx);
+                seed_loop_carried_fn_values(body, scope, ctx);
                 // M1: see `seed_loop_var_callable` — seeded in this walker AND in `analyze_stmts`.
                 seed_loop_var_callable(var, source, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
@@ -23452,10 +24273,10 @@ fn reject_secret_pc_public_return(
         });
     };
 
-    // Explicit `return` under secret if/while path conditions.
+    // Explicit `return` (and `?`) under secret if/while path conditions.
     let mut rets = Vec::new();
     for st in body {
-        collect_returns_guarded(st, &[], &mut rets);
+        collect_exits_guarded(st, &[], true, &mut rets);
     }
     for (val, guards) in &rets {
         if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope) {
@@ -23616,6 +24437,7 @@ fn reject_secret_scrutinee_returns_in_expr(
                 if secret_scrut {
                     let mut rs = Vec::new();
                     expr_returns(&arm.body, &mut rs);
+                    try_exits_in_expr(&arm.body, &mut rs);
                     for r in rs {
                         if !val_is_secret(&r) {
                             emit(ctx, flagged);
@@ -23627,6 +24449,7 @@ fn reject_secret_scrutinee_returns_in_expr(
                     if expr_is_secret_pc(g, scope, ctx) {
                         let mut rs = Vec::new();
                         expr_returns(&arm.body, &mut rs);
+                        try_exits_in_expr(&arm.body, &mut rs);
                         for r in rs {
                             if !val_is_secret(&r) {
                                 emit(ctx, flagged);
@@ -23650,6 +24473,8 @@ fn reject_secret_scrutinee_returns_in_expr(
                 let mut rs = Vec::new();
                 expr_returns(then, &mut rs);
                 expr_returns(else_, &mut rs);
+                try_exits_in_expr(then, &mut rs);
+                try_exits_in_expr(else_, &mut rs);
                 for r in rs {
                     if !val_is_secret(&r) {
                         emit(ctx, flagged);
@@ -25313,6 +26138,7 @@ fn scan_for_secret_fn(
         if let FnIdentitySet::Known(k) = &b.fn_identities {
             names.extend(k.iter().cloned());
         }
+        names.extend(b.fn_may.names.iter().cloned());
         for ids in b.field_fn_identities.values() {
             if let FnIdentitySet::Known(k) = ids {
                 names.extend(k.iter().cloned());
@@ -26882,37 +27708,60 @@ fn guard_clause_escapes(body: &[Stmt]) -> Vec<(Expr, bool)> {
 /// them. SOUND: `push_branch_path_condition` (the consumer) is a no-op for a non-modelable guard, and a
 /// reassigned param/local is removed from `int_vars` so its guard silently drops — a TRUE path premise
 /// can only turn a REJECT into a PASS, never mask a genuinely-false contract.
+/// The `ensures` discharge's view: [`collect_exits_guarded`] without `?` exits, since an early
+/// `Err` is not the function's value there.
 fn collect_returns_guarded(
     s: &Stmt,
     guards: &[(Expr, bool)],
     out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
 ) {
-    fn push_expr(e: &Expr, g: &[(Expr, bool)], out: &mut Vec<(Expr, Vec<(Expr, bool)>)>) {
+    collect_exits_guarded(s, guards, false, out);
+}
+
+/// [`collect_returns_guarded`], and with `with_try` also every `?` operand ([`try_exits_in_expr`]),
+/// which leaves the function under the same guards: the information-flow checks count those.
+fn collect_exits_guarded(
+    s: &Stmt,
+    guards: &[(Expr, bool)],
+    with_try: bool,
+    out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
+) {
+    fn push_expr(
+        e: &Expr,
+        g: &[(Expr, bool)],
+        with_try: bool,
+        out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
+    ) {
         let mut rs = Vec::new();
         expr_returns(e, &mut rs);
+        if with_try {
+            try_exits_in_expr(e, &mut rs);
+        }
         for r in rs {
             out.push((r, g.to_vec()));
         }
     }
     match s {
-        Stmt::ExprStmt(e) => push_expr(e, guards, out),
-        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => push_expr(init, guards, out),
+        Stmt::ExprStmt(e) => push_expr(e, guards, with_try, out),
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+            push_expr(init, guards, with_try, out)
+        }
         Stmt::Assign { target, value } => {
-            push_expr(target, guards, out);
-            push_expr(value, guards, out);
+            push_expr(target, guards, with_try, out);
+            push_expr(value, guards, with_try, out);
         }
         Stmt::If { cond, then, else_ } => {
-            push_expr(cond, guards, out);
+            push_expr(cond, guards, with_try, out);
             let mut g_then = guards.to_vec();
             g_then.push((cond.clone(), false));
             for st in then {
-                collect_returns_guarded(st, &g_then, out);
+                collect_exits_guarded(st, &g_then, with_try, out);
             }
             if let Some(e) = else_ {
                 let mut g_else = guards.to_vec();
                 g_else.push((cond.clone(), true));
                 for st in e {
-                    collect_returns_guarded(st, &g_else, out);
+                    collect_exits_guarded(st, &g_else, with_try, out);
                 }
             }
         }
@@ -26920,40 +27769,42 @@ fn collect_returns_guarded(
         // the guards accumulated OUTSIDE the loop (a loop-mutated var is de-modeled anyway, so its guard
         // no-ops). Same set of returns as `collect_returns_in_stmt`.
         Stmt::While { cond, body, .. } => {
-            push_expr(cond, guards, out);
+            push_expr(cond, guards, with_try, out);
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::WhileLet { expr, body, .. } => {
-            push_expr(expr, guards, out);
+            push_expr(expr, guards, with_try, out);
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::For { source, body, .. } => {
             match source {
                 crate::frontend::ForSource::Range { start, end } => {
-                    push_expr(start, guards, out);
-                    push_expr(end, guards, out);
+                    push_expr(start, guards, with_try, out);
+                    push_expr(end, guards, with_try, out);
                 }
-                crate::frontend::ForSource::Collection { expr } => push_expr(expr, guards, out),
+                crate::frontend::ForSource::Collection { expr } => {
+                    push_expr(expr, guards, with_try, out)
+                }
             }
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::Loop { body, .. }
         | Stmt::ResearchBlock { body, .. }
         | Stmt::ExploitBlock { body, .. } => {
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::HybridBlock { gpu, cpu, prove } => {
             for b in [gpu, cpu, prove].into_iter().flatten() {
                 for st in b {
-                    collect_returns_guarded(st, guards, out);
+                    collect_exits_guarded(st, guards, with_try, out);
                 }
             }
         }
@@ -28338,31 +29189,668 @@ fn declassify_source(
     }
 }
 
-/// Recursively thread a value-position block's STATEMENT flow into `local` for the INTEGRITY walker, at
-/// parity with the enforcing `analyze_stmts` control-flow-merge discipline so the two never disagree.
-/// Straight-line `let`/`Assign{Var}` set/CLEAR the label; nested control-flow (`if`/`while`/`while let`/
-/// `loop`/`for`) is MAY-merged via `merge_taint_over` over EXACTLY the oracle's path set — If: `[then,
-/// (else | snap)]` (a value cleared on BOTH branches is precisely cleared; a uniform base path would OR it
-/// back), loops: `[snap, body]` (snap = the zero-iteration path). A `for` loop var inherits the
-/// collection/range label (mirrors the oracle's For arm). Research/Exploit bodies and all Hybrid lanes
-/// are recursively MAY-merged; statement-position Match and IfLet use the same path join discipline.
-/// Block-`let`s AND destructured pattern vars are seeded with their REAL span so `merge_taint_over`'s
-/// span-identity distinguishes a branch-nested SHADOW (a new binding — its label must not leak to the
-/// outer same-named binding) from a REASSIGNMENT (same span — its label carries). This closes the
-/// value-position nested-control-flow fail-open the former hand-rolled `_ => {}` left open. Non-`Var`
-/// assignment remains outside this label-only helper; cross-iteration loop carry is handled by the
-/// monotone fixpoint immediately below.
-/// Seed a loop's carried taint/secret labels into `scope` to a MONOTONE fixpoint BEFORE the enforcing body
-/// pass checks its sinks. The enforcing `analyze_stmts` walks a loop body once in straight-line order, so a
-/// sink that reads a variable BEFORE a same-body reassignment (`while { send(a); a=b; }`) or through a
-/// multi-hop carry (`{ a=b; b=c }`) never sees the value the reassignment carries on the NEXT iteration
-/// (convergence hunt `wf_095bd48b`). Run the label-only walkers (`walk_block_taint`/`_secret`) over the
-/// body repeatedly, OR-ing any newly-labelled variable into `scope` (labels only grow → converges), so the
-/// body pass sees every may-carried label. Fail-closed over-approximation (a var labelled on SOME iteration
-/// is treated as labelled throughout). Bounded by name count (max carry-chain length).
+/// The flow discipline every label walker shares (IFC-JOIN-BREAK-SHADOW): the value-block walker
+/// ([`walk_block_labels`]), the enforcing lane's loop seeding ([`seed_loop_carried_labels`]), the
+/// return summary ([`body_returns`]) and the parameter-return summary ([`body_param_returns`]).
+///
+/// - A statement list is walked IN ORDER on its own state, so a later write overwrites an earlier
+///   one exactly.
+/// - At a control-flow merge (`if`/`else`, `match` arms, `if let`) the alternatives' states JOIN: a
+///   label on any path survives, a value cleared on every path is clean. A path that does not reach
+///   the merge (it returned, broke or continued) takes no part in it.
+/// - What leaves a block early is kept: the states at its `break`s join the loop's exit, the states
+///   at its `continue`s join the loop's head. The joins used to keep END states only, so
+///   `loop { x = k; if c { break; } x = 0; }` left `x` clean.
+/// - A loop iterates its body from the joined head to a fixpoint (labels only grow, so it ends); a
+///   later entry into the same loop in the same walk starts from the head the last one reached, so
+///   nested loops cost the sum, not the product, of their iterations.
+/// - A `let` or binder that shadows an outer name keeps the outer binding aside ([`shadowed_key`])
+///   and puts it back when its scope ends, so what was assigned to the outer name before the shadow
+///   reaches the merge. The joins used to skip a shadowing path, so `if c { x = k; let x = 0; }`
+///   left `x` clean, and a merge whose every path shadowed `x` cleared it.
+/// - Only where order is not tracked — the statements nested in a statement's own EXPRESSIONS (a
+///   value block, an expression-position arm: [`stmt_value_exprs`]) — the order-free closure
+///   [`nested_may_labels`] stands in.
+///
+/// `fall` is the state at the end of a statement list (`None` when no path reaches it); `brk` and
+/// `cont` join the states at every `break` / `continue` in it that leaves to the enclosing loop.
+struct FlowExits<S> {
+    fall: Option<S>,
+    brk: Option<S>,
+    cont: Option<S>,
+}
+
+impl<S> FlowExits<S> {
+    fn falling(state: S) -> Self {
+        Self {
+            fall: Some(state),
+            brk: None,
+            cont: None,
+        }
+    }
+
+    fn none() -> Self {
+        Self {
+            fall: None,
+            brk: None,
+            cont: None,
+        }
+    }
+}
+
+/// Join `src` into `dst`; `None` is "no path".
+fn join_exit<S>(dst: &mut Option<S>, src: Option<S>, join: &impl Fn(&mut S, &S)) {
+    if let Some(s) = src {
+        match dst {
+            Some(d) => join(d, &s),
+            None => *dst = Some(s),
+        }
+    }
+}
+
+/// The key a binding is kept under while a `let` or binder at `site` (the shadowing statement's
+/// address, unique among the scopes open at once) shadows its name: no identifier can take it, so no
+/// read reaches it until [`settle_scope`] puts it back.
+fn shadowed_key(name: &str, site: usize) -> String {
+    format!("\u{1}shadowed:{name}:{site:x}")
+}
+
+/// Before `name` is bound afresh at `site`: when it names a binding of the enclosing scope (`keys`)
+/// that is not already kept aside here, keep a copy of it under [`shadowed_key`].
+fn hide_shadowed<V: Clone>(
+    state: &mut BTreeMap<String, V>,
+    name: &str,
+    site: usize,
+    keys: &BTreeSet<String>,
+    hidden: &mut Vec<(String, String)>,
+) {
+    if !keys.contains(name) || hidden.iter().any(|(n, _)| n == name) {
+        return;
+    }
+    if let Some(b) = state.get(name).cloned() {
+        let key = shadowed_key(name, site);
+        state.insert(key.clone(), b);
+        hidden.push((name.to_string(), key));
+    }
+}
+
+/// End a scope in a state that leaves it: every binding kept aside returns to its name (replacing
+/// the shadow), and every name the scope bound is dropped, so the state is keyed like the scope's
+/// entry (`keys`) and its bindings are the entry's bindings.
+fn settle_scope<V>(
+    state: &mut BTreeMap<String, V>,
+    keys: &BTreeSet<String>,
+    hidden: &[(String, String)],
+) {
+    for (name, key) in hidden {
+        if let Some(b) = state.remove(key) {
+            state.insert(name.clone(), b);
+        }
+    }
+    state.retain(|k, _| keys.contains(k));
+}
+
+fn settle_exits<V>(
+    exits: &mut FlowExits<BTreeMap<String, V>>,
+    keys: &BTreeSet<String>,
+    hidden: &[(String, String)],
+) {
+    for s in [&mut exits.fall, &mut exits.brk, &mut exits.cont]
+        .into_iter()
+        .flatten()
+    {
+        settle_scope(s, keys, hidden);
+    }
+}
+
+/// The expressions a statement holds whose nested statements the label walks do not visit in order:
+/// a `let` / assignment value, a loop or `if` header (and loop invariants), and a statement-position
+/// `match` / `if let` scrutinee. The guards and values of a statement-position `match` / `if let`
+/// arm are the arm's own ([`arm_value_exprs`]): they run with its binders bound, a block arm's tail
+/// after its statements.
+fn stmt_value_exprs(stmt: &Stmt) -> Vec<&Expr> {
+    match stmt {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => vec![init],
+        Stmt::Assign { target, value } => vec![target, value],
+        Stmt::If { cond, .. } => vec![cond],
+        Stmt::While {
+            cond, invariant, ..
+        } => std::iter::once(cond).chain(invariant).collect(),
+        Stmt::Loop { invariant, .. } => invariant.iter().collect(),
+        Stmt::For {
+            source, invariant, ..
+        } => {
+            let mut v: Vec<&Expr> = match source {
+                crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                crate::frontend::ForSource::Collection { expr } => vec![expr],
+            };
+            v.extend(invariant);
+            v
+        }
+        Stmt::WhileLet { expr, .. } => vec![expr],
+        Stmt::ExprStmt(Expr::Match { scrutinee, .. } | Expr::IfLet { scrutinee, .. }) => {
+            vec![&**scrutinee]
+        }
+        Stmt::ExprStmt(e) => vec![e],
+        Stmt::ResearchBlock { .. }
+        | Stmt::ExploitBlock { .. }
+        | Stmt::HybridBlock { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::SpecBlock { .. } => Vec::new(),
+    }
+}
+
+/// A statement-position `match` arm's or `if let` branch's own expressions: its guard and, for a
+/// non-block body, the body; a block body's tail is its block's ([`walk_block_labels`]'s
+/// `block_value`).
+fn arm_value_exprs<'e>(guard: Option<&'e Expr>, body: &'e Expr) -> Vec<&'e Expr> {
+    let mut v: Vec<&Expr> = guard.into_iter().collect();
+    if !matches!(body, Expr::Block { .. }) {
+        v.push(body);
+    }
+    v
+}
+
+/// Whether `e` binds a pattern (`match` arms, `if let`) anywhere inside, lambdas included.
+fn expr_binds_patterns(e: &Expr) -> bool {
+    let mut found = false;
+    visit::each_expr(e, &mut |x| {
+        found |= matches!(x, Expr::Match { .. } | Expr::IfLet { .. });
+    });
+    found
+}
+
+/// Whether `e` holds statements outside any lambda body (a value block, a block arm).
+fn expr_nests_stmts(e: &Expr) -> bool {
+    let mut found = false;
+    visit::each_stmt_in_expr(e, &mut |_, in_lambda| found |= !in_lambda);
+    found
+}
+
+fn is_loop_stmt(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::While { .. } | Stmt::WhileLet { .. } | Stmt::Loop { .. } | Stmt::For { .. }
+    )
+}
+
+type LabelScope = BTreeMap<String, ScopeBinding>;
+
+/// OR `domain`'s label from `src` into `dst`, name by name over `dst`'s names (both states settled to
+/// the same scope, so a name denotes the same binding in both).
+fn label_join(domain: BlockLabelDomain<'_>, dst: &mut LabelScope, src: &LabelScope) {
+    for (name, d) in dst.iter_mut() {
+        if let Some(s) = src.get(name) {
+            if domain.labelled(s) && !domain.labelled(d) {
+                let source = s
+                    .info
+                    .taint_source
+                    .clone()
+                    .unwrap_or_else(|| format!("`{name}` on a joined path"));
+                domain.taint_place(d, source);
+            }
+        }
+    }
+}
+
+fn same_labels(domain: BlockLabelDomain<'_>, a: &LabelScope, b: &LabelScope) -> bool {
+    a.iter().all(|(name, x)| {
+        b.get(name)
+            .is_none_or(|y| domain.labelled(x) == domain.labelled(y))
+    })
+}
+
+/// Label, in `cur`, every outer binding the nested statements assign what they may give it there.
+fn apply_nested_labels(domain: BlockLabelDomain<'_>, cur: &mut LabelScope, nested: &NestedMay) {
+    for name in &nested.assigned {
+        if let (Some(m), Some(b)) = (nested.may.get(name), cur.get_mut(name)) {
+            if domain.labelled(m) && !domain.labelled(b) {
+                let source = m
+                    .info
+                    .taint_source
+                    .clone()
+                    .unwrap_or_else(|| format!("`{name}` assigned in a nested block"));
+                domain.taint_place(b, source);
+            }
+        }
+    }
+}
+
+/// A labelled `return` (or tail value) that a walk in return-summary mode reached.
+struct LabelledReturn;
+
+/// What a walk in return-summary mode seeds, for the statements a judged value sits in, on top of
+/// the walked state ([`body_returns`]).
+type RetSeed<'a> = &'a dyn Fn(&Stmt, &mut LabelScope);
+
+/// One label walk ([`walk_block_labels`]) over a value block, a loop the enforcing lane seeds, or a
+/// function body in return-summary mode.
+struct LabelWalk<'a> {
+    domain: BlockLabelDomain<'a>,
+    struct_fields: &'a PlaceTypes<'a>,
+    /// Return-summary mode ([`body_returns`]): every `return` and tail value the walk reaches is
+    /// judged on the walked state plus what this seeds for the statements it sits in (declared
+    /// pattern binders, local lambdas); a labelled one ends the walk.
+    ret_seed: Option<RetSeed<'a>>,
+    /// Per loop or hybrid block (by address), the head its last fixpoint reached in this walk.
+    heads: BTreeMap<usize, LabelScope>,
+}
+
+impl<'a> LabelWalk<'a> {
+    fn new(
+        domain: BlockLabelDomain<'a>,
+        struct_fields: &'a PlaceTypes<'a>,
+        ret_seed: Option<RetSeed<'a>>,
+    ) -> Self {
+        Self {
+            domain,
+            struct_fields,
+            ret_seed,
+            heads: BTreeMap::new(),
+        }
+    }
+
+    /// In return-summary mode, whether `value` — returned, or the function's tail value — is
+    /// labelled in `state` with `seeds`' declared binders and local lambdas added.
+    fn judge(
+        &self,
+        value: &Expr,
+        state: &LabelScope,
+        seeds: &[Stmt],
+    ) -> Result<(), LabelledReturn> {
+        let Some(seed) = self.ret_seed else {
+            return Ok(());
+        };
+        let mut local = state.clone();
+        for s in seeds {
+            seed(s, &mut local);
+        }
+        match self.domain.expr_source(value, &local, self.struct_fields) {
+            Some(_) => Err(LabelledReturn),
+            None => Ok(()),
+        }
+    }
+
+    /// The statements nested in `stmt`'s own expressions ([`stmt_value_exprs`]); see
+    /// [`LabelWalk::value_writes`].
+    fn expression_writes(
+        &self,
+        stmt: &Stmt,
+        cur: &mut LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<(), LabelledReturn> {
+        self.value_writes(
+            &stmt_value_exprs(stmt),
+            cur,
+            std::slice::from_ref(stmt),
+            out,
+        )
+    }
+
+    /// Expressions run at this point of the walk (a statement's own, an arm's guard or value, a
+    /// block's tail) can hold statements — a value block, an expression-position arm — whose order
+    /// the walk does not track: when they do, or when a `return` among them may read a binder they
+    /// bind, the order-free closure over them ([`nested_may_labels`]) stands in. Each outer binding
+    /// they assign takes the label it may get there, BEFORE the statement's own effect (so
+    /// `x = if c { x = k; 0 } else { 0 }` still ends clean); a `return` among them is judged with
+    /// every such write counted; a `break` / `continue` among them leaves with that state.
+    fn value_writes(
+        &self,
+        exprs: &[&Expr],
+        cur: &mut LabelScope,
+        seeds: &[Stmt],
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<(), LabelledReturn> {
+        let mut rets = Vec::new();
+        if self.ret_seed.is_some() {
+            for &e in exprs {
+                expr_returns(e, &mut rets);
+                // `v?` leaves the function with `v`'s `Err` / `None`.
+                try_exits_in_expr(e, &mut rets);
+            }
+        }
+        let (breaks, continues) = expr_loop_exits(exprs);
+        let nests = exprs.iter().any(|e| expr_nests_stmts(e))
+            || breaks
+            || continues
+            || !in_place_pushes(exprs).is_empty();
+        if !nests && (rets.is_empty() || !exprs.iter().any(|e| expr_binds_patterns(e))) {
+            for r in &rets {
+                self.judge(r, cur, seeds)?;
+            }
+            return Ok(());
+        }
+        let nested = nested_may_labels(exprs, cur, self.domain, self.struct_fields);
+        for r in &rets {
+            self.judge(r, &nested.may, seeds)?;
+        }
+        apply_nested_labels(self.domain, cur, &nested);
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        if nested.breaks {
+            join_exit(&mut out.brk, Some(nested.may.clone()), &join);
+        }
+        if nested.continues {
+            join_exit(&mut out.cont, Some(nested.may), &join);
+        }
+        Ok(())
+    }
+
+    /// Join alternatives into the statement they belong to: `cur` becomes the join of the states that
+    /// reach the merge (false when none does); their breaks and continues join into `out`.
+    fn merge_paths(
+        &self,
+        cur: &mut LabelScope,
+        paths: Vec<FlowExits<LabelScope>>,
+        out: &mut FlowExits<LabelScope>,
+    ) -> bool {
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        let mut fall = None;
+        for p in paths {
+            join_exit(&mut fall, p.fall, &join);
+            join_exit(&mut out.brk, p.brk, &join);
+            join_exit(&mut out.cont, p.cont, &join);
+        }
+        match fall {
+            Some(s) => {
+                *cur = s;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Run `run` from `cur` in a scope that binds `names` at `site` (seeded by `seed`): in every
+    /// state that leaves it, the bindings they shadowed come back and the binders are dropped.
+    fn scoped(
+        &mut self,
+        cur: &LabelScope,
+        names: &[String],
+        site: usize,
+        seed: impl FnOnce(&mut LabelScope),
+        run: impl FnOnce(&mut Self, LabelScope) -> Result<FlowExits<LabelScope>, LabelledReturn>,
+    ) -> Result<FlowExits<LabelScope>, LabelledReturn> {
+        let keys: BTreeSet<String> = cur.keys().cloned().collect();
+        let mut hidden = Vec::new();
+        let mut entry = cur.clone();
+        for n in names {
+            hide_shadowed(&mut entry, n, site, &keys, &mut hidden);
+        }
+        seed(&mut entry);
+        let mut exits = run(self, entry)?;
+        settle_exits(&mut exits, &keys, &hidden);
+        Ok(exits)
+    }
+
+    /// A statement-position `match` arm or `if let` branch from `entry` (its binders seeded): its
+    /// guard runs first; a block's statements are walked in order and its tail after them; the value
+    /// is judged where the arm ends when it is the function's (`tail`).
+    fn arm_body(
+        &mut self,
+        guard: Option<&Expr>,
+        body: &Expr,
+        mut entry: LabelScope,
+        tail: bool,
+        seeds: &[Stmt],
+    ) -> Result<FlowExits<LabelScope>, LabelledReturn> {
+        let mut early = FlowExits::none();
+        self.value_writes(&arm_value_exprs(guard, body), &mut entry, seeds, &mut early)?;
+        let mut exits = match body {
+            Expr::Block { stmts, tail: value } => {
+                walk_block_labels(stmts, entry, self, tail, value.as_deref(), true)?
+            }
+            // An arm `None => break` / `_ => continue` leaves the loop; nothing falls through.
+            Expr::Call { callee, .. } if callee == "break" || callee == "continue" => {
+                let mut exits = FlowExits::none();
+                if callee == "break" {
+                    exits.brk = Some(entry);
+                } else {
+                    exits.cont = Some(entry);
+                }
+                exits
+            }
+            other => {
+                if tail {
+                    self.judge(other, &entry, seeds)?;
+                }
+                FlowExits::falling(entry)
+            }
+        };
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        join_exit(&mut exits.brk, early.brk, &join);
+        join_exit(&mut exits.cont, early.cont, &join);
+        Ok(exits)
+    }
+
+    /// A loop statement in a walked list: `cur` becomes the state after it (false when nothing
+    /// leaves it).
+    fn loop_exit(
+        &mut self,
+        stmt: &Stmt,
+        body: &[Stmt],
+        cur: &mut LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<bool, LabelledReturn> {
+        let (_, exit) = self.loop_fixpoint(stmt, body, std::mem::take(cur), out)?;
+        match exit {
+            Some(s) => {
+                *cur = s;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// A loop's head (what its body starts from at any iteration) and the state after it (`None`
+    /// when nothing leaves it). The body is walked from the head, and the head joined with what
+    /// reaches the body's end or a `continue`, until it holds (labels only grow over a fixed set of
+    /// names, so this ends); the state after is the head (where the condition fails; not for `loop`)
+    /// joined with every `break`. The header runs at every head: its own nested writes and returns
+    /// count there, and the binders take the label of the range, collection or scrutinee read there.
+    fn loop_fixpoint(
+        &mut self,
+        stmt: &Stmt,
+        body: &[Stmt],
+        entry: LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<(LabelScope, Option<LabelScope>), LabelledReturn> {
+        let domain = self.domain;
+        let struct_fields = self.struct_fields;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        let site = stmt as *const Stmt as usize;
+        let binders: Vec<String> = match stmt {
+            Stmt::For { var, .. } => vec![var.clone()],
+            Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+            _ => Vec::new(),
+        };
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            label_join(domain, &mut head, prev);
+        }
+        let mut brk: Option<LabelScope> = None;
+        loop {
+            let mut header = FlowExits::none();
+            self.expression_writes(stmt, &mut head, &mut header)?;
+            let header_source = header_label(stmt, &head, domain, struct_fields);
+            let exits = self.scoped(
+                &head,
+                &binders,
+                site,
+                |scope| match stmt {
+                    Stmt::For { var, .. } => {
+                        scope.insert(var.clone(), domain.loop_binding(var, header_source.clone()));
+                    }
+                    Stmt::WhileLet { pattern, .. } => {
+                        domain.seed_pattern(scope, pattern, &header_source, struct_fields)
+                    }
+                    _ => {}
+                },
+                |walk, scope| walk_block_labels(body, scope, walk, false, None, true),
+            )?;
+            let mut next = head.clone();
+            for s in [&exits.fall, &exits.cont, &header.cont]
+                .into_iter()
+                .flatten()
+            {
+                label_join(domain, &mut next, s);
+            }
+            join_exit(&mut brk, exits.brk, &join);
+            // A `break` / `continue` in the header's own nested statements: which loop it leaves is
+            // not modelled, so it counts for this loop and the enclosing one.
+            join_exit(&mut brk, header.brk.clone(), &join);
+            join_exit(&mut out.brk, header.brk, &join);
+            join_exit(&mut out.cont, header.cont, &join);
+            if same_labels(domain, &next, &head) {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        let mut exit = match stmt {
+            Stmt::Loop { .. } => None,
+            _ => Some(head.clone()),
+        };
+        join_exit(&mut exit, brk, &join);
+        Ok((head, exit))
+    }
+
+    /// A hybrid block: the backend picks which lanes run and in what order, so the state after it is
+    /// the fixpoint of running any lane from it (each may start from what another wrote).
+    fn hybrid_fixpoint(
+        &mut self,
+        stmt: &Stmt,
+        lanes: &[&[Stmt]],
+        entry: LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<LabelScope, LabelledReturn> {
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        let site = stmt as *const Stmt as usize;
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            label_join(domain, &mut head, prev);
+        }
+        loop {
+            let mut next = head.clone();
+            for lane in lanes {
+                let exits = walk_block_labels(lane, head.clone(), self, false, None, true)?;
+                if let Some(f) = &exits.fall {
+                    label_join(domain, &mut next, f);
+                }
+                join_exit(&mut out.brk, exits.brk, &join);
+                join_exit(&mut out.cont, exits.cont, &join);
+            }
+            if same_labels(domain, &next, &head) {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        Ok(head)
+    }
+
+    /// For the enforcing lane: the head of a loop or hybrid block and the state after it.
+    fn carried(
+        &mut self,
+        stmt: &Stmt,
+        entry: LabelScope,
+    ) -> Result<(LabelScope, Option<LabelScope>), LabelledReturn> {
+        // A `break` / `continue` that leaves to an ENCLOSING loop is that loop's to seed: it walks
+        // this statement inside its own body.
+        let mut escapes = FlowExits::none();
+        match stmt {
+            Stmt::While { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. } => self.loop_fixpoint(stmt, body, entry, &mut escapes),
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                let lanes: Vec<&[Stmt]> = [gpu, cpu, prove]
+                    .into_iter()
+                    .flatten()
+                    .map(Vec::as_slice)
+                    .collect();
+                let head = self.hybrid_fixpoint(stmt, &lanes, entry, &mut escapes)?;
+                Ok((head.clone(), Some(head)))
+            }
+            _ => Ok((entry.clone(), Some(entry))),
+        }
+    }
+}
+
+/// The label a loop header gives its binders at `head`: a `for` variable its range's or
+/// collection's, a `while let` pattern its scrutinee's. Read at every head, not once at entry: a
+/// `while let` re-reads its scrutinee each iteration, and reading a `for` source there too only adds
+/// labels.
+fn header_label(
+    stmt: &Stmt,
+    head: &LabelScope,
+    domain: BlockLabelDomain<'_>,
+    struct_fields: &PlaceTypes<'_>,
+) -> Option<String> {
+    match stmt {
+        Stmt::For {
+            source: crate::frontend::ForSource::Range { start, end },
+            ..
+        } => domain
+            .expr_source(start, head, struct_fields)
+            .or_else(|| domain.expr_source(end, head, struct_fields)),
+        Stmt::For {
+            source: crate::frontend::ForSource::Collection { expr },
+            ..
+        }
+        | Stmt::WhileLet { expr, .. } => domain.expr_source(expr, head, struct_fields),
+        _ => None,
+    }
+}
+
+/// Hand a value block's walked state back to its caller, which reads the block's tail in it (so it is
+/// left unsettled: the tail may read the block's own `let`s).
+fn finish_value_block(
+    local: &mut LabelScope,
+    walked: Result<FlowExits<LabelScope>, LabelledReturn>,
+) {
+    if let Ok(exits) = walked {
+        if let Some(end) = exits.fall.or(exits.brk).or(exits.cont) {
+            *local = end;
+        }
+    }
+}
+
+/// The enforcing lane's two label domains.
+fn enforcing_label_domains(ctx: &SemanticContext) -> [BlockLabelDomain<'_>; 2] {
+    [
+        BlockLabelDomain::Taint {
+            sources: &ctx.tainting_fns,
+            param_returns: &ctx.param_return_taint,
+            method_sources: &ctx.method_tainting_fns,
+        },
+        BlockLabelDomain::Secret {
+            sources: &ctx.secret_fns,
+            param_returns: &ctx.param_return_taint,
+            method_sources: &ctx.method_secret_fns,
+        },
+    ]
+}
+
+/// Seed a loop's (or hybrid block's) carried taint/secret labels into `scope` BEFORE the enforcing
+/// body pass checks its sinks, and return the states the label walk found after it.
+///
+/// The enforcing `analyze_stmts` walks a loop body once, in order, so a sink that reads a variable
+/// BEFORE a same-body reassignment (`while { send(a); a = b; }`), through a multi-hop carry
+/// (`{ a = b; b = c }`) or through a `continue` never sees what the reassignment carries into the
+/// NEXT iteration (convergence hunt `wf_095bd48b`). The label walk iterates the loop to its head
+/// fixpoint ([`LabelWalk::loop_fixpoint`], both domains) and every name gets what the head holds; a
+/// `while let` binder or `for` variable also gets what the head gives the scrutinee or source. The
+/// returned exit states (the head where the condition fails, joined with every `break`) are joined
+/// at the loop's merge: a label live at a `break` was lost when the merge kept only the body's end
+/// state (IFC-JOIN-BREAK-SHADOW). Fail-closed over-approximation: a name labelled on SOME iteration
+/// is labelled throughout the body.
 #[allow(clippy::too_many_arguments)]
 fn seed_loop_carried_labels(
-    body: &[Stmt],
+    stmt: &Stmt,
     scope: &mut BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
     secret_fns: &BTreeSet<String>,
@@ -28370,63 +29858,358 @@ fn seed_loop_carried_labels(
     method_tainting_fns: &BTreeSet<String>,
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
+) -> Vec<BTreeMap<String, ScopeBinding>> {
+    let domains = [
+        BlockLabelDomain::Taint {
+            sources: tainting_fns,
+            param_returns: param_return_taint,
+            method_sources: method_tainting_fns,
+        },
+        BlockLabelDomain::Secret {
+            sources: secret_fns,
+            param_returns: param_return_taint,
+            method_sources: method_secret_fns,
+        },
+    ];
+    let mut exits = Vec::new();
+    for domain in domains {
+        let mut walk = LabelWalk::new(domain, struct_fields, None);
+        // Not judging returns, the walk never ends early.
+        let Ok((head, exit)) = walk.carried(stmt, scope.clone()) else {
+            continue;
+        };
+        label_join(domain, scope, &head);
+        let binders = match stmt {
+            Stmt::For { var, .. } => vec![var.clone()],
+            Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+            _ => Vec::new(),
+        };
+        if let Some(source) = header_label(stmt, &head, domain, struct_fields) {
+            for name in binders {
+                if let Some(b) = scope.get_mut(&name) {
+                    if !domain.labelled(b) {
+                        domain.taint_place(b, source.clone());
+                    }
+                }
+            }
+        }
+        exits.extend(exit);
+    }
+    exits
+}
+
+/// A write inside a statement's own expressions (a value block, an expression-position arm) reaches
+/// the outer binding before the statement's own effect: label it now, order-free over those writes
+/// ([`nested_may_labels`]). The enforcing lane analyzed such a block on a copy of the scope and
+/// dropped it, so `let v = if c { x = k; 0 } else { 0 }; println(x)` printed the secret.
+fn seed_expression_nested_labels(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
 ) {
-    let bound = scope.len() + 2;
-    for _ in 0..bound {
-        let mut c = scope.clone();
-        walk_block_taint(
-            body,
-            &mut c,
-            tainting_fns,
-            param_return_taint,
-            method_tainting_fns,
-            struct_fields,
+    seed_value_nested_labels(&stmt_value_exprs(stmt), scope, ctx);
+}
+
+/// [`seed_expression_nested_labels`] for expressions that run at another point: a statement-position
+/// arm's guard (with its binders bound) and a value block's tail (after its statements).
+fn seed_value_nested_labels(
+    exprs: &[&Expr],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    if !exprs.iter().any(|e| expr_nests_stmts(e)) {
+        return;
+    }
+    let types = ctx.place_types();
+    for domain in enforcing_label_domains(ctx) {
+        let nested = nested_may_labels(exprs, scope, domain, &types);
+        apply_nested_labels(domain, scope, &nested);
+    }
+}
+
+/// The enforcing lane's joins keep a path's label only when the path's binding is the outer one
+/// (same span): a path that SHADOWED an outer name — `if c { x = k; let x = 0; }`, or every arm
+/// binding its own `x` — reached the merge without the outer binding's state, and the merge dropped
+/// what the path assigned to it, or cleared it outright when every path shadowed it
+/// (IFC-JOIN-BREAK-SHADOW). When a path did, the label walk of the statement from `before` (which
+/// keeps a shadowed binding aside and restores it: [`shadowed_key`]) supplies the outer labels.
+fn relabel_shadowing_join(
+    stmt: &Stmt,
+    before: &BTreeMap<String, ScopeBinding>,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    let shadowed = before.iter().any(|(name, outer)| {
+        paths.iter().any(|path| {
+            path.get(name)
+                .is_some_and(|b| b.info.span != outer.info.span)
+        })
+    });
+    if !shadowed {
+        return;
+    }
+    let types = ctx.place_types();
+    for domain in enforcing_label_domains(ctx) {
+        let mut walk = LabelWalk::new(domain, &types, None);
+        let walked = walk_block_labels(
+            std::slice::from_ref(stmt),
+            before.clone(),
+            &mut walk,
+            false,
+            None,
+            true,
         );
-        walk_block_secret(
-            body,
-            &mut c,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        );
+        if let Ok(FlowExits {
+            fall: Some(end), ..
+        }) = walked
+        {
+            label_join(domain, scope, &end);
+        }
+    }
+}
+
+/// What function values a loop body may leave in the OUTER bindings it assigns, at any point of any
+/// iteration: the function-value twin of [`seed_loop_carried_labels`] (and of [`nested_may_labels`]
+/// in the return summary).
+///
+/// The enforcing walk runs a loop body once, from the state before the loop, so a call that precedes
+/// an in-body reassignment (`while c { f(k); f = h2; }`) was judged only against what `f` held on
+/// entry, although the next iteration applies `h2`: the egress, sink, capability and secret-return
+/// checks all missed it (review ordret1 LOOP-REASSIGN-AFTER-CALL-EGRESS; matrix
+/// `open_loop_reassign_after_use_secret` is its secret-return twin). The join after the loop read only
+/// the body's END state, so a function a `break` or `continue` leaves with was lost too (the
+/// function-value half of IFC-JOIN-BREAK-SHADOW).
+///
+/// Order-free and name-keyed like `nested_may_labels`: every write in the body counts on every path
+/// and every iteration until nothing changes — a `let` (a body local that feeds a later write), a
+/// `for` variable, `while let` or pattern binder (whatever its source may carry), an assignment
+/// `x = …`, and a write into a field, key or element (`b.g = h2`, `xs[i] = h2`). Lambda bodies are
+/// skipped: a closure captures by value, so its writes never reach this frame. A name bound more
+/// than once, or shadowing an outer binding, is one name here, so an inner shadow's value can widen
+/// the outer binding (an over-approximation).
+///
+/// Only KNOWN names are added. An unresolved write adds nothing, as at a join: `call_targets` and the
+/// label lanes read an `Unknown` identity set as naming no function, so letting one erase the names
+/// the entry state already resolved would drop checks the single walk makes today. For the same
+/// reason an alias the binding already has is kept. The identity and gate-tag sets only grow and a
+/// missing alias is set only to a strictly more dangerous one each time, over finitely many names,
+/// so the closure terminates and the seeded state holds everything the entry state held.
+///
+/// Returns the assigned outer bindings with everything they may hold; `None` when the body assigns
+/// no outer binding.
+fn loop_carried_fn_values(
+    body: &[Stmt],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<BTreeMap<String, ScopeBinding>> {
+    // (target, source, whether the target is bound to an element the source carries)
+    let mut writes: Vec<(String, &Expr, bool)> = Vec::new();
+    // (root, access path, value) of a write into a field, key or element (`b.g = h2`, `xs[i] = h2`)
+    let mut place_writes: Vec<(String, String, &Expr)> = Vec::new();
+    let mut assigned: BTreeSet<String> = BTreeSet::new();
+    visit::each_stmt(body, &mut |s, in_lambda| {
+        if in_lambda {
+            return;
+        }
+        match s {
+            Stmt::Let { name, init, .. } => writes.push((name.clone(), init, false)),
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                if scope.contains_key(name) {
+                    assigned.insert(name.clone());
+                }
+                writes.push((name.clone(), value, false));
+            }
+            Stmt::Assign { target, value } => {
+                if let Some((root, path)) = flatten_access_path(target) {
+                    if scope.contains_key(&root) {
+                        assigned.insert(root.clone());
+                    }
+                    place_writes.push((root, path, value));
+                }
+            }
+            Stmt::LetPattern {
+                pattern,
+                init: source,
+                ..
+            }
+            | Stmt::WhileLet {
+                pattern,
+                expr: source,
+                ..
+            } => {
+                for n in pattern.bound_names() {
+                    writes.push((n, source, true));
+                }
+            }
+            Stmt::For {
+                var,
+                source: crate::frontend::ForSource::Collection { expr },
+                ..
+            } => writes.push((var.clone(), expr, true)),
+            _ => {}
+        }
+    });
+    if assigned.is_empty() {
+        return None;
+    }
+    // `match` arms and `if let` in expression position bind their patterns too.
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            for arm in arms {
+                for n in arm.pattern.bound_names() {
+                    writes.push((n, &**scrutinee, true));
+                }
+            }
+        }
+        Expr::IfLet {
+            pattern, scrutinee, ..
+        } => {
+            for n in pattern.bound_names() {
+                writes.push((n, &**scrutinee, true));
+            }
+        }
+        _ => {}
+    });
+    let mut may = scope.clone();
+    for (name, _, _) in &writes {
+        may.entry(name.clone()).or_insert_with(|| {
+            let mut b = labelled_param_binding(name, false, None, false);
+            b.fn_identities = FnIdentitySet::empty();
+            b.builtin_gate_tags = BuiltinGateTags::empty();
+            b
+        });
+    }
+    // `fn_alias` holds one name, and a call through a binding whose identity set is `Unknown` has
+    // only that name to check, so an alias the binding already has is never replaced (the added
+    // names reach every consumer through the identity set). A binding with none takes the most
+    // dangerous candidate, as `join_fn_alias` and `merge_fn_alias_over` prefer it.
+    let alias_free: BTreeSet<String> = writes
+        .iter()
+        .map(|(target, _, _)| target)
+        .filter(|target| may.get(*target).is_some_and(|b| b.fn_alias.is_none()))
+        .cloned()
+        .collect();
+    let rank = |name: &str| -> u8 {
+        if ctx.secret_fns.contains(name) || ctx.tainting_fns.contains(name) {
+            3
+        } else if ctx.param_egress.get(name).is_some_and(|s| !s.is_empty())
+            || ctx.param_sinks.get(name).is_some_and(|s| !s.is_empty())
+            || is_sink(name)
+        {
+            2
+        } else {
+            1
+        }
+    };
+    loop {
+        if analysis_limit::cut() {
+            break;
+        }
         let mut changed = false;
-        let names: Vec<String> = c.keys().cloned().collect();
-        for n in names {
-            let (ct, cs, ct_label, cs_label) = c
-                .get(&n)
-                .map(|b| {
-                    let taint_label = if b.taint_label.is_clean() && b.info.tainted {
-                        // Slice 4 still has legacy-only place/carrier writers. Preserve their
-                        // loop-carried behavior until that slice migrates them.
-                        security_label::SecurityLabel::from_legacy_taint(
-                            b.info.tainted,
-                            b.info.taint_source.clone(),
-                        )
-                    } else {
-                        b.taint_label.clone()
-                    };
-                    let secret_label = if b.secret_label.is_clean() && b.secret {
-                        security_label::SecurityLabel::from_legacy_secret(b.secret)
-                    } else {
-                        b.secret_label.clone()
-                    };
-                    (b.info.tainted, b.secret, taint_label, secret_label)
-                })
-                .unwrap_or((
-                    false,
-                    false,
-                    security_label::SecurityLabel::clean(),
-                    security_label::SecurityLabel::clean(),
-                ));
-            if let Some(sb) = scope.get_mut(&n) {
-                if ct && !sb.info.tainted {
-                    sb.set_taint_label(sb.taint_label.clone().join(ct_label));
+        for &(ref target, source, carried) in &writes {
+            let (ids, tags, alias, fields) = if carried {
+                (
+                    fn_identities_carried_by_value(source, &may, ctx),
+                    builtin_gate_tags_carried_by_value_d(source, &may, ctx, 0),
+                    None,
+                    BTreeMap::new(),
+                )
+            } else {
+                let mut fields = BTreeMap::new();
+                match source {
+                    Expr::Var(v) => {
+                        if let Some(b) = may.get(v) {
+                            fields = b.field_fn_identities.clone();
+                        }
+                    }
+                    _ => collect_container_fn_identities(source, "", &may, ctx, &mut fields),
+                }
+                (
+                    fn_identities_of(source, &may, ctx),
+                    builtin_gate_tags_of(source, &may, ctx),
+                    fn_alias_of(source, &may, ctx),
+                    fields,
+                )
+            };
+            let Some(b) = may.get_mut(target) else {
+                continue;
+            };
+            if let (FnIdentitySet::Known(add), FnIdentitySet::Known(have)) =
+                (ids, &mut b.fn_identities)
+            {
+                for n in add {
+                    changed |= have.insert(n);
+                }
+            }
+            if let BuiltinGateTags::Known(add) = tags {
+                if !add.is_empty() {
+                    match &mut b.builtin_gate_tags {
+                        BuiltinGateTags::Known(have) => {
+                            for t in add {
+                                changed |= have.insert(t);
+                            }
+                        }
+                        unresolved => {
+                            *unresolved = BuiltinGateTags::Known(add);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if let Some(a) = alias.filter(|_| alias_free.contains(target)) {
+                if b.fn_alias.as_deref().map_or(0, rank) < rank(a.as_str()) {
+                    b.fn_alias = Some(a);
                     changed = true;
                 }
-                if cs && !sb.secret {
-                    sb.set_secret_label(sb.secret_label.clone().join(cs_label));
-                    changed = true;
+            }
+            for (key, ids) in fields {
+                if let FnIdentitySet::Known(add) = ids {
+                    if add.is_empty() {
+                        continue;
+                    }
+                    if let FnIdentitySet::Known(have) = b
+                        .field_fn_identities
+                        .entry(key)
+                        .or_insert_with(FnIdentitySet::empty)
+                    {
+                        for n in add {
+                            changed |= have.insert(n);
+                        }
+                    }
+                }
+            }
+        }
+        // A write into a field, key or element adds to what that path holds; one through a computed
+        // index (`*`) may be any element, so it adds to every path, as the ordered walk does.
+        for (root, path, value) in &place_writes {
+            let FnIdentitySet::Known(add) = fn_identities_of(value, &may, ctx) else {
+                continue;
+            };
+            if add.is_empty() {
+                continue;
+            }
+            let Some(b) = may.get_mut(root) else {
+                continue;
+            };
+            let mut keys = vec![path.clone()];
+            if path.split('.').any(|seg| seg == "*") {
+                keys.extend(b.field_fn_identities.keys().cloned());
+            }
+            for key in keys {
+                if let FnIdentitySet::Known(have) = b
+                    .field_fn_identities
+                    .entry(key)
+                    .or_insert_with(FnIdentitySet::empty)
+                {
+                    for n in &add {
+                        changed |= have.insert(n.clone());
+                    }
                 }
             }
         }
@@ -28434,6 +30217,43 @@ fn seed_loop_carried_labels(
             break;
         }
     }
+    may.retain(|name, _| assigned.contains(name));
+    Some(may)
+}
+
+/// Seed a loop's carried function values ([`loop_carried_fn_values`]) into `scope` before its body
+/// is walked, so a call early in the body sees what a later write in the body stores for the next
+/// iteration. Returns them when the body can leave early (`break`, `continue`), for the join after
+/// the loop: the state a loop leaves with is then not only its end state. The analysis stays
+/// sound only if every loop form of both statement walkers (`analyze_stmts`, `walk_block_effects`)
+/// calls this.
+fn seed_loop_carried_fn_values(
+    body: &[Stmt],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<BTreeMap<String, ScopeBinding>> {
+    let carried = loop_carried_fn_values(body, scope, ctx)?;
+    for (name, m) in &carried {
+        if let Some(b) = scope.get_mut(name) {
+            b.fn_identities = m.fn_identities.clone();
+            b.fn_alias = m.fn_alias.clone();
+            b.builtin_gate_tags = m.builtin_gate_tags.clone();
+            b.field_fn_identities = m.field_fn_identities.clone();
+        }
+    }
+    let mut leaves_early = false;
+    visit::each_stmt(body, &mut |s, in_lambda| {
+        if !in_lambda && matches!(s, Stmt::Break | Stmt::Continue) {
+            leaves_early = true;
+        }
+    });
+    // In expression position (`None => break`) too; one inside a lambda only adds the path.
+    visit::each_expr_in_stmts(body, &mut |e| {
+        if matches!(e, Expr::Call { callee, .. } if callee == "break" || callee == "continue") {
+            leaves_early = true;
+        }
+    });
+    leaves_early.then_some(carried)
 }
 
 #[derive(Clone, Copy)]
@@ -28451,6 +30271,18 @@ enum BlockLabelDomain<'a> {
 }
 
 impl BlockLabelDomain<'_> {
+    fn lane(self) -> ReturnSummaryLane {
+        match self {
+            Self::Taint { .. } => ReturnSummaryLane::Taint,
+            Self::Secret { .. } => ReturnSummaryLane::Secret,
+        }
+    }
+
+    /// Whether `binding` carries this domain's label, read as a later `Var` read reports it.
+    fn labelled(self, binding: &ScopeBinding) -> bool {
+        self.lane().is_labelled(binding)
+    }
+
     fn expr_source(
         self,
         expr: &Expr,
@@ -28597,6 +30429,7 @@ impl BlockLabelDomain<'_> {
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -28608,170 +30441,203 @@ impl BlockLabelDomain<'_> {
     }
 }
 
-/// Total statement walker shared by the integrity and confidentiality value-block lanes.
+/// Total statement walker shared by the integrity and confidentiality label lanes: value blocks
+/// (via `walk_block_taint` / `walk_block_secret`), the enforcing lane's loop seeding and shadow
+/// repair, and the return summary ([`body_returns`]), all under the flow discipline of
+/// [`FlowExits`].
 ///
 /// The domain owns only label-specific operations. Statement structure, recursive descent,
 /// branch/loop joins, pattern binding, and every code-holding field are handled once here so a new
-/// `Stmt` variant or field cannot silently drift between the two security labels.
+/// `Stmt` variant or field cannot silently drift between the two security labels. `tail`: this
+/// list's value is the function's (in return-summary mode its last statement, then `block_value`,
+/// is judged). `settle`: bring every state that leaves the list back to its entry's names; a value
+/// block's caller passes `false` and reads the block's tail in the unsettled end state.
 fn walk_block_labels(
     stmts: &[Stmt],
-    local: &mut BTreeMap<String, ScopeBinding>,
-    domain: BlockLabelDomain<'_>,
-    struct_fields: &PlaceTypes<'_>,
-) {
-    for stmt in stmts {
-        match stmt {
+    mut cur: LabelScope,
+    walk: &mut LabelWalk<'_>,
+    tail: bool,
+    block_value: Option<&Expr>,
+    settle: bool,
+) -> Result<FlowExits<LabelScope>, LabelledReturn> {
+    let domain = walk.domain;
+    let struct_fields = walk.struct_fields;
+    let keys: BTreeSet<String> = cur.keys().cloned().collect();
+    let mut hidden: Vec<(String, String)> = Vec::new();
+    let mut out: FlowExits<LabelScope> = FlowExits::none();
+    let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+    let n = stmts.len();
+    let mut reaches_end = true;
+    for (i, stmt) in stmts.iter().enumerate() {
+        let stmt_is_tail = tail && i + 1 == n;
+        let site = stmt as *const Stmt as usize;
+        let seeds = std::slice::from_ref(stmt);
+        // A loop runs its header at every head (`LabelWalk::loop_fixpoint`).
+        if !is_loop_stmt(stmt) {
+            walk.expression_writes(stmt, &mut cur, &mut out)?;
+        }
+        let falls = match stmt {
             Stmt::Let {
                 name,
                 ty,
                 init,
                 span,
             } => {
-                domain.seed_let(name, ty.as_deref(), init, local, struct_fields);
-                if let Some(binding) = local.get_mut(name) {
+                hide_shadowed(&mut cur, name, site, &keys, &mut hidden);
+                domain.seed_let(name, ty.as_deref(), init, &mut cur, struct_fields);
+                if let Some(binding) = cur.get_mut(name) {
                     binding.info.span = Some((span.start, span.end));
                 }
+                true
             }
             Stmt::LetPattern {
                 pattern,
                 init,
                 span,
             } => {
-                let source = domain.expr_source(init, local, struct_fields);
-                domain.seed_pattern(local, pattern, &source, struct_fields);
-                for name in pattern.bound_names() {
-                    if let Some(binding) = local.get_mut(&name) {
+                let source = domain.expr_source(init, &cur, struct_fields);
+                let names = pattern.bound_names();
+                for name in &names {
+                    hide_shadowed(&mut cur, name, site, &keys, &mut hidden);
+                }
+                domain.seed_pattern(&mut cur, pattern, &source, struct_fields);
+                for name in &names {
+                    if let Some(binding) = cur.get_mut(name) {
                         binding.info.span = Some((span.start, span.end));
                     }
                 }
+                true
             }
             Stmt::Assign {
                 target: Expr::Var(name),
                 value,
             } => {
-                let source = domain.expr_source(value, local, struct_fields);
-                if let Some(binding) = local.get_mut(name) {
+                let source = domain.expr_source(value, &cur, struct_fields);
+                if let Some(binding) = cur.get_mut(name) {
                     domain.assign_binding(binding, source);
                 }
+                true
             }
             Stmt::Assign { target, value } => {
                 if let Some(root) = assign_target_root(target) {
-                    if let Some(source) = domain.expr_source(value, local, struct_fields) {
-                        if let Some(binding) = local.get_mut(root) {
+                    // The keys and indices decide where the value lands (`m[k] = 1` stores `k`).
+                    let mut keys = Vec::new();
+                    place_key_exprs(target, &mut keys);
+                    let source = std::iter::once(value)
+                        .chain(keys)
+                        .find_map(|e| domain.expr_source(e, &cur, struct_fields));
+                    if let Some(source) = source {
+                        if let Some(binding) = cur.get_mut(root) {
                             domain.taint_place(binding, source);
                         }
                     }
                 }
+                true
             }
             Stmt::If { cond, then, else_ } => {
                 // The reduced value-label model is explicit-flow-only, but it must still traverse the
                 // condition. The enforcing lane owns the separate secret-PC rejection.
-                drop(domain.expr_source(cond, local, struct_fields));
-                let mut then_scope = local.clone();
-                walk_block_labels(then, &mut then_scope, domain, struct_fields);
-                let else_scope = if let Some(body) = else_ {
-                    let mut scope = local.clone();
-                    walk_block_labels(body, &mut scope, domain, struct_fields);
-                    scope
-                } else {
-                    local.clone()
+                drop(domain.expr_source(cond, &cur, struct_fields));
+                let then_exits =
+                    walk_block_labels(then, cur.clone(), walk, stmt_is_tail, None, true)?;
+                let else_exits = match else_ {
+                    Some(body) => {
+                        walk_block_labels(body, cur.clone(), walk, stmt_is_tail, None, true)?
+                    }
+                    None => FlowExits::falling(cur.clone()),
                 };
-                merge_taint_over(local, &[&then_scope, &else_scope]);
+                walk.merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
             }
             Stmt::While {
                 cond,
                 body,
                 invariant,
             } => {
-                drop(domain.expr_source(cond, local, struct_fields));
+                drop(domain.expr_source(cond, &cur, struct_fields));
                 for predicate in invariant {
-                    drop(domain.expr_source(predicate, local, struct_fields));
+                    drop(domain.expr_source(predicate, &cur, struct_fields));
                 }
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
             Stmt::Loop { body, invariant } => {
                 for predicate in invariant {
-                    drop(domain.expr_source(predicate, local, struct_fields));
+                    drop(domain.expr_source(predicate, &cur, struct_fields));
                 }
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
+            // `loop_exit` binds `pattern` from `expr` at every head.
             Stmt::WhileLet {
-                pattern,
+                pattern: _,
                 expr,
                 body,
             } => {
-                let source = domain.expr_source(expr, local, struct_fields);
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                domain.seed_pattern(&mut body_scope, pattern, &source, struct_fields);
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                drop(domain.expr_source(expr, &cur, struct_fields));
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
+            // `loop_exit` binds `var` from `source` at every head.
             Stmt::For {
-                var,
+                var: _,
                 source,
                 body,
                 invariant,
             } => {
-                let source = match source {
+                match source {
                     crate::frontend::ForSource::Range { start, end } => {
-                        let start_source = domain.expr_source(start, local, struct_fields);
-                        let end_source = domain.expr_source(end, local, struct_fields);
-                        start_source.or(end_source)
+                        drop(domain.expr_source(start, &cur, struct_fields));
+                        drop(domain.expr_source(end, &cur, struct_fields));
                     }
                     crate::frontend::ForSource::Collection { expr } => {
-                        domain.expr_source(expr, local, struct_fields)
+                        drop(domain.expr_source(expr, &cur, struct_fields));
                     }
-                };
-                for predicate in invariant {
-                    drop(domain.expr_source(predicate, local, struct_fields));
                 }
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                body_scope.insert(var.clone(), domain.loop_binding(var, source));
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                for predicate in invariant {
+                    drop(domain.expr_source(predicate, &cur, struct_fields));
+                }
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
             Stmt::ResearchBlock { intent: _, body } | Stmt::ExploitBlock { intent: _, body } => {
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                let body_exits = walk_block_labels(body, cur.clone(), walk, false, None, true)?;
+                let skipped = FlowExits::falling(cur.clone());
+                walk.merge_paths(&mut cur, vec![skipped, body_exits], &mut out)
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
-                let snapshot = local.clone();
-                let mut lanes = vec![snapshot.clone()];
-                for body in [gpu, cpu, prove].into_iter().flatten() {
-                    let mut lane_scope = snapshot.clone();
-                    walk_block_labels(body, &mut lane_scope, domain, struct_fields);
-                    lanes.push(lane_scope);
-                }
-                let lane_refs: Vec<&BTreeMap<String, ScopeBinding>> = lanes.iter().collect();
-                merge_taint_over(local, &lane_refs);
+                let lanes: Vec<&[Stmt]> = [gpu, cpu, prove]
+                    .into_iter()
+                    .flatten()
+                    .map(Vec::as_slice)
+                    .collect();
+                cur = walk.hybrid_fixpoint(stmt, &lanes, cur, &mut out)?;
+                true
             }
             Stmt::ExprStmt(Expr::Match {
                 scrutinee, arms, ..
             }) => {
-                let source = domain.expr_source(scrutinee, local, struct_fields);
-                let mut arm_scopes = Vec::new();
+                let source = domain.expr_source(scrutinee, &cur, struct_fields);
+                let mut arm_exits = Vec::with_capacity(arms.len());
+                // Arms are tried in order: a guard that runs and fails leaves what it wrote to the
+                // arms after it.
+                let mut tried = cur.clone();
                 for arm in arms {
-                    let mut arm_scope = local.clone();
-                    domain.seed_pattern(&mut arm_scope, &arm.pattern, &source, struct_fields);
-                    if let Expr::Block { stmts, .. } = &arm.body {
-                        walk_block_labels(stmts, &mut arm_scope, domain, struct_fields);
-                    } else {
-                        drop(domain.expr_source(&arm.body, &arm_scope, struct_fields));
+                    let names = arm.pattern.bound_names();
+                    let seed = |scope: &mut LabelScope| {
+                        domain.seed_pattern(scope, &arm.pattern, &source, struct_fields)
+                    };
+                    arm_exits.push(walk.scoped(&tried, &names, site, seed, |w, scope| {
+                        w.arm_body(arm.guard.as_ref(), &arm.body, scope, stmt_is_tail, seeds)
+                    })?);
+                    if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_stmts(g)) {
+                        let failed = walk.scoped(&tried, &names, site, seed, |w, mut scope| {
+                            let mut exits = FlowExits::none();
+                            w.value_writes(&[guard], &mut scope, seeds, &mut exits)?;
+                            exits.fall = Some(scope);
+                            Ok(exits)
+                        })?;
+                        if let Some(f) = &failed.fall {
+                            label_join(domain, &mut tried, f);
+                        }
                     }
-                    arm_scopes.push(arm_scope);
                 }
-                let arm_refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
-                merge_taint_over(local, &arm_refs);
+                walk.merge_paths(&mut cur, arm_exits, &mut out)
             }
             Stmt::ExprStmt(Expr::IfLet {
                 pattern,
@@ -28780,21 +30646,16 @@ fn walk_block_labels(
                 else_,
                 ..
             }) => {
-                let source = domain.expr_source(scrutinee, local, struct_fields);
-                let mut then_scope = local.clone();
-                domain.seed_pattern(&mut then_scope, pattern, &source, struct_fields);
-                if let Expr::Block { stmts, .. } = then.as_ref() {
-                    walk_block_labels(stmts, &mut then_scope, domain, struct_fields);
-                } else {
-                    drop(domain.expr_source(then, &then_scope, struct_fields));
-                }
-                let mut else_scope = local.clone();
-                if let Expr::Block { stmts, .. } = else_.as_ref() {
-                    walk_block_labels(stmts, &mut else_scope, domain, struct_fields);
-                } else {
-                    drop(domain.expr_source(else_, &else_scope, struct_fields));
-                }
-                merge_taint_over(local, &[&then_scope, &else_scope]);
+                let source = domain.expr_source(scrutinee, &cur, struct_fields);
+                let then_exits = walk.scoped(
+                    &cur,
+                    &pattern.bound_names(),
+                    site,
+                    |scope| domain.seed_pattern(scope, pattern, &source, struct_fields),
+                    |w, scope| w.arm_body(None, then, scope, stmt_is_tail, seeds),
+                )?;
+                let else_exits = walk.arm_body(None, else_, cur.clone(), stmt_is_tail, seeds)?;
+                walk.merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
             }
             Stmt::ExprStmt(Expr::Call { callee, args })
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
@@ -28802,60 +30663,117 @@ fn walk_block_labels(
                 if let Some(root) = assign_target_root(&args[0]) {
                     let source = args[1..]
                         .iter()
-                        .find_map(|arg| domain.expr_source(arg, local, struct_fields));
+                        .find_map(|arg| domain.expr_source(arg, &cur, struct_fields));
                     if let Some(source) = source {
-                        if let Some(binding) = local.get_mut(root) {
+                        if let Some(binding) = cur.get_mut(root) {
                             domain.taint_place(binding, source);
                         }
                     }
                 }
+                true
+            }
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
+                if let Some(returned) = args.first() {
+                    walk.judge(returned, &cur, seeds)?;
+                }
+                false
+            }
+            // `break` / `continue` written as an expression statement leave like `Stmt::Break` /
+            // `Stmt::Continue` do.
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "break" => {
+                for a in args {
+                    drop(domain.expr_source(a, &cur, struct_fields));
+                }
+                join_exit(&mut out.brk, Some(std::mem::take(&mut cur)), &join);
+                false
+            }
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "continue" => {
+                for a in args {
+                    drop(domain.expr_source(a, &cur, struct_fields));
+                }
+                join_exit(&mut out.cont, Some(std::mem::take(&mut cur)), &join);
+                false
             }
             Stmt::ExprStmt(expr) => {
-                drop(domain.expr_source(expr, local, struct_fields));
+                drop(domain.expr_source(expr, &cur, struct_fields));
+                if stmt_is_tail {
+                    walk.judge(expr, &cur, seeds)?;
+                }
+                true
             }
-            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { forall: _ } => {}
+            Stmt::Break => {
+                join_exit(&mut out.brk, Some(std::mem::take(&mut cur)), &join);
+                false
+            }
+            Stmt::Continue => {
+                join_exit(&mut out.cont, Some(std::mem::take(&mut cur)), &join);
+                false
+            }
+            Stmt::SpecBlock { forall: _ } => true,
+        };
+        if !falls {
+            reaches_end = false;
+            break;
         }
     }
+    if reaches_end {
+        // The block's tail runs after its statements: its own nested writes and returns count here.
+        if let Some(value) = block_value {
+            walk.value_writes(&[value], &mut cur, stmts, &mut out)?;
+            if tail {
+                walk.judge(value, &cur, stmts)?;
+            }
+        }
+        out.fall = Some(cur);
+    }
+    if settle {
+        settle_exits(&mut out, &keys, &hidden);
+    }
+    Ok(out)
 }
 
 fn walk_block_taint(
     stmts: &[Stmt],
+    value: Option<&Expr>,
     local: &mut BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     method_tainting_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
-    walk_block_labels(
-        stmts,
-        local,
+    let mut walk = LabelWalk::new(
         BlockLabelDomain::Taint {
             sources: tainting_fns,
             param_returns: param_return_taint,
             method_sources: method_tainting_fns,
         },
         struct_fields,
+        None,
     );
+    let walked = walk_block_labels(stmts, local.clone(), &mut walk, false, value, false);
+    finish_value_block(local, walked);
 }
 
 fn walk_block_secret(
     stmts: &[Stmt],
+    value: Option<&Expr>,
     local: &mut BTreeMap<String, ScopeBinding>,
     secret_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
-    walk_block_labels(
-        stmts,
-        local,
+    let mut walk = LabelWalk::new(
         BlockLabelDomain::Secret {
             sources: secret_fns,
             param_returns: param_return_taint,
             method_sources: method_secret_fns,
         },
         struct_fields,
+        None,
     );
+    let walked = walk_block_labels(stmts, local.clone(), &mut walk, false, value, false);
+    finish_value_block(local, walked);
 }
 
 /// The taint-source label of an expression, or `None` if clean — the 4-arg wrapper over
@@ -29075,6 +30993,13 @@ impl SourceLane {
         }
     }
 
+    fn return_summary_lane(self) -> ReturnSummaryLane {
+        match self {
+            Self::Taint => ReturnSummaryLane::Taint,
+            Self::Secret => ReturnSummaryLane::Secret,
+        }
+    }
+
     fn var_source(self, name: &str, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
         match self {
             Self::Taint => scope
@@ -29157,8 +31082,10 @@ impl SourceLane {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn source_lane_apply_block(
     stmts: &[Stmt],
+    value: Option<&Expr>,
     local: &mut BTreeMap<String, ScopeBinding>,
     lane_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
@@ -29169,6 +31096,7 @@ fn source_lane_apply_block(
     match lane {
         SourceLane::Taint => walk_block_taint(
             stmts,
+            value,
             local,
             lane_fns,
             param_return_taint,
@@ -29177,6 +31105,7 @@ fn source_lane_apply_block(
         ),
         SourceLane::Secret => walk_block_secret(
             stmts,
+            value,
             local,
             lane_fns,
             param_return_taint,
@@ -29290,7 +31219,22 @@ fn expr_source(
         return Some(ANALYSIS_LIMIT_SOURCE.into());
     }
     match expr {
-        Expr::Var(name) => lane.var_source(name, scope),
+        // In a RETURN SUMMARY, a bare FUNCTION NAME read as a value (`let g = h2`, `g = h2` in a
+        // branch, `b.g = h2`, `return h2`, so also `let g = choose(n)` for a `choose` returning one)
+        // carries what the function returns when applied: the answer this analysis already gives
+        // its eta-expansion `|n| h2(n)` (the `Lambda` arm) and a container holding it
+        // (`container_element_secret`). The summaries track no function identities (the enforcing
+        // lane's `fn_alias`), so `let g = h2; return g(n)` was not secret-returning and
+        // `print(f(3))` printed `h2`'s secret. A name bound in scope (a local, a parameter, a
+        // pattern binder) is that binding, never the function. Summary scopes only
+        // ([`RETURN_SUMMARY_SCOPE`]): the enforcing lane resolves identities itself, and labelling a
+        // function VALUE there would reject storing or counting one (`len(map([1], getsec_v))`).
+        Expr::Var(name) => lane.var_source(name, scope).or_else(|| {
+            (scope.contains_key(RETURN_SUMMARY_SCOPE)
+                && !scope.contains_key(name)
+                && lane_fns.contains(name))
+            .then(|| format!("return value of `{name}`"))
+        }),
         Expr::Binary { lhs, rhs, .. } => expr_source(
             lhs,
             scope,
@@ -29321,40 +31265,24 @@ fn expr_source(
             lane,
         ),
         Expr::Call { callee, args } => {
-            // Resolve a FUNCTION-VALUE ALIAS before consulting either summary:
-            // `let g = key; g()` parses as `Call { callee: "g" }`, and a raw-name
-            // lookup misses `key`'s entry. Same resolution on both lanes so
-            // aliasing cannot launder a label one lane already rejects.
-            let resolved = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
+            // Every function the call may run ([`call_targets`]), the same on both lanes so
+            // aliasing cannot launder a label one lane already rejects. `let g = key; g()` parses as
+            // `Call { callee: "g" }`, and a raw-name lookup missed `key`'s entry. A CALL-position
+            // name is a user function before it is a local (`param_return_taint` holds an entry for
+            // every user function), so `let h = pubfn; h(3)` returns what the user `h` returns.
+            // MULTI-CANDIDATE: the single-name `fn_alias` collapses a may-hold-several-functions
+            // binding to ONE preferred name, chosen lane-agnostically, so a binding that may hold a
+            // secret-returning AND a tainting function (a mixed `{secret_fn, taint_fn}` field applied
+            // at the taint-only `write_file`) lost the other lane's candidate; every target counts.
+            let user_fn = param_return_taint.contains_key(callee.as_str());
+            let targets = call_targets(callee, scope, user_fn);
+            let local = if user_fn { None } else { scope.get(callee) };
+            let rets = union_over_targets(param_return_taint, &targets);
             if let Some(src) = lane.constructor_source(callee, scope) {
                 Some(src)
-            } else if lane_fns.contains(resolved) {
-                Some(format!("return value of `{}`", resolved))
-            } else if let Some(hit) = scope.get(callee).and_then(|b| match &b.fn_identities {
-                // MULTI-CANDIDATE per-lane check. The single-name `fn_alias` collapses a
-                // may-hold-several-functions binding to ONE preferred name, chosen lane-agnostically
-                // (`join_fn_alias` / the FieldAccess/Index arm prefer any secret-or-taint candidate).
-                // A binding that may hold BOTH a secret-returning AND a tainting function therefore
-                // resolves `fn_alias` to only one of them, and the OTHER lane's check misses at a
-                // sink that this lane alone guards (e.g. a mixed `{secret_fn, taint_fn}` field applied
-                // at the taint-only `write_file`: the secret lane does not guard a non-egress sink, so
-                // the collapsed-to-secret alias let the tainted branch through). The full identity set
-                // is preserved on the binding, so consult it directly: if ANY known candidate is in
-                // THIS lane's dangerous set, the call may return this lane's label. Additive and
-                // fail-closed — it can only ADD a source where the single-name spine dropped one.
-                FnIdentitySet::Known(names) => names
-                    .iter()
-                    .find(|n| lane_fns.contains(n.as_str()))
-                    .cloned(),
-                FnIdentitySet::Unknown => None,
-            }) {
+            } else if let Some(hit) = targets.iter().find(|t| lane_fns.contains(t.as_str())) {
                 Some(format!("return value of `{}`", hit))
-            } else if let Some(rets) =
-                union_over_targets(param_return_taint, &call_targets(callee, scope))
-            {
+            } else if let Some(src) = rets.as_ref().and_then(|rets| {
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {
                         expr_source(
@@ -29368,7 +31296,12 @@ fn expr_source(
                         )
                     })
                 })
-            } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
+            }) {
+                Some(src)
+            // No named candidate returns a labelled argument; a binding that may ALSO hold a lambda
+            // (`if c { |x| p.k } else { zero }`) still returns what the lambda captures. The named
+            // candidates' summaries used to end the check here (LAMBDA-PLUS-NAMED-FN-JOIN).
+            } else if let Some(lam) = local.and_then(|b| b.closure_lambda.clone()) {
                 let capture = if let Expr::Lambda { params, body } = lam.as_ref() {
                     let Some(_frame) = closure_frame() else {
                         return Some(ANALYSIS_LIMIT_SOURCE.into());
@@ -29385,17 +31318,30 @@ fn expr_source(
                         .into_iter()
                         .map(|t| substitute_vars(&t, &__subst))
                         .collect();
-                    tails.iter().find_map(|t| {
-                        expr_source(
-                            t,
-                            &inner,
-                            lane_fns,
-                            param_return_taint,
-                            method_fns,
-                            struct_fields,
-                            lane,
-                        )
-                    })
+                    tails
+                        .iter()
+                        .find_map(|t| {
+                            expr_source(
+                                t,
+                                &inner,
+                                lane_fns,
+                                param_return_taint,
+                                method_fns,
+                                struct_fields,
+                                lane,
+                            )
+                        })
+                        .or_else(|| {
+                            closure_extra_source(
+                                body,
+                                &inner,
+                                lane_fns,
+                                param_return_taint,
+                                method_fns,
+                                struct_fields,
+                                lane,
+                            )
+                        })
                 } else {
                     None
                 };
@@ -29419,10 +31365,13 @@ fn expr_source(
                             )
                         })
                     })
-            } else if scope.get(callee).is_some_and(|b| lane.binding_labeled(b)) {
-                scope
-                    .get(callee)
-                    .and_then(|b| lane.apply_labeled_source(b, callee))
+            } else if rets.is_some() && !local.is_some_and(|b| b.fn_may.open) {
+                // Every candidate is a named function and none returns a labelled argument. A
+                // binding that may also hold a callable no name covers (`if c { abs } else { zero }`,
+                // [`FnMay::open`]) falls through: the builtin may return its argument.
+                None
+            } else if local.is_some_and(|b| lane.binding_labeled(b)) {
+                local.and_then(|b| lane.apply_labeled_source(b, callee))
             } else {
                 // A shape-only builtin (`len(xs)`) reveals no field of a struct it is given, so a
                 // whole-struct source does not flow through it.
@@ -29642,22 +31591,36 @@ fn expr_source(
             let subst = closure_body_let_subst(body);
             let mut tails = Vec::new();
             expr_tail_values(body, &mut tails);
-            tails.iter().find_map(|t| {
-                expr_source(
-                    &substitute_vars(t, &subst),
-                    &inner,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                    lane,
-                )
-            })
+            tails
+                .iter()
+                .find_map(|t| {
+                    expr_source(
+                        &substitute_vars(t, &subst),
+                        &inner,
+                        lane_fns,
+                        param_return_taint,
+                        method_fns,
+                        struct_fields,
+                        lane,
+                    )
+                })
+                .or_else(|| {
+                    closure_extra_source(
+                        body,
+                        &inner,
+                        lane_fns,
+                        param_return_taint,
+                        method_fns,
+                        struct_fields,
+                        lane,
+                    )
+                })
         }
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
             source_lane_apply_block(
                 stmts,
+                tail.as_deref(),
                 &mut local,
                 lane_fns,
                 param_return_taint,
@@ -29842,7 +31805,8 @@ fn expr_source(
                     .and_then(|b| b.field_closures.get(&path).cloned())
             });
             if let Some(Expr::Var(f)) = stored_closure.as_deref() {
-                if let Some(target) = call_targets(f, scope)
+                // `f` was stored as a VALUE, where a local shadows a user function of its name.
+                if let Some(target) = call_targets(f, scope, false)
                     .into_iter()
                     .find(|t| lane_fns.contains(t.as_str()))
                 {
@@ -29865,17 +31829,31 @@ fn expr_source(
                     .into_iter()
                     .map(|t| substitute_vars(&t, &__subst))
                     .collect();
-                if let Some(s) = tails.iter().find_map(|t| {
-                    expr_source(
-                        t,
-                        &inner,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                        lane,
-                    )
-                }) {
+                if let Some(s) = tails
+                    .iter()
+                    .find_map(|t| {
+                        expr_source(
+                            t,
+                            &inner,
+                            lane_fns,
+                            param_return_taint,
+                            method_fns,
+                            struct_fields,
+                            lane,
+                        )
+                    })
+                    .or_else(|| {
+                        closure_extra_source(
+                            body,
+                            &inner,
+                            lane_fns,
+                            param_return_taint,
+                            method_fns,
+                            struct_fields,
+                            lane,
+                        )
+                    })
+                {
                     return Some(s);
                 }
             }
@@ -29890,15 +31868,19 @@ fn expr_source(
             // off the binding (like `field_closures` above), so this stays `ctx`-free. Additive: a
             // non-lane identity (`b.f = plainfn`) is absent from `lane_fns` and still accepts, and
             // an `Unknown`/empty set or an unresolvable path yields nothing — the prior behaviour.
-            if stored_closure.is_none() {
-                if let Some((root, path)) = flatten_access_path(callee) {
-                    if let Some(FnIdentitySet::Known(names)) = scope
-                        .get(&root)
-                        .and_then(|b| b.field_fn_identities.get(&path))
-                    {
-                        if let Some(target) = names.iter().find(|n| lane_fns.contains(n.as_str())) {
-                            return Some(format!("return value of `{target}`"));
-                        }
+            //
+            // Consulted even when a closure IS stored at the path: a branch or loop join restores
+            // `field_closures` from before the block, while `merge_fn_alias_over` unions the identity
+            // sets. After `let b = B { g: h1 }; if c { b.g = h2; }` the stored closure is still `h1`'s
+            // eta-expansion and only the identity set `{h1, h2}` knows `b.g` may be `h2`, so
+            // `print(b.g(n))` printed the secret while the straight-line `b.g = h2` was rejected.
+            if let Some((root, path)) = flatten_access_path(callee) {
+                if let Some(FnIdentitySet::Known(names)) = scope
+                    .get(&root)
+                    .and_then(|b| b.field_fn_identities.get(&path))
+                {
+                    if let Some(target) = names.iter().find(|n| lane_fns.contains(n.as_str())) {
+                        return Some(format!("return value of `{target}`"));
                     }
                 }
             }
@@ -30098,12 +32080,6 @@ fn container_element_taint(
 // It is deliberately whole-value + reassignment-insensitive + declassify-aware, exactly matching the
 // intra-procedural analysis, and MONOTONE (only grows) so it needs no control-flow-merge join.
 
-/// Whether an expression is a `return X` (Anubis models `return` as a call to the pseudo-function
-/// named `"return"`, never a real function).
-fn is_return_call(e: &Expr) -> bool {
-    matches!(e, Expr::Call { callee, .. } if callee == "return")
-}
-
 /// Seed one `let` binding's taint into `scope`, mirroring the real let-seeding (annotation OR a
 /// tainted, non-declassified initializer). Params are never seeded here — a returned parameter is
 /// arg-flow, handled at each call site; this isolates taint a function produces INTERNALLY.
@@ -30161,6 +32137,7 @@ fn seed_one_let(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -30243,6 +32220,7 @@ fn seed_pattern(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -30385,6 +32363,7 @@ fn seed_effect_let(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -30544,6 +32523,7 @@ fn seed_effect_pattern(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities,
                 field_fn_identities,
                 builtin_gate_tags,
@@ -30603,6 +32583,7 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
                     fn_alias: None,
+                    fn_may: FnMay::default(),
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -30710,6 +32691,7 @@ fn seed_declared_pattern_binders(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -30794,10 +32776,9 @@ fn collect_stmt_patterns<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Pattern>) {
 /// `body_returns_taint` / `body_returns_secret` into one skeleton so a new
 /// statement shape cannot be learned on one lane and dropped on the other.
 ///
-/// Semantic split preserved in this slice: only [`ReturnSummaryLane::Secret`]
-/// seeds `while let` binders from declared `secret<T>` payloads. The taint
-/// twin historically did not; adding that seeder is a D4 closure and belongs
-/// in its own slice with its own fixture.
+/// The walk itself is the shared label walker ([`walk_block_labels`]); both lanes
+/// seed `while let`, `match` and `if let` binders from the scrutinee and from
+/// declared qualified payloads (`seed_pattern`).
 #[derive(Clone, Copy)]
 enum ReturnSummaryLane {
     Taint,
@@ -30805,97 +32786,10 @@ enum ReturnSummaryLane {
 }
 
 impl ReturnSummaryLane {
-    fn expr_source(
-        self,
-        expr: &Expr,
-        scope: &BTreeMap<String, ScopeBinding>,
-        lane_fns: &BTreeSet<String>,
-        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-        method_fns: &BTreeSet<String>,
-        struct_fields: &PlaceTypes<'_>,
-    ) -> Option<String> {
-        match self {
-            Self::Taint => expr_source(
-                expr,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-                SourceLane::Taint,
-            ),
-            Self::Secret => expr_source(
-                expr,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-                SourceLane::Secret,
-            ),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn seed_let(
-        self,
-        name: &str,
-        ty: Option<&str>,
-        init: &Expr,
-        scope: &mut BTreeMap<String, ScopeBinding>,
-        lane_fns: &BTreeSet<String>,
-        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-        method_fns: &BTreeSet<String>,
-        struct_fields: &PlaceTypes<'_>,
-    ) {
-        match self {
-            Self::Taint => seed_one_let(
-                name,
-                ty,
-                init,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-            ),
-            Self::Secret => seed_one_let_secret(
-                name,
-                ty,
-                init,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-            ),
-        }
-    }
-
     fn seed_pattern_lane(self) -> SeedPatternLane {
         match self {
             Self::Taint => SeedPatternLane::Taint,
             Self::Secret => SeedPatternLane::Secret,
-        }
-    }
-
-    fn write_var_label(self, binding: &mut ScopeBinding, src: Option<String>) {
-        match self {
-            Self::Taint => binding.set_taint_label(
-                security_label::SecurityLabel::from_legacy_taint(src.is_some(), src),
-            ),
-            Self::Secret => binding.set_secret_label(
-                security_label::SecurityLabel::from_legacy_secret(src.is_some()),
-            ),
-        }
-    }
-
-    fn mark_root_labelled(self, binding: &mut ScopeBinding, src: String) {
-        match self {
-            Self::Taint => {
-                binding.set_taint_label(security_label::SecurityLabel::labeled_from(src))
-            }
-            Self::Secret => binding.set_secret_label(security_label::SecurityLabel::labeled(None)),
         }
     }
 
@@ -30915,121 +32809,10 @@ impl ReturnSummaryLane {
             Self::Secret => is_secret_type(ty),
         }
     }
-
-    /// Seed the binders a loop header introduces for its body: a `for` variable carries the label of
-    /// its range or collection, and a `while let` binder the label of its scrutinee. The ordered walk
-    /// had no binding for either, so `for v in [q.k] { return v; }` returned an unlabelled `v`.
-    #[allow(clippy::too_many_arguments)]
-    fn seed_loop_binders(
-        self,
-        stmt: &Stmt,
-        scope: &mut BTreeMap<String, ScopeBinding>,
-        lane_fns: &BTreeSet<String>,
-        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-        method_fns: &BTreeSet<String>,
-        struct_fields: &PlaceTypes<'_>,
-    ) {
-        if !matches!(stmt, Stmt::For { .. } | Stmt::WhileLet { .. }) {
-            return;
-        }
-        let label = header_exprs(stmt).into_iter().find_map(|e| {
-            self.expr_source(
-                e,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-            )
-        });
-        match stmt {
-            Stmt::For { var, .. } => {
-                let mut binding = labelled_param_binding(var, false, None, false);
-                if let Some(label) = label {
-                    self.mark_root_labelled(&mut binding, label);
-                }
-                scope.insert(var.clone(), binding);
-            }
-            Stmt::WhileLet { pattern, .. } => {
-                seed_pattern(
-                    scope,
-                    pattern,
-                    &label,
-                    self.seed_pattern_lane(),
-                    struct_fields,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    /// Lane-parameterized `while let` declared-payload seeder. Closes the D4 taint-side
-    /// residual explicitly named in the second-rewrite `PHASE_2_COMPLETION_2026-08-13.md`
-    /// § 9.7: prior to this slice the Secret arm seeded declared enum-payload / struct-field
-    /// binders and the Taint arm bailed out at the top, so a function that internally
-    /// destructured a `tainted<T>` payload through `while let ... = ...` and returned the
-    /// binding was NOT seen as returning tainted data; callers of that function then
-    /// passed the "clean" return value to a sink and the summary-side check accepted.
-    /// The direct (enforcing-lane) form was already caught in both lanes; only the
-    /// summary path — this helper's only caller, inside `body_returns` — needed the fix.
-    ///
-    /// The lane picks its own declared-qualifier predicate through `SeedPatternLane`
-    /// (the same routing the collapsed `seed_pattern` twin uses) and the label bit
-    /// through `mark_root_labelled`, so any future third lane adopts both writes by
-    /// implementing the two lane helpers instead of touching this function.
-    fn seed_while_let_binders(
-        self,
-        stmt: &Stmt,
-        scope: &mut BTreeMap<String, ScopeBinding>,
-        struct_fields: &PlaceTypes<'_>,
-    ) {
-        let Stmt::WhileLet { pattern, .. } = stmt else {
-            return;
-        };
-        let mut names = BTreeSet::new();
-        qualified_pattern_binders(
-            pattern,
-            struct_fields,
-            self.seed_pattern_lane().declared_qualifier(),
-            &mut names,
-        );
-        for n in names {
-            let b = scope.entry(n.clone()).or_insert_with(|| {
-                ScopeBinding {
-                    whole_struct: None,
-                    whole_captures: None,
-                    whole_list: false,
-                    whole_map: false,
-                    info: BindingInfo {
-                        name: n.clone(),
-                        ty: None,
-                        mode: String::new(),
-                        tainted: false,
-                        taint_source: None,
-                        declassified: false,
-                        span: None,
-                    },
-                    closure_arity: None,
-                    closure_lambda: None,
-                    field_closures: BTreeMap::new(),
-                    fn_alias: None,
-                    fn_identities: FnIdentitySet::Unknown,
-                    field_fn_identities: BTreeMap::new(),
-                    builtin_gate_tags: BuiltinGateTags::Unknown,
-                    field_builtin_gate_tags: BTreeMap::new(),
-                    taint_label: security_label::SecurityLabel::default(),
-                    secret_label: security_label::SecurityLabel::default(),
-                    secret: false,
-                }
-                .with_labels()
-            });
-            self.mark_root_labelled(b, format!("declared enum payload `{n}`"));
-        }
-    }
 }
 
-/// One write [`nested_may_labels`] closes over: when any of `sources` carries the lane's label,
-/// every binding in `targets` may carry it.
+/// One write [`nested_may_labels`] closes over: when any of `sources` carries the label, every
+/// binding in `targets` may carry it.
 struct NestedWrite<'a> {
     targets: Vec<String>,
     sources: Vec<&'a Expr>,
@@ -31060,140 +32843,396 @@ fn nested_pattern_write<'a>(
     });
 }
 
-/// The labels every binding MAY carry anywhere inside the statements nested in `stmt`, and the names
-/// they ASSIGN (`x = …`, `x[i] = …`, `push(x, …)`), which are the outer bindings they can change.
-/// `None` when nothing nested in `stmt` writes a binding.
+/// The names `sources` read: every `Var` and every callee named by a `Call`, anywhere inside them
+/// (value blocks and lambda bodies included).
+fn source_reads(sources: &[&Expr]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for &e in sources {
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Var(n) => {
+                names.insert(n.clone());
+            }
+            Expr::Call { callee, .. } => {
+                names.insert(callee.clone());
+            }
+            _ => {}
+        });
+    }
+    names
+}
+
+/// Close monotone writes to a fixpoint with a worklist. `reads[i]` names what write `i`'s sources
+/// read (`None`: they may read anything); `eval(i)` applies write `i` and returns the names it
+/// changed. A write is evaluated again only when a name it reads changes, so a carry chain in any
+/// order costs one evaluation per link, where a pass over every write per change cost one PASS per
+/// link (quadratic: `PERF1-closure-quadratic-x-nesting-x-fixpoint`).
+fn close_writes(reads: &[Option<BTreeSet<String>>], mut eval: impl FnMut(usize) -> Vec<String>) {
+    let mut users: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    let mut anything: Vec<usize> = Vec::new();
+    for (i, r) in reads.iter().enumerate() {
+        match r {
+            Some(names) => {
+                for n in names {
+                    users.entry(n.as_str()).or_default().push(i);
+                }
+            }
+            None => anything.push(i),
+        }
+    }
+    let mut queued = vec![true; reads.len()];
+    let mut queue: std::collections::VecDeque<usize> = (0..reads.len()).collect();
+    while let Some(i) = queue.pop_front() {
+        queued[i] = false;
+        for changed in eval(i) {
+            for &j in users
+                .get(changed.as_str())
+                .into_iter()
+                .flatten()
+                .chain(anything.iter())
+            {
+                if !queued[j] {
+                    queued[j] = true;
+                    queue.push_back(j);
+                }
+            }
+        }
+    }
+}
+
+/// Whether `callee(args)` is the in-place `push`/`insert` form, which writes into `args[0]`.
+fn is_in_place_push(callee: &str, args: &[Expr]) -> bool {
+    matches!(callee, "push" | "insert") && args.len() >= 2
+}
+
+/// The KEY and INDEX expressions of an assignment place (`k` in `m[k] = v`, `i` and `j` in
+/// `b.xs[i][j] = v`). They decide where the value lands, so a label on one is written into the root
+/// with the value: `m["${q.k}"] = 1` stores the secret as a key of `m`, and the root took its label
+/// from the clean `1` alone (in the return summary and in the enforcing lane).
+fn place_key_exprs<'a>(target: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match target {
+        Expr::Index { base, index } => {
+            out.push(index.as_ref());
+            place_key_exprs(base, out);
+        }
+        Expr::FieldAccess { base, .. } => place_key_exprs(base, out),
+        _ => {}
+    }
+}
+
+/// The operands of `?` in `e`, outside nested lambdas: `v?` leaves the enclosing function with `v`'s
+/// `Err` (or `None`), so for the flow lanes `v` is a returned value, returned under the conditions
+/// that reach it. A `?` in a closure leaves the closure ([`closure_extra_source`] reads those).
 ///
-/// `body_returns` walks straight-line code in order and restores its scope after every nested
-/// block, so a label a branch, a loop, a `match` arm or a value block wrote onto an outer binding
-/// was dropped at the join. `fn f(q: S) { let x = 0; if c { x = q.k; } return x; }` was not
-/// secret-returning, and `print(f(p))` printed the secret field on a clean check (review round 36,
-/// `r36-spec-3`). A single join over the blocks' END states is not enough either: a label can be
-/// live at a `break` or `return` and overwritten before the end, a loop carries it to the next
-/// iteration, and a `let` that shadows the binding hides what was assigned to it before.
-///
-/// So this closure is deliberately order-free and name-keyed. Starting from `scope`, every nested
-/// write counts on every path and every iteration until nothing changes; a name bound more than
-/// once, or shadowing an outer binding, is one binding here, and if its sites disagree on its
-/// declared type the type is dropped, so a field read off it counts every declaration. The
-/// statement's OWN top-level write (a `let`, an assignment or a `push` at `stmt` itself) is left to
-/// the ordered walk, which keeps a straight-line overwrite precise. Lambda bodies are skipped: a
-/// closure captures by value, so its writes never reach this frame (a write to a captured name is
-/// invisible after the call; runtime-checked).
+/// Kept apart from [`expr_returns`], which also feeds identity and contract resolution: there an
+/// early `Err` is not the function's value (it would un-resolve a sole returned function, or be
+/// checked against an `ensures`). Neither return summary nor the implicit-flow check saw them:
+/// `let v = Err(q.k)?; return Ok(0);` printed the secret, and `if q.k > 100 { let v = Err(0)?; }`
+/// encoded the condition in which of `Ok` / `Err` came back.
+fn try_exits_in_expr(e: &Expr, out: &mut Vec<Expr>) {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    visit::each_expr(e, &mut |x| lambda_try_nodes(x, &mut in_lambda));
+    visit::each_expr(e, &mut |x| push_try_exit(x, &in_lambda, out));
+}
+
+/// The `?` nodes inside `e` when `e` is a lambda: they leave the closure, not the function.
+fn lambda_try_nodes(e: &Expr, in_lambda: &mut BTreeSet<*const Expr>) {
+    if let Expr::Lambda { body, .. } = e {
+        visit::each_expr(body, &mut |y| {
+            if matches!(y, Expr::Try(_)) {
+                in_lambda.insert(y as *const Expr);
+            }
+        });
+    }
+}
+
+fn push_try_exit(e: &Expr, in_lambda: &BTreeSet<*const Expr>, out: &mut Vec<Expr>) {
+    if let Expr::Try(inner) = e {
+        if !in_lambda.contains(&(e as *const Expr)) {
+            out.push((**inner).clone());
+        }
+    }
+}
+
+/// The in-place `push` / `insert` calls in `exprs` outside lambda bodies, in EXPRESSION position as
+/// well as statement form: the runtime writes the container in place either way (`backends/run.rs`
+/// lowers `let t = push(xs, v)` to `{ xs.push_val(v); xs.clone() }`), and the walks knew only the
+/// statement (`let t = push(xs, q.k); return xs;` returned the secret with a clean summary).
+fn in_place_pushes<'a>(exprs: &[&'a Expr]) -> Vec<(&'a str, &'a [Expr])> {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Lambda { body, .. } = x {
+                visit::each_expr(body, &mut |y| {
+                    in_lambda.insert(y as *const Expr);
+                });
+            }
+        });
+    }
+    let mut out = Vec::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if in_lambda.contains(&(x as *const Expr)) {
+                return;
+            }
+            if let Expr::Call { callee, args } = x {
+                if is_in_place_push(callee, args) {
+                    if let Some(root) = assign_target_root(&args[0]) {
+                        out.push((root, &args[1..]));
+                    }
+                }
+            }
+        });
+    }
+    out
+}
+
+/// Whether any statement nested in `e` assigns a binding, or `e` holds an in-place `push`/`insert`
+/// (a cheap test before [`closure_extra_source`] copies a closure body).
+fn expr_nests_assignment(e: &Expr) -> bool {
+    let mut found = false;
+    visit::each_expr(e, &mut |x| match x {
+        Expr::Call { callee, args } if is_in_place_push(callee, args) => found = true,
+        Expr::Block { stmts, .. } => visit::each_stmt(stmts, &mut |s, _| {
+            if matches!(s, Stmt::Assign { .. }) {
+                found = true;
+            }
+        }),
+        _ => {}
+    });
+    found
+}
+
+/// What a CLOSURE CALL may yield beyond the tails the closure arms read (`expr_tail_values` through
+/// `closure_body_let_subst`, in the scope the closure was built in). Those substitute the body's
+/// `let`s only, so a body that WRITES a name before yielding it — a captured name (`|| { x = q.k; x
+/// }`) or its own local (`let y = 0; y = q.k; y`) — yielded what the name held outside, and a `v?` in
+/// the body, which returns `v`'s `Err` from the closure, was not read at all: each returned the
+/// secret through a clean `g()`, in a callee's summary and in `main`. Here the tails and those `?`
+/// operands are read in the body's order-free may-scope ([`nested_may_labels`]). `None` at once for
+/// a body with no assignment, `push`/`insert` or `?`, where the tails already read are complete.
 #[allow(clippy::too_many_arguments)]
-fn nested_may_labels(
-    stmt: &Stmt,
-    scope: &BTreeMap<String, ScopeBinding>,
+fn closure_extra_source(
+    body: &Expr,
+    inner: &BTreeMap<String, ScopeBinding>,
     lane_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     method_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
-    lane: ReturnSummaryLane,
-) -> Option<(BTreeMap<String, ScopeBinding>, BTreeSet<String>)> {
+    lane: SourceLane,
+) -> Option<String> {
+    let mut exits = Vec::new();
+    try_exits_in_expr(body, &mut exits);
+    if exits.is_empty() && !expr_nests_assignment(body) {
+        return None;
+    }
+    let domain = match lane.return_summary_lane() {
+        ReturnSummaryLane::Taint => BlockLabelDomain::Taint {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+        ReturnSummaryLane::Secret => BlockLabelDomain::Secret {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+    };
+    let may = nested_may_labels(&[body], inner, domain, struct_fields).may;
+    let mut values = Vec::new();
+    expr_tail_values(body, &mut values);
+    values.extend(exits);
+    values.iter().find_map(|v| {
+        expr_source(
+            v,
+            &may,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+            lane,
+        )
+    })
+}
+
+/// Whether `exprs` hold, outside lambda bodies, a `break` / `continue` in expression position: the
+/// parser gives one in an arm or a value (`None => break`, `let y = match c { true => break, _ => 0
+/// }`) as `Expr::Call { callee: "break" | "continue" }`, never as `Stmt::Break`. A walk that knew only
+/// the statement form took a loop whose only exit is one for a loop that never ends, and skipped
+/// every `return` after it (review of the ordinary-lane designs, U1/U2). One inside a loop nested
+/// there leaves that loop: counting it for the enclosing one only adds a path.
+fn expr_loop_exits(exprs: &[&Expr]) -> (bool, bool) {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Lambda { body, .. } = x {
+                visit::each_expr(body, &mut |y| {
+                    in_lambda.insert(y as *const Expr);
+                });
+            }
+        });
+    }
+    let (mut breaks, mut continues) = (false, false);
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if in_lambda.contains(&(x as *const Expr)) {
+                return;
+            }
+            if let Expr::Call { callee, .. } = x {
+                breaks |= callee == "break";
+                continues |= callee == "continue";
+            }
+        });
+    }
+    (breaks, continues)
+}
+
+/// What the statements nested in a statement's own expressions may do ([`nested_may_labels`]).
+struct NestedMay {
+    /// The labels every binding may carry anywhere among them.
+    may: BTreeMap<String, ScopeBinding>,
+    /// The outer names they ASSIGN (`x = …`, `x[i] = …`, `push(x, …)`).
+    assigned: BTreeSet<String>,
+    /// Whether a `break` / `continue` among them (outside lambdas) may leave to the enclosing loop.
+    breaks: bool,
+    continues: bool,
+}
+
+/// The labels every binding MAY carry anywhere among the statements nested in `exprs` — a
+/// statement's own expressions ([`stmt_value_exprs`]: a value block, an expression-position arm),
+/// the one place the label walks do not track order — and the outer names they assign.
+///
+/// Deliberately order-free and name-keyed: starting from `scope`, every nested write counts on every
+/// path and every iteration until nothing changes; a name bound more than once, or shadowing an
+/// outer binding, is one binding here, and if its sites disagree on its declared type the type is
+/// dropped, so a field read off it counts every declaration. Lambda bodies are skipped: a closure
+/// captures by value, so its writes never reach this frame (a write to a captured name is invisible
+/// after the call; runtime-checked). Only the statements nested in expressions are closed over: the
+/// walks visit a statement's own bodies in order, so the closure no longer runs for every compound
+/// statement at every nesting level over everything beneath it (`PERF-NESTED-MAY-LABELS-PER-LEVEL`).
+fn nested_may_labels(
+    exprs: &[&Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    domain: BlockLabelDomain<'_>,
+    struct_fields: &PlaceTypes<'_>,
+) -> NestedMay {
+    let lane = domain.lane();
     let mut writes: Vec<NestedWrite<'_>> = Vec::new();
     let mut binds: Vec<(String, Option<&str>)> = Vec::new();
     let mut declared: BTreeSet<String> = BTreeSet::new();
     let mut assigned: BTreeSet<String> = BTreeSet::new();
-    visit::each_stmt(std::slice::from_ref(stmt), &mut |s, in_lambda| {
-        if in_lambda {
-            return;
+    let (mut breaks, mut continues) = expr_loop_exits(exprs);
+    for &e in exprs {
+        // `push` / `insert` in expression position write their container too.
+        for (root, args) in in_place_pushes(&[e]) {
+            assigned.insert(root.to_string());
+            writes.push(NestedWrite {
+                targets: vec![root.to_string()],
+                sources: args.iter().collect(),
+            });
         }
-        let own = std::ptr::eq(s, stmt);
-        match s {
-            Stmt::Let { name, ty, init, .. } if !own => {
-                binds.push((name.clone(), ty.as_deref()));
-                if lane.declared(ty.as_deref()) {
-                    declared.insert(name.clone());
-                }
-                writes.push(NestedWrite {
-                    targets: vec![name.clone()],
-                    sources: vec![init],
-                });
+        visit::each_stmt_in_expr(e, &mut |s, in_lambda| {
+            if in_lambda {
+                return;
             }
-            Stmt::LetPattern { pattern, init, .. } if !own => nested_pattern_write(
-                pattern,
-                init,
-                lane,
-                struct_fields,
-                &mut binds,
-                &mut declared,
-                &mut writes,
-            ),
-            Stmt::WhileLet { pattern, expr, .. } => nested_pattern_write(
-                pattern,
-                expr,
-                lane,
-                struct_fields,
-                &mut binds,
-                &mut declared,
-                &mut writes,
-            ),
-            Stmt::For { var, source, .. } => {
-                binds.push((var.clone(), None));
-                let sources = match source {
-                    crate::frontend::ForSource::Range { start, end } => vec![start, end],
-                    crate::frontend::ForSource::Collection { expr } => vec![expr],
-                };
-                writes.push(NestedWrite {
-                    targets: vec![var.clone()],
-                    sources,
-                });
-            }
-            Stmt::Assign { target, value } if !own => {
-                if let Some(root) = assign_target_root(target) {
-                    assigned.insert(root.to_string());
+            match s {
+                Stmt::Let { name, ty, init, .. } => {
+                    binds.push((name.clone(), ty.as_deref()));
+                    if lane.declared(ty.as_deref()) {
+                        declared.insert(name.clone());
+                    }
                     writes.push(NestedWrite {
-                        targets: vec![root.to_string()],
-                        sources: vec![value],
+                        targets: vec![name.clone()],
+                        sources: vec![init],
                     });
                 }
-            }
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if !own && matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    assigned.insert(root.to_string());
-                    writes.push(NestedWrite {
-                        targets: vec![root.to_string()],
-                        sources: args[1..].iter().collect(),
-                    });
-                }
-            }
-            _ => {}
-        }
-    });
-    // `match` arms and `if let` in expression position bind their patterns too.
-    visit::each_expr_in_stmts(std::slice::from_ref(stmt), &mut |e| match e {
-        Expr::Match {
-            scrutinee, arms, ..
-        } => {
-            for arm in arms {
-                nested_pattern_write(
-                    &arm.pattern,
-                    scrutinee,
+                Stmt::LetPattern { pattern, init, .. } => nested_pattern_write(
+                    pattern,
+                    init,
                     lane,
                     struct_fields,
                     &mut binds,
                     &mut declared,
                     &mut writes,
-                );
+                ),
+                Stmt::WhileLet { pattern, expr, .. } => nested_pattern_write(
+                    pattern,
+                    expr,
+                    lane,
+                    struct_fields,
+                    &mut binds,
+                    &mut declared,
+                    &mut writes,
+                ),
+                Stmt::For { var, source, .. } => {
+                    binds.push((var.clone(), None));
+                    let sources = match source {
+                        crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                        crate::frontend::ForSource::Collection { expr } => vec![expr],
+                    };
+                    writes.push(NestedWrite {
+                        targets: vec![var.clone()],
+                        sources,
+                    });
+                }
+                Stmt::Assign { target, value } => {
+                    if let Some(root) = assign_target_root(target) {
+                        assigned.insert(root.to_string());
+                        let mut sources = vec![value];
+                        place_key_exprs(target, &mut sources);
+                        writes.push(NestedWrite {
+                            targets: vec![root.to_string()],
+                            sources,
+                        });
+                    }
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args })
+                    if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+                {
+                    if let Some(root) = assign_target_root(&args[0]) {
+                        assigned.insert(root.to_string());
+                        writes.push(NestedWrite {
+                            targets: vec![root.to_string()],
+                            sources: args[1..].iter().collect(),
+                        });
+                    }
+                }
+                // A `break` inside a loop nested here leaves that loop, not the enclosing one;
+                // counting it for the enclosing one only adds a path.
+                Stmt::Break => breaks = true,
+                Stmt::Continue => continues = true,
+                _ => {}
             }
-        }
-        Expr::IfLet {
-            pattern, scrutinee, ..
-        } => nested_pattern_write(
-            pattern,
-            scrutinee,
-            lane,
-            struct_fields,
-            &mut binds,
-            &mut declared,
-            &mut writes,
-        ),
-        _ => {}
-    });
-    if writes.is_empty() {
-        return None;
+        });
+        // `match` arms and `if let` in expression position bind their patterns too.
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                for arm in arms {
+                    nested_pattern_write(
+                        &arm.pattern,
+                        scrutinee,
+                        lane,
+                        struct_fields,
+                        &mut binds,
+                        &mut declared,
+                        &mut writes,
+                    );
+                }
+            }
+            Expr::IfLet {
+                pattern, scrutinee, ..
+            } => nested_pattern_write(
+                pattern,
+                scrutinee,
+                lane,
+                struct_fields,
+                &mut binds,
+                &mut declared,
+                &mut writes,
+            ),
+            _ => {}
+        });
     }
     let mut may = scope.clone();
     for (name, ty) in &binds {
@@ -31212,157 +33251,189 @@ fn nested_may_labels(
     }
     for name in &declared {
         if let Some(b) = may.get_mut(name) {
-            if !lane.is_labelled(b) {
-                lane.mark_root_labelled(b, format!("declared qualifier on `{name}`"));
+            if !domain.labelled(b) {
+                domain.taint_place(b, format!("declared qualifier on `{name}`"));
             }
         }
     }
-    // Monotone: a round either labels a name that was not labelled or ends the loop, and the names
-    // are finite.
-    loop {
-        let mut changed = false;
-        for w in &writes {
-            if w.targets
-                .iter()
-                .all(|t| may.get(t).is_some_and(|b| lane.is_labelled(b)))
-            {
-                continue;
-            }
-            let Some(src) = w.sources.iter().find_map(|e| {
-                lane.expr_source(
-                    e,
-                    &may,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                )
-            }) else {
-                continue;
-            };
-            for t in &w.targets {
-                let b = may
-                    .entry(t.clone())
-                    .or_insert_with(|| labelled_param_binding(t, false, None, false));
-                if !lane.is_labelled(b) {
-                    lane.mark_root_labelled(b, src.clone());
-                    changed = true;
-                }
-            }
+    // A write whose sources name a binding holding a closure (or stored field closures) can read
+    // names the sources do not mention: it is re-evaluated on every change.
+    let reads: Vec<Option<BTreeSet<String>>> = writes
+        .iter()
+        .map(|w| {
+            let names = source_reads(&w.sources);
+            let opaque = names.iter().any(|n| {
+                may.get(n)
+                    .is_some_and(|b| b.closure_lambda.is_some() || !b.field_closures.is_empty())
+            });
+            (!opaque).then_some(names)
+        })
+        .collect();
+    close_writes(&reads, |i| {
+        let w = &writes[i];
+        let mut changed = Vec::new();
+        if w.targets
+            .iter()
+            .all(|t| may.get(t).is_some_and(|b| domain.labelled(b)))
+        {
+            return changed;
         }
-        if !changed {
-            break;
-        }
-    }
-    Some((may, assigned))
-}
-
-/// After a nested statement, label every outer binding it may have assigned a labelled value
-/// ([`nested_may_labels`]). `except` names the bindings the statement itself rebinds or overwrites
-/// AFTER its nested writes (a `let x = …` / `x = …` whose value holds the nested block), which the
-/// ordered walk has already set exactly.
-fn join_nested_writes(
-    scope: &mut BTreeMap<String, ScopeBinding>,
-    nested: &Option<(BTreeMap<String, ScopeBinding>, BTreeSet<String>)>,
-    except: &[String],
-    lane: ReturnSummaryLane,
-) {
-    let Some((may, assigned)) = nested else {
-        return;
-    };
-    for name in assigned {
-        if except.contains(name) {
-            continue;
-        }
-        let Some(m) = may.get(name).filter(|m| lane.is_labelled(m)) else {
-            continue;
+        let Some(src) = w
+            .sources
+            .iter()
+            .find_map(|e| domain.expr_source(e, &may, struct_fields))
+        else {
+            return changed;
         };
-        if let Some(b) = scope.get_mut(name) {
-            if !lane.is_labelled(b) {
-                let src = m
-                    .info
-                    .taint_source
-                    .clone()
-                    .unwrap_or_else(|| format!("`{name}` assigned in a nested block"));
-                lane.mark_root_labelled(b, src);
+        for t in &w.targets {
+            let b = may
+                .entry(t.clone())
+                .or_insert_with(|| labelled_param_binding(t, false, None, false));
+            if !domain.labelled(b) {
+                domain.taint_place(b, src.clone());
+                changed.push(t.clone());
             }
         }
+        changed
+    });
+    NestedMay {
+        may,
+        assigned,
+        breaks,
+        continues,
     }
 }
 
-/// A compound statement's HEADER expressions — an `if`/`while` condition, a `while let` scrutinee,
-/// a `for` range or collection — which run before its body (and, for a loop, between iterations).
-fn header_exprs(stmt: &Stmt) -> Vec<&Expr> {
-    match stmt {
-        Stmt::If { cond, .. } | Stmt::While { cond, .. } => vec![cond],
-        Stmt::WhileLet { expr, .. }
-        | Stmt::For {
-            source: crate::frontend::ForSource::Collection { expr },
-            ..
-        } => vec![expr],
-        Stmt::For {
-            source: crate::frontend::ForSource::Range { start, end },
-            ..
-        } => vec![start, end],
-        _ => Vec::new(),
-    }
+/// The param-flow twin of [`nested_may_labels`] for [`body_param_returns`]: every name any statement
+/// nested in `exprs` may bind or assign, with the parameters it may carry there (order-free,
+/// name-keyed, lambdas skipped).
+struct NestedFlow {
+    may: BTreeMap<String, BTreeSet<usize>>,
+    assigned: BTreeSet<String>,
+    breaks: bool,
+    continues: bool,
 }
 
-/// The `return`s inside a compound statement's header, which the ordered walk over its bodies never
-/// reaches.
-fn header_returns(stmt: &Stmt) -> Vec<Expr> {
-    let mut out = Vec::new();
-    for h in header_exprs(stmt) {
-        expr_returns(h, &mut out);
-    }
-    out
-}
-
-/// Whether a compound statement's header holds statements (a value block, a `match` arm body),
-/// which can write a binding before the body runs.
-fn header_nests_stmts(stmt: &Stmt) -> bool {
-    let mut found = false;
-    for h in header_exprs(stmt) {
-        visit::each_expr(h, &mut |e| {
-            if matches!(e, Expr::Block { stmts, .. } if !stmts.is_empty()) {
-                found = true;
+fn nested_param_flow(
+    exprs: &[&Expr],
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+    known: &BTreeMap<String, BTreeSet<usize>>,
+) -> NestedFlow {
+    let mut writes: Vec<(Vec<String>, Vec<&Expr>)> = Vec::new();
+    let mut assigned = BTreeSet::new();
+    let (mut breaks, mut continues) = expr_loop_exits(exprs);
+    for &e in exprs {
+        // `push` / `insert` in expression position write their container too.
+        for (root, args) in in_place_pushes(&[e]) {
+            assigned.insert(root.to_string());
+            writes.push((vec![root.to_string()], args.iter().collect()));
+        }
+        visit::each_stmt_in_expr(e, &mut |s, in_lambda| {
+            if in_lambda {
+                return;
+            }
+            match s {
+                Stmt::Let { name, init, .. } => writes.push((vec![name.clone()], vec![init])),
+                Stmt::LetPattern { pattern, init, .. } => {
+                    writes.push((pattern.bound_names(), vec![init]))
+                }
+                Stmt::WhileLet { pattern, expr, .. } => {
+                    writes.push((pattern.bound_names(), vec![expr]))
+                }
+                Stmt::For { var, source, .. } => {
+                    let sources = match source {
+                        crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                        crate::frontend::ForSource::Collection { expr } => vec![expr],
+                    };
+                    writes.push((vec![var.clone()], sources));
+                }
+                Stmt::Assign { target, value } => {
+                    if let Some(root) = assign_target_root(target) {
+                        assigned.insert(root.to_string());
+                        let mut sources = vec![value];
+                        place_key_exprs(target, &mut sources);
+                        writes.push((vec![root.to_string()], sources));
+                    }
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args })
+                    if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+                {
+                    if let Some(root) = assign_target_root(&args[0]) {
+                        assigned.insert(root.to_string());
+                        writes.push((vec![root.to_string()], args[1..].iter().collect()));
+                    }
+                }
+                Stmt::Break => breaks = true,
+                Stmt::Continue => continues = true,
+                _ => {}
             }
         });
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                for arm in arms {
+                    writes.push((arm.pattern.bound_names(), vec![&**scrutinee]));
+                }
+            }
+            Expr::IfLet {
+                pattern, scrutinee, ..
+            } => writes.push((pattern.bound_names(), vec![&**scrutinee])),
+            _ => {}
+        });
     }
-    found
+    let mut may = flow.clone();
+    let reads: Vec<Option<BTreeSet<String>>> = writes
+        .iter()
+        .map(|(_, sources)| Some(source_reads(sources)))
+        .collect();
+    close_writes(&reads, |i| {
+        let (targets, sources) = &writes[i];
+        let mut set = BTreeSet::new();
+        for s in sources {
+            set.extend(expr_param_return_flow(s, &may, known));
+        }
+        let mut changed = Vec::new();
+        if set.is_empty() {
+            return changed;
+        }
+        for t in targets {
+            let entry = may.entry(t.clone()).or_default();
+            let before = entry.len();
+            entry.extend(set.iter().copied());
+            if entry.len() != before {
+                changed.push(t.clone());
+            }
+        }
+        changed
+    });
+    NestedFlow {
+        may,
+        assigned,
+        breaks,
+        continues,
+    }
 }
 
-/// Whether any of `rets` carries the lane's label in `scope`.
-#[allow(clippy::too_many_arguments)]
-fn any_ret_labelled(
-    rets: &[Expr],
-    scope: &BTreeMap<String, ScopeBinding>,
-    lane_fns: &BTreeSet<String>,
-    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-    method_fns: &BTreeSet<String>,
-    struct_fields: &PlaceTypes<'_>,
-    lane: ReturnSummaryLane,
-) -> bool {
-    rets.iter().any(|e| {
-        lane.expr_source(
-            e,
-            scope,
-            lane_fns,
-            param_return_taint,
-            method_fns,
-            struct_fields,
-        )
-        .is_some()
-    })
-}
-
-/// Lane-parameterized replacement for `body_returns_taint` / `body_returns_secret`.
+/// Lane-parameterized replacement for `body_returns_taint` / `body_returns_secret`: whether a
+/// function body may return a value carrying the lane's label.
 ///
-/// Straight-line statements are walked in order (an overwrite clears a label exactly). A statement
-/// that nests others is walked in order too, for the `return`s inside it, but its scope is restored
-/// afterwards, so every label its nested statements may have written onto an outer binding is put
-/// back by [`join_nested_writes`] from the order-free closure [`nested_may_labels`]; a loop is
-/// entered with that closure too, since an iteration starts from what the previous one wrote.
+/// The body is walked by the shared label walker ([`walk_block_labels`]) in return-summary mode,
+/// under the flow discipline of [`FlowExits`]: statements in order (an overwrite clears a label
+/// exactly), branches and `match`/`if let` arms joined (a label on any path survives, a value
+/// cleared on every path is clean), loops to their head fixpoint, `break`/`continue` states kept,
+/// shadowed outer bindings restored at scope end; the order-free closure only for statements nested
+/// in a statement's own expressions. Every `return` and tail value is judged where it is reached,
+/// with the statement's declared pattern binders (`let`/`while let`/`match`/`if let`, `LetPattern`
+/// included) and local lambdas seeded on top.
+///
+/// This replaced (IFC-JOIN-BREAK-SHADOW, review of 9dc7be91) a walk that restored its scope after
+/// every nested statement and put back, from an order-free closure over EVERYTHING nested in it,
+/// every label it might have written: an overwrite of a secret by a LATER branch that clears it on
+/// every path, a label that exists before a loop and is overwritten before every read, and a temp
+/// reused by a second loop all made the function secret- or taint-returning (OR1-OR3), and the
+/// closure was recomputed for every statement at every nesting level (quadratic in a carry chain,
+/// times the nesting, times the summary fixpoint).
 #[allow(clippy::too_many_arguments)]
 fn body_returns(
     stmts: &[Stmt],
@@ -31374,295 +33445,48 @@ fn body_returns(
     struct_fields: &PlaceTypes<'_>,
     lane: ReturnSummaryLane,
 ) -> bool {
-    let n = stmts.len();
-    for (i, stmt) in stmts.iter().enumerate() {
-        let stmt_is_tail = tail && i + 1 == n;
-        let nested = nested_may_labels(
-            stmt,
-            scope,
-            lane_fns,
-            param_return_taint,
-            method_fns,
-            struct_fields,
-            lane,
-        );
-        // A `return` in a statement's own expressions — a compound statement's header, or a value
-        // block / `match` arm inside a straight-line statement's value — leaves from inside nested
-        // code, so it is judged with every nested write counted. (Returns inside a compound
-        // statement's BODIES are judged by the ordered walk below; the `_` arm judges its own.)
-        let straight_line = match stmt {
-            Stmt::Let { .. } | Stmt::LetPattern { .. } | Stmt::Assign { .. } => true,
-            Stmt::ExprStmt(Expr::Call { callee, args }) => {
-                matches!(callee.as_str(), "push" | "insert") && args.len() >= 2
+    // The walker itself binds `let`, `LetPattern`, `while let`, `for`, `match` and `if let` binders
+    // (`seed_pattern`, declared qualified payloads included); a judged value also gets these.
+    let seed = |stmt: &Stmt, local: &mut BTreeMap<String, ScopeBinding>| {
+        match lane {
+            ReturnSummaryLane::Taint => {
+                seed_declared_pattern_binders(stmt, struct_fields, ty::is_tainted, local, |b| {
+                    b.set_taint_label(security_label::SecurityLabel::labeled_from(
+                        "declared enum payload",
+                    ));
+                })
             }
-            _ => false,
-        };
-        let mut own_rets = header_returns(stmt);
-        if straight_line {
-            collect_returns_in_stmt(stmt, &mut own_rets);
-        }
-        if any_ret_labelled(
-            &own_rets,
-            nested.as_ref().map_or(&*scope, |(may, _)| may),
-            lane_fns,
-            param_return_taint,
-            method_fns,
-            struct_fields,
-            lane,
-        ) {
-            return true;
-        }
-        match stmt {
-            Stmt::Let { name, ty, init, .. } => {
-                lane.seed_let(
-                    name,
-                    ty.as_deref(),
-                    init,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                );
-                join_nested_writes(scope, &nested, std::slice::from_ref(name), lane);
-            }
-            Stmt::LetPattern { pattern, init, .. } => {
-                let label = lane.expr_source(
-                    init,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                );
-                seed_pattern(
-                    scope,
-                    pattern,
-                    &label,
-                    lane.seed_pattern_lane(),
-                    struct_fields,
-                );
-                join_nested_writes(scope, &nested, &pattern.bound_names(), lane);
-            }
-            Stmt::If { then, else_, .. } => {
-                // A write inside the condition happens before either branch runs.
-                if header_nests_stmts(stmt) {
-                    join_nested_writes(scope, &nested, &[], lane);
-                }
-                let saved = scope.clone();
-                if body_returns(
-                    then,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    stmt_is_tail,
-                    struct_fields,
-                    lane,
-                ) {
-                    return true;
-                }
-                *scope = saved.clone();
-                if let Some(else_body) = else_ {
-                    if body_returns(
-                        else_body,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        stmt_is_tail,
-                        struct_fields,
-                        lane,
-                    ) {
-                        return true;
-                    }
-                }
-                *scope = saved;
-                join_nested_writes(scope, &nested, &[], lane);
-            }
-            Stmt::While { body, .. }
-            | Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
-                let saved = scope.clone();
-                if !matches!(stmt, Stmt::ResearchBlock { .. } | Stmt::ExploitBlock { .. }) {
-                    join_nested_writes(scope, &nested, &[], lane);
-                }
-                lane.seed_loop_binders(
-                    stmt,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                );
-                lane.seed_while_let_binders(stmt, scope, struct_fields);
-                if body_returns(
-                    body,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    false,
-                    struct_fields,
-                    lane,
-                ) {
-                    return true;
-                }
-                *scope = saved;
-                join_nested_writes(scope, &nested, &[], lane);
-            }
-            Stmt::HybridBlock { gpu, cpu, prove } => {
-                for b in [gpu, cpu, prove].into_iter().flatten() {
-                    let saved = scope.clone();
-                    // The backend picks the lanes' order, so each may start from another's writes.
-                    join_nested_writes(scope, &nested, &[], lane);
-                    if body_returns(
-                        b,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        false,
-                        struct_fields,
-                        lane,
-                    ) {
-                        return true;
-                    }
-                    *scope = saved;
-                }
-                join_nested_writes(scope, &nested, &[], lane);
-            }
-            Stmt::Assign {
-                target: Expr::Var(name),
-                value,
-            } => {
-                let src = lane.expr_source(
-                    value,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                );
-                if let Some(b) = scope.get_mut(name) {
-                    lane.write_var_label(b, src);
-                }
-                join_nested_writes(scope, &nested, std::slice::from_ref(name), lane);
-            }
-            Stmt::Assign { target, value } => {
-                if let Some(root) = assign_target_root(target) {
-                    if let Some(src) = lane.expr_source(
-                        value,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    ) {
-                        if let Some(b) = scope.get_mut(root) {
-                            lane.mark_root_labelled(b, src);
-                        }
-                    }
-                }
-                join_nested_writes(scope, &nested, &[], lane);
-            }
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if let Some(src) = args[1..].iter().find_map(|a| {
-                        lane.expr_source(
-                            a,
-                            scope,
-                            lane_fns,
-                            param_return_taint,
-                            method_fns,
-                            struct_fields,
-                        )
-                    }) {
-                        if let Some(b) = scope.get_mut(root) {
-                            lane.mark_root_labelled(b, src);
-                        }
-                    }
-                }
-                join_nested_writes(scope, &nested, &[], lane);
-            }
-            _ => {
-                let seed = |mut local: BTreeMap<String, ScopeBinding>| {
-                    match lane {
-                        ReturnSummaryLane::Taint => seed_declared_pattern_binders(
-                            stmt,
-                            struct_fields,
-                            ty::is_tainted,
-                            &mut local,
-                            |b| {
-                                b.set_taint_label(security_label::SecurityLabel::labeled_from(
-                                    "declared enum payload",
-                                ));
-                            },
-                        ),
-                        ReturnSummaryLane::Secret => seed_declared_pattern_binders(
-                            stmt,
-                            struct_fields,
-                            ty::is_secret,
-                            &mut local,
-                            |b| b.set_secret_label(security_label::SecurityLabel::labeled(None)),
-                        ),
-                    }
-                    seed_stmt_local_lambdas(stmt, &mut local);
-                    local
-                };
-                // The tail value is walked in order from the real entry scope; a `return` anywhere
-                // inside the statement (a `match` arm, an `if let` branch) is judged with every
-                // write nested in it counted, since it can follow any of them.
-                let local = seed(scope.clone());
-                let nested_local;
-                let ret_scope = match &nested {
-                    Some((may, _)) => {
-                        nested_local = seed(may.clone());
-                        &nested_local
-                    }
-                    None => &local,
-                };
-                let mut rets = Vec::new();
-                collect_returns_in_stmt(stmt, &mut rets);
-                if any_ret_labelled(
-                    &rets,
-                    ret_scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                    lane,
-                ) {
-                    return true;
-                }
-                if stmt_is_tail {
-                    if let Stmt::ExprStmt(e) = stmt {
-                        if !is_return_call(e)
-                            && lane
-                                .expr_source(
-                                    e,
-                                    &local,
-                                    lane_fns,
-                                    param_return_taint,
-                                    method_fns,
-                                    struct_fields,
-                                )
-                                .is_some()
-                        {
-                            return true;
-                        }
-                    }
-                }
-                join_nested_writes(scope, &nested, &[], lane);
+            ReturnSummaryLane::Secret => {
+                seed_declared_pattern_binders(stmt, struct_fields, ty::is_secret, local, |b| {
+                    b.set_secret_label(security_label::SecurityLabel::labeled(None))
+                })
             }
         }
+        seed_stmt_local_lambdas(stmt, local);
+    };
+    let seed: RetSeed<'_> = &seed;
+    let domain = match lane {
+        ReturnSummaryLane::Taint => BlockLabelDomain::Taint {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+        ReturnSummaryLane::Secret => BlockLabelDomain::Secret {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+    };
+    let mut walk = LabelWalk::new(domain, struct_fields, Some(seed));
+    match walk_block_labels(stmts, scope.clone(), &mut walk, tail, None, false) {
+        Ok(exits) => {
+            if let Some(end) = exits.fall {
+                *scope = end;
+            }
+            false
+        }
+        Err(LabelledReturn) => true,
     }
-    false
 }
 
 /// Seed a return-summary scope with every typed parameter. A qualifier-declared param is
@@ -31695,6 +33519,7 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -31815,6 +33640,11 @@ fn fn_returns_taint(
 ) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
+    // A return-summary walk ([`RETURN_SUMMARY_SCOPE`]): a bare function name reads as its return.
+    scope.insert(
+        RETURN_SUMMARY_SCOPE.to_string(),
+        labelled_param_binding(RETURN_SUMMARY_SCOPE, false, None, false),
+    );
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     body_returns(
         body,
@@ -31959,6 +33789,7 @@ fn seed_one_let_secret(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -32059,6 +33890,11 @@ fn fn_returns_secret(
 ) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
+    // A return-summary walk ([`RETURN_SUMMARY_SCOPE`]): a bare function name reads as its return.
+    scope.insert(
+        RETURN_SUMMARY_SCOPE.to_string(),
+        labelled_param_binding(RETURN_SUMMARY_SCOPE, false, None, false),
+    );
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     body_returns(
         body,
@@ -33313,8 +35149,13 @@ fn expr_param_return_flow(
                 }
                 s
             } else {
-                // Unknown/builtin during bootstrap: conservative union of args.
-                args.iter().fold(BTreeSet::new(), |mut acc, a| {
+                // Unknown/builtin during bootstrap: conservative union of args. A call through a
+                // local or a parameter that HOLDS a function (`fn app(g, n) { return g(n); }`) also
+                // returns what that function returns, so the binding's own flow reaches the result:
+                // `app` was summarized as returning `n` alone, and `print(app(|x| p.k, 3))` printed
+                // the secret the closure captured.
+                let through = flow.get(callee).cloned().unwrap_or_default();
+                args.iter().fold(through, |mut acc, a| {
                     acc.extend(expr_param_return_flow(a, flow, known_param_return));
                     acc
                 })
@@ -33361,9 +35202,19 @@ fn expr_param_return_flow(
         // through); the block now inherits the driver's branch may-union, so a param assigned only inside a
         // nested branch reaches the tail. The tail is then evaluated in the block's post-statement `local`.
         Expr::Block { stmts, tail } => {
-            let mut local = flow.clone();
             let mut discard = BTreeSet::new();
-            body_param_returns(stmts, &mut local, known_param_return, &mut discard, false);
+            let mut walk = ParamWalk {
+                known: known_param_return,
+                found: &mut discard,
+                heads: BTreeMap::new(),
+            };
+            // The tail runs after the statements: its own nested writes reach the flow it is read in.
+            let exits = walk.block(stmts, flow.clone(), false, tail.as_deref(), false);
+            let local = exits
+                .fall
+                .or(exits.brk)
+                .or(exits.cont)
+                .unwrap_or_else(|| flow.clone());
             tail.as_ref()
                 .map(|t| expr_param_return_flow(t, &local, known_param_return))
                 .unwrap_or_default()
@@ -33520,6 +35371,18 @@ fn lambda_body_return_flow(
     found
 }
 
+/// Collect the parameter indices a statement list can RETURN under `known_param_return` into
+/// `found`, leaving `flow` at the list's end state (a value block's caller reads its tail there).
+///
+/// Walked under the flow discipline of [`FlowExits`] ([`ParamWalk`]): statements in order (a
+/// straight-line `x = …` replaces `x`'s flow exactly), alternatives JOINED (a param reaching a name
+/// on any path reaches it after; one cleared on every path is cleared), loops to their head fixpoint
+/// with every `continue` state, `break` states joined into the loop's exit, and a binding a `let` or
+/// binder shadows kept aside and restored when the scope ends. The walk used to merge each branch's
+/// END state name by name into the pre-branch flow: a param live at a `break` and overwritten before
+/// the end of the body, or assigned to an outer name that the branch then shadowed with a `let`, was
+/// dropped (`open_rv36o_sib_brk_param`, `open_rv36o_sib_shd_param`), as was one carried through a
+/// `continue` or assigned inside a value block, and a `while let` binder carried nothing.
 fn body_param_returns(
     stmts: &[Stmt],
     flow: &mut BTreeMap<String, BTreeSet<usize>>,
@@ -33527,265 +35390,552 @@ fn body_param_returns(
     found: &mut BTreeSet<usize>,
     tail: bool,
 ) {
-    let n = stmts.len();
-    // Local lambda bindings in this block, so `return g()` / `let r = g()` where `g = |p| body`
-    // resolves to the closure body's return-flow — the param→return-taint twin of the value-block and
-    // returned-closure fixes (soundness hunt2 [12]: `fn fwd(x){ let g = || x; return g(); }` returned
-    // x through the local closure but the summary treated `g()` as opaque, so `send(fwd(secret))`
-    // compiled).
-    let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
-    for (i, stmt) in stmts.iter().enumerate() {
-        let stmt_is_tail = tail && i + 1 == n;
-        match stmt {
-            Stmt::Let { name, init, .. } => {
-                // Hidden returns inside the initializer.
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                for r in rets {
-                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
-                }
-                if matches!(init, Expr::Lambda { .. }) {
-                    lambdas.insert(name.clone(), init.clone());
-                }
-                let cleared = matches!(
-                    init,
-                    Expr::Declassify { policy, reason, .. } if declassify_wellformed(policy, reason)
-                );
-                if cleared {
-                    flow.insert(name.clone(), BTreeSet::new());
-                } else {
-                    let f = local_lambda_return_flow(init, flow, &lambdas, known_param_return)
-                        .unwrap_or_else(|| expr_param_return_flow(init, flow, known_param_return));
-                    flow.insert(name.clone(), f);
-                }
+    let mut walk = ParamWalk {
+        known: known_param_return,
+        found,
+        heads: BTreeMap::new(),
+    };
+    let exits = walk.block(stmts, flow.clone(), tail, None, false);
+    if let Some(end) = exits.fall.or(exits.brk).or(exits.cont) {
+        *flow = end;
+    }
+}
+
+type ParamFlow = BTreeMap<String, BTreeSet<usize>>;
+
+/// Union `src`'s flow into `dst` over `dst`'s names (both settled to the same scope).
+fn param_flow_join(dst: &mut ParamFlow, src: &ParamFlow) {
+    for (name, d) in dst.iter_mut() {
+        if let Some(s) = src.get(name) {
+            d.extend(s.iter().copied());
+        }
+    }
+}
+
+/// One walk of [`body_param_returns`].
+struct ParamWalk<'a> {
+    known: &'a ParamFlow,
+    found: &'a mut BTreeSet<usize>,
+    /// Per loop or hybrid block (by address), the head its last fixpoint reached in this walk.
+    heads: BTreeMap<usize, ParamFlow>,
+}
+
+impl ParamWalk<'_> {
+    /// A returned (or tail) value's parameters, through a local lambda it applies too.
+    fn note_return(&mut self, e: &Expr, flow: &ParamFlow, lambdas: &BTreeMap<String, Expr>) {
+        self.found
+            .extend(expr_param_return_flow(e, flow, self.known));
+        if let Some(lf) = local_lambda_return_flow(e, flow, lambdas, self.known) {
+            self.found.extend(lf);
+        }
+    }
+
+    /// The statements nested in `stmt`'s own expressions ([`stmt_value_exprs`]); see
+    /// [`ParamWalk::value_writes`].
+    fn expression_writes(
+        &mut self,
+        stmt: &Stmt,
+        cur: &mut ParamFlow,
+        lambdas: &BTreeMap<String, Expr>,
+        out: &mut FlowExits<ParamFlow>,
+    ) {
+        self.value_writes(&stmt_value_exprs(stmt), cur, lambdas, out);
+    }
+
+    /// Expressions run at this point (a statement's own, an arm's guard or value, a block's tail)
+    /// whose nested statements the walk does not order: the returns among them are collected with
+    /// every write nested there counted, the outer names those statements assign gain what they may
+    /// get there (before the statement's own write), and a `break` / `continue` among them leaves
+    /// with that flow (order-free: [`nested_param_flow`], the twin of [`nested_may_labels`]).
+    fn value_writes(
+        &mut self,
+        exprs: &[&Expr],
+        cur: &mut ParamFlow,
+        lambdas: &BTreeMap<String, Expr>,
+        out: &mut FlowExits<ParamFlow>,
+    ) {
+        let mut rets = Vec::new();
+        for &e in exprs {
+            expr_returns(e, &mut rets);
+            // `v?` leaves the function with `v`'s `Err` / `None`.
+            try_exits_in_expr(e, &mut rets);
+        }
+        let (breaks, continues) = expr_loop_exits(exprs);
+        let nests = exprs.iter().any(|e| expr_nests_stmts(e))
+            || breaks
+            || continues
+            || !in_place_pushes(exprs).is_empty();
+        if !nests && (rets.is_empty() || !exprs.iter().any(|e| expr_binds_patterns(e))) {
+            for r in &rets {
+                self.note_return(r, cur, lambdas);
             }
-            // A destructuring `let [a,b] = [x,0]; return a` propagates the init's param-flow to each
-            // bound name — without this arm a destructured param that is returned was silently dropped.
-            Stmt::LetPattern { pattern, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                for r in rets {
-                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
-                }
-                let set = expr_param_return_flow(init, flow, known_param_return);
-                seed_flow_pattern(flow, pattern, &set);
-            }
-            // A param assigned to a local inside a branch MAY reach a later return, so MERGE (union)
-            // each branch-end flow into the outer flow rather than RESTORING the pre-branch flow — the
-            // restore dropped `let r=0; if c { r=x; } return r`. `found` accumulates unconditionally
-            // across the branch recursions (only the flow map is merged here).
-            Stmt::If { then, else_, .. } => {
-                let saved = flow.clone();
-                let mut t = saved.clone();
-                body_param_returns(then, &mut t, known_param_return, found, stmt_is_tail);
-                let mut e = saved.clone();
-                if let Some(else_body) = else_ {
-                    body_param_returns(else_body, &mut e, known_param_return, found, stmt_is_tail);
-                }
-                *flow = saved;
-                union_flow_into(flow, &t);
-                union_flow_into(flow, &e);
-            }
-            Stmt::While { body, .. }
-            | Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
-                // Iterate the loop body to a FIXPOINT: a value can migrate across iterations
-                // (`while … { a = b; b = c; }` carries c's param to `a` only on the 2nd pass), so a single
-                // pass UNDER-approximates and a returned loop-carried param laundered (soundness hunt
-                // `wf_5b2a1bcc` leak_34). Accumulate by UNION each pass into `acc` (monotone even though a
-                // straight-line `Assign` STRONG-overwrites WITHIN one pass — the union never shrinks `acc`),
-                // so it converges; bound by name count (an upper bound on the carry-chain length).
-                let bound = flow.len() + 1;
-                let mut acc = flow.clone();
-                for _ in 0..bound {
-                    let mut b = acc.clone();
-                    body_param_returns(body, &mut b, known_param_return, found, false);
-                    let before = acc.clone();
-                    union_flow_into(&mut acc, &b);
-                    if acc == before {
-                        break;
-                    }
-                }
-                union_flow_into(flow, &acc);
-            }
-            Stmt::For {
-                body, var, source, ..
-            } => {
-                let src_flow = match source {
-                    crate::frontend::ForSource::Range { start, end } => {
-                        let mut s = expr_param_return_flow(start, flow, known_param_return);
-                        s.extend(expr_param_return_flow(end, flow, known_param_return));
-                        s
-                    }
-                    crate::frontend::ForSource::Collection { expr } => {
-                        expr_param_return_flow(expr, flow, known_param_return)
-                    }
-                };
-                // Same loop-carried fixpoint as the `While` arm, re-seeding the loop var each pass.
-                let bound = flow.len() + 1;
-                let mut acc = flow.clone();
-                for _ in 0..bound {
-                    let mut b = acc.clone();
-                    b.insert(var.clone(), src_flow.clone());
-                    body_param_returns(body, &mut b, known_param_return, found, false);
-                    let before = acc.clone();
-                    union_flow_into(&mut acc, &b);
-                    if acc == before {
-                        break;
-                    }
-                }
-                union_flow_into(flow, &acc);
-            }
-            Stmt::HybridBlock { gpu, cpu, prove } => {
-                for b in [gpu, cpu, prove].into_iter().flatten() {
-                    let mut bf = flow.clone();
-                    body_param_returns(b, &mut bf, known_param_return, found, false);
-                    union_flow_into(flow, &bf);
-                }
-            }
-            // A straight-line whole-`Var` reassignment STRONG-overwrites: `r = <value>` unconditionally
-            // replaces the entire binding, so `r`'s prior param-flow is dead and dropping it is EXACT
-            // (not an under-approximation) — the value the tail/return reads derives solely from the RHS.
-            // Soundness is confined to straight-line position BY CONSTRUCTION: a reassignment inside a
-            // branch/loop is recursed on a CLONE and then may-unioned back (the If/While/For/Loop/Hybrid
-            // arms above union the branch-post flow with the pre-branch flow), which demotes a conditional
-            // clear to a MAY — the pre-branch flow always survives. This is the precision the value-walker
-            // Block arm already had (fe44f35); lifting it into the one canonical stmt walker keeps the two
-            // walkers from re-diverging. Verified sound + monotone in the `compute_param_return_taint`
-            // fixpoint (add-only accumulation never defeats it: a clearing RHS is intrinsically small from
-            // iteration 1).
-            Stmt::Assign {
-                target: Expr::Var(name),
-                value,
-            } => {
-                let set = expr_param_return_flow(value, flow, known_param_return);
-                flow.insert(name.clone(), set);
-            }
-            // A non-`Var` target (`buf[0]=k`, `obj.f=k`) is a MAY-update of the root binding, so weak-union
-            // into the root (overwriting would drop the param-flow the sibling elements already carry).
-            Stmt::Assign { target, value } => {
-                if let Some(root) = assign_target_root(target) {
-                    let rhs = expr_param_return_flow(value, flow, known_param_return);
-                    flow.entry(root.to_string()).or_default().extend(rhs);
-                }
-            }
-            // Task #48-f: `push(xs, v)` / `insert(map, k, v)` MUTATES the container `xs`/`map` to include
-            // the pushed value(s), so if the container is later RETURNED, those values' param-flow reaches
-            // the return. Weak-union the flow of every non-container arg into the container binding (push
-            // ADDS, it does not overwrite). Closes container-return taint laundering
-            // (`fn fill(xs, v){ push(xs, v); return xs }` — v reaches the return via the mutated container,
-            // so `send(fill([0], secret)[0])` is caught). Over-approximate (key + value) = safe direction.
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Expr::Var(container) = &args[0] {
-                    for a in &args[1..] {
-                        let rhs = expr_param_return_flow(a, flow, known_param_return);
-                        flow.entry(container.clone()).or_default().extend(rhs);
-                    }
-                }
-            }
-            // A statement-position `match`/`if let` that RETURNS a pattern binding — `fn extract(o){ match
-            // o { Some(x) => { return x; } None => { return 0; } } }` returns param `o`'s payload through
-            // the `Some(x)` binding, so `extract` must flow param 0 to its return. The `_ =>` arm below
-            // collects the `return x` but `x` is not in `flow` (it is pattern-bound), so the flow was lost
-            // (hunt wf_e67160a7). Seed each arm's pattern with the scrutinee's param-flow, then recurse.
-            Stmt::ExprStmt(Expr::Match {
-                scrutinee, arms, ..
-            }) => {
-                let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
-                for arm in arms {
-                    let mut c = flow.clone();
-                    seed_flow_pattern(&mut c, &arm.pattern, &scrut);
-                    match &arm.body {
-                        Expr::Block { stmts, tail } => {
-                            body_param_returns(
-                                stmts,
-                                &mut c,
-                                known_param_return,
-                                found,
-                                stmt_is_tail,
-                            );
-                            if stmt_is_tail {
-                                if let Some(t) = tail {
-                                    found.extend(expr_param_return_flow(t, &c, known_param_return));
-                                }
-                            }
-                        }
-                        other => {
-                            if stmt_is_tail {
-                                found.extend(expr_param_return_flow(other, &c, known_param_return));
-                            }
-                        }
-                    }
-                    // May-merge the arm-body reassignments back — a nested `match c { _ => { a = p } }`
-                    // (not in tail position) must propagate `a`'s new flow to the later block tail
-                    // (`let out = { let mut a=0; match c { _ => { a=p } }; a }`) — else the value-block
-                    // return laundered the param (audit after hunt wf_e67160a7).
-                    union_flow_into(flow, &c);
-                }
-            }
-            Stmt::ExprStmt(Expr::IfLet {
-                pattern,
-                scrutinee,
-                then,
-                else_,
-                ..
-            }) => {
-                let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
-                let mut c = flow.clone();
-                seed_flow_pattern(&mut c, pattern, &scrut);
-                if let Expr::Block { stmts, tail } = then.as_ref() {
-                    body_param_returns(stmts, &mut c, known_param_return, found, stmt_is_tail);
-                    if stmt_is_tail {
-                        if let Some(t) = tail {
-                            found.extend(expr_param_return_flow(t, &c, known_param_return));
-                        }
-                    }
-                } else if stmt_is_tail {
-                    found.extend(expr_param_return_flow(then, &c, known_param_return));
-                }
-                let mut e = flow.clone();
-                if let Expr::Block { stmts, tail } = else_.as_ref() {
-                    body_param_returns(stmts, &mut e, known_param_return, found, stmt_is_tail);
-                    if stmt_is_tail {
-                        if let Some(t) = tail {
-                            found.extend(expr_param_return_flow(t, &e, known_param_return));
-                        }
-                    }
-                } else if stmt_is_tail {
-                    found.extend(expr_param_return_flow(else_, &e, known_param_return));
-                }
-                union_flow_into(flow, &c);
-                union_flow_into(flow, &e);
-            }
-            _ => {
-                let mut rets = Vec::new();
-                collect_returns_in_stmt(stmt, &mut rets);
-                for r in rets {
-                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
-                    if let Some(lf) =
-                        local_lambda_return_flow(&r, flow, &lambdas, known_param_return)
-                    {
-                        found.extend(lf);
-                    }
-                }
-                if stmt_is_tail {
-                    if let Stmt::ExprStmt(e) = stmt {
-                        if !is_return_call(e) {
-                            found.extend(expr_param_return_flow(e, flow, known_param_return));
-                            if let Some(lf) =
-                                local_lambda_return_flow(e, flow, &lambdas, known_param_return)
-                            {
-                                found.extend(lf);
-                            }
-                        }
-                    }
-                }
+            return;
+        }
+        let nested = nested_param_flow(exprs, cur, self.known);
+        for r in &rets {
+            self.note_return(r, &nested.may, lambdas);
+        }
+        for name in &nested.assigned {
+            if let (Some(m), Some(f)) = (nested.may.get(name), cur.get_mut(name)) {
+                f.extend(m.iter().copied());
             }
         }
+        if nested.breaks {
+            join_exit(&mut out.brk, Some(nested.may.clone()), &param_flow_join);
+        }
+        if nested.continues {
+            join_exit(&mut out.cont, Some(nested.may), &param_flow_join);
+        }
+    }
+
+    /// Join alternatives: `cur` becomes the join of those that reach the merge (false when none
+    /// does); their breaks and continues join into `out`.
+    fn merge_paths(
+        cur: &mut ParamFlow,
+        paths: Vec<FlowExits<ParamFlow>>,
+        out: &mut FlowExits<ParamFlow>,
+    ) -> bool {
+        let mut fall = None;
+        for p in paths {
+            join_exit(&mut fall, p.fall, &param_flow_join);
+            join_exit(&mut out.brk, p.brk, &param_flow_join);
+            join_exit(&mut out.cont, p.cont, &param_flow_join);
+        }
+        match fall {
+            Some(f) => {
+                *cur = f;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Run `run` from `cur` in a scope binding `names` at `site` (seeded by `seed`): in every flow
+    /// that leaves it, the bindings they shadowed come back and the binders are dropped.
+    fn scoped(
+        &mut self,
+        cur: &ParamFlow,
+        names: &[String],
+        site: usize,
+        seed: impl FnOnce(&mut ParamFlow),
+        run: impl FnOnce(&mut Self, ParamFlow) -> FlowExits<ParamFlow>,
+    ) -> FlowExits<ParamFlow> {
+        let keys: BTreeSet<String> = cur.keys().cloned().collect();
+        let mut hidden = Vec::new();
+        let mut entry = cur.clone();
+        for n in names {
+            hide_shadowed(&mut entry, n, site, &keys, &mut hidden);
+        }
+        seed(&mut entry);
+        let mut exits = run(self, entry);
+        settle_exits(&mut exits, &keys, &hidden);
+        exits
+    }
+
+    /// A statement-position `match` arm or `if let` branch from `entry` (binders seeded): its guard
+    /// runs first, a block's tail after its statements; when it is the function's value (`tail`),
+    /// its value's parameters are returned.
+    fn arm_body(
+        &mut self,
+        guard: Option<&Expr>,
+        body: &Expr,
+        mut entry: ParamFlow,
+        tail: bool,
+        lambdas: &BTreeMap<String, Expr>,
+    ) -> FlowExits<ParamFlow> {
+        let mut early = FlowExits::none();
+        self.value_writes(
+            &arm_value_exprs(guard, body),
+            &mut entry,
+            lambdas,
+            &mut early,
+        );
+        let mut exits = match body {
+            Expr::Block { stmts, tail: value } => {
+                self.block(stmts, entry, tail, value.as_deref(), true)
+            }
+            // An arm `None => break` / `_ => continue` leaves the loop; nothing falls through.
+            Expr::Call { callee, .. } if callee == "break" || callee == "continue" => {
+                let mut exits = FlowExits::none();
+                if callee == "break" {
+                    exits.brk = Some(entry);
+                } else {
+                    exits.cont = Some(entry);
+                }
+                exits
+            }
+            other => {
+                if tail {
+                    self.note_return(other, &entry, lambdas);
+                }
+                FlowExits::falling(entry)
+            }
+        };
+        join_exit(&mut exits.brk, early.brk, &param_flow_join);
+        join_exit(&mut exits.cont, early.cont, &param_flow_join);
+        exits
+    }
+
+    /// A loop: the body from the joined head to a fixpoint (flows only grow over a fixed set of
+    /// names), every `continue` joining the head; the flow after it is the head (not for `loop`)
+    /// joined with every `break` (`None` when nothing leaves it). The header runs at every head: its
+    /// own nested writes and returns count there, a `for` variable carries its range's or
+    /// collection's flow and a `while let` pattern its scrutinee's, read there.
+    fn loop_exit(
+        &mut self,
+        stmt: &Stmt,
+        body: &[Stmt],
+        entry: ParamFlow,
+        out: &mut FlowExits<ParamFlow>,
+    ) -> Option<ParamFlow> {
+        let site = stmt as *const Stmt as usize;
+        let binders: Vec<String> = match stmt {
+            Stmt::For { var, .. } => vec![var.clone()],
+            Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+            _ => Vec::new(),
+        };
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            param_flow_join(&mut head, prev);
+        }
+        let mut brk: Option<ParamFlow> = None;
+        loop {
+            let mut header = FlowExits::none();
+            self.expression_writes(stmt, &mut head, &BTreeMap::new(), &mut header);
+            let header_flow = match stmt {
+                Stmt::For {
+                    source: crate::frontend::ForSource::Range { start, end },
+                    ..
+                } => {
+                    let mut s = expr_param_return_flow(start, &head, self.known);
+                    s.extend(expr_param_return_flow(end, &head, self.known));
+                    s
+                }
+                Stmt::For {
+                    source: crate::frontend::ForSource::Collection { expr },
+                    ..
+                }
+                | Stmt::WhileLet { expr, .. } => expr_param_return_flow(expr, &head, self.known),
+                _ => BTreeSet::new(),
+            };
+            let exits = self.scoped(
+                &head,
+                &binders,
+                site,
+                |f| match stmt {
+                    Stmt::For { var, .. } => {
+                        f.insert(var.clone(), header_flow.clone());
+                    }
+                    Stmt::WhileLet { pattern, .. } => seed_flow_pattern(f, pattern, &header_flow),
+                    _ => {}
+                },
+                |walk, f| walk.block(body, f, false, None, true),
+            );
+            let mut next = head.clone();
+            for s in [&exits.fall, &exits.cont, &header.cont]
+                .into_iter()
+                .flatten()
+            {
+                param_flow_join(&mut next, s);
+            }
+            join_exit(&mut brk, exits.brk, &param_flow_join);
+            // A `break` / `continue` in the header's own nested statements counts for this loop and
+            // the enclosing one (which it leaves is not modelled).
+            join_exit(&mut brk, header.brk.clone(), &param_flow_join);
+            join_exit(&mut out.brk, header.brk, &param_flow_join);
+            join_exit(&mut out.cont, header.cont, &param_flow_join);
+            if next == head {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        let mut exit = match stmt {
+            Stmt::Loop { .. } => None,
+            _ => Some(head),
+        };
+        join_exit(&mut exit, brk, &param_flow_join);
+        exit
+    }
+
+    /// A hybrid block: any lanes, in any order — the fixpoint of running any lane from the state.
+    fn hybrid(
+        &mut self,
+        stmt: &Stmt,
+        lanes: &[&[Stmt]],
+        entry: ParamFlow,
+        out: &mut FlowExits<ParamFlow>,
+    ) -> ParamFlow {
+        let site = stmt as *const Stmt as usize;
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            param_flow_join(&mut head, prev);
+        }
+        loop {
+            let mut next = head.clone();
+            for lane in lanes {
+                let exits = self.block(lane, head.clone(), false, None, true);
+                if let Some(f) = &exits.fall {
+                    param_flow_join(&mut next, f);
+                }
+                join_exit(&mut out.brk, exits.brk, &param_flow_join);
+                join_exit(&mut out.cont, exits.cont, &param_flow_join);
+            }
+            if next == head {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        head
+    }
+
+    /// Walk a statement list from `cur`; see [`body_param_returns`]. `tail`: the list's value is the
+    /// function's (its last statement, then `block_value`, is returned). `settle`: bring every flow
+    /// that leaves it back to the entry's names.
+    fn block(
+        &mut self,
+        stmts: &[Stmt],
+        mut cur: ParamFlow,
+        tail: bool,
+        block_value: Option<&Expr>,
+        settle: bool,
+    ) -> FlowExits<ParamFlow> {
+        let keys: BTreeSet<String> = cur.keys().cloned().collect();
+        let mut hidden: Vec<(String, String)> = Vec::new();
+        let mut out: FlowExits<ParamFlow> = FlowExits::none();
+        // Local lambda bindings in this block, so `return g()` / `let r = g()` where `g = |p| body`
+        // resolves to the closure body's return-flow — the param→return-taint twin of the
+        // value-block and returned-closure fixes (soundness hunt2 [12]: `fn fwd(x){ let g = || x;
+        // return g(); }` returned x through the local closure but the summary treated `g()` as
+        // opaque, so `send(fwd(secret))` compiled).
+        let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
+        let n = stmts.len();
+        let mut reaches_end = true;
+        for (i, stmt) in stmts.iter().enumerate() {
+            let stmt_is_tail = tail && i + 1 == n;
+            let site = stmt as *const Stmt as usize;
+            if !is_loop_stmt(stmt) {
+                self.expression_writes(stmt, &mut cur, &lambdas, &mut out);
+            }
+            let falls = match stmt {
+                Stmt::Let { name, init, .. } => {
+                    if matches!(init, Expr::Lambda { .. }) {
+                        lambdas.insert(name.clone(), init.clone());
+                    }
+                    let cleared = matches!(
+                        init,
+                        Expr::Declassify { policy, reason, .. } if declassify_wellformed(policy, reason)
+                    );
+                    let f = if cleared {
+                        BTreeSet::new()
+                    } else {
+                        local_lambda_return_flow(init, &cur, &lambdas, self.known)
+                            .unwrap_or_else(|| expr_param_return_flow(init, &cur, self.known))
+                    };
+                    hide_shadowed(&mut cur, name, site, &keys, &mut hidden);
+                    cur.insert(name.clone(), f);
+                    true
+                }
+                // A destructuring `let [a,b] = [x,0]; return a` propagates the init's param-flow to
+                // each bound name.
+                Stmt::LetPattern { pattern, init, .. } => {
+                    let set = expr_param_return_flow(init, &cur, self.known);
+                    for name in pattern.bound_names() {
+                        hide_shadowed(&mut cur, &name, site, &keys, &mut hidden);
+                    }
+                    seed_flow_pattern(&mut cur, pattern, &set);
+                    true
+                }
+                // A whole-`Var` reassignment STRONG-overwrites: `r = <value>` replaces the binding, so
+                // `r`'s prior param-flow is dead and dropping it is EXACT. A reassignment on SOME
+                // paths only is joined with the others at the merge, so the prior flow survives on
+                // them.
+                Stmt::Assign {
+                    target: Expr::Var(name),
+                    value,
+                } => {
+                    let set = expr_param_return_flow(value, &cur, self.known);
+                    cur.insert(name.clone(), set);
+                    true
+                }
+                // A non-`Var` target (`buf[0]=k`, `obj.f=k`) is a MAY-update of the root binding.
+                Stmt::Assign { target, value } => {
+                    if let Some(root) = assign_target_root(target) {
+                        let mut rhs = expr_param_return_flow(value, &cur, self.known);
+                        // The keys and indices decide where the value lands (`m[k] = 1` stores `k`).
+                        let mut keys = Vec::new();
+                        place_key_exprs(target, &mut keys);
+                        for k in keys {
+                            rhs.extend(expr_param_return_flow(k, &cur, self.known));
+                        }
+                        cur.entry(root.to_string()).or_default().extend(rhs);
+                    }
+                    true
+                }
+                Stmt::If { then, else_, .. } => {
+                    let then_exits = self.block(then, cur.clone(), stmt_is_tail, None, true);
+                    let else_exits = match else_ {
+                        Some(body) => self.block(body, cur.clone(), stmt_is_tail, None, true),
+                        None => FlowExits::falling(cur.clone()),
+                    };
+                    Self::merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
+                }
+                Stmt::While { body, .. }
+                | Stmt::WhileLet { body, .. }
+                | Stmt::Loop { body, .. }
+                | Stmt::For { body, .. } => {
+                    match self.loop_exit(stmt, body, std::mem::take(&mut cur), &mut out) {
+                        Some(f) => {
+                            cur = f;
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                    let body_exits = self.block(body, cur.clone(), false, None, true);
+                    let skipped = FlowExits::falling(cur.clone());
+                    Self::merge_paths(&mut cur, vec![skipped, body_exits], &mut out)
+                }
+                Stmt::HybridBlock { gpu, cpu, prove } => {
+                    let lanes: Vec<&[Stmt]> = [gpu, cpu, prove]
+                        .into_iter()
+                        .flatten()
+                        .map(Vec::as_slice)
+                        .collect();
+                    cur = self.hybrid(stmt, &lanes, cur, &mut out);
+                    true
+                }
+                // `push(xs, v)` / `insert(map, k, v)` MUTATES the container to include the value(s):
+                // weak-union their flow into the container (task #48-f).
+                Stmt::ExprStmt(Expr::Call { callee, args })
+                    if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+                {
+                    if let Expr::Var(container) = &args[0] {
+                        for a in &args[1..] {
+                            let rhs = expr_param_return_flow(a, &cur, self.known);
+                            cur.entry(container.clone()).or_default().extend(rhs);
+                        }
+                    }
+                    true
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
+                    if let Some(returned) = args.first() {
+                        self.note_return(returned, &cur, &lambdas);
+                    }
+                    false
+                }
+                // A statement-position `match`/`if let` binds each arm's pattern with the scrutinee's
+                // param-flow (`match o { Some(x) => { return x; } … }` returns `o`'s payload; hunt
+                // wf_e67160a7), and its arms join like branches.
+                Stmt::ExprStmt(Expr::Match {
+                    scrutinee, arms, ..
+                }) => {
+                    let scrut = expr_param_return_flow(scrutinee, &cur, self.known);
+                    let mut arm_exits = Vec::with_capacity(arms.len());
+                    // Arms are tried in order: a guard that runs and fails leaves what it wrote to
+                    // the arms after it.
+                    let mut tried = cur.clone();
+                    for arm in arms {
+                        let names = arm.pattern.bound_names();
+                        let seed = |f: &mut ParamFlow| seed_flow_pattern(f, &arm.pattern, &scrut);
+                        arm_exits.push(self.scoped(&tried, &names, site, seed, |walk, f| {
+                            walk.arm_body(arm.guard.as_ref(), &arm.body, f, stmt_is_tail, &lambdas)
+                        }));
+                        if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_stmts(g)) {
+                            let failed = self.scoped(&tried, &names, site, seed, |walk, mut f| {
+                                let mut exits = FlowExits::none();
+                                walk.value_writes(&[guard], &mut f, &lambdas, &mut exits);
+                                exits.fall = Some(f);
+                                exits
+                            });
+                            if let Some(f) = &failed.fall {
+                                param_flow_join(&mut tried, f);
+                            }
+                        }
+                    }
+                    Self::merge_paths(&mut cur, arm_exits, &mut out)
+                }
+                Stmt::ExprStmt(Expr::IfLet {
+                    pattern,
+                    scrutinee,
+                    then,
+                    else_,
+                    ..
+                }) => {
+                    let scrut = expr_param_return_flow(scrutinee, &cur, self.known);
+                    let then_exits = self.scoped(
+                        &cur,
+                        &pattern.bound_names(),
+                        site,
+                        |f| seed_flow_pattern(f, pattern, &scrut),
+                        |walk, f| walk.arm_body(None, then, f, stmt_is_tail, &lambdas),
+                    );
+                    let else_exits =
+                        self.arm_body(None, else_, cur.clone(), stmt_is_tail, &lambdas);
+                    Self::merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
+                }
+                // `break` / `continue` written as an expression statement leave like the statements.
+                Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "break" => {
+                    join_exit(
+                        &mut out.brk,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "continue" => {
+                    join_exit(
+                        &mut out.cont,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::ExprStmt(e) => {
+                    if stmt_is_tail {
+                        self.note_return(e, &cur, &lambdas);
+                    }
+                    true
+                }
+                Stmt::Break => {
+                    join_exit(
+                        &mut out.brk,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::Continue => {
+                    join_exit(
+                        &mut out.cont,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::SpecBlock { .. } => true,
+            };
+            if !falls {
+                reaches_end = false;
+                break;
+            }
+        }
+        if reaches_end {
+            // The block's tail runs after its statements: its nested writes and returns count here.
+            if let Some(value) = block_value {
+                self.value_writes(&[value], &mut cur, &lambdas, &mut out);
+                if tail {
+                    self.note_return(value, &cur, &lambdas);
+                }
+            }
+            out.fall = Some(cur);
+        }
+        if settle {
+            settle_exits(&mut out, &keys, &hidden);
+        }
+        out
     }
 }
 
@@ -34471,6 +36621,7 @@ mod fn_identity_spine_tests {
             secret: false,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: identities,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -34826,6 +36977,7 @@ mod builtin_gate_tag_tests {
             secret: false,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: tags,

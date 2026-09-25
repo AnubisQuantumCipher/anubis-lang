@@ -1,0 +1,11 @@
+fn summarize(path) uses(fs.read) {
+    let rows = split(read_file(path), "\n");
+    let mut cell = "";
+    let mut chars = 0;
+    for r in rows { cell = r; chars = chars + len(cell); }
+    let labels = ["a", "bb", "ccc"];
+    let mut width = 0;
+    for l in labels { cell = l; width = width + len(cell); }
+    return width;
+}
+fn main() uses(fs.read, io.print) { print(summarize("rv37j_data.txt")); }

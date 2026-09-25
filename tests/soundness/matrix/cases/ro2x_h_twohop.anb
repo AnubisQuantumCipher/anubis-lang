@@ -1,0 +1,11 @@
+fn getsec() -> secret<i64> { let s: secret<i64> = 42; return s; }
+fn pub1() -> i64 { return 1; }
+fn main() {
+    let g = pub1;
+    let x = 0;
+    for i in 0..3 {
+        print(x);
+        x = g();
+        g = getsec;
+    }
+}

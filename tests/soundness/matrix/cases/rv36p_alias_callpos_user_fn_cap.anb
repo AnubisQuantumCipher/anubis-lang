@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pure1(x) { return x + 1; }
+fn w(x) uses(fs.write) {
+    write_file("wout.txt", "pwned");
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let w = pure1;
+    let z = w(1);
+}

@@ -1,0 +1,1 @@
+fn main() { let k: secret<i64> = 42; let o = Some(k); let x = 0; match o { Some(v) if (if true { x = v; true } else { true }) => { } _ => { } } println(x); }
