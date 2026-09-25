@@ -2983,7 +2983,10 @@ fn cli_main() -> Result<()> {
                 say!("verdict: {}", bundle.manifest.verdict);
 
                 if let Some(err) = &check_error {
-                    say!("check failed: {}", err);
+                    say!(
+                        "check failed: {}",
+                        anubis_compiler::diagnostics::printable(err)
+                    );
                 } else {
                     say!("check passed (no policy violations)");
                 }
@@ -3015,8 +3018,16 @@ fn cli_main() -> Result<()> {
             // obligations that passed in a failing run as of a clean one.
             if let Some(line) = coverage.verdict_line() {
                 say!("{line}");
-                for name in &coverage.uncertified {
-                    say!("  no witness (REG-002, out of the proven fragment): {name}");
+                let named = anubis_compiler::diagnostics::named_uncertified(&coverage.uncertified);
+                for name in &named {
+                    say!(
+                        "  no witness (REG-002, out of the proven fragment): {}",
+                        anubis_compiler::diagnostics::printable(name)
+                    );
+                }
+                let more = coverage.uncertified.len().saturating_sub(named.len());
+                if more > 0 {
+                    say!("  … and {more} more with no witness");
                 }
             }
 
@@ -3057,7 +3068,10 @@ fn cli_main() -> Result<()> {
             }
 
             if let Some(err) = &check_error {
-                return Err(anyhow!("check failed: {}", err));
+                return Err(anyhow!(
+                    "check failed: {}",
+                    anubis_compiler::diagnostics::printable(err)
+                ));
             }
             if let Some(err) = verdict_failure {
                 return Err(anyhow!("{}", err));

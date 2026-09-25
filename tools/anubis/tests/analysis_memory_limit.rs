@@ -178,3 +178,32 @@ fn the_hard_exit_reports_in_json() {
     assert!(stdout.contains("ANUBIS_ANALYSIS_LIMIT"), "{stdout}");
     assert!(stdout.contains("anubis.summary"), "{stdout}");
 }
+
+/// Past a limit, what the fail-closed answers produce is not reported, whatever it says: here a
+/// public binding "initialized from a secret value" in a program with no secret (review of the
+/// checker limits).
+#[test]
+fn nothing_after_a_limit_is_reported_as_a_finding() {
+    let src = "fn main() {\n    let g = |s| 0;\n    g = |s| g(s);\n    g(0);\n    let x: i64 = 5;\n    print(x);\n}\n";
+    let (json, _) = check_with("after", src, "100000", &["--message-format", "json"]);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    assert_eq!(json.status.code(), Some(1), "{stdout}");
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains("anubis.diagnostic"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{stdout}");
+    assert!(lines[0].contains("ANUBIS_ANALYSIS_LIMIT"), "{stdout}");
+}
+
+/// A finding made before the limit is kept whatever its text holds: a map key naming the stand-in
+/// used to hide it.
+#[test]
+fn a_finding_quoting_the_stand_in_is_kept() {
+    let src = "struct S { k: secret<i64>, pub_n: i64 }\nfn leak() uses(net.send) {\n    let p = S { k: 42, pub_n: 3 };\n    let m = { \"a value past the analysis limit\": p };\n    send(\"host\", 80, str(m));\n}\nfn main() uses(net.send) {\n    leak();\n    let g = |s| 0;\n    g = |s| g(s);\n    g(0);\n}\n";
+    let (out, _) = check("stand-in", src, "100000");
+    let text = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("ANUBIS_ANALYSIS_LIMIT"), "{text}");
+    assert!(text.contains("ANUBIS_SECRET_EXFILTRATION"), "{text}");
+}

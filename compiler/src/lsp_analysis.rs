@@ -21,13 +21,34 @@ pub struct HoverInfo {
     pub contents: String,
 }
 
+/// Parse errors reported one by one; the rest are counted in one more.
+const MAX_PARSE_DIAGNOSTICS: usize = 200;
+
 /// Run parse + typecheck + obligations; map to LSP-shaped diagnostics.
 pub fn analyze_source(source: &str) -> (Vec<LspDiagnostic>, Option<TypedIR>, Option<AST>) {
     let detailed = parse_source_detailed(source);
     let mut diags = Vec::new();
-    for d in &detailed.diagnostics {
-        let (line, col) = line_col(source, d.span.start);
-        let (el, ec) = line_col(source, d.span.end);
+    // Located through one index (walking the source per error was quadratic: 60000 errors took
+    // 16 s), and at most MAX_PARSE_DIAGNOSTICS of them, then a count at the next one.
+    let index = crate::frontend::LineIndex::new(source);
+    for (i, d) in detailed.diagnostics.iter().enumerate() {
+        let (line, col) = index.line_col(d.span.start);
+        let (el, ec) = index.line_col(d.span.end);
+        if i == MAX_PARSE_DIAGNOSTICS {
+            diags.push(LspDiagnostic {
+                line: (line.saturating_sub(1)) as u32,
+                character: (col.saturating_sub(1)) as u32,
+                end_line: (el.saturating_sub(1)) as u32,
+                end_character: (ec.saturating_sub(1)) as u32,
+                severity: 1,
+                code: Some("ANUBIS_PARSE".into()),
+                message: format!(
+                    "… and {} more parse errors",
+                    detailed.diagnostics.len() - MAX_PARSE_DIAGNOSTICS
+                ),
+            });
+            break;
+        }
         diags.push(LspDiagnostic {
             line: (line.saturating_sub(1)) as u32,
             character: (col.saturating_sub(1)) as u32,

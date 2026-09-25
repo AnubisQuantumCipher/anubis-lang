@@ -4736,6 +4736,35 @@ pub fn parse_source(source: &str) -> Result<AST, String> {
     }
 }
 
+/// Every line start of a source, so many offsets are located without walking the source from its
+/// start each time (`line_col` does, which is quadratic over a file with many errors).
+pub struct LineIndex<'s> {
+    source: &'s str,
+    starts: Vec<usize>,
+}
+
+impl<'s> LineIndex<'s> {
+    pub fn new(source: &'s str) -> Self {
+        let starts = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        LineIndex { source, starts }
+    }
+
+    /// Exactly `line_col(source, byte_offset)`.
+    pub fn line_col(&self, byte_offset: usize) -> (usize, usize) {
+        let clamped = byte_offset.min(self.source.len());
+        let line = self.starts.partition_point(|&s| s <= clamped).max(1);
+        let start = self.starts[line - 1];
+        let column = self.source[start..]
+            .char_indices()
+            .take_while(|(i, _)| start + i < clamped)
+            .count()
+            + 1;
+        (line, column)
+    }
+}
+
 /// Resolve a byte offset into a 1-based `(line, column)` pair, counting columns in
 /// Unicode scalar values (not bytes) so multi-byte source still points at the right cell.
 /// Offsets at or past end-of-source clamp to the final position.
@@ -4931,6 +4960,16 @@ mod diagnostic_render_tests {
             &err[err.len() - 80..]
         );
         assert!(err.matches("; ").count() <= MAX_JOINED_PARSE_ERRORS);
+    }
+
+    /// The line index locates every offset exactly as `line_col` does.
+    #[test]
+    fn line_index_agrees_with_line_col() {
+        let src = "fn main() {\n  é 日本 x\n\n\tlet = ;\r\n}";
+        let index = LineIndex::new(src);
+        for off in 0..=src.len() + 3 {
+            assert_eq!(index.line_col(off), line_col(src, off), "offset {off}");
+        }
     }
 
     /// A cascade of errors renders the first ones and counts the rest.

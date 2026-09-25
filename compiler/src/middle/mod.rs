@@ -3135,6 +3135,15 @@ impl SemanticContext {
     /// Wired in by the bidirectional inference-core slice: the arm-join conflict and the
     /// `Call`/`Index`/`FieldAccess` check-direction mismatches all route through here with
     /// `shadow_gated=true`.
+    /// Record an enforcing diagnostic. The first one raised after an analysis limit was reached
+    /// marks where the diagnostics computed from fail-closed answers begin (`limit_mark`).
+    fn push_diag(&mut self, diag: SemanticDiagnostic) {
+        if self.limit_mark.is_none() && analysis_limit::exhausted() {
+            self.limit_mark = Some(self.diagnostics.len());
+        }
+        self.diagnostics.push(diag);
+    }
+
     fn emit(&mut self, diag: SemanticDiagnostic, shadow_gated: bool) {
         if shadow_gated {
             // A shadow-gated (not-yet-promoted) check NEVER enters the enforcing `diagnostics`
@@ -3147,7 +3156,7 @@ impl SemanticContext {
                 self.shadow_diags.push(diag);
             }
         } else {
-            self.diagnostics.push(diag);
+            self.push_diag(diag);
         }
     }
 }
@@ -3165,7 +3174,12 @@ struct SemanticContext {
     constraints: Vec<String>,
     taint_traces: Vec<TaintTrace>,
     solver_obligations: Vec<SolverObligation>,
+    /// Enforcing diagnostics, in the order raised (`push_diag`; nothing removes one before the
+    /// request ends).
     diagnostics: Vec<SemanticDiagnostic>,
+    /// How many diagnostics had been raised when the first one after an analysis limit was: those
+    /// from there on came from fail-closed answers (`typecheck_request` drops them).
+    limit_mark: Option<usize>,
     /// Application-site witnesses produced by the builtin gate-tag resolver for the function
     /// currently being analyzed. Reset per item; never part of its declared/inferred effect row.
     applied_builtin_leg2: bool,
@@ -3633,6 +3647,18 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
 
 /// Typecheck with an explicit verification-lane flag (Phase-3 C5). Prefer `typecheck` for the
 /// default lane; pass `verified=true` for `--verified` / fail-closed effect declarations.
+pub use analysis_limit::AnalysisLimit;
+
+/// How the memory-limit refusal begins (its budget in MiB follows).
+pub fn analysis_limit_memory_prefix() -> &'static str {
+    analysis_limit::MEMORY_PREFIX
+}
+
+/// The analysis limit the last check request on this thread reached, if any (`typecheck_ex`).
+pub fn last_analysis_limit() -> Option<AnalysisLimit> {
+    analysis_limit::last()
+}
+
 pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
     // One request: an analysis limit reached anywhere in it refuses it (`analysis_limit`).
     analysis_limit::check(|| typecheck_request(ast, mode, verified))
@@ -3768,11 +3794,11 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
         }
     }
 
-    // Past an analysis limit, a diagnostic that names the fail-closed stand-in is a consequence of
-    // the limit (which `analysis_limit::check` reports), not a finding; every other one is kept.
-    if analysis_limit::exhausted() {
-        ctx.diagnostics
-            .retain(|d| !d.message.contains(ANALYSIS_LIMIT_SOURCE));
+    // Past an analysis limit, the diagnostics raised after it came from fail-closed answers (the
+    // limit itself is reported by `analysis_limit::check`); those raised before it are findings of a
+    // complete analysis of what it had covered, and are kept. By position, never by text.
+    if let Some(mark) = ctx.limit_mark {
+        ctx.diagnostics.truncate(mark);
     }
     if !ctx.diagnostics.is_empty() {
         let messages = ctx
@@ -4274,7 +4300,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 }
                 // Flat function namespace: a redefinition is an error.
                 if !ctx.all_fns.insert(name.clone()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_DUPLICATE_FUNCTION".into()),
                         message: format!("function `{}` is defined more than once", name),
                         span: Some((span.start, span.end)),
@@ -5293,7 +5319,7 @@ fn check_calls_expr_nc(
                 && !bound.contains(callee)
                 && !crate::backends::run::is_builtin_name(callee)
             {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_UNKNOWN_FUNCTION".into()),
                     message: format!("call to unknown function `{}`", callee),
                     span: None,
@@ -5312,7 +5338,7 @@ fn check_calls_expr_nc(
             // shape of defect closed at four other layers today.
             if crate::backends::run::is_builtin_name(callee) && !fns.contains(callee) {
                 if let Some(msg) = crate::backends::run::builtin_arity_error(callee, args.len()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_ERROR".into()),
                         message: msg,
                         span: None,
@@ -5352,7 +5378,7 @@ fn check_calls_expr_nc(
                 let present: Vec<&Expr> =
                     closure_idxs.iter().filter_map(|&i| args.get(i)).collect();
                 if !present.is_empty() && present.iter().all(|a| not_callable(a)) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_TYPE_ERROR".into()),
                         message: format!(
                             "builtin `{callee}` expects a callable in one of arguments {closure_idxs:?}; none of them can be one"
@@ -5364,7 +5390,7 @@ fn check_calls_expr_nc(
                 for &index in closure_idxs {
                     if let Some(arg) = args.get(index) {
                         if not_callable(arg) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_ERROR".into()),
                                 message: format!(
                                     "builtin `{callee}` argument {index} expects a callable value"
@@ -5423,7 +5449,7 @@ fn check_calls_expr_nc(
             // the call namespace is flat, so neither is valid. Without this check both silently
             // lower to a stringy enum value at runtime instead of trapping.
             match ctx.enum_variants.get(enum_name).cloned() {
-                None => ctx.diagnostics.push(SemanticDiagnostic {
+                None => ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_UNKNOWN_ENUM".into()),
                     message: format!(
                         "`{enum_name}::{variant}` refers to unknown type `{enum_name}` \
@@ -5433,7 +5459,7 @@ fn check_calls_expr_nc(
                     span: None,
                 }),
                 Some(variants) if !variants.contains(variant) => {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_UNKNOWN_VARIANT".into()),
                         message: format!(
                             "enum `{enum_name}` has no variant `{variant}` (known: {})",
@@ -5783,7 +5809,7 @@ fn reject_unknown_attributes(
             })
             .map(|k| format!(" (did you mean `{k}`?)"))
             .unwrap_or_default();
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_UNKNOWN_ATTRIBUTE".into()),
             message: format!(
                 "unknown attribute `{}`{hint}; an unrecognized attribute is rejected rather than \
@@ -5843,7 +5869,7 @@ fn require_research_authorization_metadata(
             .any(|a| a.key == "authorization" && !a.value.is_empty())
     });
     if !has_auth {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_RESEARCH_MISSING_AUTHORIZATION".into()),
             message: "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
                 .to_string(),
@@ -6200,7 +6226,7 @@ fn analyze_function(
         let opaque = norm == "any" || norm == "unknown";
         if !r.is_empty() && !result_like && !opaque && !ty::is_generic(r) && body_contains_try(body)
         {
-            ctx.diagnostics.push(SemanticDiagnostic {
+            ctx.push_diag(SemanticDiagnostic {
                 code: Some("ANUBIS_TRY_OUTSIDE_RESULT".into()),
                 message: format!(
                     "`{name}` uses the `?` operator but declares `-> {r}`; `?` requires the function to return `Option` or `Result`"
@@ -6230,7 +6256,7 @@ fn analyze_function(
     let mut seen_params = BTreeSet::new();
     for (pname, _) in params {
         if !seen_params.insert(pname.clone()) {
-            ctx.diagnostics.push(SemanticDiagnostic {
+            ctx.push_diag(SemanticDiagnostic {
                 code: Some("ANUBIS_DUPLICATE_PARAM".into()),
                 message: format!("duplicate parameter `{}` in function `{}`", pname, name),
                 span: Some((span.start, span.end)),
@@ -6250,7 +6276,7 @@ fn analyze_function(
     // property (there is no loop, and no input makes one appear), and `check` accepting a program
     // that cannot run is the gap this closes.
     for kw in crate::middle::loopctl::unenclosed_loop_control(body) {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP".into()),
             message: format!("`{}` in function `{}` has no enclosing loop", kw, name),
             span: Some((span.start, span.end)),
@@ -6633,7 +6659,7 @@ fn analyze_function(
         .filter_map(|e| capability_effect(e))
         .collect();
     if ctx.verified && !caps_used.is_empty() && declared_effects.is_empty() {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
             message: format!(
                 "verification lane: function `{name}` uses capability effect(s) [{}] but declares no `uses(...)` clause",
@@ -6650,7 +6676,7 @@ fn analyze_function(
         let mut seen_undeclared = BTreeSet::new();
         for cap in &caps_used {
             if !declared.contains(cap) && seen_undeclared.insert(cap.clone()) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
                     message: format!(
                         "function `{name}` uses effect `{cap}` but does not declare it in `uses(...)` (declared: {})",
@@ -6905,7 +6931,7 @@ fn analyze_function(
         collect_let_bound(body, &mut rebound);
         for p in ensures_vars.intersection(&param_names) {
             if rebound.contains(p) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
                     message: format!(
                         "cannot verify a postcondition over parameter `{p}`: it is reassigned or \
@@ -7016,7 +7042,7 @@ fn analyze_function(
                 let mut rv = BTreeSet::new();
                 collect_expr_vars(r, &mut rv);
                 if let Some(p) = rv.intersection(&mutated_params).next() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
                         message: format!(
                             "cannot verify a postcondition at an early `return` whose value depends on \
@@ -8040,7 +8066,7 @@ fn discharge_method_requires(
         None => return true, // no contract on this method name — nothing to discharge
     };
     let Some((pnames, creq, cens)) = entry else {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_AMBIGUOUS_METHOD_CONTRACT".into()),
             message: format!(
                 "method `{method}` is declared by more than one impl and at least one declaration \
@@ -10735,7 +10761,7 @@ fn analyze_stmts(
                 span,
             } => {
                 if mode == Mode::Safe && type_has_raw_pointer(ty.as_deref()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_RAW_POINTER_IN_SAFE".into()),
                         message: format!(
                             "safe mode raw pointer binding `{}` requires a research/exploit boundary",
@@ -10759,7 +10785,7 @@ fn analyze_stmts(
                         && !ctx.all_fns.contains(v)
                         && !crate::backends::run::is_builtin_name(v)
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_UNKNOWN_VARIABLE".into()),
                             message: format!("unknown variable `{}`", v),
                             span: None,
@@ -10841,7 +10867,7 @@ fn analyze_stmts(
                 if let Some(t) = ty.as_deref() {
                     if let Some(got) = infer_expr_type_scoped(init, scope) {
                         if !types_assignable(t, &got) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                 message: format!("type mismatch: expected `{}`, got `{}`", t, got),
                                 span: Some((span.start, span.end)),
@@ -10862,7 +10888,7 @@ fn analyze_stmts(
                         // return-position (`ANUBIS_RETURN_TYPE_MISMATCH`) and argument-position checks.
                         // Accept-biased: an unknown callee / `Any` / assignable type yields `None`.
                         if let Some(got) = check_mismatch_scoped(init, t, scope, ctx) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                 message: format!("type mismatch: expected `{}`, got `{}`", t, got),
                                 span: Some((span.start, span.end)),
@@ -10894,7 +10920,7 @@ fn analyze_stmts(
                     && init_secret.is_some()
                     && ty.as_deref().is_some_and(|t| !is_secret_type(Some(t)))
                 {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                         message: format!(
                             "`{name}` is annotated with a public type but initialized from a secret value — confidentiality labels must not be dropped by annotation. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -12209,7 +12235,7 @@ fn analyze_stmts(
                             .and_then(|b| b.info.ty.as_deref())
                             .is_some_and(|t| !is_secret_type(Some(t)))
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                             message: format!(
                                 "`{name}` is a public-typed binding assigned a secret value — confidentiality labels must not be dropped by assignment. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -12247,7 +12273,7 @@ fn analyze_stmts(
                             .and_then(|b| b.info.ty.as_deref())
                             .is_some_and(|t| !is_secret_type(Some(t)))
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                             message: format!(
                                 "`{root}` is a public-typed binding written with a secret value through a field/index place — confidentiality labels must not be dropped by place assignment. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -12791,7 +12817,7 @@ fn analyze_stmts(
                             got.as_ref(),
                         ) {
                             if !types_assignable(&expected, got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch on assign to `{}`: expected `{}`, got `{}`",
@@ -13367,7 +13393,7 @@ fn analyze_stmts(
             Stmt::Loop { body, invariant } => {
                 effects.push("loop".into());
                 if !invariant.is_empty() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                         message: "an unbounded `loop` has no exit condition to assume, so an \
                              invariant cannot be discharged inductively — use a `while` loop with an \
@@ -13500,7 +13526,7 @@ fn analyze_stmts(
                     if !(is_int_modelable(start, &ctx.solver_int_vars)
                         && is_int_modelable(end, &ctx.solver_int_vars))
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` invariant is verified only over an integer RANGE with \
                                  modelable bounds (`for i in a..b`); this range bound is not an integer \
@@ -13514,7 +13540,7 @@ fn analyze_stmts(
                         // iteration (it yields start, start+1, …; a body `i = …` is discarded next
                         // iteration), but the while-desugaring's `i = i + 1` would COMPOUND the body write
                         // into a divergent transition. Reject (fail-closed) rather than model it wrong.
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` loop that reassigns its own counter inside the body cannot \
                                  carry a verified invariant (the counter is rebound from the range each \
@@ -13524,7 +13550,7 @@ fn analyze_stmts(
                         });
                         None
                     } else if bound_mutated {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` loop whose range bound is mutated inside the body cannot \
                                  carry a verified invariant (the runtime freezes the range at loop entry \
@@ -13626,7 +13652,7 @@ fn analyze_stmts(
                             augmented.extend(invariant.iter().cloned());
                             verify_while_invariants(ctx, &cond, &augmented, &body2, &outer)
                         } else {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                                 message:
                                     "a `for` invariant over a collection is verified only for a \
@@ -13638,7 +13664,7 @@ fn analyze_stmts(
                             None
                         }
                     } else {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` invariant over a collection is verified only for a bounded \
                                  sequence VARIABLE; bind the collection to a `let` first"
@@ -14808,7 +14834,7 @@ fn analyze_expr_effect(
     match expr {
         Expr::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
             if expr_is_hmac_tag_call(lhs) || expr_is_hmac_tag_call(rhs) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CRYPTO_MISUSE".into()),
                     message: "comparing an HMAC tag with `==`/`!=` is not constant-time and is \
                          vulnerable to timing attacks (RWC Ch3). Use `hmac_sha256_verify(key, msg, tag)` \
@@ -14818,7 +14844,7 @@ fn analyze_expr_effect(
                 });
             }
             if expr_is_password_secret_call(lhs) || expr_is_password_secret_call(rhs) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CRYPTO_MISUSE".into()),
                     message: "comparing a password hash/KDF output with `==`/`!=` is not constant-time \
                          (RWC Ch8). Use `password_verify(password, encoding)` or `std.crypto::password_verify`"
@@ -14834,7 +14860,7 @@ fn analyze_expr_effect(
             if is_aead_key_consumer(callee)
                 && args.first().map(expr_is_raw_ecdh_shared).unwrap_or(false)
             {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CRYPTO_MISUSE".into()),
                     message: "using raw `x25519_shared` / `ecdh_shared` as an AEAD key is forbidden \
                          (RWC Ch5). Derive with `hkdf_sha256` / `crypto::kdf_hkdf_sha256`, or use \
@@ -14846,7 +14872,7 @@ fn analyze_expr_effect(
             // A+ call-site type checks for user functions (not builtins).
             if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
                 if args.len() != param_tys.len() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_MISMATCH".into()),
                         message: format!(
                             "function `{}` expects {} argument(s), got {}",
@@ -14860,7 +14886,7 @@ fn analyze_expr_effect(
                     for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                         if let Some(got) = infer_expr_type_scoped(arg, scope) {
                             if !types_assignable(expected, &got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch: argument {} of `{}` expects `{}`, got `{}`",
@@ -14889,7 +14915,7 @@ fn analyze_expr_effect(
                             )
                             .is_some()
                         {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                                 message: format!(
                                     "secret value passed as argument {i} of `{callee}` into public formal type `{expected}` — confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -14932,7 +14958,7 @@ fn analyze_expr_effect(
                 // Safe: forbidden unless `uses(shell)` (or uses(exec)/proc.exec) declared.
                 // `target_run` is the PoC process harness — same capability gate as shell/exec.
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "shell") {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                         message: "safe mode shell/exec/target_run effect is forbidden without `uses(shell)` (or use @research/@poc with authorization)".to_string(),
                         span: None,
@@ -14953,7 +14979,7 @@ fn analyze_expr_effect(
                 // Safe: authorized when `uses(fs.write)` is declared on this function.
                 // delete_file/remove_file share fs.write (unlink is a write-class mutation of the FS).
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                         message: "safe mode file_write forbidden without `uses(fs.write)`"
                             .to_string(),
@@ -14970,7 +14996,7 @@ fn analyze_expr_effect(
                 effects.push("network".to_string());
                 // Safe: authorized when `uses(net.send)` (or net.connect) is declared.
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "net.send") {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                         message: "safe mode network effect forbidden without `uses(net.send)`"
                             .to_string(),
@@ -15085,7 +15111,7 @@ fn analyze_expr_effect(
                             declassified,
                         });
                         if mode == Mode::Safe && !declassified {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
                                 message: format!(
                                     "safe mode tainted flow from `{}` to sink `{}` requires declassify() or research boundary",
@@ -15211,7 +15237,7 @@ fn analyze_expr_effect(
                                 declassified,
                             });
                             if mode == Mode::Safe && !declassified {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_INTERPROC_SINK".into()),
                                     message: format!(
                                         "safe mode tainted flow from `{}` into parameter {} of `{}`, which reaches a sink without declassify",
@@ -15255,7 +15281,7 @@ fn analyze_expr_effect(
                                     declassified,
                                 });
                                 if mode == Mode::Safe && !declassified {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!(
                                             "safe mode tainted flow: a closure capturing `{}` is passed into parameter {} of `{}`, which applies it and reaches a sink without declassify",
@@ -15286,7 +15312,7 @@ fn analyze_expr_effect(
                                     .is_some_and(|row| row.effects.iter().any(|e| is_sink(e)))
                             }) && mode == Mode::Safe
                             {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!("safe mode callable container passed into parameter {} of `{}` reaches a sink", i, callee),
                                         span: None,
@@ -15491,7 +15517,7 @@ fn analyze_expr_effect(
                             }
                             if mode == Mode::Safe && is_sink(fname) {
                                 if let Some(src) = &elem_taint {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
                                         message: format!("safe mode tainted flow from `{src}` through `{callee}` into sink `{fname}` without declassify"),
                                         span: None,
@@ -15515,7 +15541,7 @@ fn analyze_expr_effect(
                                 && ctx.param_sinks.get(fname).is_some_and(|s| !s.is_empty())
                             {
                                 if let Some(src) = &elem_taint {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!("safe mode tainted flow from `{src}` through `{callee}` into `{fname}`, which reaches a sink without declassify"),
                                         span: None,
@@ -15801,7 +15827,7 @@ fn analyze_expr_effect(
                 });
                 effects.push("declassify".into());
                 if mode == Mode::Safe && !has_policy {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_DECLASSIFY_MISSING_POLICY_REASON".into()),
                         message: "declassify in safe mode requires policy and reason: declassify(value, policy: \"...\", reason: \"...\")".into(),
                         span: None,
@@ -16069,7 +16095,7 @@ fn analyze_expr_effect(
                             ) {
                                 let declassified = expr_is_declassified(arg, scope);
                                 if mode == Mode::Safe && !declassified {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!(
                                             "safe mode tainted flow from `{source}` into parameter {i} of `{fname}` (a function stored in a container), which reaches a sink without declassify"
@@ -16235,7 +16261,7 @@ fn analyze_expr_effect(
                                 )
                                 .is_some()
                             {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                                     message: format!(
                                         "secret value passed as argument {i} of method `{field}` into public formal type `{expected}` — confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -16330,7 +16356,7 @@ fn analyze_expr_effect(
                                     declassified,
                                 });
                                 if mode == Mode::Safe && !declassified {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!(
                                             "safe mode tainted flow from `{}` into parameter {} of method `{}`, which reaches a sink without declassify",
@@ -16499,7 +16525,7 @@ fn analyze_expr_effect(
                 }
             }
             for (sname, fname, field_ty, got) in kind_mismatches {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                     message: format!(
                         "struct `{sname}` field `{fname}` expects `{field_ty}`, got `{got}`"
@@ -22980,7 +23006,7 @@ fn push_ensures_obligations(
                     }
                 }
             };
-            ctx.diagnostics.push(SemanticDiagnostic {
+            ctx.push_diag(SemanticDiagnostic {
                 code: Some(code.into()),
                 message,
                 span: Some((span.start, span.end)),
@@ -23320,7 +23346,7 @@ fn reject_secret_pc_public_return(
             return;
         }
         *flagged = true;
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_IMPLICIT_FLOW".into()),
             message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
                 .into(),
@@ -23332,7 +23358,7 @@ fn reject_secret_pc_public_return(
             return;
         }
         *flagged = true;
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
             message: "a secret value is returned through a public return type — confidentiality labels must not be dropped at the return boundary. Declare `-> secret<T>`, or interpose declassify(value, policy, reason)."
                 .into(),
@@ -23462,7 +23488,7 @@ fn reject_secret_scrutinee_returns_in_expr(
             return;
         }
         *flagged = true;
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_IMPLICIT_FLOW".into()),
             message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
                 .into(),
@@ -23598,7 +23624,7 @@ fn reject_implicit_flow_under_secret_pc(
     }
     for v in assigned {
         if !scope.get(v.as_str()).map(|b| b.secret).unwrap_or(false) {
-            ctx.diagnostics.push(SemanticDiagnostic {
+            ctx.push_diag(SemanticDiagnostic {
                 code: Some("ANUBIS_IMPLICIT_FLOW".into()),
                 message: format!(
                     "`{v}` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
@@ -26059,7 +26085,7 @@ fn verify_while_invariants(
         .collect();
     let outer_assumptions: &[String] = &outer_assumptions;
     let reject = |ctx: &mut SemanticContext, why: &str| {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
             message: format!(
                 "cannot verify this loop invariant inductively: {why}. Invariants are supported on \
@@ -26294,7 +26320,7 @@ fn verify_while_invariants_float(
         .collect();
     let outer_assumptions: &[String] = &outer_assumptions;
     let reject = |ctx: &mut SemanticContext, why: &str| {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
             message: format!(
                 "cannot verify this float loop invariant inductively: {why}. Invariants are supported \
@@ -27069,7 +27095,7 @@ fn check_one_return(
     if is_constant_expr(expr) {
         if let Some(actual) = infer_expr_type_scoped(expr, scope) {
             if !types_assignable(rty, &actual) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
                     message: format!(
                         "function declared `-> {}` but returns a value of type `{}`",
@@ -27680,7 +27706,7 @@ fn check_expr_semantics(
         Expr::Call { callee, args } => {
             if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
                 if args.len() != param_tys.len() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_MISMATCH".into()),
                         message: format!(
                             "function `{}` expects {} argument(s), got {}",
@@ -27694,7 +27720,7 @@ fn check_expr_semantics(
                     for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                         if let Some(got) = infer_expr_type_scoped(arg, scope) {
                             if !types_assignable(expected, &got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch: argument {} of `{}` expects `{}`, got `{}`",
@@ -27727,7 +27753,7 @@ fn check_expr_semantics(
                 // Higher-order use (`map(xs, f)`) is an internal call, not a source `f(args)`, so it
                 // still pads — matching the strict-direct / pad-higher-order arity policy.
                 if args.len() != arity {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_MISMATCH".into()),
                         message: format!(
                             "closure `{}` expects {} argument(s), got {}",
@@ -27803,7 +27829,7 @@ fn check_expr_semantics(
             ) {
                 for operand in [lhs.as_ref(), rhs.as_ref()] {
                     if let Some(bad) = static_non_numeric_operand(operand, scope) {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_TYPE_MISMATCH".into()),
                             message: format!(
                                 "operator `{}` requires numeric operands, but an operand has type `{}`",
@@ -27821,7 +27847,7 @@ fn check_expr_semantics(
             // B1: unary `-` requires a numeric operand.
             if op == "-" {
                 if let Some(bad) = static_non_numeric_operand(expr, scope) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_TYPE_MISMATCH".into()),
                         message: format!("unary `-` requires a numeric operand, got `{}`", bad),
                         span: None,
@@ -27875,7 +27901,7 @@ fn check_expr_semantics(
             // B1: only lists, strings, maps, and structs are indexable. A statically-known numeric
             // or bool base is a type error (dynamic bases are left to the fail-closed runtime).
             if let Some(bad) = static_non_indexable(base, scope) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                     message: format!(
                         "cannot index a value of type `{}` (only lists, strings, and maps are indexable)",
@@ -27924,7 +27950,7 @@ fn check_expr_semantics(
             if let Expr::FieldAccess { field, .. } = &**callee {
                 if let Some(Some(arity)) = ctx.method_arities.get(field).copied() {
                     if args.len() + 1 != arity {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_ARITY_MISMATCH".into()),
                             message: format!(
                                 "method `{}` expects {} argument(s), got {}",
@@ -27944,7 +27970,7 @@ fn check_expr_semantics(
             let mut seen = BTreeSet::new();
             for (fname, fexpr) in fields {
                 if !seen.insert(fname.clone()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_DUPLICATE_FIELD".into()),
                         message: format!(
                             "duplicate field `{}` in `{}` struct literal",
@@ -27982,7 +28008,7 @@ fn check_expr_semantics(
                     if is_scalar_prim(&declared) {
                         if let Some(got) = infer_expr_type_scoped(fexpr, scope) {
                             if is_scalar_prim(&got) && !types_assignable(&declared, &got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch: field `{}` of `{}` expects `{}`, got `{}`",
@@ -28190,7 +28216,7 @@ fn check_match_exhaustiveness(
         .filter(|v| !covered.contains(v))
         .collect();
     if !missing.is_empty() {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_MATCH_NON_EXHAUSTIVE".into()),
             message: format!(
                 "non-exhaustive match on `{}`: missing variant(s) {} (add arms or `_`)",
@@ -33338,7 +33364,7 @@ fn apply_inherited_capability(
         "fs.write" => {
             effects.push("file_write".into());
             if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                     message: format!(
                         "safe mode file_write (via callee `uses({raw})`) forbidden without `uses(fs.write)`"
@@ -33350,7 +33376,7 @@ fn apply_inherited_capability(
         "net.send" => {
             effects.push("network".into());
             if mode == Mode::Safe && !safe_cap_allowed(ctx, "net.send") {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                     message: format!(
                         "safe mode network (via callee `uses({raw})`) forbidden without `uses(net.send)`"
@@ -33362,7 +33388,7 @@ fn apply_inherited_capability(
         "shell" => {
             effects.push("shell".into());
             if mode == Mode::Safe && !safe_cap_allowed(ctx, "shell") {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                     message: format!(
                         "safe mode shell/exec (via callee `uses({raw})`) forbidden without `uses(shell)`"

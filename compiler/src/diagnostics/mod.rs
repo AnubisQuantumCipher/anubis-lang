@@ -292,8 +292,13 @@ pub struct Coverage {
     pub trusted_to_solver: usize,
     /// `certified + trusted_to_solver`.
     pub discharged: usize,
-    /// The obligations resting on the solver's word, named rather than counted.
+    /// The obligations resting on the solver's word, named rather than counted: the first
+    /// `MAX_UNCERTIFIED_NAMED`, each name cut to `MAX_NAME` characters (an obligation over a long
+    /// sum is named by its whole SMT term: 688 of them made an 8.5 MB line).
     pub uncertified: Vec<String>,
+    /// How many more there are than `uncertified` names.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub uncertified_omitted: usize,
     /// Checks that reached neither a recognised discharge nor a failure, so the
     /// denominator above does not silently shrink to fit its numerator.
     pub not_discharged: usize,
@@ -303,13 +308,39 @@ pub struct Coverage {
     pub witnesses_retained: bool,
 }
 
+/// Obligations named in a coverage report, and the characters of each name shown.
+pub const MAX_UNCERTIFIED_NAMED: usize = 100;
+pub const MAX_NAME: usize = 240;
+
+/// The names a coverage report shows: the first `MAX_UNCERTIFIED_NAMED`, each cut to `MAX_NAME`
+/// characters (`…` marks a cut).
+pub fn named_uncertified(names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .take(MAX_UNCERTIFIED_NAMED)
+        .map(|n| {
+            if n.chars().count() > MAX_NAME {
+                let cut: String = n.chars().take(MAX_NAME).collect();
+                format!("{cut}…")
+            } else {
+                n.clone()
+            }
+        })
+        .collect()
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 impl From<&crate::middle::CertificateCoverage> for Coverage {
     fn from(c: &crate::middle::CertificateCoverage) -> Coverage {
         Coverage {
             certified: c.certified,
             trusted_to_solver: c.trusted_to_solver,
             discharged: c.discharged,
-            uncertified: c.uncertified.clone(),
+            uncertified: named_uncertified(&c.uncertified),
+            uncertified_omitted: c.uncertified.len().saturating_sub(MAX_UNCERTIFIED_NAMED),
             not_discharged: c.not_discharged,
             witnesses_retained: c.witnesses_retained,
         }
@@ -371,13 +402,25 @@ fn leading_code(message: &str) -> String {
 /// one thing a verdict format must never say about a failure.
 pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
     let code = leading_code(message);
-    // The checker ran out of stack or memory: nothing is known to be wrong with the program, so an
-    // agent must not "repair" it; it can simplify it or raise the budget.
+    // The checker reached one of its analysis limits: nothing is known to be wrong with the program,
+    // so an agent must not "repair" it; it can restate (simplify) it. Only the memory budget can be
+    // raised, and only its refusal carries a `budget` saying how much it was; a stack or
+    // closure-depth refusal carries none, so there is nothing to raise.
     let (defect_locus, agent_action) = if code == "ANUBIS_ANALYSIS_LIMIT" {
         (DefectLocus::Capability, AgentAction::RestateOrRaiseBudget)
     } else {
         (DefectLocus::Program, AgentAction::RepairProgram)
     };
+    let budget = message
+        .strip_prefix(crate::middle::analysis_limit_memory_prefix())
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|mib| mib.parse::<u64>().ok())
+        .map(|mib| Budget {
+            metric: "analysis_memory_mib".into(),
+            limit: mib,
+            measured: true,
+            consumed: None,
+        });
     Diagnostic {
         type_tag: "anubis.diagnostic".into(),
         schema: SCHEMA.into(),
@@ -392,10 +435,37 @@ pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
         obligation: None,
         counterexample: None,
         location: None,
-        budget: None,
+        budget,
         suggestions: Vec::new(),
     }
 }
+
+/// Text for a human reader, with every control character but a newline or a tab shown as `\u{..}`
+/// (a message can quote user text, such as a map key, and escape sequences in it would otherwise
+/// drive the terminal or log that shows it). JSON output escapes on its own.
+pub fn printable(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(
+        text.chars()
+            .map(|c| {
+                if c.is_control() && c != '\n' && c != '\t' {
+                    format!("\\u{{{:x}}}", c as u32)
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Parse diagnostics reported one by one; the rest are counted in one more. Error recovery can
+/// report one per token of a malformed file.
+const MAX_PARSE_DIAGNOSTICS: usize = 200;
 
 /// One structured diagnostic per parse error, each carrying a real location.
 ///
@@ -403,28 +473,12 @@ pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
 /// human renderer draws its carets from — not by reading back the rendered
 /// text. A format that re-parsed its own prose would drift the first time the
 /// caret rendering changed.
-/// Parse diagnostics reported one by one; the rest are counted in one more. Error recovery can
-/// report one per token of a malformed file.
-const MAX_PARSE_DIAGNOSTICS: usize = 200;
-
 pub fn diagnostics_of_parse_errors(source: &str, path: &str) -> Vec<Diagnostic> {
     let all = crate::frontend::parse_source_detailed(source).diagnostics;
     // Line starts, once: locating each error by walking the source from its start was quadratic
     // (150000 errors took 52 s).
-    let starts: Vec<usize> = std::iter::once(0)
-        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
-    let locate = |offset: usize| {
-        let clamped = offset.min(source.len());
-        let line = starts.partition_point(|&s| s <= clamped).max(1);
-        let start = starts[line - 1];
-        let column = source[start..]
-            .char_indices()
-            .take_while(|(i, _)| start + i < clamped)
-            .count()
-            + 1;
-        (line, column)
-    };
+    let index = crate::frontend::LineIndex::new(source);
+    let locate = |offset: usize| index.line_col(offset);
     let more = all.len().saturating_sub(MAX_PARSE_DIAGNOSTICS);
     let mut out: Vec<Diagnostic> = all
         .iter()
@@ -865,6 +919,17 @@ mod tests {
         let both = diagnostics_of_refusal(
             "ANUBIS_ANALYSIS_LIMIT: the checker ran out of stack\nANUBIS_SECRET_EXFILTRATION: s",
         );
+        assert!(both[0].budget.is_none());
+        let mem = diagnostic_of_refusal(&format!(
+            "{}512 MiB: half the memory free) ...",
+            crate::middle::analysis_limit_memory_prefix()
+        ));
+        assert_eq!(mem.budget.as_ref().map(|b| b.limit), Some(512));
+        assert_eq!(printable("a\u{1b}[2Jb\n"), "a\\u{1b}[2Jb\n");
+        assert!(matches!(
+            printable("plain\ttext"),
+            std::borrow::Cow::Borrowed(_)
+        ));
         assert_eq!(both.len(), 2);
         assert_eq!(both[0].defect_locus, DefectLocus::Capability);
         assert_eq!(both[1].code, "ANUBIS_SECRET_EXFILTRATION");

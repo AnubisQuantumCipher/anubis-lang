@@ -428,7 +428,10 @@ fn build_evidence_bundle_tree_inner(
 
     // A check refused at the analysis limit ran out of stack or memory; running the same analysis
     // again for the bundle would only repeat that (and double the time to the refusal).
-    let limit_refusal = rejection.is_some_and(crate::diagnostics::is_analysis_limit);
+    // A limit refusal is a refusal of the analysis of a program that parsed (a parse error's
+    // rendering begins with the input's path, which can be anything).
+    let limit_refusal =
+        parse_res.is_ok() && rejection.is_some_and(crate::diagnostics::is_analysis_limit);
     if limit_refusal {
         checks.push(Check {
             name: "typecheck".into(),
@@ -930,9 +933,13 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     derive_claim(source, mode, true).0
 }
 
-/// The claim block, and whether the analysis stopped at the checker's analysis limit (then its
-/// verdict is not a fact about the program). `analyze: false` records the parse only.
-fn derive_claim(source: &str, mode: &str, analyze: bool) -> (ClaimBlock, bool) {
+/// The claim block, and the analysis limit its analysis stopped at, if any (then its verdict is not
+/// a fact about the program). `analyze: false` records the parse only.
+fn derive_claim(
+    source: &str,
+    mode: &str,
+    analyze: bool,
+) -> (ClaimBlock, Option<crate::middle::AnalysisLimit>) {
     let source_sha256 = sha256_bytes(source.as_bytes());
     let tc_mode = match mode {
         "research" => crate::frontend::Mode::Research,
@@ -942,14 +949,12 @@ fn derive_claim(source: &str, mode: &str, analyze: bool) -> (ClaimBlock, bool) {
     let parse_res = crate::frontend::parse_source(source);
     let parse_ok = parse_res.is_ok();
     let mut typecheck_ok = false;
-    let mut limit = false;
+    let mut limit = None;
     let mut solver_obligations = 0usize;
     let mut solver_all_discharged = true;
     if let (Ok(ast), true) = (parse_res, analyze) {
         let typed = crate::middle::typecheck(ast, tc_mode);
-        limit = typed
-            .as_ref()
-            .is_err_and(|e| crate::diagnostics::is_analysis_limit(e));
+        limit = crate::middle::last_analysis_limit();
         if let Ok(ir) = typed {
             typecheck_ok = true;
             let tainted = crate::middle::TaintPass::apply(ir);
@@ -1066,8 +1071,12 @@ pub fn derive_claim_block_bound(dir: &Path, source: &str, mode: &str) -> ClaimBl
     derive_claim_bound(dir, source, mode).0
 }
 
-/// [`derive_claim_block_bound`], and whether its analysis stopped at the analysis limit.
-fn derive_claim_bound(dir: &Path, source: &str, mode: &str) -> (ClaimBlock, bool) {
+/// [`derive_claim_block_bound`], and the analysis limit its analysis stopped at, if any.
+fn derive_claim_bound(
+    dir: &Path,
+    source: &str,
+    mode: &str,
+) -> (ClaimBlock, Option<crate::middle::AnalysisLimit>) {
     let (mut cb, limit) = derive_claim(source, mode, true);
     if let Some(zk) = derive_zk_binding(dir) {
         cb.zk_present = true;
@@ -1120,17 +1129,6 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // re-derived block differ from the recorded one and fails closed here (the CLI additionally
     // re-verifies the receipt cryptographically against the ImageID).
     let (fresh, limit) = derive_claim_bound(dir, &source, &recorded.mode);
-    // A re-derivation stopped by the analysis limit (the verifying machine's memory, or a program
-    // past the checker's stack or depth) neither confirms nor refutes the recorded claim: say so,
-    // rather than "invalid", which reads as tampering.
-    if limit && !claim_semantically_matches(&fresh, &recorded) {
-        return Err(
-            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the checker reached \
-                    its analysis limit on this machine, so the bundle is neither confirmed nor \
-                    refuted (give the check more memory: ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
-                .into(),
-        );
-    }
     // If the bundle is signed, the signature must verify over the current claim + manifest. An
     // unsigned bundle is still a valid (unsigned) PCA. A forged/invalid signature fails closed.
     let sig_ok = match pca_signature_status(dir)? {
@@ -1184,12 +1182,26 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
             true // legacy bundle without an entitlement profile
         }
     };
-    Ok(hashes_ok
-        && source_bound
-        && sig_ok
-        && confine_ok
-        && entitlement_ok
-        && claim_semantically_matches(&fresh, &recorded))
+    // Integrity decides first: a bundle whose files, source binding, signature, confinement or
+    // entitlements do not check is invalid, whatever the analysis could re-derive.
+    if !(hashes_ok && source_bound && sig_ok && confine_ok && entitlement_ok) {
+        return Ok(false);
+    }
+    let matches = claim_semantically_matches(&fresh, &recorded);
+    // A re-derivation stopped by the MEMORY budget of this machine neither confirms nor refutes an
+    // intact bundle's claim: say so, rather than "invalid", which reads as tampering. A stack or
+    // closure-depth limit is the same on every machine, so the claim it could not re-derive is
+    // refuted as it stands.
+    if !matches && limit == Some(crate::middle::AnalysisLimit::Memory) {
+        return Err(
+            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the checker's \
+                    analysis reached its memory budget on this machine, so the intact bundle is \
+                    neither confirmed nor refuted (give the check more memory: \
+                    ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
+                .into(),
+        );
+    }
+    Ok(matches)
 }
 
 /// The `pca.sig` sidecar: an Ed25519 signature over the PCA, written OUTSIDE `MANIFEST.sha256` (it

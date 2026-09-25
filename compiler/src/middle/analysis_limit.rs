@@ -24,9 +24,12 @@
 //! the walkers return a fail-closed answer, and `check` turns the request into an
 //! `ANUBIS_ANALYSIS_LIMIT` refusal, so a partial analysis never passes as a check. The refusal names
 //! the limit that was reached (only the memory budget can be raised), and is followed, on the next
-//! line, by the findings the analysis made elsewhere in the program. The errors that only name the
-//! fail-closed stand-in (a secret "past the analysis limit" in a program with none) are dropped
-//! before that (`typecheck_request`); a genuine finding the limit did not touch is kept.
+//! line, by the findings the analysis made BEFORE it reached the limit: those came from a complete
+//! analysis of what it had covered. Every diagnostic raised after it is dropped, by position
+//! (`SemanticContext::push_diag` marks where the limit was first seen), never by its text: those
+//! came from the fail-closed answers (a secret "past the analysis limit", or a public binding
+//! "initialized from a secret value", in a program with none). What the analysis did not reach
+//! was not analyzed at all, so a finding there is not reported; the program is refused regardless.
 //!
 //! Time is not bounded. An analysis stopped by none of these can still take long (a chain of 8000
 //! functions each calling the previous one runs past two minutes): it uses CPU, not the memory or
@@ -54,13 +57,38 @@ const STACK: u8 = 1;
 const DEPTH: u8 = 2;
 const MEMORY: u8 = 3;
 
+/// The limit a check request reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisLimit {
+    /// The stack guard: nesting too deep to analyze (deterministic for a given thread's stack).
+    Stack,
+    /// The closure-depth cap (deterministic).
+    Depth,
+    /// The memory budget (depends on the memory the machine had free).
+    Memory,
+}
+
+/// How the memory refusal begins (the JSON lane reads its budget from this text, which is ours).
+pub(crate) const MEMORY_PREFIX: &str =
+    "ANUBIS_ANALYSIS_LIMIT: the checker's analysis of this program exceeded its memory budget (";
+
+/// The limit the last check request on this thread reached, if any.
+pub(crate) fn last() -> Option<AnalysisLimit> {
+    match LAST.get() {
+        STACK => Some(AnalysisLimit::Stack),
+        DEPTH => Some(AnalysisLimit::Depth),
+        MEMORY => Some(AnalysisLimit::Memory),
+        _ => None,
+    }
+}
+
 /// The refusal for the limit that was reached.
 pub(super) fn diagnostic(reason: u8) -> String {
-    let refused = "it cannot bound what the program returns or does, so the program is refused";
+    let refused = "it cannot bound what the program returns or does past that point, so the \
+                   program is refused (any findings made before it are listed after this)";
     match reason {
         MEMORY => format!(
-            "ANUBIS_ANALYSIS_LIMIT: the checker's analysis of this program exceeded its memory \
-             budget ({} MiB: half the memory free when the check began, or \
+            "{MEMORY_PREFIX}{} MiB: half the memory free when the check began, or \
              ANUBIS_ANALYSIS_MEMORY_MIB); {refused}. This is a limit of the checker, not a finding \
              about the program: simplify it, or give the check more memory \
              (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if the machine has it to spare",
@@ -68,15 +96,16 @@ pub(super) fn diagnostic(reason: u8) -> String {
         ),
         DEPTH => format!(
             "ANUBIS_ANALYSIS_LIMIT: the checker followed more than {DEPTH_LIMIT} nested closure \
-             bodies while analyzing this program (a closure that calls itself through a reassigned \
-             name, directly or through another closure, need not end); {refused}. The checker \
-             cannot tell whether such a call ends: break the cycle, or make it a named function"
+             bodies while analyzing this program; {refused}. This is a limit of the checker: a \
+             closure that calls itself through a reassigned name (directly or through another \
+             closure) reaches it, and so do closures nested that deep; reduce the nesting, or make \
+             such a closure a named function. More memory does not change it"
         ),
         _ => format!(
             "ANUBIS_ANALYSIS_LIMIT: the checker ran out of stack while analyzing this program \
              (expressions or closure bodies nested too deeply to analyze, or a closure that reaches \
              itself through a reassigned name); {refused}. This is a limit of the checker, not a \
-             finding about the program: reduce the nesting"
+             finding about the program: reduce the nesting. More memory does not change it"
         ),
     }
 }
@@ -85,6 +114,8 @@ thread_local! {
     static DEPTH_NOW: Cell<usize> = const { Cell::new(0) };
     /// The limit reached in the current request (`NONE` while none is).
     static REASON: Cell<u8> = const { Cell::new(NONE) };
+    /// The limit the last finished request reached (`last`).
+    static LAST: Cell<u8> = const { Cell::new(NONE) };
     /// The lowest stack address a walker may enter at, in the current request (0: no request).
     static FLOOR: Cell<usize> = const { Cell::new(0) };
 }
@@ -202,6 +233,7 @@ pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
     );
     let result = f();
     let reason = REASON.get();
+    LAST.set(reason);
     if reason == NONE {
         return result;
     }
@@ -332,17 +364,22 @@ mod tests {
         let (limit, rest) = err.split_once('\n').unwrap();
         assert!(limit.starts_with("ANUBIS_ANALYSIS_LIMIT"), "{err}");
         assert_eq!(rest, "ANUBIS_SECRET_EXFILTRATION: x");
+        assert!(last().is_some());
+        assert!(check(|| Ok(())).is_ok());
+        assert_eq!(last(), None);
     }
 
     /// Only the memory budget can be raised, so only its refusal says so.
     #[test]
     fn each_limit_names_itself() {
         assert!(diagnostic(MEMORY).contains("ANUBIS_ANALYSIS_MEMORY_MIB"));
+        assert!(diagnostic(MEMORY).starts_with(MEMORY_PREFIX));
         for reason in [STACK, DEPTH] {
             let d = diagnostic(reason);
             assert!(d.starts_with("ANUBIS_ANALYSIS_LIMIT: "), "{d}");
             assert!(!d.contains("ANUBIS_ANALYSIS_MEMORY_MIB"), "{d}");
-            assert!(!d.contains("memory"), "{d}");
+            assert!(!d.starts_with(MEMORY_PREFIX), "{d}");
+            assert!(d.contains("More memory does not change it"), "{d}");
         }
         assert!(diagnostic(DEPTH).contains("4096 nested closure bodies"));
         assert!(diagnostic(STACK).contains("ran out of stack"));
