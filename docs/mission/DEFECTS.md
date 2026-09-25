@@ -13,6 +13,7 @@ its question; S3 precision/over-rejection or crash on input; S4 correctness/qual
 | id | sev | defect | evidence | state |
 |---|---|---|---|---|
 | CAND-ALIAS-STACK | S3 | Workspace release tests abort in `recursive_closure_source_reports_limit_and_recovers` on the uncommitted alias candidate. Matching baseline differential is not yet measured. | [Complete failure receipt](../evidence/ALIAS_CANDIDATE_VERIFY_2026-09-25/README.md), source patch, manifest and full cargo log; cargo rc 101. | open; blocks candidate integration; follow-up deliberate crash verification requires the mandated guest |
+| CAND-CLOSURE-CAPTURE | S1 | An unshipped closure-effect worklist suppresses repeated current-scope states without traversing the old captured printer; invalid self/mutual-assignment controls become accepted. | [Rejected-design receipt](../evidence/ALIAS_CLOSURE_WORKLIST_REJECTED_2026-09-25/README.md); `ord3_capture_*` matrix controls; native output changes with the annotated secret. | prototype rejected; no compiler change integrated; capture-versioned ordinary effects remain required |
 
 ## Assurance chain (03)
 

@@ -1,0 +1,8 @@
+fn main() {
+    let secret_value: secret<i64> = 42;
+    let h = |s| { print(s); 0 };
+    let g = |s| 1;
+    g = |s| h(s);
+    h = |s| g(s);
+    g(secret_value);
+}

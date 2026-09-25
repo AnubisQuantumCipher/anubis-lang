@@ -1,0 +1,16 @@
+// Proposed ACCEPT control; not executed by the design task.
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(p) {
+    let clean = p.pub_n;
+    let mut c = |z| clean;
+    let mut i = 0;
+    while i < 2 {
+        c = |z| c(z);
+        i = i + 1;
+    }
+    return c(p.pub_n);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

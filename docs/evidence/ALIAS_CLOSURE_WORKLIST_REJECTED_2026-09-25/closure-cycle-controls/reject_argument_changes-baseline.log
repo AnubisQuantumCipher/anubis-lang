@@ -1,0 +1,7 @@
+anubis check /home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_argument_changes.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260925-173928-safe-2
+verdict: FAIL
+check failed: ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `a value computed from a whole struct value holding declared field `k` of type `secret<i64>` (type `S`)` reaches an egress inside `f` without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program
+Error: check failed: ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `a value computed from a whole struct value holding declared field `k` of type `secret<i64>` (type `S`)` reaches an egress inside `f` without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program

@@ -1,0 +1,7 @@
+anubis check /home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_distinct_captures.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260925-173929-safe-6
+verdict: FAIL
+check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `declared field `k` of type `secret<i64>`` flows to egress `print` without declassify() — release a private value with declassify(value, policy=…, reason=…) before it leaves the program
+Error: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `declared field `k` of type `secret<i64>`` flows to egress `print` without declassify() — release a private value with declassify(value, policy=…, reason=…) before it leaves the program

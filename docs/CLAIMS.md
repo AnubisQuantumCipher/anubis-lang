@@ -15,6 +15,13 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-25 — closure-effects worklist prototype rejected.** It restores a valid
+wrapper but accepts retained-printer controls that disclose an annotated secret. The
+[rejected-design receipt](evidence/ALIAS_CLOSURE_WORKLIST_REJECTED_2026-09-25/README.md)
+preserves the source delta, independent review, differential checks and native output.
+The `ord3_capture_*` matrix controls require semantic rejection. No compiler change is
+integrated, and no new full-matrix total or completed capture fix is claimed.
+
 **UPDATE 2026-09-25 — unshipped alias candidate verification failed.** Workspace release
 testing aborted in `closure_analysis_limit::recursive_closure_source_reports_limit_and_recovers`.
 The [failure receipt](evidence/ALIAS_CANDIDATE_VERIFY_2026-09-25/README.md) preserves the exact

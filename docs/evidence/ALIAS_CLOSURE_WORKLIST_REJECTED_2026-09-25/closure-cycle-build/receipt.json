@@ -1,0 +1,11 @@
+{
+  "status": "build-only, no acceptance claim",
+  "utc": "2026-09-25T17:38:09.052312+00:00",
+  "base": "2990eab2c6ad856fd2f1bfc25fa77c3e6a60b92a",
+  "source_diff_sha256": "c950f6add69de43789e6e7f2b0d309379412866b0c9b1ac21be400f8b010bd73",
+  "source_manifest_sha256": "82694b66aea8f9c84134bc6ad037d8676199afb8c76aab5d3e7483ccc5069e62",
+  "pin": "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+  "binary_sha256": "bb62868e0f1495a12f26499e6499aaa2c6ef6ffe08f1212ab59f470bd1bf6c88",
+  "build_log": "../build-closure-cycle.log",
+  "build_exit_code": 0
+}
