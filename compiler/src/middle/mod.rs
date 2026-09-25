@@ -6570,7 +6570,8 @@ fn analyze_function(
     }
     ctx.shadowed_lets.clear();
     collect_shadowed_lets(body, &mut ctx.shadowed_lets);
-    (ctx.whole_not_list, ctx.whole_not_map, ctx.whole_retype) = whole::assigned_shapes(body, ctx);
+    (ctx.whole_not_list, ctx.whole_not_map, ctx.whole_retype) =
+        whole::assigned_shapes(params, body, ctx);
     // (BUILTIN-SHADOW detection — shadowed_string_preds + shadow_builtin_mark sentinels — is computed
     // earlier, right after the solver-set clears, so it precedes requires-seeding; see there.)
 
@@ -10664,15 +10665,21 @@ fn seed_loop_carried_whole(
 }
 
 /// What a closure stored by `let` or assignment closes over (see `ScopeBinding::whole_captures`): a
-/// lambda's, taken now; an alias's, the aliased closure's.
+/// lambda's, taken now; an alias's, the aliased closure's; and, when the binding holds a closure the
+/// value chooses (`closure`: a branch, arm or block choosing a lambda, a helper returning or
+/// forwarding one), what the names the value reads hold now and what the closures it names closed
+/// over (`whole::chosen_captures`) — otherwise the closure's names would be read where it is called,
+/// after a later `let` of one.
 fn whole_captures_of(
     value: &Expr,
+    closure: bool,
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) -> Option<whole::Captures> {
     match value {
         Expr::Lambda { .. } => Some(whole::closure_captures(value, scope, ctx)),
         Expr::Var(v) => scope.get(v).and_then(|b| b.whole_captures.clone()),
+        _ if closure => Some(whole::chosen_captures(value, scope, ctx)),
         _ => None,
     }
 }
@@ -10799,7 +10806,6 @@ fn analyze_stmts(
                     whole::is_list_expr(init, scope, ctx) && !ctx.whole_not_list.contains(name);
                 let init_map =
                     whole::is_map_expr(init, scope, ctx) && !ctx.whole_not_map.contains(name);
-                let init_captures = whole_captures_of(init, scope, ctx);
                 let declass_source = declassify_source(
                     init,
                     scope,
@@ -10994,6 +11000,8 @@ fn analyze_stmts(
                 // secret/tainted-capturing closure binds `g` to a capturing element (fail-closed).
                 // Covers flat `arr[i]`, nested `outer[i][0]`, and `b.fs[i]` bind twins of direct apply.
                 let cl = cl.or_else(|| symbolic_index_capturing_closure(init, scope, ctx));
+                // See `ScopeBinding::whole_captures`: what the closure bound here closes over.
+                let init_captures = whole_captures_of(init, cl.is_some(), scope, ctx);
                 // Task #48: closures stored in this binding's STRUCT FIELDS / LIST / MAP, keyed by
                 // dotted access path. Alias `let b2 = b` inherits b's paths.
                 // Sub-container bind residual close (2026-07-25): `let mid = outer[0]` must re-key
@@ -12750,7 +12758,7 @@ fn analyze_stmts(
                                 tags
                             }
                         };
-                        let captures = whole_captures_of(value, scope, ctx);
+                        let captures = whole_captures_of(value, cl.is_some(), scope, ctx);
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
                             b.closure_lambda = cl;
@@ -16805,7 +16813,8 @@ fn walk_block_effects(
                     whole::is_list_expr(init, scope, ctx) && !ctx.whole_not_list.contains(name);
                 let init_map =
                     whole::is_map_expr(init, scope, ctx) && !ctx.whole_not_map.contains(name);
-                let init_captures = whole_captures_of(init, scope, ctx);
+                // Only a lambda or an alias binds a closure here (`cl` below).
+                let init_captures = whole_captures_of(init, false, scope, ctx);
                 seed_effect_let(
                     name,
                     ty.as_deref(),

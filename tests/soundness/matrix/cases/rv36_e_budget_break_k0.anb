@@ -1,0 +1,115 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn burn(q) {
+    let out = [];
+    let v0 = 0;
+    let v1 = 0;
+    let v2 = 0;
+    let v3 = 0;
+    let i0 = 0;
+    while i0 < 2 {
+        v1 = [v0, i0];
+        push(out, v2);
+        let i1 = 0;
+        while i1 < 2 {
+            v2 = [v1, i1];
+            push(out, v3);
+            let i2 = 0;
+            while i2 < 2 {
+                v3 = [v2, i2];
+                push(out, v0);
+                let i3 = 0;
+                while i3 < 2 {
+                    v0 = [v3, i3];
+                    push(out, v1);
+                    let i4 = 0;
+                    while i4 < 2 {
+                        v1 = [v0, i4];
+                        push(out, v2);
+                        let i5 = 0;
+                        while i5 < 2 {
+                            v2 = [v1, i5];
+                            push(out, v3);
+                            let i6 = 0;
+                            while i6 < 2 {
+                                v3 = [v2, i6];
+                                push(out, v0);
+                                let i7 = 0;
+                                while i7 < 2 {
+                                    v0 = [v3, i7];
+                                    push(out, v1);
+                                    let i8 = 0;
+                                    while i8 < 2 {
+                                        v1 = [v0, i8];
+                                        push(out, v2);
+                                        let i9 = 0;
+                                        while i9 < 2 {
+                                            v2 = [v1, i9];
+                                            push(out, v3);
+                                            let i10 = 0;
+                                            while i10 < 2 {
+                                                v3 = [v2, i10];
+                                                push(out, v0);
+                                                let i11 = 0;
+                                                while i11 < 2 {
+                                                    v0 = [v3, i11];
+                                                    push(out, v1);
+                                                    let i12 = 0;
+                                                    while i12 < 2 {
+                                                        v1 = [v0, i12];
+                                                        push(out, v2);
+                                                        let i13 = 0;
+                                                        while i13 < 2 {
+                                                            v2 = [v1, i13];
+                                                            push(out, v3);
+                                                            let i14 = 0;
+                                                            while i14 < 2 {
+                                                                v3 = [v2, i14];
+                                                                push(out, v0);
+                                                                let i15 = 0;
+                                                                while i15 < 2 {
+                                                                    v0 = [v3, i15];
+                                                                    push(out, v1);
+                                                                    v3 = v2;
+                                                                    v2 = v1;
+                                                                    v1 = v0;
+                                                                    v0 = q;
+                                                                    i15 = i15 + 1;
+                                                                }
+                                                                i14 = i14 + 1;
+                                                            }
+                                                            i13 = i13 + 1;
+                                                        }
+                                                        i12 = i12 + 1;
+                                                    }
+                                                    i11 = i11 + 1;
+                                                }
+                                                i10 = i10 + 1;
+                                            }
+                                            i9 = i9 + 1;
+                                        }
+                                        i8 = i8 + 1;
+                                    }
+                                    i7 = i7 + 1;
+                                }
+                                i6 = i6 + 1;
+                            }
+                            i5 = i5 + 1;
+                        }
+                        i4 = i4 + 1;
+                    }
+                    i3 = i3 + 1;
+                }
+                i2 = i2 + 1;
+            }
+            i1 = i1 + 1;
+        }
+        i0 = i0 + 1;
+    }
+    return [1, 2, 3];
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let a = 0;
+    let b = 0;
+    for j in burn(p) { print(a); a = b; b = p; }
+}
