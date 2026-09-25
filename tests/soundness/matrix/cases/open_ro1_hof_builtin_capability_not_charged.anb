@@ -1,0 +1,13 @@
+fn w(x) uses(fs.write) {
+    write_file("/home/sicarii/.cache/anubis-review-esc/ordret1/alias/wout.txt", "pwned");
+    return 0;
+}
+fn pure1(x) {
+    return x + 1;
+}
+fn main() {
+    let n = 3;
+    let c = n > 1;
+    let d = n > 100;
+    let z = each([1], w);
+}
