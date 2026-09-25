@@ -1597,6 +1597,13 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — review of `9dc7be91` (`28d21d21`).**
+    - An independent review confirmed 33 findings: 2 REGRESSIONS (a call through a function binding
+      whose identity set is Unknown no longer checks the other function's egress or capability),
+      22 pre-existing leaks near the change, 6 over-refusals and 3 costs 9dc7be91 introduced.
+      All 30 programs are matrix cases (`open_ro1_*`, `ro1_or*`); fixes are being designed.
+    - Matrix at `28d21d21`: 1237 cases, 1094 PASS, 58 silent accepts (all `open_*`), 85 wrong-class.
+
     **UPDATE 2026-09-25 — the ordinary lane's return summaries (`9dc7be91`).**
     - A secret or tainted value assigned in a nested block of a callee and returned is labelled
       (IFC-ORDINARY-RETURN), and a call through a joined function binding checks every function it

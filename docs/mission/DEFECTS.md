@@ -349,3 +349,20 @@ acceptance: in no probe did a check pass after a limit, and no tampered or forge
 | CHK-CONTROL-VERIFY | S3 | pre-existing: verify printed a bundle's escape-laden field names raw, and `report` a bundle's text; bidirectional overrides were never escaped | review N8 | **fixed** 2536d046: every printed error and report goes through printable(), which also shows bidi and zero-width characters |
 | CHK-COVERAGE-NAMES | S4 | 0275f5f3: 100 names cut to 240 characters could all read the same | review N9 | **fixed** 2536d046: first 160 and last 60 characters and a digest |
 | CHK-DISARM | S4 | 0275f5f3: after a request the allocator kept looking and could exit outside any check | review note | **fixed** 2536d046 |
+
+### Follow-up: 28d21d21 (review of 9dc7be91; CI)
+
+An independent review of 9dc7be91 (IFC-ORDINARY-RETURN, pin anubis-ordret1 against anubis-crashfix13)
+confirmed 33 findings, each re-run by a verifier. The 30 with a verdict are matrix cases since 28d21d21
+(1237 cases at that commit: 1094 PASS, 58 silent accepts, 85 wrong-class). Fix designs are in progress.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| IFC-ALIAS-PREFERENCE | S1 | REGRESSION of 9dc7be91: a call through a function binding whose identity set is Unknown checks the one preferred alias; making a function secret-returning flipped that preference, so the other function's egress, or its declared capability, went unchecked | `open_ro1_alias_regression_unknown_set_secret`, `open_ro1_alias_regression_unknown_set_capability` | open (fix in design) |
+| IFC-ALIAS-RESOLUTION | S1 | pre-existing: an unresolvable branch makes a binding's whole identity set Unknown; value-block tails, value-position assignments, lambda-and-name joins, closures returning functions and call-result field types resolve one name or none; a local named like a user function is taken for the callee although the runtime calls the user function | `open_ro1_unknown_set_*`, `open_ro1_value_block_tail_identity`, `open_ro1_fn_assigned_in_value_block_lost`, `open_ro1_lambda_plus_named_fn_join_skips_closure`, `open_ro1_closure_returning_function`, `open_ro1_struct_type_single_alias_at_join`, `open_ro1_*local*` (3) | open |
+| IFC-SUMMARY-GAPS | S1 | pre-existing: the return summary does not track which function a local holds; push/insert in expression position; `?` as an early return (also under a secret condition); a function stored into a field inside a branch; four symmetric shapes (a read after a value-block write in one expression, a lambda assigning a captured name, a secret key in an assignment target, a mistyped struct annotation) | `open_ro1_ret_*`, `open_ro1_implicit_flow_try_under_secret_branch`, `open_ro1_enforcing_branch_join_drops_field_fn_identity`, `open_ro1_sym_*` | open |
+| IFC-HOF-NAMED | S1 | pre-existing: a named function given to a builtin HOF through a local, or to a user HOF, is not checked; a builtin HOF does not charge the function's capability; a loop reassigning a function after its call | `open_ro1_hof_*`, `open_ro1_user_hof_named_fn_arg`, `open_ro1_loop_reassign_after_call_egress` | open |
+| OR-ORDRET-CLOSURE | S3 | introduced by 9dc7be91: the order-free closure cannot clear a label that a later statement overwrites on every path, or that an entering loop overwrites before reading it, and it carries three older imprecisions into branches and loops | `ro1_or1`..`ro1_or6` (wrong-class) | open (fix in design) |
+| PERF-ORDRET-CLOSURE | S3 | introduced by 9dc7be91: the closure is recomputed at every nesting level and its fixpoint is quadratic in a reverse carry chain (three programs 6.5-14x slower than the previous pin, over 1 s) | review perf findings | open (fix in design) |
+| CI-MACOS-FIXTURES | S3 | the hosted gate's language fixtures failed on macOS since 66ac16ce: the needle search used GNU-only sed syntax and hid its error, so the text searched was empty | CI run 36097287313 (log tail); a BSD-sed shim reproduces 131/271 exactly | **fixed** a4ca63c5 |
+| CI-G19-PUSHDIAG | S3 | G19 looked for the literal `ctx.diagnostics.push`, which 0275f5f3 replaced by `push_diag` | CI run 36097287313 | **fixed** a4ca63c5 |
