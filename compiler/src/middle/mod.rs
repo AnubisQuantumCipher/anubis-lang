@@ -787,6 +787,57 @@ fn join_fn_alias<'a>(
     first
 }
 
+/// Every user function a call to `callee` may run: a local binding's single-name alias and every
+/// function its identity set names, or `callee` itself when no binding of that name holds one.
+///
+/// A per-parameter summary (`param_egress`, `param_sinks`, `param_return_taint`) of a call through a
+/// join (`let f = if c { h2 } else { h1 }; f(x)`) is the union over these. `fn_alias` keeps ONE name
+/// and prefers a secret- or taint-returning candidate, so a join of a printing `h2` and a
+/// secret-returning `h1` resolved to `h1`, and `h2`'s egress of the argument was never checked. An
+/// `Unknown` identity set adds nothing beyond the alias, as before.
+fn call_targets(callee: &str, scope: &BTreeMap<String, ScopeBinding>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if let Some(b) = scope.get(callee) {
+        out.extend(b.fn_alias.iter().cloned());
+        if let FnIdentitySet::Known(ns) = &b.fn_identities {
+            out.extend(ns.iter().cloned());
+        }
+    }
+    if out.is_empty() {
+        out.insert(callee.to_string());
+    }
+    out
+}
+
+/// The union of a per-parameter `summary` over `targets` ([`call_targets`]); `None` when no target
+/// has an entry.
+fn union_over_targets(
+    summary: &BTreeMap<String, BTreeSet<usize>>,
+    targets: &BTreeSet<String>,
+) -> Option<BTreeSet<usize>> {
+    let mut found = None::<BTreeSet<usize>>;
+    for t in targets {
+        if let Some(ps) = summary.get(t) {
+            found
+                .get_or_insert_with(BTreeSet::new)
+                .extend(ps.iter().copied());
+        }
+    }
+    found
+}
+
+/// Whether `b` may hold a function in `fns`: its single-name alias or any name in its identity set.
+fn binding_may_call<'a>(b: &'a ScopeBinding, fns: &BTreeSet<String>) -> Option<&'a String> {
+    let known = match &b.fn_identities {
+        FnIdentitySet::Known(ns) => Some(ns),
+        FnIdentitySet::Unknown => None,
+    };
+    b.fn_alias
+        .iter()
+        .chain(known.into_iter().flatten())
+        .find(|n| fns.contains(n.as_str()))
+}
+
 /// Additive, set-valued function-identity spine. Existing `fn_alias_of` callers intentionally remain
 /// untouched: that API selects one label-dangerous identity at a join, while this API preserves the
 /// complete known set for policies (contracts, sealedness, builtin gating) whose result cannot be
@@ -15067,8 +15118,11 @@ fn analyze_expr_effect(
             // Context-sensitive capability propagation for a container passed to a formal that the
             // callee applies. Project the argument's callable identities and inherit only the
             // candidate's declared capabilities at this call site; a pure container therefore stays
-            // accepted, while `app([leak])` charges the caller for `leak`'s fs.write.
-            if let Some(applied_params) = ctx.param_sinks.get(sink_callee).cloned() {
+            // accepted, while `app([leak])` charges the caller for `leak`'s fs.write. A call through
+            // a join applies the formals of every function it may be ([`call_targets`]).
+            if let Some(applied_params) =
+                union_over_targets(&ctx.param_sinks, &call_targets(callee, scope))
+            {
                 for i in applied_params {
                     if let Some(arg) = args.get(i) {
                         let mut projected = BTreeMap::new();
@@ -15203,13 +15257,12 @@ fn analyze_expr_effect(
             // `ANUBIS_INTERPROC_SINK` (the leak is at the call boundary, not a local sink name).
             // Resolve a function-value alias so a call THROUGH `let f = leak; f(k)` consults `leak`'s
             // interproc summary, not the (absent) summary of the local var `f`. Direct calls are
-            // unaffected (no alias ⇒ `resolved_callee == callee`). Soundness hunt 2026-07-19: the alias
-            // laundered a secret/tainted argument past ANUBIS_INTERPROC_EXFILTRATION / _SINK.
-            let resolved_callee: &str = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
-            if let Some(sink_params) = ctx.param_sinks.get(resolved_callee).cloned() {
+            // unaffected (no binding ⇒ the target is `callee`). Soundness hunt 2026-07-19: the alias
+            // laundered a secret/tainted argument past ANUBIS_INTERPROC_EXFILTRATION / _SINK. A
+            // binding that may hold several functions (a join) takes the union of their summaries:
+            // one preferred name dropped the others' sinks and egress.
+            let targets = call_targets(callee, scope);
+            if let Some(sink_params) = union_over_targets(&ctx.param_sinks, &targets) {
                 for i in sink_params {
                     if let Some(arg) = args.get(i) {
                         let builtin_source = builtin_gate_tags_of(arg, scope, ctx)
@@ -15330,7 +15383,7 @@ fn analyze_expr_effect(
             // itself be a secret-returning helper). Egress-only, so a secret into a LOCAL write is not
             // flagged. A well-formed declassify releases (via `expr_secret_source` → None). Safe-mode.
             if mode == Mode::Safe {
-                if let Some(egress_params) = ctx.param_egress.get(resolved_callee).cloned() {
+                if let Some(egress_params) = union_over_targets(&ctx.param_egress, &targets) {
                     for i in egress_params {
                         if let Some(arg) = args.get(i) {
                             // An argument whose FUNCTION IDENTITY resolves to a secret-returning
@@ -29266,7 +29319,9 @@ fn expr_source(
                 FnIdentitySet::Unknown => None,
             }) {
                 Some(format!("return value of `{}`", hit))
-            } else if let Some(rets) = param_return_taint.get(resolved) {
+            } else if let Some(rets) =
+                union_over_targets(param_return_taint, &call_targets(callee, scope))
+            {
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {
                         expr_source(
@@ -29754,11 +29809,10 @@ fn expr_source(
                     .and_then(|b| b.field_closures.get(&path).cloned())
             });
             if let Some(Expr::Var(f)) = stored_closure.as_deref() {
-                let target = scope
-                    .get(f)
-                    .and_then(|b| b.fn_alias.as_deref())
-                    .unwrap_or(f.as_str());
-                if lane_fns.contains(target) {
+                if let Some(target) = call_targets(f, scope)
+                    .into_iter()
+                    .find(|t| lane_fns.contains(t.as_str()))
+                {
                     return Some(format!("return value of `{target}`"));
                 }
             }
@@ -29963,8 +30017,7 @@ fn container_element_secret(
     }
     scope
         .get(n)
-        .and_then(|b| b.fn_alias.clone())
-        .filter(|a| secret_fns.contains(a))
+        .and_then(|b| binding_may_call(b, secret_fns))
         .map(|a| format!("return value of `{a}`"))
 }
 
@@ -30000,8 +30053,7 @@ fn container_element_taint(
     }
     scope
         .get(n)
-        .and_then(|b| b.fn_alias.clone())
-        .filter(|a| tainting_fns.contains(a))
+        .and_then(|b| binding_may_call(b, tainting_fns))
         .map(|a| format!("return value of `{a}`"))
 }
 
@@ -30814,6 +30866,70 @@ impl ReturnSummaryLane {
         }
     }
 
+    /// Whether `binding` carries this lane's label, read exactly as `SourceLane::var_source` reads a
+    /// `Var`, so a binding this says is labelled is one a later read of it reports.
+    fn is_labelled(self, binding: &ScopeBinding) -> bool {
+        match self {
+            Self::Taint => binding.info.tainted && binding.info.taint_source.is_some(),
+            Self::Secret => binding.secret,
+        }
+    }
+
+    /// Whether a declared type annotation carries this lane's qualifier (`tainted<T>` / `secret<T>`).
+    fn declared(self, ty: Option<&str>) -> bool {
+        match self {
+            Self::Taint => is_tainted_type(ty),
+            Self::Secret => is_secret_type(ty),
+        }
+    }
+
+    /// Seed the binders a loop header introduces for its body: a `for` variable carries the label of
+    /// its range or collection, and a `while let` binder the label of its scrutinee. The ordered walk
+    /// had no binding for either, so `for v in [q.k] { return v; }` returned an unlabelled `v`.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_loop_binders(
+        self,
+        stmt: &Stmt,
+        scope: &mut BTreeMap<String, ScopeBinding>,
+        lane_fns: &BTreeSet<String>,
+        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+        method_fns: &BTreeSet<String>,
+        struct_fields: &PlaceTypes<'_>,
+    ) {
+        if !matches!(stmt, Stmt::For { .. } | Stmt::WhileLet { .. }) {
+            return;
+        }
+        let label = header_exprs(stmt).into_iter().find_map(|e| {
+            self.expr_source(
+                e,
+                scope,
+                lane_fns,
+                param_return_taint,
+                method_fns,
+                struct_fields,
+            )
+        });
+        match stmt {
+            Stmt::For { var, .. } => {
+                let mut binding = labelled_param_binding(var, false, None, false);
+                if let Some(label) = label {
+                    self.mark_root_labelled(&mut binding, label);
+                }
+                scope.insert(var.clone(), binding);
+            }
+            Stmt::WhileLet { pattern, .. } => {
+                seed_pattern(
+                    scope,
+                    pattern,
+                    &label,
+                    self.seed_pattern_lane(),
+                    struct_fields,
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Lane-parameterized `while let` declared-payload seeder. Closes the D4 taint-side
     /// residual explicitly named in the second-rewrite `PHASE_2_COMPLETION_2026-08-13.md`
     /// § 9.7: prior to this slice the Secret arm seeded declared enum-payload / struct-field
@@ -30879,7 +30995,341 @@ impl ReturnSummaryLane {
     }
 }
 
+/// One write [`nested_may_labels`] closes over: when any of `sources` carries the lane's label,
+/// every binding in `targets` may carry it.
+struct NestedWrite<'a> {
+    targets: Vec<String>,
+    sources: Vec<&'a Expr>,
+}
+
+/// Record a pattern binding for [`nested_may_labels`]: every binder may hold the scrutinee's label,
+/// and a binder whose DECLARED payload or field type carries the lane's qualifier holds it anyway.
+fn nested_pattern_write<'a>(
+    pattern: &'a Pattern,
+    scrutinee: &'a Expr,
+    lane: ReturnSummaryLane,
+    struct_fields: &PlaceTypes<'_>,
+    binds: &mut Vec<(String, Option<&'a str>)>,
+    declared: &mut BTreeSet<String>,
+    writes: &mut Vec<NestedWrite<'a>>,
+) {
+    let targets = pattern.bound_names();
+    binds.extend(targets.iter().map(|n| (n.clone(), None)));
+    qualified_pattern_binders(
+        pattern,
+        struct_fields,
+        lane.seed_pattern_lane().declared_qualifier(),
+        declared,
+    );
+    writes.push(NestedWrite {
+        targets,
+        sources: vec![scrutinee],
+    });
+}
+
+/// The labels every binding MAY carry anywhere inside the statements nested in `stmt`, and the names
+/// they ASSIGN (`x = …`, `x[i] = …`, `push(x, …)`), which are the outer bindings they can change.
+/// `None` when nothing nested in `stmt` writes a binding.
+///
+/// `body_returns` walks straight-line code in order and restores its scope after every nested
+/// block, so a label a branch, a loop, a `match` arm or a value block wrote onto an outer binding
+/// was dropped at the join. `fn f(q: S) { let x = 0; if c { x = q.k; } return x; }` was not
+/// secret-returning, and `print(f(p))` printed the secret field on a clean check (review round 36,
+/// `r36-spec-3`). A single join over the blocks' END states is not enough either: a label can be
+/// live at a `break` or `return` and overwritten before the end, a loop carries it to the next
+/// iteration, and a `let` that shadows the binding hides what was assigned to it before.
+///
+/// So this closure is deliberately order-free and name-keyed. Starting from `scope`, every nested
+/// write counts on every path and every iteration until nothing changes; a name bound more than
+/// once, or shadowing an outer binding, is one binding here, and if its sites disagree on its
+/// declared type the type is dropped, so a field read off it counts every declaration. The
+/// statement's OWN top-level write (a `let`, an assignment or a `push` at `stmt` itself) is left to
+/// the ordered walk, which keeps a straight-line overwrite precise. Lambda bodies are skipped: a
+/// closure captures by value, so its writes never reach this frame (a write to a captured name is
+/// invisible after the call; runtime-checked).
+#[allow(clippy::too_many_arguments)]
+fn nested_may_labels(
+    stmt: &Stmt,
+    scope: &BTreeMap<String, ScopeBinding>,
+    lane_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+    lane: ReturnSummaryLane,
+) -> Option<(BTreeMap<String, ScopeBinding>, BTreeSet<String>)> {
+    let mut writes: Vec<NestedWrite<'_>> = Vec::new();
+    let mut binds: Vec<(String, Option<&str>)> = Vec::new();
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    let mut assigned: BTreeSet<String> = BTreeSet::new();
+    visit::each_stmt(std::slice::from_ref(stmt), &mut |s, in_lambda| {
+        if in_lambda {
+            return;
+        }
+        let own = std::ptr::eq(s, stmt);
+        match s {
+            Stmt::Let { name, ty, init, .. } if !own => {
+                binds.push((name.clone(), ty.as_deref()));
+                if lane.declared(ty.as_deref()) {
+                    declared.insert(name.clone());
+                }
+                writes.push(NestedWrite {
+                    targets: vec![name.clone()],
+                    sources: vec![init],
+                });
+            }
+            Stmt::LetPattern { pattern, init, .. } if !own => nested_pattern_write(
+                pattern,
+                init,
+                lane,
+                struct_fields,
+                &mut binds,
+                &mut declared,
+                &mut writes,
+            ),
+            Stmt::WhileLet { pattern, expr, .. } => nested_pattern_write(
+                pattern,
+                expr,
+                lane,
+                struct_fields,
+                &mut binds,
+                &mut declared,
+                &mut writes,
+            ),
+            Stmt::For { var, source, .. } => {
+                binds.push((var.clone(), None));
+                let sources = match source {
+                    crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                    crate::frontend::ForSource::Collection { expr } => vec![expr],
+                };
+                writes.push(NestedWrite {
+                    targets: vec![var.clone()],
+                    sources,
+                });
+            }
+            Stmt::Assign { target, value } if !own => {
+                if let Some(root) = assign_target_root(target) {
+                    assigned.insert(root.to_string());
+                    writes.push(NestedWrite {
+                        targets: vec![root.to_string()],
+                        sources: vec![value],
+                    });
+                }
+            }
+            Stmt::ExprStmt(Expr::Call { callee, args })
+                if !own && matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+            {
+                if let Some(root) = assign_target_root(&args[0]) {
+                    assigned.insert(root.to_string());
+                    writes.push(NestedWrite {
+                        targets: vec![root.to_string()],
+                        sources: args[1..].iter().collect(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    });
+    // `match` arms and `if let` in expression position bind their patterns too.
+    visit::each_expr_in_stmts(std::slice::from_ref(stmt), &mut |e| match e {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            for arm in arms {
+                nested_pattern_write(
+                    &arm.pattern,
+                    scrutinee,
+                    lane,
+                    struct_fields,
+                    &mut binds,
+                    &mut declared,
+                    &mut writes,
+                );
+            }
+        }
+        Expr::IfLet {
+            pattern, scrutinee, ..
+        } => nested_pattern_write(
+            pattern,
+            scrutinee,
+            lane,
+            struct_fields,
+            &mut binds,
+            &mut declared,
+            &mut writes,
+        ),
+        _ => {}
+    });
+    if writes.is_empty() {
+        return None;
+    }
+    let mut may = scope.clone();
+    for (name, ty) in &binds {
+        match may.get_mut(name) {
+            Some(b) => {
+                if b.info.ty.as_deref() != *ty {
+                    b.info.ty = None;
+                }
+            }
+            None => {
+                let mut b = labelled_param_binding(name, false, None, false);
+                b.info.ty = ty.map(str::to_string);
+                may.insert(name.clone(), b);
+            }
+        }
+    }
+    for name in &declared {
+        if let Some(b) = may.get_mut(name) {
+            if !lane.is_labelled(b) {
+                lane.mark_root_labelled(b, format!("declared qualifier on `{name}`"));
+            }
+        }
+    }
+    // Monotone: a round either labels a name that was not labelled or ends the loop, and the names
+    // are finite.
+    loop {
+        let mut changed = false;
+        for w in &writes {
+            if w.targets
+                .iter()
+                .all(|t| may.get(t).is_some_and(|b| lane.is_labelled(b)))
+            {
+                continue;
+            }
+            let Some(src) = w.sources.iter().find_map(|e| {
+                lane.expr_source(
+                    e,
+                    &may,
+                    lane_fns,
+                    param_return_taint,
+                    method_fns,
+                    struct_fields,
+                )
+            }) else {
+                continue;
+            };
+            for t in &w.targets {
+                let b = may
+                    .entry(t.clone())
+                    .or_insert_with(|| labelled_param_binding(t, false, None, false));
+                if !lane.is_labelled(b) {
+                    lane.mark_root_labelled(b, src.clone());
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Some((may, assigned))
+}
+
+/// After a nested statement, label every outer binding it may have assigned a labelled value
+/// ([`nested_may_labels`]). `except` names the bindings the statement itself rebinds or overwrites
+/// AFTER its nested writes (a `let x = …` / `x = …` whose value holds the nested block), which the
+/// ordered walk has already set exactly.
+fn join_nested_writes(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    nested: &Option<(BTreeMap<String, ScopeBinding>, BTreeSet<String>)>,
+    except: &[String],
+    lane: ReturnSummaryLane,
+) {
+    let Some((may, assigned)) = nested else {
+        return;
+    };
+    for name in assigned {
+        if except.contains(name) {
+            continue;
+        }
+        let Some(m) = may.get(name).filter(|m| lane.is_labelled(m)) else {
+            continue;
+        };
+        if let Some(b) = scope.get_mut(name) {
+            if !lane.is_labelled(b) {
+                let src = m
+                    .info
+                    .taint_source
+                    .clone()
+                    .unwrap_or_else(|| format!("`{name}` assigned in a nested block"));
+                lane.mark_root_labelled(b, src);
+            }
+        }
+    }
+}
+
+/// A compound statement's HEADER expressions — an `if`/`while` condition, a `while let` scrutinee,
+/// a `for` range or collection — which run before its body (and, for a loop, between iterations).
+fn header_exprs(stmt: &Stmt) -> Vec<&Expr> {
+    match stmt {
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } => vec![cond],
+        Stmt::WhileLet { expr, .. }
+        | Stmt::For {
+            source: crate::frontend::ForSource::Collection { expr },
+            ..
+        } => vec![expr],
+        Stmt::For {
+            source: crate::frontend::ForSource::Range { start, end },
+            ..
+        } => vec![start, end],
+        _ => Vec::new(),
+    }
+}
+
+/// The `return`s inside a compound statement's header, which the ordered walk over its bodies never
+/// reaches.
+fn header_returns(stmt: &Stmt) -> Vec<Expr> {
+    let mut out = Vec::new();
+    for h in header_exprs(stmt) {
+        expr_returns(h, &mut out);
+    }
+    out
+}
+
+/// Whether a compound statement's header holds statements (a value block, a `match` arm body),
+/// which can write a binding before the body runs.
+fn header_nests_stmts(stmt: &Stmt) -> bool {
+    let mut found = false;
+    for h in header_exprs(stmt) {
+        visit::each_expr(h, &mut |e| {
+            if matches!(e, Expr::Block { stmts, .. } if !stmts.is_empty()) {
+                found = true;
+            }
+        });
+    }
+    found
+}
+
+/// Whether any of `rets` carries the lane's label in `scope`.
+#[allow(clippy::too_many_arguments)]
+fn any_ret_labelled(
+    rets: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    lane_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+    lane: ReturnSummaryLane,
+) -> bool {
+    rets.iter().any(|e| {
+        lane.expr_source(
+            e,
+            scope,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+        )
+        .is_some()
+    })
+}
+
 /// Lane-parameterized replacement for `body_returns_taint` / `body_returns_secret`.
+///
+/// Straight-line statements are walked in order (an overwrite clears a label exactly). A statement
+/// that nests others is walked in order too, for the `return`s inside it, but its scope is restored
+/// afterwards, so every label its nested statements may have written onto an outer binding is put
+/// back by [`join_nested_writes`] from the order-free closure [`nested_may_labels`]; a loop is
+/// entered with that closure too, since an iteration starts from what the previous one wrote.
 #[allow(clippy::too_many_arguments)]
 fn body_returns(
     stmts: &[Stmt],
@@ -30894,23 +31344,43 @@ fn body_returns(
     let n = stmts.len();
     for (i, stmt) in stmts.iter().enumerate() {
         let stmt_is_tail = tail && i + 1 == n;
+        let nested = nested_may_labels(
+            stmt,
+            scope,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+            lane,
+        );
+        // A `return` in a statement's own expressions — a compound statement's header, or a value
+        // block / `match` arm inside a straight-line statement's value — leaves from inside nested
+        // code, so it is judged with every nested write counted. (Returns inside a compound
+        // statement's BODIES are judged by the ordered walk below; the `_` arm judges its own.)
+        let straight_line = match stmt {
+            Stmt::Let { .. } | Stmt::LetPattern { .. } | Stmt::Assign { .. } => true,
+            Stmt::ExprStmt(Expr::Call { callee, args }) => {
+                matches!(callee.as_str(), "push" | "insert") && args.len() >= 2
+            }
+            _ => false,
+        };
+        let mut own_rets = header_returns(stmt);
+        if straight_line {
+            collect_returns_in_stmt(stmt, &mut own_rets);
+        }
+        if any_ret_labelled(
+            &own_rets,
+            nested.as_ref().map_or(&*scope, |(may, _)| may),
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+            lane,
+        ) {
+            return true;
+        }
         match stmt {
             Stmt::Let { name, ty, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                if rets.iter().any(|e| {
-                    lane.expr_source(
-                        e,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
                 lane.seed_let(
                     name,
                     ty.as_deref(),
@@ -30921,23 +31391,9 @@ fn body_returns(
                     method_fns,
                     struct_fields,
                 );
+                join_nested_writes(scope, &nested, std::slice::from_ref(name), lane);
             }
             Stmt::LetPattern { pattern, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                if rets.iter().any(|e| {
-                    lane.expr_source(
-                        e,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
                 let label = lane.expr_source(
                     init,
                     scope,
@@ -30953,8 +31409,13 @@ fn body_returns(
                     lane.seed_pattern_lane(),
                     struct_fields,
                 );
+                join_nested_writes(scope, &nested, &pattern.bound_names(), lane);
             }
             Stmt::If { then, else_, .. } => {
+                // A write inside the condition happens before either branch runs.
+                if header_nests_stmts(stmt) {
+                    join_nested_writes(scope, &nested, &[], lane);
+                }
                 let saved = scope.clone();
                 if body_returns(
                     then,
@@ -30984,6 +31445,7 @@ fn body_returns(
                     }
                 }
                 *scope = saved;
+                join_nested_writes(scope, &nested, &[], lane);
             }
             Stmt::While { body, .. }
             | Stmt::WhileLet { body, .. }
@@ -30992,6 +31454,17 @@ fn body_returns(
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let saved = scope.clone();
+                if !matches!(stmt, Stmt::ResearchBlock { .. } | Stmt::ExploitBlock { .. }) {
+                    join_nested_writes(scope, &nested, &[], lane);
+                }
+                lane.seed_loop_binders(
+                    stmt,
+                    scope,
+                    lane_fns,
+                    param_return_taint,
+                    method_fns,
+                    struct_fields,
+                );
                 lane.seed_while_let_binders(stmt, scope, struct_fields);
                 if body_returns(
                     body,
@@ -31006,10 +31479,13 @@ fn body_returns(
                     return true;
                 }
                 *scope = saved;
+                join_nested_writes(scope, &nested, &[], lane);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = scope.clone();
+                    // The backend picks the lanes' order, so each may start from another's writes.
+                    join_nested_writes(scope, &nested, &[], lane);
                     if body_returns(
                         b,
                         scope,
@@ -31024,6 +31500,7 @@ fn body_returns(
                     }
                     *scope = saved;
                 }
+                join_nested_writes(scope, &nested, &[], lane);
             }
             Stmt::Assign {
                 target: Expr::Var(name),
@@ -31040,6 +31517,7 @@ fn body_returns(
                 if let Some(b) = scope.get_mut(name) {
                     lane.write_var_label(b, src);
                 }
+                join_nested_writes(scope, &nested, std::slice::from_ref(name), lane);
             }
             Stmt::Assign { target, value } => {
                 if let Some(root) = assign_target_root(target) {
@@ -31056,6 +31534,7 @@ fn body_returns(
                         }
                     }
                 }
+                join_nested_writes(scope, &nested, &[], lane);
             }
             Stmt::ExprStmt(Expr::Call { callee, args })
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
@@ -31076,17 +31555,16 @@ fn body_returns(
                         }
                     }
                 }
+                join_nested_writes(scope, &nested, &[], lane);
             }
             _ => {
-                let mut scope_local;
-                let scope: &mut BTreeMap<String, ScopeBinding> = {
-                    scope_local = scope.clone();
+                let seed = |mut local: BTreeMap<String, ScopeBinding>| {
                     match lane {
                         ReturnSummaryLane::Taint => seed_declared_pattern_binders(
                             stmt,
                             struct_fields,
                             ty::is_tainted,
-                            &mut scope_local,
+                            &mut local,
                             |b| {
                                 b.set_taint_label(security_label::SecurityLabel::labeled_from(
                                     "declared enum payload",
@@ -31097,26 +31575,36 @@ fn body_returns(
                             stmt,
                             struct_fields,
                             ty::is_secret,
-                            &mut scope_local,
+                            &mut local,
                             |b| b.set_secret_label(security_label::SecurityLabel::labeled(None)),
                         ),
                     }
-                    seed_stmt_local_lambdas(stmt, &mut scope_local);
-                    &mut scope_local
+                    seed_stmt_local_lambdas(stmt, &mut local);
+                    local
+                };
+                // The tail value is walked in order from the real entry scope; a `return` anywhere
+                // inside the statement (a `match` arm, an `if let` branch) is judged with every
+                // write nested in it counted, since it can follow any of them.
+                let local = seed(scope.clone());
+                let nested_local;
+                let ret_scope = match &nested {
+                    Some((may, _)) => {
+                        nested_local = seed(may.clone());
+                        &nested_local
+                    }
+                    None => &local,
                 };
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
-                if rets.iter().any(|e| {
-                    lane.expr_source(
-                        e,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
+                if any_ret_labelled(
+                    &rets,
+                    ret_scope,
+                    lane_fns,
+                    param_return_taint,
+                    method_fns,
+                    struct_fields,
+                    lane,
+                ) {
                     return true;
                 }
                 if stmt_is_tail {
@@ -31125,7 +31613,7 @@ fn body_returns(
                             && lane
                                 .expr_source(
                                     e,
-                                    scope,
+                                    &local,
                                     lane_fns,
                                     param_return_taint,
                                     method_fns,
@@ -31137,6 +31625,7 @@ fn body_returns(
                         }
                     }
                 }
+                join_nested_writes(scope, &nested, &[], lane);
             }
         }
     }
