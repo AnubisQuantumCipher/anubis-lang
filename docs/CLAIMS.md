@@ -1597,6 +1597,11 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — whole-struct lane, review round 37 (`8ea94c78`).**
+    - Round 37 confirmed 27 findings (2 regressions); all 16 leaks, 8 over-refusals and the 25 s cost
+      are fixed, each a matrix case with a runtime witness; TY-SHADOW-RETYPE's two leaks closed too.
+    - Matrix at this pin: 1286 cases, 1131 PASS, 65 silent accepts (all `open_*`), 90 wrong-class.
+
     **UPDATE 2026-09-25 — review of `9dc7be91` (`28d21d21`).**
     - An independent review confirmed 33 findings: 2 REGRESSIONS (a call through a function binding
       whose identity set is Unknown no longer checks the other function's egress or capability),

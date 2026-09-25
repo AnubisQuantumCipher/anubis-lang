@@ -366,3 +366,21 @@ confirmed 33 findings, each re-run by a verifier. The 30 with a verdict are matr
 | PERF-ORDRET-CLOSURE | S3 | introduced by 9dc7be91: the closure is recomputed at every nesting level and its fixpoint is quadratic in a reverse carry chain (three programs 6.5-14x slower than the previous pin, over 1 s) | review perf findings | open (fix in design) |
 | CI-MACOS-FIXTURES | S3 | the hosted gate's language fixtures failed on macOS since 66ac16ce: the needle search used GNU-only sed syntax and hid its error, so the text searched was empty | CI run 36097287313 (log tail); a BSD-sed shim reproduces 131/271 exactly | **fixed** a4ca63c5 |
 | CI-G19-PUSHDIAG | S3 | G19 looked for the literal `ctx.diagnostics.push`, which 0275f5f3 replaced by `push_diag` | CI run 36097287313 | **fixed** a4ca63c5 |
+
+### Follow-up: 8ea94c78 (review round 37)
+
+Review round 37 of the whole-struct lane (pin whole13b) confirmed 27 findings: 16 leaks (2 regressions
+against the lane before round 35), 8 over-refusals and 3 costs. Six fix designs and a cross-check;
+all six landed, merged. Matrix at 8ea94c78: 1286 cases, 1131 PASS, 65 silent accepts (all `open_*`),
+90 wrong-class.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| FV-WHOLE-R37 | S1 | round 37's leaks: an unsettled loop dropped a binding's value or function half (2 regressions); the main-scope boundary trusted one closure or function of a choice, dropped names the chooser binds, a block-local alias, reduce's list and functions written in expression position; function values through match arguments, nested call/apply, reduce seeds and builders; a scalar builtin's name bound locally; a `let` rebinding its own name; container joins of other element types; `self` found by name; a written part through an alias | `rv37_*` (16), `rv37x_w1`, `rv37x_d_copy`, `rv37x_pay_mixed`, `rv37x_enum_mixed` | **fixed** 8ea94c78 |
+| OR-WHOLE-R37 | S3 | round 37's over-refusals: join leaves that are binders or block-local lets, lookups and declared indexes, held fields of constructor formals, counter maps and map_values, copy-then-mutate accumulators | `rv37_*or*` (8), `rv37x_a_or0_*` (2) | **fixed** 8ea94c78 |
+| PERF-WHOLE-R37 | S2 | round 36 ran nested value blocks from every combination of bound and unbound enclosing names (13 wrapper levels: 32.5 s; a memory-limit refusal of a valid program) | `rv37_r37_p1*`, `rv37_r37_p2*` | **fixed** 8ea94c78 (P2's seeding cost documented) |
+| TY-SHADOW-RETYPE | S1 | the two recorded leaks (a later `let` shadowing a name changes the type read for an earlier binding's part or receiver) | `open_whole13_rv36x_sp2`, `_rs1` | **fixed** 8ea94c78 (the tables stay keyed by name; an edge now reads any binding of the name) |
+| OR-WHOLE-R37-DOC | S4 | documented over-refusals: a single-function binding from a call or reduce keeps its value half; three loop-fallback shapes | `rv37x_or_*`, `rv37x_overrefusal_loopfb_*` (wrong-class) | documented |
+| TY-UNENFORCED (literal fields) | S1 | still open: a declared field type trusted for a struct literal (or list of them) holding another type | `open_rv37x_f_*` (8) | open |
+| FV-OPEN-6 (container, coincidence) | S1 | still open: a function taken out of a container; the lane catches w1 only through a name coincidence | `open_rv37x_w1_nocoinc` | open |
+| IFC-ALIAS-RESOLUTION (expression writes) | S1 | still open, ordinary lane: a function written in expression position in a callee, called with a secret field | `open_rv37x_ra_callee_pk`, `_stmt` | open (the ordinary unit) |
