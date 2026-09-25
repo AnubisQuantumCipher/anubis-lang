@@ -1597,6 +1597,14 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — whole-struct lane, review round 38 (`f878d41c`).**
+    - Round 38 confirmed 46 findings; this commit fixes 34 of them (12 regressions among them: nine
+      against the pin before round 37, three against whole10), each a matrix case with a runtime
+      witness. The next unit fixes 10 more (a call returning a function value); R38B-13 (a
+      pre-existing cost) stays open and R38B-14 is a documented over-refusal.
+    - Matrix at this pin: 1565 cases, 1435 PASS, 35 silent accepts (all `open_*`), 95 wrong-class;
+      one case (24 nested `reduce` seeds) times out at this commit and passes again at the next.
+
     **UPDATE 2026-09-25 — ordinary lane: fixes for the review of `9dc7be91` (`1696925b`).**
     - Both regressions of 9dc7be91 and 29 more leaks closed, including IFC-JOIN-BREAK-SHADOW's seven:
       the join walkers track order, `break` / `continue` exits and shadows; a call through a binding

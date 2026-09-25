@@ -404,3 +404,23 @@ the cross-check laid out. Matrix at 1696925b: 1364 cases, 1242 PASS, 34 silent a
 | OR-ORDRET-OLD | S4 | older imprecisions the ordered walk no longer spreads: a declassify inside a helper, a field read on an unannotated let, field-insensitive root labels | `ro1_or4..6` (wrong-class) | open |
 | TY-UNENFORCED (annotations) | S1 | a declared struct annotation trusted for a value of another type | `open_ro1_sym_mistyped_struct_annotation` | open |
 | FV-CLOSURE-RETURNS-FN | S1 | a local closure returning a function | `open_ro1_closure_returning_function` | open |
+
+### Follow-up: f878d41c (whole-struct lane, review round 38: four of five fix designs)
+
+Review round 38 (pin whole14a) confirmed 46 findings: 35 leaks, 5 over-refusals, 6 costs. Five fix
+designs and a cross-check; this commit lands push-loose, bands, boundary2 and domain2 part A (fnreturns
+is the next unit). Matrix at f878d41c: 1565 cases, 1435 PASS, 35 silent accepts (all `open_*`), 95
+wrong-class.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| WHOLE-PUSH-SHADOW | S1 | a `let push` anywhere hid a statement push from `written`/`changes`; the round-37 loose rules then dispatched a secret-holding struct as its element type (3 regressions of round 37) | `rv38_r38_loose_l1/l2/l4/l5_*`, `rv38_r38d_l5_*` | **fixed** f878d41c |
+| WHOLE-SCALAR-TRUST | S1 | scalar_leaf and a let's declared struct annotation trusted types the runtime does not check | `rv38_r38_fix7_*`, `rv38_r38_declared_let_type_trusted` | **fixed** f878d41c |
+| WHOLE-BANDS | S1 | round 37's phantom runs reached a function taken out of a container only two bands deep and only below a `let` (3 regressions of round 37); constructs re-run at the view lost guard writes and order | `rv38_r38b_l1/l2/l3/l9/l10/l11/l12_*`, `rv38c_u_mk`, `rv38c_u_main` | **fixed** f878d41c: `stick` / `exact_value`, constructs read as walked |
+| WHOLE-JOIN-CAPTURES | S1 | statement joins and loop heads dropped what the lane found a binding may be as a function (3 regressions against whole10) | `rv38_r38b_1/2/3/4/5/6_*`, `rv38y_b2_*` | **fixed** f878d41c: join_captures, carried_captures, writes_seen |
+| WHOLE-PART-WRITERS | S1 | a callee writing into a part of what it returns; self-part edges; Element roots in the strict parts query | `rv38_r38d_l1..l4_*`, `rv38x_domai_l4x_*` (6) | **fixed** f878d41c |
+| OR-WHOLE-R37 | S3 | round-37 over-refusals and costs: twice rule, joined containers, phantom reads, bound-chain memory, nested wrappers | `rv38_r38d_o1/o2_*`, `rv38_r38b_o1/o2/12/p1..p3_*` | **fixed** f878d41c |
+| PERF-NESTED-CALL-OPERANDS | S3 | this commit: bands reads a callback's returned functions through arg_local, which walks the operand again: 24 nested reduce seeds or 22 nested call/apply operands take exponential time | `rv30_valid_perf5_reduce_seed_nesting_exponential` (wrong-class at f878d41c) | fixed by the next unit (fnreturns, fns_at) |
+| FV-OPEN-6 (round 38) | S1 | still open: a function taken out of a container, caught before only through a name coincidence | `open_rv38c_fut`, `_fut_nc`, `_u_mk_nocoinc`, `_u_main_nc` | open |
+| OR-WHOLE-R38 | S4 | documented over-refusals: a loop variable over a list of functions is not followed; a lambda's write to a captured name is taken as reaching it; a sticky container rebind; an expression-position write keeping a stale alias (needs the ordinary lane); a block-local let under the twice rule | `rv38x_bound_acc_b15_*`, `rv38y_b2_v8`, `rv38y_b2_u4b`, `rv38x_bands_ovr_sticky_container_rebind`, `rv38_r38b_14_*`, `rv38x_domai_rv38d2_o1_or5_*` (wrong-class) | documented |
+| PERF-R38B-13 | S3 | a nested capture chain costs 80-110 s on every pin (pre-existing) | review round 38 | open |
