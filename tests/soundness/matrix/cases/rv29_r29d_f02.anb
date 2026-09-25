@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+enum W { Box { v: S }, Empty }
+fn main() { let p = S { k: 42, pub_n: 3 }; let w = W::Box { v: p }; match w { W::Box { v } => print(v), _ => print(0) } }

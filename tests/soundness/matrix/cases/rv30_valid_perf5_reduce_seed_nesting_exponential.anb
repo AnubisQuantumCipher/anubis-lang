@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    print(reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, 0, |a0, x| a0 + x.pub_n), |a1, x| a1 + x.pub_n), |a2, x| a2 + x.pub_n), |a3, x| a3 + x.pub_n), |a4, x| a4 + x.pub_n), |a5, x| a5 + x.pub_n), |a6, x| a6 + x.pub_n), |a7, x| a7 + x.pub_n), |a8, x| a8 + x.pub_n), |a9, x| a9 + x.pub_n), |a10, x| a10 + x.pub_n), |a11, x| a11 + x.pub_n), |a12, x| a12 + x.pub_n), |a13, x| a13 + x.pub_n), |a14, x| a14 + x.pub_n), |a15, x| a15 + x.pub_n), |a16, x| a16 + x.pub_n), |a17, x| a17 + x.pub_n), |a18, x| a18 + x.pub_n), |a19, x| a19 + x.pub_n), |a20, x| a20 + x.pub_n), |a21, x| a21 + x.pub_n), |a22, x| a22 + x.pub_n), |a23, x| a23 + x.pub_n));
+}

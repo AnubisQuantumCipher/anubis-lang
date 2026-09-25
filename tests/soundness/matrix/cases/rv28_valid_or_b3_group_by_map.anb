@@ -1,0 +1,16 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64, branch: string }
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100, branch: "north" }, Account { id: 2, owner: "bob", k: 7, balance: 250, branch: "south" }, Account { id: 3, owner: "cy", k: 9, balance: 175, branch: "north" }];
+    let groups = {};
+    for a in accts {
+        if has_key(groups, a.branch) {
+            groups[a.branch] = groups[a.branch] + [a];
+        } else {
+            groups[a.branch] = [a];
+        }
+    }
+    for b in keys(groups) {
+        print(b + ": " + str(len(groups[b])));
+    }
+}

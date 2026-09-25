@@ -1,0 +1,2 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() { let p = S { k: 42, pub_n: 3 }; let q = p; let g = |z| q; let q = 0; print(g(0)); }

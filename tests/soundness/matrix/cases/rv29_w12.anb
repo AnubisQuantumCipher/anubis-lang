@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Box1 { inner: S }
+fn wrap(m, n) {
+    if n == 0 { return m }
+    return wrap(Box1 { inner: m }, n - 1)
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(wrap(p, 1).inner);
+}

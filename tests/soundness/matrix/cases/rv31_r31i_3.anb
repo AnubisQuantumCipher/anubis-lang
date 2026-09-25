@@ -1,0 +1,21 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct A { n: i64 }
+impl A {
+    fn show(self) -> i64 {
+        return 0;
+    }
+}
+impl S {
+    fn show(self) -> S {
+        return self;
+    }
+}
+fn f(p: S) -> i64 {
+    let q = if len(str(p)) > 3 { p } else { p };
+    let r = q.show();
+    return len(str(r));
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

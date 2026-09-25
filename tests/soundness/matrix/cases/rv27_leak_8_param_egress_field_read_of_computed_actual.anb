@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show_all(ys) { for y in ys { print(y.pub_n); } }
+fn main() { let p = S { k: 42, pub_n: 3 }; let ys = [p, S { k: 7000, pub_n: 1 }]; show_all(sort_by(ys, |s| len(str(s)))); }

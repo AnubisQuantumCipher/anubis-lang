@@ -1,0 +1,24 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+struct Item { sku: string, qty: i64 }
+
+impl Item {
+    fn show(self) {
+        print(self);
+    }
+}
+
+impl Account {
+    fn show(self) {
+        print(self.owner + ": " + str(self.balance));
+    }
+}
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }, Account { id: 3, owner: "cy", k: 9, balance: 175 }];
+    let it = Item { sku: "A-1", qty: 3 };
+    it.show();
+    for a in accts {
+        a.show();
+    }
+}

@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mk(p) { return ["S { k: 5", p]; }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let x: S = mk(p);
+  print(max(x).pub_n);
+}

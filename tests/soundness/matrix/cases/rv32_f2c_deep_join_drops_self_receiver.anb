@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { n: i64 }
+impl S { fn show(self, x) { print(x); return 0; } }
+impl W { fn show(self, x) { return 0; } }
+struct T { k2: secret<i64>, o: Option<S> }
+fn g(t, p) {
+    let q = if p.pub_n > 100 { [str(p)] } else { t.o };
+    return q.show(p);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let t = T { k2: 1, o: p };
+    let z = g(t, p);
+}

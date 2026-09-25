@@ -1,0 +1,17 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(g) -> i64 {
+    let x = 0;
+    let r = match 1 {
+        1 if if true { x = g(); false } else { x = g(); false } => 0,
+        _ => {
+            print(x);
+            1
+        }
+    };
+    return r;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let v = f(|| p);
+    print(v);
+}

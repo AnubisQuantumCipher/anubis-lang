@@ -1,0 +1,33 @@
+struct Employee { salary: secret<i64>, name: str, dept: str }
+struct Dept { name: str, budget: i64 }
+
+impl Employee {
+    fn same(self, other: Employee) -> bool { return self == other; }
+    fn label(self) -> str { return self.name + "@" + self.dept; }
+}
+impl Dept {
+    fn same(self, e: Employee) -> bool { return self.name == e.dept; }
+    fn label(self) -> str { return "dept " + self.name; }
+}
+
+fn payroll(es: list<Employee>) -> i64 {
+    let mut t = 0;
+    for e in es { t = t + e.salary; }
+    return declassify(t, "aggregate-payroll", "only the total leaves");
+}
+
+fn main() {
+    let es = [
+        Employee { salary: 42, name: "ann", dept: "eng" },
+        Employee { salary: 7, name: "bob", dept: "ops" },
+    ];
+    let eng = Dept { name: "eng", budget: 100 };
+    let mut n = 0;
+    for e in es {
+        let hit = eng.same(e);
+        if hit { n = n + 1; }
+        println(e.label() + " in eng: " + str(hit));
+    }
+    println(eng.label() + " has " + str(n));
+    println("payroll-ok=" + str(payroll(es) >= 0));
+}

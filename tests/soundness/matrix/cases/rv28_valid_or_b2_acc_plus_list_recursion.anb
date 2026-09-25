@@ -1,0 +1,19 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn keep_rich(xs, acc) {
+    if is_empty(xs) {
+        return acc;
+    }
+    let a = first(xs);
+    if a.balance > 150 {
+        return keep_rich(drop(xs, 1), acc + [a]);
+    }
+    return keep_rich(drop(xs, 1), acc);
+}
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }, Account { id: 3, owner: "cy", k: 9, balance: 175 }];
+    let rich = keep_rich(accts, []);
+    print(len(rich));
+    print(join(map(rich, |a| a.owner), ","));
+}

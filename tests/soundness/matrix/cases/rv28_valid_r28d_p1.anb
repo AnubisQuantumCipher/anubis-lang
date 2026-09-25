@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn walk(t, n) {
+    if n <= 0 {
+        return 1;
+    }
+    return [walk({ "a": t }, n - 1), walk({ "b": t }, n - 1), walk({ "c": t }, n - 1), walk({ "d": t }, n - 1), walk({ "e": t }, n - 1)];
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let r = walk(p, 2);
+    print(len(r));
+}

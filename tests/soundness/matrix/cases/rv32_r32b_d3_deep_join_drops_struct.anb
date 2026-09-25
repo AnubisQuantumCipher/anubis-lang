@@ -1,0 +1,26 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { owner: i64 }
+impl S {
+    fn describe(self) -> string {
+        return str(self);
+    }
+}
+impl T {
+    fn describe(self) -> string {
+        return "t";
+    }
+}
+fn f(y: S, n: i64) -> string {
+    let acc = [[y]];
+    let i = 0;
+    while i < n {
+        acc = [[[acc[0][0]]]];
+        i = i + 1;
+    }
+    let z = if y.pub_n > 2 { acc[0][0] } else { [str(y)] };
+    return z.describe();
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p, 0));
+}

@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn names(node) {
+    let out = [node["name"]];
+    for c in node["children"] {
+        out = out + names(c);
+    }
+    return out;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let leaf = { "name": "leaf", "val": p, "children": [] };
+    let root = { "name": "root", "val": p, "children": [leaf] };
+    for n in names(root) {
+        print(n);
+    }
+}

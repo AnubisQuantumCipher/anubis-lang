@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { s: S, n: i64 }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let w = W { s: ["S { k: 5", p], n: 1 };
+  let x = w.s;
+  print(max(x).pub_n);
+}

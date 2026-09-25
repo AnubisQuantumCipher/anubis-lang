@@ -1,0 +1,8 @@
+struct Account { pin: secret<i64>, id: i64, balance: i64 }
+fn main() {
+    let accts = [Account { pin: 42, id: 1, balance: 100 }, Account { pin: 7, id: 2, balance: 250 }];
+    let bal = |a| a.balance;
+    let rich = filter(accts, |a| bal(a) > 150);
+    print("rich accounts: ${len(rich)}");
+    print("total: ${reduce(accts, 0, |t, a| t + bal(a))}");
+}

@@ -26,6 +26,7 @@ pub(crate) mod security_label;
 pub(crate) mod trifecta;
 pub(crate) mod ty;
 mod visit;
+mod whole;
 
 /// Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer for
 /// `SecurityLabel`. Emits one canonical TSV row per (op, args) tuple over the DECLARED
@@ -241,7 +242,16 @@ struct ScopeBinding {
     /// container of them) one of whose declared fields is `secret`. Kept apart from `secret`, which
     /// would make every mention secret: releasing the whole value leaks the field, reading another
     /// field (`p.pub_n`) does not.
-    whole_struct: Option<String>,
+    whole_struct: Option<whole::WholeSrc>,
+    /// For a closure written here: what the names it closes over held when it was written (a later
+    /// `let` of the same name must not change what the closure sees).
+    whole_captures: Option<whole::Captures>,
+    /// Whether this binding is known to be a list from the shape of what was bound (`[]`, `xs + [x]`),
+    /// never from a declared type, which the checker does not enforce. The whole-struct lane reads
+    /// `+` on a list as concatenation, not rendering.
+    whole_list: bool,
+    /// Likewise, whether it is known to be a map (a string-key write lands only under that key).
+    whole_map: bool,
 }
 
 impl ScopeBinding {
@@ -2612,6 +2622,9 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                     let entry = scope.entry(name.clone()).or_insert_with(|| {
                         ScopeBinding {
                             whole_struct: None,
+                            whole_captures: None,
+                            whole_list: false,
+                            whole_map: false,
                             info: BindingInfo {
                                 name: name.clone(),
                                 ty: None,
@@ -2737,6 +2750,9 @@ fn seed_loop_var_callable(
                 tmp.to_string(),
                 ScopeBinding {
                     whole_struct: None,
+                    whole_captures: None,
+                    whole_list: false,
+                    whole_map: false,
                     info: BindingInfo {
                         name: tmp.to_string(),
                         ty: None,
@@ -2770,6 +2786,9 @@ fn seed_loop_var_callable(
     let b = scope.entry(var.to_string()).or_insert_with(|| {
         ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: var.to_string(),
                 ty: None,
@@ -3436,13 +3455,25 @@ struct SemanticContext {
     /// sites consult it: a SECRET argument into a summarized-egress param is `ANUBIS_INTERPROC_EXFILTRATION`
     /// when `fn leak(x){ send(x); }`. Monotone fixpoint.
     param_egress: BTreeMap<String, BTreeSet<usize>>,
-    /// Formals whose WHOLE value reaches an egress (see `compute_param_whole_egress`).
-    param_whole_egress: BTreeMap<String, BTreeSet<usize>>,
-    /// Formals a function's return values carry whole (`compute_fn_returns_param_whole`).
-    fn_returns_param_whole: BTreeMap<String, BTreeSet<usize>>,
-    /// Free functions / bare-named methods returning a whole struct with a secret field.
-    fn_returns_whole: BTreeSet<String>,
-    method_returns_whole: BTreeSet<String>,
+    /// Free-function and (bare-named) impl-method bodies, for the whole-struct lane's call-site
+    /// specialization (`whole.rs`). A method name maps to every impl declaring it, `self` first.
+    whole_fns: BTreeMap<String, whole::WholeBody>,
+    whole_methods: BTreeMap<String, Vec<(String, whole::WholeBody)>>,
+    /// The functions and `impl`-prefixed methods that may build a struct with a `secret` field, with
+    /// the sources of what they build (`whole::compute_builders`).
+    whole_builders: BTreeMap<String, String>,
+    /// Whole-struct specializations of callees bound to no closure, shared by every query (a
+    /// callee's body reads only its formals): what each returns and where it releases a whole struct.
+    whole_memo: whole::WholeMemo,
+    /// Names the function body being analyzed ever assigns a value not known to stay a list (a
+    /// map): no binding of one is taken to be a list (map) (`whole::assigned_shapes`).
+    whole_not_list: BTreeSet<String>,
+    whole_not_map: BTreeSet<String>,
+    /// What may make a name's declared or inferred struct type stale (`whole::stale_type`): the
+    /// whole-struct lane does not dispatch a method call on such a name by that type.
+    whole_retype: whole::Retype,
+    /// The secret struct types a `declassify` may release whole (`whole::compute_released`).
+    whole_released: BTreeSet<String>,
     /// Interprocedural param→sink / param→egress summaries for IMPL METHODS, keyed by BARE method name
     /// and UNIONED across every impl that declares that name (receiver static type is generally
     /// unrecoverable, so bare-name + union is the fail-closed choice). SEPARATE from `param_sinks`/
@@ -3688,22 +3719,13 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
             &mut ctx.param_egress,
             &mut ctx.method_param_egress,
         );
-        ctx.fn_returns_param_whole =
-            compute_fn_returns_param_whole(&free_fns, &ctx.fn_returns_param);
-        let (rw_fns, rw_methods) = compute_returns_whole(
-            &free_fns,
-            &impl_methods,
-            &ctx.struct_fields,
-            &ctx.return_feeding,
-        );
-        ctx.fn_returns_whole = rw_fns;
-        ctx.method_returns_whole = rw_methods;
-        ctx.param_whole_egress = compute_param_whole_egress(
-            &free_fns,
-            &impl_methods,
-            &ctx.fn_returns_param,
-            &ctx.fn_returns_param_whole,
-        );
+        ctx.whole_fns = free_fns
+            .iter()
+            .map(|(n, ps, b)| (n.clone(), (ps.clone(), b.to_vec())))
+            .collect();
+        collect_impl_methods_typed(&ast.items, &mut ctx.whole_methods);
+        ctx.whole_builders = whole::compute_builders(&ctx);
+        ctx.whole_released = whole::compute_released(&ctx);
     }
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
@@ -6123,6 +6145,9 @@ fn analyze_function(
                     n.clone(),
                     ScopeBinding {
                         whole_struct: None,
+                        whole_captures: None,
+                        whole_list: false,
+                        whole_map: false,
                         info: BindingInfo {
                             name: n.clone(),
                             ty: Some(t.clone()),
@@ -6244,6 +6269,9 @@ fn analyze_function(
                 name.clone(),
                 ScopeBinding {
                     whole_struct: None,
+                    whole_captures: None,
+                    whole_list: false,
+                    whole_map: false,
                     info: info.clone(),
                     closure_arity: None,
                     closure_lambda: None,
@@ -6530,6 +6558,7 @@ fn analyze_function(
     }
     ctx.shadowed_lets.clear();
     collect_shadowed_lets(body, &mut ctx.shadowed_lets);
+    (ctx.whole_not_list, ctx.whole_not_map, ctx.whole_retype) = whole::assigned_shapes(body, ctx);
     // (BUILTIN-SHADOW detection — shadowed_string_preds + shadow_builtin_mark sentinels — is computed
     // earlier, right after the solver-set clears, so it precedes requires-seeding; see there.)
 
@@ -7775,11 +7804,17 @@ fn merge_taint_over(
         let mut tainted = false;
         let mut source: Option<String> = None;
         let mut secret = false;
+        let mut whole_src: Option<whole::WholeSrc> = None;
+        let mut whole_list = true;
+        let mut whole_map = true;
         for p in paths {
             if let Some(pb) = p.get(&name) {
                 if pb.info.span != outer_span {
                     continue;
                 }
+                whole_src = whole::whole_merge(&whole_src, &pb.whole_struct);
+                whole_list &= pb.whole_list;
+                whole_map &= pb.whole_map;
                 if pb.info.tainted {
                     tainted = true;
                     source = source.or_else(|| pb.info.taint_source.clone());
@@ -7807,6 +7842,10 @@ fn merge_taint_over(
             // Confidentiality is the DUAL: a secret cleared on every path (e.g. declassified in both
             // branches) is precisely un-labelled; secret on any path re-secrets the outer binding.
             b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(secret));
+            // A whole-struct mark set on any path (a `push` in one branch) holds after the join.
+            b.whole_struct = whole::whole_merge(&b.whole_struct, &whole_src);
+            b.whole_list &= whole_list;
+            b.whole_map &= whole_map;
         }
     }
 }
@@ -10479,6 +10518,9 @@ fn labelled_param_binding(
     let secret_label = security_label::SecurityLabel::from_legacy_secret(secret);
     ScopeBinding {
         whole_struct: None,
+        whole_captures: None,
+        whole_list: false,
+        whole_map: false,
         info: BindingInfo {
             name: name.to_string(),
             ty: None,
@@ -10523,6 +10565,18 @@ fn analyze_value_block(
     // `_ => print(f(-1))` and a tail `{ …; f(-1) }` were analyzed for effects alone, a silent accept.
     match body {
         Expr::Block { stmts, tail } => {
+            // Without an explicit tail, a bare call as the block's last statement is its value (the
+            // runtime's `split_tail_expr`): an ordinary call, so a user function named `push` there
+            // is not an in-place write (round 32, D5). A `return` or a statement-only sink stays a
+            // statement; every other statement kind is analyzed as one, where its writes are tracked.
+            let (stmts, tail): (&[Stmt], Option<&Expr>) = match (stmts.split_last(), tail) {
+                (Some((Stmt::ExprStmt(e @ Expr::Call { callee, .. }), head)), None)
+                    if callee != "return" && !whole::is_statement_sink(callee) =>
+                {
+                    (head, Some(e))
+                }
+                _ => (stmts, tail.as_deref()),
+            };
             analyze_stmts(stmts, mode, scope, fn_symbols, effects, assumptions, ctx);
             if let Some(t) = tail {
                 analyze_expr_effect(t, mode, scope, effects, ctx);
@@ -10533,6 +10587,74 @@ fn analyze_value_block(
             analyze_expr_effect(other, mode, scope, effects, ctx);
             discharge_calls_in_expr(ctx, assumptions, scope, other);
         }
+    }
+}
+
+/// The whole-struct lane: the writes a statement's own expressions make to variables as they run —
+/// an in-place `push` in an argument, an assignment inside a value block or a `match` arm — marked
+/// on the variables (monotone; see `ScopeBinding::whole_struct`). Nested statement bodies are
+/// analyzed as statements.
+fn whole_expression_writes(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    let exprs: Vec<&Expr> = match stmt {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => vec![init],
+        Stmt::Assign { target, value } => vec![target, value],
+        Stmt::ExprStmt(e) => vec![e],
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } => vec![cond],
+        Stmt::WhileLet { expr, .. } => vec![expr],
+        Stmt::For { source, .. } => match source {
+            crate::frontend::ForSource::Collection { expr } => vec![expr],
+            crate::frontend::ForSource::Range { start, end } => vec![start, end],
+        },
+        Stmt::Loop { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::ResearchBlock { .. }
+        | Stmt::ExploitBlock { .. }
+        | Stmt::HybridBlock { .. }
+        | Stmt::SpecBlock { .. } => Vec::new(),
+    };
+    for e in exprs {
+        for (root, src, list, map) in whole::expr_writes(e, scope, ctx) {
+            if let Some(b) = scope.get_mut(&root) {
+                if let Some(src) = src {
+                    whole::whole_mark(&mut b.whole_struct, src);
+                }
+                b.whole_list &= list;
+                b.whole_map &= map;
+            }
+        }
+    }
+}
+
+/// A loop body is analyzed once: give the names the loop writes what they may hold at the head of
+/// any iteration (the whole-struct lane iterates the loop to a fixpoint: `whole::loop_carried`).
+fn seed_loop_carried_whole(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    for (n, src) in whole::loop_carried(stmt, scope, ctx) {
+        if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
+            whole::whole_mark(&mut b.whole_struct, src);
+        }
+    }
+}
+
+/// What a closure stored by `let` or assignment closes over (see `ScopeBinding::whole_captures`): a
+/// lambda's, taken now; an alias's, the aliased closure's.
+fn whole_captures_of(
+    value: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<whole::Captures> {
+    match value {
+        Expr::Lambda { .. } => Some(whole::closure_captures(value, scope, ctx)),
+        Expr::Var(v) => scope.get(v).and_then(|b| b.whole_captures.clone()),
+        _ => None,
     }
 }
 
@@ -10574,6 +10696,7 @@ fn analyze_stmts(
             }
         }
         prev_exits = stmt_always_exits(stmt, ctx);
+        whole_expression_writes(stmt, scope, ctx);
         match stmt {
             Stmt::Let {
                 name,
@@ -10648,7 +10771,12 @@ fn analyze_stmts(
                     SourceLane::Secret,
                 );
                 // See `ScopeBinding::whole_struct`.
-                let init_whole = whole_value_source(init, scope, ctx);
+                let init_whole = whole::whole_value_source(init, scope, ctx);
+                let init_list =
+                    whole::is_list_expr(init, scope, ctx) && !ctx.whole_not_list.contains(name);
+                let init_map =
+                    whole::is_map_expr(init, scope, ctx) && !ctx.whole_not_map.contains(name);
+                let init_captures = whole_captures_of(init, scope, ctx);
                 let declass_source = declassify_source(
                     init,
                     scope,
@@ -11025,6 +11153,9 @@ fn analyze_stmts(
                     name.clone(),
                     ScopeBinding {
                         whole_struct: init_whole,
+                        whole_captures: init_captures,
+                        whole_list: init_list,
+                        whole_map: init_map,
                         info: info.clone(),
                         closure_arity: ca,
                         closure_lambda: cl,
@@ -11413,7 +11544,7 @@ fn analyze_stmts(
                     SourceLane::Secret,
                 )
                 .is_some();
-                let pattern_whole = whole_value_source(init, scope, ctx);
+                let pattern_whole = whole::whole_value_source(init, scope, ctx);
                 seed_effect_pattern(
                     scope,
                     pattern,
@@ -11423,13 +11554,11 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
-                // A destructured element of a container holding a struct with a secret field is one
-                // (`let [q] = xs`, `let (q, n) = (xs[0], 1)`); a struct-field pattern is not.
-                if let Some(src) = pattern_whole {
-                    for n in whole_binders(pattern) {
-                        if let Some(b) = scope.get_mut(&n) {
-                            b.whole_struct.get_or_insert(src.clone());
-                        }
+                // Each binder holds what its position of the value holds (`let [q] = xs`, a pair slot,
+                // a record field `let T { a, b } = t`).
+                for (n, src) in whole::pattern_binders(pattern, &pattern_whole, ctx) {
+                    if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
                     }
                 }
                 // Patch each bound name's span to the real `let`-pattern span. `seed_effect_pattern`
@@ -11741,11 +11870,10 @@ fn analyze_stmts(
                         ctx,
                     );
                     propagate_pattern_closures(&mut arm_scope, scrutinee, &arm.pattern);
-                    if let Some(src) = whole_value_source(scrutinee, scope, ctx) {
-                        for n in whole_binders(&arm.pattern) {
-                            if let Some(b) = arm_scope.get_mut(&n) {
-                                b.whole_struct.get_or_insert(src.clone());
-                            }
+                    let scrut_whole = whole::whole_value_source(scrutinee, scope, ctx);
+                    for (n, src) in whole::pattern_binders(&arm.pattern, &scrut_whole, ctx) {
+                        if let (Some(b), Some(src)) = (arm_scope.get_mut(&n), src) {
+                            whole::whole_mark(&mut b.whole_struct, src);
                         }
                     }
                     // The arm's pattern binds names (`Shape::Box { center, .. }`) that the arm body reads;
@@ -11855,11 +11983,10 @@ fn analyze_stmts(
                     ctx,
                 );
                 propagate_pattern_closures(&mut then_scope, scrutinee, pattern);
-                if let Some(src) = whole_value_source(scrutinee, scope, ctx) {
-                    for n in whole_binders(pattern) {
-                        if let Some(b) = then_scope.get_mut(&n) {
-                            b.whole_struct.get_or_insert(src.clone());
-                        }
+                let scrut_whole = whole::whole_value_source(scrutinee, scope, ctx);
+                for (n, src) in whole::pattern_binders(pattern, &scrut_whole, ctx) {
+                    if let (Some(b), Some(src)) = (then_scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
                     }
                 }
                 for n in pattern.bound_names() {
@@ -11925,18 +12052,18 @@ fn analyze_stmts(
                     ctx,
                 );
                 check_expr_semantics(expr, scope, ctx);
-                // `push(xs, p)` (and the other in-place inserts) stores a whole struct into `xs`.
+                // `push(xs, p)` (and the other in-place list writes) stores into `xs`; a position
+                // computed from a whole struct decides where the elements sit.
                 if let Expr::Call { callee, args } = expr {
-                    if matches!(callee.as_str(), "push" | "insert" | "append" | "unshift") {
-                        if let Some(Expr::Var(xs)) = args.first() {
-                            if let Some(src) = args
-                                .iter()
-                                .skip(1)
-                                .find_map(|a| whole_value_source(a, scope, ctx))
-                            {
-                                if let Some(b) = scope.get_mut(xs) {
-                                    b.whole_struct.get_or_insert(src);
-                                }
+                    if let Some((root, src, shifts)) =
+                        whole::in_place_mark_in(callee, args, true, scope, ctx)
+                    {
+                        if let Some(b) = scope.get_mut(&root) {
+                            if shifts {
+                                whole::whole_unpos(&mut b.whole_struct);
+                            }
+                            if let Some(src) = src {
+                                whole::whole_mark(&mut b.whole_struct, src);
                             }
                         }
                     }
@@ -11956,18 +12083,21 @@ fn analyze_stmts(
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
-                // A whole struct with a `secret` field stored into a variable or one of its
-                // elements/entries (`m["a"] = p`, `xs[0] = p`, `q = p`): the root now holds it
-                // (monotone; see `ScopeBinding::whole_struct`).
-                if let Some(src) = whole_value_source(value, scope, ctx) {
-                    let mut root = target;
-                    while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = root {
-                        root = base;
+                // A whole struct with a `secret` field (or a value computed from one) stored into a
+                // variable or one of its fields / entries / elements (`q = p`, `t.a = str(p)`,
+                // `m["a"] = p`, `xs[i] = p`): the root now holds it there, and a key or position
+                // computed from one decides where (monotone; see `ScopeBinding::whole_struct`).
+                if let Some((root, src)) = whole::assign_mark_in(target, value, scope, ctx) {
+                    if let Some(b) = scope.get_mut(&root) {
+                        whole::whole_mark(&mut b.whole_struct, src);
                     }
-                    if let Expr::Var(r) = root {
-                        if let Some(b) = scope.get_mut(r) {
-                            b.whole_struct.get_or_insert(src);
-                        }
+                }
+                if let Expr::Var(root) = target {
+                    let list = whole::is_list_expr(value, scope, ctx);
+                    let map = whole::is_map_expr(value, scope, ctx);
+                    if let Some(b) = scope.get_mut(root) {
+                        b.whole_list &= list;
+                        b.whole_map &= map;
                     }
                 }
                 // A contracted call in ASSIGN-value position (`y = g(x);`, `y = h(g(x));`) — discharge its
@@ -12597,9 +12727,11 @@ fn analyze_stmts(
                                 tags
                             }
                         };
+                        let captures = whole_captures_of(value, scope, ctx);
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
                             b.closure_lambda = cl;
+                            b.whole_captures = captures;
                             b.fn_alias = fal;
                             b.fn_identities = fn_identities;
                             b.field_closures = new_fclos;
@@ -12937,6 +13069,8 @@ fn analyze_stmts(
                 body,
                 invariant,
             } => {
+                // Seeded before the condition, which runs at every iteration.
+                seed_loop_carried_whole(stmt, scope, ctx);
                 // Implicit-flow: secret while-condition + public assign = same binary-extraction as `if`.
                 {
                     let mut assigned = BTreeSet::new();
@@ -13064,6 +13198,8 @@ fn analyze_stmts(
                 body,
                 ..
             } => {
+                // Seeded before the scrutinee is read: its binders see every iteration.
+                seed_loop_carried_whole(stmt, scope, ctx);
                 // Implicit-flow: secret scrutinee + public assign in body (PC from secret match).
                 {
                     let mut assigned = BTreeSet::new();
@@ -13126,6 +13262,12 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
+                let wl_whole = whole::whole_value_source(expr, &snap_scope, ctx);
+                for (n, src) in whole::pattern_binders(pattern, &wl_whole, ctx) {
+                    if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
                 }
@@ -13157,6 +13299,7 @@ fn analyze_stmts(
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
                 havoc_loop_written(ctx, assumptions, body);
+                seed_loop_carried_whole(stmt, scope, ctx);
                 seed_loop_carried_labels(
                     body,
                     scope,
@@ -13214,6 +13357,7 @@ fn analyze_stmts(
                 );
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
+                seed_loop_carried_whole(stmt, scope, ctx);
                 seed_loop_carried_labels(
                     body,
                     scope,
@@ -13561,17 +13705,16 @@ fn analyze_stmts(
                     declassified: false,
                     span: None,
                 };
-                // An element of a collection holding a struct with a secret field is one.
-                let for_whole = match source {
-                    crate::frontend::ForSource::Collection { expr } => {
-                        whole_value_source(expr, scope, ctx)
-                    }
-                    crate::frontend::ForSource::Range { .. } => None,
-                };
+                // An element of a collection holding a struct with a secret field is one; a range bound
+                // computed from one makes the counter computed from it.
+                let for_whole = whole::for_var_source(source, scope, ctx);
                 scope.insert(
                     var.clone(),
                     ScopeBinding {
                         whole_struct: for_whole,
+                        whole_captures: None,
+                        whole_list: false,
+                        whole_map: false,
                         info: info.clone(),
                         closure_arity: None,
                         closure_lambda: None,
@@ -13611,6 +13754,7 @@ fn analyze_stmts(
                 invalidate_binding_facts(ctx, assumptions, var);
                 let keep = keepable_written_ints(ctx, &[body]);
                 havoc_loop_written_keep(ctx, assumptions, body, &keep);
+                seed_loop_carried_whole(stmt, scope, ctx);
                 seed_loop_carried_labels(
                     body,
                     scope,
@@ -14535,6 +14679,9 @@ fn scope_with_closure_params(
             p.clone(),
             ScopeBinding {
                 whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: p.clone(),
                     ty: None,
@@ -14569,6 +14716,27 @@ fn analyze_expr_effect(
     effects: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    // The whole-struct lane at a call: a user function or method (its body specialized to these
+    // arguments), a closure, or a builtin applying a callback, that makes a whole struct with a
+    // `secret` field — or a value computed from one — reach an egress sink inside it.
+    if mode == Mode::Safe && matches!(expr, Expr::Call { .. } | Expr::CallExpr { .. }) {
+        if let Some(source) = whole::call_egress(expr, scope, ctx) {
+            let callee = match expr {
+                Expr::Call { callee, .. } => format!("`{callee}`"),
+                _ => "the called method or value".to_string(),
+            };
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                    message: format!(
+                        "safe mode confidentiality violation: secret `{source}` reaches an egress inside {callee} without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program"
+                    ),
+                    span: None,
+                },
+                false,
+            );
+        }
+    }
     match expr {
         Expr::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
             if expr_is_hmac_tag_call(lhs) || expr_is_hmac_tag_call(rhs) {
@@ -14902,7 +15070,7 @@ fn analyze_expr_effect(
                         &ctx.place_types(),
                         SourceLane::Secret,
                     )
-                    .or_else(|| whole_value_source(arg, scope, ctx))
+                    .or_else(|| whole::whole_value_source(arg, scope, ctx).map(|w| w.text()))
                     {
                         ctx.emit(
                             SemanticDiagnostic {
@@ -15099,15 +15267,7 @@ fn analyze_expr_effect(
                                 SourceLane::Secret,
                             )
                             .or(ident_secret)
-                            // The whole struct only where the callee releases the formal WHOLE
-                            // (`print(s)`), not a field of it (`print(s.pub_n)`).
-                            .or_else(|| {
-                                ctx.param_whole_egress
-                                    .get(resolved_callee)
-                                    .is_some_and(|w| w.contains(&i))
-                                    .then(|| whole_value_source(arg, scope, ctx))
-                                    .flatten()
-                            }) {
+                            {
                                 ctx.emit(
                                     SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
@@ -15503,6 +15663,9 @@ fn analyze_expr_effect(
                                 pp.clone(),
                                 ScopeBinding {
                                     whole_struct: None,
+                                    whole_captures: None,
+                                    whole_list: false,
+                                    whole_map: false,
                                     info: BindingInfo {
                                         name: pp.clone(),
                                         ty: None,
@@ -16557,10 +16720,22 @@ fn walk_block_effects(
     effects: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
-    for stmt in stmts {
+    for (i, stmt) in stmts.iter().enumerate() {
+        // Without an explicit tail, the block's last statement is its value (the runtime's
+        // `split_tail_expr`): a `push` there is an ordinary call, not an in-place write.
+        let valued = tail.is_none()
+            && i + 1 == stmts.len()
+            && !matches!(stmt, Stmt::ExprStmt(Expr::Call { callee, .. })
+                if callee == "return" || whole::is_statement_sink(callee));
         match stmt {
             Stmt::Let { name, ty, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
+                let init_whole = whole::whole_value_source(init, scope, ctx);
+                let init_list =
+                    whole::is_list_expr(init, scope, ctx) && !ctx.whole_not_list.contains(name);
+                let init_map =
+                    whole::is_map_expr(init, scope, ctx) && !ctx.whole_not_map.contains(name);
+                let init_captures = whole_captures_of(init, scope, ctx);
                 seed_effect_let(
                     name,
                     ty.as_deref(),
@@ -16586,6 +16761,12 @@ fn walk_block_effects(
                         b.closure_lambda = cl;
                     }
                 }
+                if let Some(b) = scope.get_mut(name) {
+                    b.whole_struct = init_whole;
+                    b.whole_captures = init_captures;
+                    b.whole_list = init_list;
+                    b.whole_map = init_map;
+                }
             }
             Stmt::LetPattern { pattern, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
@@ -16608,7 +16789,13 @@ fn walk_block_effects(
                     SourceLane::Secret,
                 )
                 .is_some();
+                let pattern_whole = whole::whole_value_source(init, scope, ctx);
                 seed_effect_pattern(scope, pattern, init, &t, s, &ctx.place_types(), ctx);
+                for (n, src) in whole::pattern_binders(pattern, &pattern_whole, ctx) {
+                    if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
             }
             Stmt::Assign {
                 target: Expr::Var(name),
@@ -16642,14 +16829,36 @@ fn walk_block_effects(
                     b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(s));
                 }
             }
-            Stmt::Assign { value, .. } => {
-                // Non-`Var` LHS: still walk the value for buried effects; the binding is untracked.
+            Stmt::Assign { target, value } => {
+                // Non-`Var` LHS: still walk the value for buried effects; the binding is untracked
+                // except for the whole-struct lane's mark on its root.
                 analyze_expr_effect(value, mode, scope, effects, ctx);
+                if let Some((root, src)) = whole::assign_mark_in(target, value, scope, ctx) {
+                    if let Some(b) = scope.get_mut(&root) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
             }
             Stmt::ExprStmt(Expr::Assert(inner)) => {
                 analyze_expr_effect(inner, mode, scope, effects, ctx);
             }
-            Stmt::ExprStmt(e) => analyze_expr_effect(e, mode, scope, effects, ctx),
+            Stmt::ExprStmt(e) => {
+                analyze_expr_effect(e, mode, scope, effects, ctx);
+                if let Expr::Call { callee, args } = e {
+                    if let Some((root, src, shifts)) =
+                        whole::in_place_mark_in(callee, args, !valued, scope, ctx)
+                    {
+                        if let Some(b) = scope.get_mut(&root) {
+                            if shifts {
+                                whole::whole_unpos(&mut b.whole_struct);
+                            }
+                            if let Some(src) = src {
+                                whole::whole_mark(&mut b.whole_struct, src);
+                            }
+                        }
+                    }
+                }
+            }
             Stmt::If { cond, then, else_ } => {
                 // Implicit-flow REJECT inside descended closure bodies (mirrors analyze_stmts).
                 {
@@ -16676,6 +16885,8 @@ fn walk_block_effects(
                 *scope = snap;
             }
             Stmt::While { cond, body, .. } => {
+                // Seeded before the condition, which runs at every iteration.
+                seed_loop_carried_whole(stmt, scope, ctx);
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(body, &mut assigned);
@@ -16706,11 +16917,13 @@ fn walk_block_effects(
                 }
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 let snap = scope.clone();
+                seed_loop_carried_whole(stmt, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
             Stmt::Loop { body, .. } => {
                 let snap = scope.clone();
+                seed_loop_carried_whole(stmt, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
@@ -16748,6 +16961,7 @@ fn walk_block_effects(
                     }
                 }
                 let snap = scope.clone();
+                seed_loop_carried_whole(stmt, scope, ctx);
                 // M1: see `seed_loop_var_callable` — seeded in this walker AND in `analyze_stmts`.
                 seed_loop_var_callable(var, source, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
@@ -28173,6 +28387,9 @@ impl BlockLabelDomain<'_> {
         let secret = secret_label.to_legacy_secret();
         ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: var.to_string(),
                 ty: None,
@@ -28863,664 +29080,6 @@ fn whole_struct_source(
         .iter()
         .find_map(|(f, t)| lane.declared_field_source(f, t))
         .map(|src| format!("{WHOLE_STRUCT_SOURCE}{src} (type `{}`)", ty.trim()))
-}
-
-/// The whole-value struct source of `expr` (see `ScopeBinding::whole_struct`): a struct literal or
-/// struct-typed value whose declaration has a `secret` field, a container of them, a binding that
-/// holds one, or a call whose result is one. Consulted ONLY where the whole value leaves the program
-/// (the egress checks) and for bindings; ordinary secret propagation never sees it, so reading
-/// another field, destructuring a public field or taking a length stays public.
-fn whole_value_source(
-    expr: &Expr,
-    scope: &BTreeMap<String, ScopeBinding>,
-    ctx: &SemanticContext,
-) -> Option<String> {
-    whole_value_source_d(expr, scope, ctx, 0)
-}
-
-fn whole_value_source_d(
-    expr: &Expr,
-    scope: &BTreeMap<String, ScopeBinding>,
-    ctx: &SemanticContext,
-    depth: u32,
-) -> Option<String> {
-    if depth > 8 {
-        return None;
-    }
-    let struct_fields = &ctx.place_types();
-    let rec = |e: &Expr| whole_value_source_d(e, scope, ctx, depth + 1);
-    let typed = || {
-        place_struct_type(expr, scope, struct_fields)
-            .and_then(|t| whole_struct_source(&t, struct_fields, SourceLane::Secret))
-    };
-    let known_struct = |base: &Expr| {
-        place_struct_type(base, scope, struct_fields)
-            .is_some_and(|t| struct_fields.fields.contains_key(t.trim()))
-    };
-    match expr {
-        Expr::StructLiteral { name, fields, .. } => {
-            whole_struct_source(name, struct_fields, SourceLane::Secret)
-                .or_else(|| fields.iter().find_map(|(_, e)| rec(e)))
-        }
-        Expr::ArrayLiteral { elements } => elements.iter().find_map(rec),
-        Expr::MapLiteral { entries, .. } => entries.iter().find_map(|(_, v)| rec(v)),
-        Expr::EnumConstruct { fields, .. } => fields.iter().find_map(rec),
-        Expr::Var(n) => scope
-            .get(n)
-            .and_then(|b| b.whole_struct.clone())
-            .or_else(typed),
-        // An element of a container of such structs.
-        Expr::Index { base, index } if !matches!(index.as_ref(), Expr::StrLiteral(_)) => {
-            rec(base).or_else(typed)
-        }
-        // A string key / dot name reads a FIELD of a struct (its declared type decides) or an ENTRY
-        // of a map (which may hold such a struct).
-        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
-            // A dot name that some struct declares reads that FIELD even when the base's type is
-            // unknown (`xs[0].pub_n`); any other dot name is a map entry. (A map key spelled like a
-            // declared field is read as the field: a recorded residual.)
-            let declared_field_name = matches!(expr, Expr::FieldAccess { field, .. }
-                if struct_fields.fields.values().any(|fs| fs.contains_key(field)));
-            if known_struct(base) || declared_field_name {
-                typed().or_else(|| {
-                    let Expr::Index { index, .. } = expr else {
-                        return None;
-                    };
-                    let Expr::StrLiteral(key) = index.as_ref() else {
-                        return None;
-                    };
-                    let as_field = Expr::FieldAccess {
-                        base: base.clone(),
-                        field: key.clone(),
-                        span: Default::default(),
-                    };
-                    place_struct_type(&as_field, scope, struct_fields)
-                        .and_then(|t| whole_struct_source(&t, struct_fields, SourceLane::Secret))
-                })
-            } else {
-                rec(base).or_else(typed)
-            }
-        }
-        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
-            rec(then).or_else(|| rec(else_))
-        }
-        // A `match` yields an arm's value; an arm may yield a binder of the scrutinee.
-        Expr::Match {
-            scrutinee, arms, ..
-        } => arms.iter().find_map(|a| rec(&a.body)).or_else(|| {
-            arms.iter()
-                .any(|a| !a.pattern.bound_names().is_empty())
-                .then(|| rec(scrutinee))
-                .flatten()
-        }),
-        // A block's value; a closure the block binds and then calls yields its body's value.
-        Expr::Block { stmts, tail } => {
-            let tail = tail.as_deref()?;
-            if let Expr::Call { callee, .. } = tail {
-                for st in stmts {
-                    if let Stmt::Let {
-                        name,
-                        init: Expr::Lambda { body, .. },
-                        ..
-                    } = st
-                    {
-                        if name == callee {
-                            return rec(body);
-                        }
-                    }
-                }
-            }
-            rec(tail)
-        }
-        // `+` renders a struct operand in full (string interpolation desugars to it).
-        Expr::Binary { op, lhs, rhs } if op == "+" => rec(lhs).or_else(|| rec(rhs)),
-        Expr::Call { callee, args } => {
-            if !ctx.fn_params.contains_key(callee) && !scope.contains_key(callee) {
-                if is_whole_rendering_builtin(callee) {
-                    return args.iter().find_map(rec);
-                }
-                // Builtins that hand back elements of their first argument.
-                if is_element_passing_builtin(callee) {
-                    // `get` on a STRUCT returns its default, never a field (the runtime's `get`
-                    // reads lists and maps only); `get(m, k, default)` may hand back the default.
-                    let get_on_struct = callee == "get"
-                        && args
-                            .first()
-                            .and_then(|b| place_struct_type(b, scope, struct_fields))
-                            .is_some_and(|t| struct_fields.fields.contains_key(t.trim()));
-                    let from_container = if get_on_struct {
-                        None
-                    } else {
-                        args.first().and_then(rec)
-                    };
-                    return from_container.or_else(|| {
-                        (callee == "get")
-                            .then(|| args.get(2).and_then(rec))
-                            .flatten()
-                    });
-                }
-                // `map` / `flat_map`: what the callback returns for each element.
-                if matches!(callee.as_str(), "map" | "flat_map") {
-                    let elem = args.first().and_then(rec);
-                    return args
-                        .get(1)
-                        .and_then(|cb| whole_callback_result(cb, elem, scope, ctx, depth + 1));
-                }
-                return typed();
-            }
-            // A closure bound here: the value its body yields, its parameters meaning the arguments.
-            if let Some(Expr::Lambda { params, body }) =
-                scope.get(callee).and_then(|b| b.closure_lambda.as_deref())
-            {
-                if let Some(src) = rec(body) {
-                    return Some(src);
-                }
-                let fwd = &ctx.fn_returns_param;
-                let ret_whole = &ctx.fn_returns_param_whole;
-                for (p, a) in params.iter().zip(args.iter()) {
-                    let names: BTreeSet<String> = [p.clone()].into_iter().collect();
-                    if whole_position_mentions(body, &names, fwd, ret_whole) {
-                        if let Some(src) = rec(a) {
-                            return Some(src);
-                        }
-                    }
-                }
-                return None;
-            }
-            if ctx.fn_returns_whole.contains(callee) {
-                return Some(format!(
-                    "{WHOLE_STRUCT_SOURCE}the result of `{callee}`, a struct with a secret field"
-                ));
-            }
-            // A function that returns a formal (or a container holding it) hands it back whole.
-            if let Some(js) = ctx.fn_returns_param_whole.get(callee) {
-                if let Some(src) = js.iter().find_map(|j| args.get(*j).and_then(rec)) {
-                    return Some(src);
-                }
-            }
-            if let Some((pnames, j)) = ctx.fn_returns_param.get(callee) {
-                if pnames.len() == args.len() {
-                    if let Some(src) = args.get(*j).and_then(rec) {
-                        return Some(src);
-                    }
-                }
-            }
-            typed()
-        }
-        Expr::CallExpr { callee, args } => {
-            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
-                if ctx.method_returns_whole.contains(field) {
-                    return Some(format!(
-                        "{WHOLE_STRUCT_SOURCE}the result of method `{field}`, a struct with a \
-                         secret field"
-                    ));
-                }
-                // A method that returns one of its formals hands that argument back (`self` is 0).
-                if let Some((pnames, j)) = ctx.method_returns_param.get(field) {
-                    if pnames.len() == args.len() + 1 {
-                        let forwarded = if *j == 0 {
-                            Some(base.as_ref())
-                        } else {
-                            args.get(j - 1)
-                        };
-                        if let Some(src) = forwarded.and_then(rec) {
-                            return Some(src);
-                        }
-                    }
-                }
-                return typed();
-            }
-            // A call through a value the lane cannot resolve (`fs[0](p)`) may hand back any
-            // argument.
-            args.iter().find_map(rec).or_else(typed)
-        }
-        _ => typed(),
-    }
-}
-
-/// The names a pattern binds to the WHOLE scrutinee or to a payload of it (`q`, `Some(q)`, `[q]`),
-/// excluding struct-field destructuring (`S { pub_n }` binds one field, not the whole value).
-fn whole_binders(p: &crate::frontend::Pattern) -> Vec<String> {
-    use crate::frontend::Pattern;
-    match p {
-        Pattern::Struct { .. } => Vec::new(),
-        Pattern::Or(alts) => alts.iter().flat_map(whole_binders).collect(),
-        other => other.bound_names(),
-    }
-}
-
-/// Builtins that hand back elements of their first argument unchanged.
-fn is_element_passing_builtin(callee: &str) -> bool {
-    matches!(
-        callee,
-        "filter"
-            | "first"
-            | "last"
-            | "reverse"
-            | "sort"
-            | "sort_by"
-            | "take"
-            | "skip"
-            | "slice"
-            | "pop"
-            | "find"
-            | "min_by"
-            | "max_by"
-            | "get"
-            | "take_while"
-            | "drop_while"
-            | "unique"
-            | "dedup"
-            | "partition"
-    )
-}
-
-/// The whole-struct source of what callback `cb` returns when applied to elements whose source is
-/// `elem` (`map(xs, cb)`): a closure whose body builds or captures such a struct, or passes its
-/// argument on whole; a function known to return one, or to return its argument.
-fn whole_callback_result(
-    cb: &Expr,
-    elem: Option<String>,
-    scope: &BTreeMap<String, ScopeBinding>,
-    ctx: &SemanticContext,
-    depth: u32,
-) -> Option<String> {
-    match cb {
-        Expr::Lambda { params, body } => {
-            whole_value_source_d(body, scope, ctx, depth + 1).or_else(|| {
-                let p = params.first()?;
-                let names: BTreeSet<String> = [p.clone()].into_iter().collect();
-                whole_position_mentions(
-                    body,
-                    &names,
-                    &ctx.fn_returns_param,
-                    &ctx.fn_returns_param_whole,
-                )
-                .then(|| elem.clone())
-                .flatten()
-            })
-        }
-        Expr::Var(n) if ctx.fn_params.contains_key(n) => {
-            if ctx.fn_returns_whole.contains(n) {
-                return Some(format!(
-                    "{WHOLE_STRUCT_SOURCE}the result of `{n}`, a struct with a secret field"
-                ));
-            }
-            let forwards = ctx
-                .fn_returns_param_whole
-                .get(n)
-                .is_some_and(|js| js.contains(&0))
-                || ctx.fn_returns_param.get(n).is_some_and(|(_, j)| *j == 0);
-            forwards.then_some(elem).flatten()
-        }
-        // A closure bound to a local.
-        Expr::Var(n) => match scope.get(n).and_then(|b| b.closure_lambda.as_deref()) {
-            Some(lam @ Expr::Lambda { .. }) => {
-                whole_callback_result(lam, elem, scope, ctx, depth + 1)
-            }
-            _ => elem,
-        },
-        _ => elem,
-    }
-}
-
-/// Builtins whose result renders or carries their argument in full.
-fn is_whole_rendering_builtin(callee: &str) -> bool {
-    matches!(
-        callee,
-        "str"
-            | "to_string"
-            | "format"
-            | "repr"
-            | "debug"
-            | "json"
-            | "to_json"
-            | "json_encode"
-            | "concat"
-            | "join"
-            | "identity"
-            | "secret_source"
-            | "values"
-            | "Some"
-            | "Ok"
-            | "Err"
-            | "flatten"
-            | "to_list"
-    )
-}
-
-/// Whether `e` carries the WHOLE value of a variable in `names` (not merely a field of it) — the
-/// positions `whole_value_source` follows.
-fn whole_position_mentions(
-    e: &Expr,
-    names: &BTreeSet<String>,
-    fwd: &BTreeMap<String, (Vec<String>, usize)>,
-    ret_whole: &BTreeMap<String, BTreeSet<usize>>,
-) -> bool {
-    let rec = |x: &Expr| whole_position_mentions(x, names, fwd, ret_whole);
-    match e {
-        Expr::Var(v) => names.contains(v),
-        Expr::Index { base, index } if !matches!(index.as_ref(), Expr::StrLiteral(_)) => rec(base),
-        Expr::ArrayLiteral { elements } => elements.iter().any(rec),
-        Expr::MapLiteral { entries, .. } => entries.iter().any(|(_, v)| rec(v)),
-        Expr::EnumConstruct { fields, .. } => fields.iter().any(rec),
-        Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| rec(v)),
-        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => rec(then) || rec(else_),
-        Expr::Match {
-            scrutinee, arms, ..
-        } => arms.iter().any(|a| rec(&a.body)) || rec(scrutinee),
-        Expr::Block { tail, .. } => tail.as_deref().is_some_and(rec),
-        Expr::Binary { op, lhs, rhs } if op == "+" => rec(lhs) || rec(rhs),
-        Expr::Call { callee, args } => {
-            if is_whole_rendering_builtin(callee) {
-                return args.iter().any(rec);
-            }
-            if let Some((pnames, j)) = fwd.get(callee) {
-                if pnames.len() == args.len() && args.get(*j).is_some_and(rec) {
-                    return true;
-                }
-            }
-            ret_whole
-                .get(callee)
-                .is_some_and(|js| js.iter().any(|j| args.get(*j).is_some_and(rec)))
-        }
-        _ => false,
-    }
-}
-
-/// The names in `body` that hold the WHOLE value of a name in `seed`: `let` aliases, `for`
-/// variables over it, `match` / `if let` binders of it, and lists it was pushed into.
-fn whole_alias_closure(
-    body: &[Stmt],
-    seed: BTreeSet<String>,
-    fwd: &BTreeMap<String, (Vec<String>, usize)>,
-    ret_whole: &BTreeMap<String, BTreeSet<usize>>,
-) -> BTreeSet<String> {
-    let mut names = seed;
-    loop {
-        let before = names.len();
-        let mut add: Vec<String> = Vec::new();
-        visit::each_stmt(body, &mut |st, _| match st {
-            Stmt::Let { name, init, .. }
-                if whole_position_mentions(init, &names, fwd, ret_whole) =>
-            {
-                add.push(name.clone());
-            }
-            Stmt::For {
-                var,
-                source: crate::frontend::ForSource::Collection { expr },
-                ..
-            } if whole_position_mentions(expr, &names, fwd, ret_whole) => {
-                add.push(var.clone());
-            }
-            Stmt::Assign { target, value }
-                if whole_position_mentions(value, &names, fwd, ret_whole) =>
-            {
-                let mut root = target;
-                while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = root {
-                    root = base;
-                }
-                if let Expr::Var(r) = root {
-                    add.push(r.clone());
-                }
-            }
-            _ => {}
-        });
-        visit::each_expr_in_stmts(body, &mut |e| match e {
-            Expr::Match {
-                scrutinee, arms, ..
-            } if whole_position_mentions(scrutinee, &names, fwd, ret_whole) => {
-                for a in arms {
-                    add.extend(whole_binders(&a.pattern));
-                }
-            }
-            Expr::IfLet {
-                pattern, scrutinee, ..
-            } if whole_position_mentions(scrutinee, &names, fwd, ret_whole) => {
-                add.extend(whole_binders(pattern));
-            }
-            Expr::Call { callee, args }
-                if matches!(callee.as_str(), "push" | "insert" | "append" | "unshift")
-                    && args
-                        .iter()
-                        .skip(1)
-                        .any(|a| whole_position_mentions(a, &names, fwd, ret_whole)) =>
-            {
-                if let Some(Expr::Var(v)) = args.first() {
-                    add.push(v.clone());
-                }
-            }
-            _ => {}
-        });
-        names.extend(add);
-        if names.len() == before {
-            return names;
-        }
-    }
-}
-
-/// Per free function, the formals whose value its return values carry WHOLE (`fn wrap(s) { return
-/// [s]; }`), fixpoint over calls.
-fn compute_fn_returns_param_whole(
-    free_fns: &[(String, Vec<String>, &[Stmt])],
-    fwd: &BTreeMap<String, (Vec<String>, usize)>,
-) -> BTreeMap<String, BTreeSet<usize>> {
-    let mut out: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    loop {
-        let mut changed = false;
-        for (name, params, body) in free_fns {
-            let rets = all_return_values(body);
-            for (i, p) in params.iter().enumerate() {
-                if out.get(name).is_some_and(|s| s.contains(&i)) {
-                    continue;
-                }
-                let names = whole_alias_closure(body, [p.clone()].into_iter().collect(), fwd, &out);
-                if rets
-                    .iter()
-                    .any(|r| whole_position_mentions(r, &names, fwd, &out))
-                {
-                    out.entry(name.clone()).or_default().insert(i);
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            return out;
-        }
-    }
-}
-
-/// Whether `e`, a value computed in a body with no caller context, is certainly a whole struct with a
-/// `secret` field: a literal of such a struct (or a container of them), a local bound to one, or a
-/// call to a function / method known to return one.
-fn literal_whole(
-    e: &Expr,
-    locals: &BTreeMap<String, Expr>,
-    struct_fields: &BTreeMap<String, BTreeMap<String, String>>,
-    fns: &BTreeSet<String>,
-    methods: &BTreeSet<String>,
-    depth: u32,
-) -> bool {
-    if depth > 6 {
-        return false;
-    }
-    let rec = |x: &Expr| literal_whole(x, locals, struct_fields, fns, methods, depth + 1);
-    match e {
-        Expr::StructLiteral { name, fields, .. } => {
-            struct_fields
-                .get(name)
-                .is_some_and(|fs| fs.values().any(|t| is_secret_type(Some(t))))
-                || fields.iter().any(|(_, v)| rec(v))
-        }
-        Expr::ArrayLiteral { elements } => elements.iter().any(rec),
-        Expr::MapLiteral { entries, .. } => entries.iter().any(|(_, v)| rec(v)),
-        Expr::EnumConstruct { fields, .. } => fields.iter().any(rec),
-        Expr::Var(v) => locals.get(v).is_some_and(rec),
-        Expr::If { then, else_, .. } => rec(then) || rec(else_),
-        Expr::Call { callee, args } => {
-            fns.contains(callee) || (is_whole_rendering_builtin(callee) && args.iter().any(rec))
-        }
-        Expr::CallExpr { callee, .. } => {
-            matches!(callee.as_ref(), Expr::FieldAccess { field, .. } if methods.contains(field))
-        }
-        _ => false,
-    }
-}
-
-/// Free functions and (bare-named) methods that return a whole struct with a `secret` field.
-fn compute_returns_whole(
-    free_fns: &[(String, Vec<String>, &[Stmt])],
-    impl_methods: &[(String, Vec<String>, &[Stmt])],
-    struct_fields: &BTreeMap<String, BTreeMap<String, String>>,
-    return_feeding: &BTreeMap<String, Vec<Expr>>,
-) -> (BTreeSet<String>, BTreeSet<String>) {
-    let mut fns: BTreeSet<String> = BTreeSet::new();
-    let mut methods: BTreeSet<String> = BTreeSet::new();
-    loop {
-        let mut changed = false;
-        for (is_method, list) in [(false, free_fns), (true, impl_methods)] {
-            for (name, _params, body) in list {
-                let set = if is_method { &methods } else { &fns };
-                if set.contains(name) {
-                    continue;
-                }
-                let locals = single_let_inits(body);
-                // Everything that flows into the returns (`return_feeding`): a local list pushed a
-                // struct and returned counts (`let xs = []; push(xs, S { .. }); return xs`).
-                let feeding_key = if is_method {
-                    format!("impl {name}")
-                } else {
-                    name.clone()
-                };
-                let feeding: Vec<Expr> = return_feeding
-                    .get(&feeding_key)
-                    .cloned()
-                    .unwrap_or_else(|| all_return_values(body));
-                let hit = feeding
-                    .iter()
-                    .any(|r| literal_whole(r, &locals, struct_fields, &fns, &methods, 0));
-                if hit {
-                    if is_method {
-                        methods.insert(name.clone());
-                    } else {
-                        fns.insert(name.clone());
-                    }
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            return (fns, methods);
-        }
-    }
-}
-
-/// `param_whole_egress` (and its method twin): per function, the formals whose WHOLE value reaches
-/// an egress sink — directly, through a container / literal / concatenation / rendering builtin /
-/// forwarder, through a local alias, `for` variable, `match` / `if let` binder or pushed-into list,
-/// through a local closure that releases its argument, or through another function's or method's
-/// whole-egress formal (fixpoint). A formal only a FIELD of which is released (`print(s.pub_n)`) is
-/// not in it. Method keys are `impl <name>` with `self` at index 0.
-fn compute_param_whole_egress(
-    free_fns: &[(String, Vec<String>, &[Stmt])],
-    impl_methods: &[(String, Vec<String>, &[Stmt])],
-    fwd: &BTreeMap<String, (Vec<String>, usize)>,
-    ret_whole: &BTreeMap<String, BTreeSet<usize>>,
-) -> BTreeMap<String, BTreeSet<usize>> {
-    let mut out: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    let all: Vec<(String, &Vec<String>, &[Stmt])> = free_fns
-        .iter()
-        .map(|(n, p, b)| (n.clone(), p, *b))
-        .chain(
-            impl_methods
-                .iter()
-                .map(|(n, p, b)| (format!("impl {n}"), p, *b)),
-        )
-        .collect();
-    loop {
-        let mut changed = false;
-        for (key, params, body) in &all {
-            for (i, p) in params.iter().enumerate() {
-                if out.get(key).is_some_and(|s| s.contains(&i)) {
-                    continue;
-                }
-                let names =
-                    whole_alias_closure(body, [p.clone()].into_iter().collect(), fwd, ret_whole);
-                // Local closures that release their own argument whole.
-                let mut releasing_closures: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-                visit::each_stmt(body, &mut |st, _| {
-                    if let Stmt::Let {
-                        name,
-                        init:
-                            Expr::Lambda {
-                                params: lp,
-                                body: lb,
-                            },
-                        ..
-                    } = st
-                    {
-                        for (j, q) in lp.iter().enumerate() {
-                            let qn: BTreeSet<String> = [q.clone()].into_iter().collect();
-                            let mut hit = false;
-                            visit::each_expr(lb, &mut |x| {
-                                if let Expr::Call { callee, args } = x {
-                                    if is_egress_sink(callee)
-                                        && args.iter().any(|a| {
-                                            whole_position_mentions(a, &qn, fwd, ret_whole)
-                                        })
-                                    {
-                                        hit = true;
-                                    }
-                                }
-                            });
-                            if hit {
-                                releasing_closures
-                                    .entry(name.clone())
-                                    .or_default()
-                                    .insert(j);
-                            }
-                        }
-                    }
-                });
-                let mut hit = false;
-                visit::each_expr_in_stmts(body, &mut |e| {
-                    if hit {
-                        return;
-                    }
-                    let wm = |a: &Expr| whole_position_mentions(a, &names, fwd, ret_whole);
-                    match e {
-                        Expr::Call { callee, args } => {
-                            if is_egress_sink(callee) {
-                                hit = args.iter().any(wm);
-                            } else if let Some(js) =
-                                out.get(callee).or_else(|| releasing_closures.get(callee))
-                            {
-                                hit = js.iter().any(|j| args.get(*j).is_some_and(wm));
-                            }
-                        }
-                        Expr::CallExpr { callee, args } => {
-                            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
-                                if let Some(js) = out.get(&format!("impl {field}")) {
-                                    // Method formal j ≥ 1 is call argument j - 1 (self is 0).
-                                    hit = js
-                                        .iter()
-                                        .any(|j| *j >= 1 && args.get(j - 1).is_some_and(wm));
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                });
-                if hit {
-                    out.entry(key.clone()).or_default().insert(i);
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            return out;
-        }
-    }
 }
 
 fn expr_source(
@@ -30383,6 +29942,9 @@ fn seed_one_let(
         name.to_string(),
         ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: name.to_string(),
                 ty: ty.map(str::to_string),
@@ -30462,6 +30024,9 @@ fn seed_pattern(
         let is_declared_here = declared.contains(&n);
         let mut binding = ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: n.clone(),
                 ty: None,
@@ -30601,6 +30166,9 @@ fn seed_effect_let(
         name.to_string(),
         ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: name.to_string(),
                 ty: ty.map(str::to_string),
@@ -30757,6 +30325,9 @@ fn seed_effect_pattern(
             n.clone(),
             ScopeBinding {
                 whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: n,
                     ty: None,
@@ -30813,6 +30384,9 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
             let e = scope.entry(name.to_string()).or_insert_with(|| {
                 ScopeBinding {
                     whole_struct: None,
+                    whole_captures: None,
+                    whole_list: false,
+                    whole_map: false,
                     info: BindingInfo {
                         name: name.to_string(),
                         ty: None,
@@ -30917,6 +30491,9 @@ fn seed_declared_pattern_binders(
         let b = scope.entry(n.clone()).or_insert_with(|| {
             ScopeBinding {
                 whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: n.clone(),
                     ty: None,
@@ -31153,6 +30730,9 @@ impl ReturnSummaryLane {
             let b = scope.entry(n.clone()).or_insert_with(|| {
                 ScopeBinding {
                     whole_struct: None,
+                    whole_captures: None,
+                    whole_list: false,
+                    whole_map: false,
                     info: BindingInfo {
                         name: n.clone(),
                         ty: None,
@@ -31459,6 +31039,9 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
             name.clone(),
             ScopeBinding {
                 whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: name.clone(),
                     ty: Some(ty.clone()),
@@ -31720,6 +31303,9 @@ fn seed_one_let_secret(
         name.to_string(),
         ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: name.to_string(),
                 ty: ty.map(str::to_string),
@@ -31941,6 +31527,39 @@ pub(crate) fn collect_fn_params_bodies<'a>(
 /// keyed by bare name (so same-named methods across impls share a key and their summaries UNION —
 /// fail-closed). `self` is kept at parameter index 0, matching the runtime dispatch (run.rs builds
 /// `call_args = [receiver, …]`), so a summary index p≥1 corresponds to call arg p-1.
+/// Impl methods by bare name, each with the (generic-free) type it is declared on, for the
+/// whole-struct lane (a receiver of known type calls only its own impl).
+fn collect_impl_methods_typed(
+    items: &[Item],
+    out: &mut BTreeMap<String, Vec<(String, whole::WholeBody)>>,
+) {
+    for item in items {
+        match item {
+            Item::Impl {
+                type_name, methods, ..
+            } => {
+                let ty = type_name.split('<').next().unwrap_or("").trim().to_string();
+                for m in methods {
+                    if let Item::Fn {
+                        name, params, body, ..
+                    } = m
+                    {
+                        out.entry(name.clone()).or_default().push((
+                            ty.clone(),
+                            (
+                                params.iter().map(|(n, _)| n.clone()).collect(),
+                                body.clone(),
+                            ),
+                        ));
+                    }
+                }
+            }
+            Item::Module { items, .. } => collect_impl_methods_typed(items, out),
+            _ => {}
+        }
+    }
+}
+
 fn collect_impl_method_params_bodies<'a>(
     items: &'a [Item],
     out: &mut Vec<(String, Vec<String>, &'a [Stmt])>,
@@ -34195,6 +33814,9 @@ mod fn_identity_spine_tests {
     fn binding(identities: FnIdentitySet) -> ScopeBinding {
         ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: "fixture".into(),
                 ty: None,
@@ -34506,6 +34128,9 @@ mod builtin_gate_tag_tests {
     fn binding(tags: BuiltinGateTags) -> ScopeBinding {
         ScopeBinding {
             whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: "fixture".into(),
                 ty: None,

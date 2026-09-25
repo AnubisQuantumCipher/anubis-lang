@@ -1,0 +1,8 @@
+struct Account { pin: secret<i64>, id: i64, balance: i64 }
+fn main() {
+    let accts = [Account { pin: 42, id: 1, balance: 100 }];
+    let more = [Account { pin: 7, id: 2, balance: 250 }];
+    let all = concat(accts, more);
+    print("accounts: ${len(all)}");
+    for a in all { print(a.id); }
+}

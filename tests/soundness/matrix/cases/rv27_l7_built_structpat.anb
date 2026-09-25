@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { a: string, b: i64 }
+fn mk() { let t = T { a: str(S { k: 42, pub_n: 3 }), b: 1 }; let T { a, b } = t; return a; }
+fn main() { print(mk()); }

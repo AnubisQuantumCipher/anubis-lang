@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { a: string, b: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let t = T { a: "x", b: 1 };
+    t.a = str(p);
+    print(t.b);
+}

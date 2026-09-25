@@ -1,0 +1,68 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let x = 0;
+    let y = 0;
+    let i0 = 0;
+    while i0 < 2 {
+        x = [x, y];
+        let i1 = 0;
+        while i1 < 2 {
+            x = [x, y];
+            let i2 = 0;
+            while i2 < 2 {
+                x = [x, y];
+                let i3 = 0;
+                while i3 < 2 {
+                    x = [x, y];
+                    let i4 = 0;
+                    while i4 < 2 {
+                        x = [x, y];
+                        let i5 = 0;
+                        while i5 < 2 {
+                            x = [x, y];
+                            let i6 = 0;
+                            while i6 < 2 {
+                                x = [x, y];
+                                let i7 = 0;
+                                while i7 < 2 {
+                                    x = [x, y];
+                                    let i8 = 0;
+                                    while i8 < 2 {
+                                        x = [x, y];
+                                        let i9 = 0;
+                                        while i9 < 2 {
+                                            x = [x, y];
+                                            let i10 = 0;
+                                            while i10 < 2 {
+                                                x = [x, y];
+                                                let i11 = 0;
+                                                while i11 < 2 {
+                                                    x = [x, y];
+                                                    y = x; x = p;
+                                                    i11 = i11 + 1;
+                                                }
+                                                i10 = i10 + 1;
+                                            }
+                                            i9 = i9 + 1;
+                                        }
+                                        i8 = i8 + 1;
+                                    }
+                                    i7 = i7 + 1;
+                                }
+                                i6 = i6 + 1;
+                            }
+                            i5 = i5 + 1;
+                        }
+                        i4 = i4 + 1;
+                    }
+                    i3 = i3 + 1;
+                }
+                i2 = i2 + 1;
+            }
+            i1 = i1 + 1;
+        }
+        i0 = i0 + 1;
+    }
+    print(1);
+}

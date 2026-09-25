@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h(v) {
+    (|a1| if true { (|a2| if true { (|a3| if true { (|a4| if true { (|a5| if true { (|a6| if true { (|a7| if true { (|a8| if true { (|a9| if true { (|a10| if true { (|a11| if true { (|a12| if true { (|a13| if true { (|a14| if true { (|a15| if true { (|a16| if true { (|a17| if true { (|a18| if true { (|a19| if true { (|a20| if true { (|a21| if true { (|a22| if true { (|a23| if true { (|a24| if true { (|a25| if true { (|a26| if true { print(v); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0); 0 } else { 0 })(0);
+    return 0
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    h(p);
+}

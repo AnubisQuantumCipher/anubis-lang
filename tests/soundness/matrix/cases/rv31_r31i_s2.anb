@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(p: S) {
+    let o = None(p);
+    let v = o?;
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(len(str(f(p))));
+}

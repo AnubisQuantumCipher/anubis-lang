@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mk() { let q = S { k: 42, pub_n: 3 }; while let Some(v) = Some(q) { return v; } return 0; }
+fn main() { print(mk()); }

@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Box1 { inner: i64 }
+fn grow(g, n) {
+    if n == 0 { return g(0) }
+    return Box1 { inner: grow(g, n - 1) }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(grow(|x| p, 8).inner.inner.inner.inner.inner.inner.inner.inner);
+}
