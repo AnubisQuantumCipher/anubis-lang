@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+impl T { fn show(self) -> str { return "t ${self.v}"; } }
+impl U { fn show(self) -> str { return "u ${self.inner}"; } }
+fn mku(q) -> U { return U { inner: q }; }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let x = mku(p);
+  let ts = [T { v: 1 }];
+  for x in ts { println("in ${x.v}"); }
+  let y = x;
+  println(y.show());
+}

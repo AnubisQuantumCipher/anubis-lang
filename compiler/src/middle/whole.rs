@@ -101,13 +101,18 @@ const SPREAD: usize = 64;
 /// Block runs remembered per query. Every run from a new state is remembered, and nested loops
 /// produce one per iteration of every enclosing loop: past this, the oldest run is forgotten (runs
 /// still count as steps), so the memory a query holds is bounded. A run is asked for again soon
-/// after it is made — the value and the function values of what was just walked (`src`,
-/// `passed_fns` where the walk ended) — so the recent runs are the ones kept: keeping the first
-/// ones instead runs every level of a value nested past the bound again, twice as often per level.
+/// after it is made (a value asked for where no walk ran it: `src`, `passed_fns`), so the recent
+/// runs are the ones kept: keeping the first ones instead runs every level of a value nested past
+/// the bound again, twice as often per level.
 const MAX_BLOCKS: usize = 256;
 
 /// The builtins that write their first argument (a variable) in place.
 const IN_PLACE: [&str; 6] = ["push", "append", "unshift", "insert", "remove", "pop"];
+
+/// The root `type_roots` gives the result of a call that may write into a part of a value
+/// (`compute_part_writers`): no name, and its parts are stale (`assigned_shapes` enters it in
+/// `written`).
+const WROTE: &str = "\u{1}wrote";
 
 /// A function's formals and body, as the whole-struct lane specializes it.
 pub(super) type WholeBody = (Vec<String>, Vec<Stmt>);
@@ -765,10 +770,17 @@ fn local_src(l: &Local) -> Option<WholeSrc> {
 fn local_kind(l: &Local) -> Kind {
     match l {
         Local::Src(_, k) => k.clone(),
-        Local::Any(ls) if !ls.is_empty() => {
-            let mut ks = ls.iter().map(local_kind);
-            let first = ks.next().unwrap_or_default();
-            ks.fold(first, |a, b| a.meet(&b))
+        // A function has no list, map or struct kind: only the value parts meet (a name that may
+        // also be a function kept no kind at all, and every use of its value half lost precision).
+        Local::Any(ls) => {
+            let mut ks = ls
+                .iter()
+                .filter(|l| !matches!(l, Local::Closure(_) | Local::Named(_) | Local::Opaque(_)))
+                .map(local_kind);
+            match ks.next() {
+                Some(first) => ks.fold(first, |a, b| a.meet(&b)),
+                None => Kind::NONE,
+            }
         }
         _ => Kind::NONE,
     }
@@ -939,9 +951,8 @@ struct Active {
 }
 
 /// A statement list (its address and length), the names it runs from (their address; the entry
-/// keeps them alive), the rest of the position, and how many runs with names unbound it is inside
-/// (`Env::phantom`).
-type BlockKey = (usize, usize, usize, usize, bool, u32, u8, u8);
+/// keeps them alive), and the rest of the position.
+type BlockKey = (usize, usize, usize, usize, bool, u32, u8);
 
 /// A position made by binding a pattern: the base names (kept alive), what the scrutinee held, and
 /// the position.
@@ -951,14 +962,28 @@ type BinderAt = (Rc<Locals>, Option<WholeSrc>, At);
 type Tentative = (u64, FnFx, Vec<String>);
 
 /// A `match` / `if let` scrutinee's node, the position it was evaluated at (its names' address,
-/// whether they fall back to the caller's scope, the application depth), the epoch, and how many runs
-/// with names unbound it was evaluated inside (`Env::phantom`).
-type ScrutineeKey = (usize, usize, bool, u32, u64, u8);
+/// whether they fall back to the caller's scope, the application depth), and the epoch.
+type ScrutineeKey = (usize, usize, bool, u32, u64);
 
 /// A scrutinee evaluated ([`scrutinee_at`]): the names it was evaluated from (kept alive, so their
 /// address is not reused), the calls in progress it read, whether a limit shaped it, what it holds,
 /// and what it is as a binding.
 type Scrutinized = (Rc<Locals>, Vec<String>, bool, Option<WholeSrc>, Local);
+
+/// A value construct (a value block, `if`, `if let`, `match`) a walk ran: what it holds and the
+/// function values it may be, as the walk found them where it ran it.
+#[derive(Clone)]
+struct WalkedAt {
+    val: Option<WholeSrc>,
+    fns: Vec<Local>,
+}
+
+/// The value constructs a walk ran, not inside one another, by node ([`at_view`]).
+type Walked = BTreeMap<usize, WalkedAt>;
+
+/// A closure's body read for the function values it returns ([`returned_fns`]): the arguments,
+/// the epoch, and the functions.
+type Returned = (Vec<Local>, u64, Vec<Local>);
 
 /// A remembered closure application: the arguments, the epoch, the calls it read, the application
 /// depth when a limit shaped it, and the result.
@@ -999,6 +1024,9 @@ struct Env<'a> {
     scrutinees: RefCell<BTreeMap<ScrutineeKey, Scrutinized>>,
     /// Closure applications made, by the closure's number.
     applies: RefCell<BTreeMap<usize, Vec<Applied>>>,
+    /// The function values a closure's body was read to return ([`returned_fns`]), by the
+    /// closure's number: the arguments, the epoch, and the functions.
+    returned: RefCell<BTreeMap<usize, Vec<Returned>>>,
     /// Every lambda a closure was made of, by its node's address (so no address is reused while the
     /// query runs); closures numbered by identity and captures; lambdas' free names.
     lams: RefCell<BTreeMap<usize, Rc<Expr>>>,
@@ -1011,11 +1039,9 @@ struct Env<'a> {
     /// outermost loop; and how many loops deep the interpretation is.
     heads: RefCell<Option<Locals>>,
     loops: Cell<usize>,
-    /// How many runs of value blocks with the names enclosing them unbound are in progress
-    /// (`passed_fns_in`): such a run starts runs of its own only up to [`MAX_PHANTOM`] deep, and
-    /// the block runs of each depth are remembered apart. A callee or a closure body runs as it
-    /// does anywhere (what it returns is remembered for every caller).
-    phantom: Cell<u8>,
+    /// The walks whose view is being read ([`at_view`]), innermost last: the view, and the value
+    /// constructs the walk ran.
+    frames: RefCell<Vec<(At, Rc<Walked>)>>,
 }
 
 impl<'a> Env<'a> {
@@ -1038,6 +1064,7 @@ impl<'a> Env<'a> {
             binder_ats: RefCell::default(),
             scrutinees: RefCell::default(),
             applies: RefCell::default(),
+            returned: RefCell::default(),
             lams: RefCell::default(),
             interned: RefCell::default(),
             next_closure: Cell::new(0),
@@ -1045,7 +1072,7 @@ impl<'a> Env<'a> {
             scoped: RefCell::default(),
             heads: RefCell::default(),
             loops: Cell::new(0),
-            phantom: Cell::new(0),
+            frames: RefCell::default(),
         }
     }
 
@@ -1223,8 +1250,11 @@ fn binders_at(
 ) -> At {
     // A binder that takes the whole scrutinee (`match f { g => g() }`, `let (g) = f`) is what the
     // scrutinee is, a function value included. Its position is remembered too, so `src` and
-    // `passed_fns` read an arm at the same one (and share what they evaluate there).
+    // `passed_fns` read an arm at the same one (and share what they evaluate there). A binder of a
+    // part, or of a whole that may be a function the lane lost, may still be any function the name
+    // stood for here ([`stick`]).
     let whole_name = whole_binder(p);
+    let whole_bound = whole_name.map(|b| stick(b, whole.clone(), || false, env, at));
     let key = (p as *const _ as usize, Rc::as_ptr(&at.locals) as usize);
     if let Some(hit) = env.binder_ats.borrow().get(&key).and_then(|v| {
         v.iter()
@@ -1233,19 +1263,18 @@ fn binders_at(
                     && src == s
                     && a.use_scope == at.use_scope
                     && a.depth == at.depth
-                    && whole_name.is_none_or(|b| a.locals.get(b) == Some(whole))
+                    && whole_name.is_none_or(|b| a.locals.get(b) == whole_bound.as_ref())
             })
             .map(|(_, _, a)| a.clone())
     }) {
         return hit;
     }
-    let made = match whole_name {
-        Some(b) => at.with([(b.to_string(), whole.clone())]),
-        None => at.with(
-            pattern_binders(p, s, env.ctx)
-                .into_iter()
-                .map(|(n, b)| (n, Local::Src(b, Kind::NONE))),
-        ),
+    let made = match (whole_name, whole_bound) {
+        (Some(b), Some(l)) => at.with([(b.to_string(), l)]),
+        _ => at.with(pattern_binders(p, s, env.ctx).into_iter().map(|(n, b)| {
+            let l = stick(&n, Local::Src(b, Kind::NONE), || false, env, at);
+            (n, l)
+        })),
     };
     env.binder_ats.borrow_mut().entry(key).or_default().push((
         at.locals.clone(),
@@ -1279,7 +1308,7 @@ pub(super) fn whole_value_source(
         // A read after a write inside the expression (`[push(t, p), t]`) sees it.
         let at = seeded(expr, &env);
         let w = walk(expr, &env, &at, &None);
-        src(expr, &env, &w.view())
+        walked_value(expr, &w, &env)
     } else {
         src(expr, &env, &top())
     };
@@ -1380,30 +1409,36 @@ fn seeded_in<'e>(es: impl IntoIterator<Item = &'e Expr>, env: &Env) -> At {
 }
 
 /// What each name of `scope` written by the loop statement `stmt` may hold at the head of any of its
-/// iterations. The statement walk in `mod.rs` analyzes a loop body once, so a value that reaches a
-/// name late in one iteration and is read early in the next is seeded from here.
+/// iterations, and what it may then be as a function when that is more than before the loop
+/// (`carried_captures`). The statement walk in `mod.rs` analyzes a loop body once, so a value, or a
+/// function, that reaches a name late in one iteration and is read early in the next is seeded from
+/// here.
 pub(super) fn loop_carried(
     stmt: &Stmt,
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
-) -> Vec<(String, Option<WholeSrc>)> {
+) -> Vec<(String, Option<WholeSrc>, Option<Captures>)> {
     let env = Env::new(ctx, scope);
     let stmts = std::slice::from_ref(stmt);
     let mut names = BTreeSet::new();
     stmt_roots(stmts, &mut names);
+    let mut in_place = BTreeSet::new();
     visit::each_expr_in_stmts(stmts, &mut |x| match x {
         Expr::Block { stmts, .. } => stmt_roots(stmts, &mut names),
         Expr::Call { callee, args } if IN_PLACE.contains(&callee.as_str()) => {
             if let Some(Expr::Var(n)) = args.first() {
                 names.insert(n.clone());
+                in_place.insert(n.clone());
             }
         }
         _ => {}
     });
+    let written = names.clone();
     let bound: Vec<(String, Local)> = names
         .into_iter()
         .filter_map(|n| scope_local(&n, &env).map(|l| (n, l)))
         .collect();
+    let before: Locals = bound.iter().cloned().collect();
     let at = top().with(bound);
     *env.heads.borrow_mut() = Some(Locals::new());
     let _ = interp_uncached(stmts, None, &env, &at, Run::LOOP_BODY);
@@ -1411,8 +1446,216 @@ pub(super) fn loop_carried(
     heads
         .into_iter()
         .filter(|(n, _)| scope.contains_key(n))
-        .map(|(n, l)| (n, local_src(&l)))
+        .map(|(n, l)| {
+            let captures = before.get(&n).and_then(|pre| {
+                let seen = writes_seen(
+                    &n,
+                    |f| visit::each_stmt(stmts, f),
+                    |f| visit::each_expr_in_stmts(stmts, f),
+                    &written,
+                    in_place.contains(&n),
+                    &env,
+                );
+                carried_captures(&n, pre, &l, seen, &env)
+            });
+            (n, local_src(&l), captures)
+        })
         .collect()
+}
+
+/// What a name of the scope a loop writes may be as a function at the head of a later iteration
+/// (`head`, the lane's interpretation of the loop), when that is more than it was before the loop
+/// (`pre`): a function or closure only a later iteration holds (`g = if c { let t = h; t } else { g }`
+/// read before it in the body: the ordinary lane's identities do not see a block's alias), or a value
+/// half where there was none. Sure when no value may be at the head but the functions found, or when
+/// every value the loop writes to the name is one the lane follows (`seen`: the interpretation gives
+/// a branch, arm or block a value half beside its functions whatever they yield). `None`: nothing to
+/// add.
+fn carried_captures(n: &str, pre: &Local, head: &Local, seen: bool, env: &Env) -> Option<Captures> {
+    let b = env.scope.get(n)?;
+    let mut fns = fn_parts(head);
+    if fns.is_empty() {
+        return None;
+    }
+    let before = fn_parts(pre);
+    let grew = fns.iter().any(|f| !before.contains(f));
+    let sure = !has_src(head) || seen;
+    if !grew && (sure || has_src(pre)) {
+        return None;
+    }
+    closure_value_half(&mut fns, sure, b);
+    let names = b
+        .whole_captures
+        .as_ref()
+        .map(|c| c.0.clone())
+        .unwrap_or_default();
+    Some(Captures(names, Some(Rc::new(Bound { fns, sure }))))
+}
+
+/// Whether every value the statements `each_stmt` visits (and the expressions `each_expr` visits,
+/// for the names they bind) write to the name `n` of the caller's scope is a function the lane's
+/// interpretation follows, or no function at all ([`leaves_seen`]). The interpretation itself gives a
+/// branch, arm or block a value half beside the functions it yields, and a name of the scope read
+/// as both halves when it may be several functions (`scope_local`), so its result cannot say this.
+/// Only plain assignments `n = v` outside lambdas write it (never an in-place builtin: `in_place`),
+/// the name surely held only functions before (`resolve_local`, with no value half), and each `v`
+/// is read with every name written there (`written`) and every name bound there outside `v` (a
+/// `let`, a pattern's binder, a lambda's parameter, a loop variable but a counter over a range that
+/// no name of the scope shares) untrusted — `v` binds its own. A write into a part of `n`, or one a
+/// lambda makes, is not followed.
+fn writes_seen<'a>(
+    n: &str,
+    each_stmt: impl Fn(&mut dyn FnMut(&'a Stmt, bool)),
+    each_expr: impl Fn(&mut dyn FnMut(&'a Expr)),
+    written: &BTreeSet<String>,
+    in_place: bool,
+    env: &Env,
+) -> bool {
+    if in_place || resolve_local(n, env, &top()).is_none_or(|l| has_src(&l)) {
+        return false;
+    }
+    let mut binders: BTreeMap<String, bool> = BTreeMap::new();
+    let mut untrusted: Vec<String> = Vec::new();
+    let mut ranged: Vec<(String, bool)> = Vec::new();
+    each_stmt(&mut |s, _| match s {
+        Stmt::Let { name, .. } => untrusted.push(name.clone()),
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            untrusted.extend(pattern.bound_names())
+        }
+        Stmt::For { var, source, .. } => {
+            // A counter holds no function; an element may be one the interpretation lost.
+            let seen = matches!(source, crate::frontend::ForSource::Range { .. });
+            ranged.push((var.clone(), seen));
+        }
+        _ => {}
+    });
+    each_expr(&mut |x| match x {
+        Expr::IfLet { pattern, .. } => untrusted.extend(pattern.bound_names()),
+        Expr::Match { arms, .. } => {
+            for a in arms {
+                untrusted.extend(a.pattern.bound_names());
+            }
+        }
+        Expr::Lambda { params, .. } => untrusted.extend(params.iter().cloned()),
+        _ => {}
+    });
+    // A name bound more than once is trusted only if every binding is, and a loop variable named
+    // like a name of the scope never is (`v` may read that name, outside the loop).
+    for (v, seen) in ranged {
+        let seen = seen && !env.scope.contains_key(v.as_str());
+        let e = binders.entry(v).or_insert(true);
+        *e &= seen;
+    }
+    for v in untrusted {
+        binders.insert(v, false);
+    }
+    let mut seen = true;
+    each_stmt(&mut |s, in_lambda| {
+        if let Stmt::Assign { target, value } = s {
+            if place_root(target) == Some(n) {
+                seen &= !in_lambda
+                    && matches!(target, Expr::Var(v) if v == n)
+                    && leaves_seen(value, &binders, written, env);
+            }
+        }
+    });
+    seen
+}
+
+/// What a name of the caller's scope may be as a function where a statement's paths meet again (an
+/// `if`'s branches, the arms of a `match` or an `if let`, a loop run zero or more times): what it may
+/// be at the end of any path that keeps the binding (`paths`), as that path's scope resolves it. The
+/// statement walk in `mod.rs` restores the binding the statement started with (`outer`), whose
+/// ordinary-lane fields name only some of those, and what the lane's interpretation recorded on a
+/// path (`value_captures`, `expr_writes`: a block's alias, a chooser's binder, `reduce`'s list, a
+/// closure assigned in a branch, a function written in expression position) would be dropped with
+/// the path's scope. `None` when no path changed what the binding may be as a function: the restored
+/// binding is then every path's. What the restored binding's closure closes over stays its own; a
+/// closure a path held is among the functions, with what it closed over.
+pub(super) fn join_captures(
+    name: &str,
+    outer: &ScopeBinding,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+    ctx: &SemanticContext,
+) -> Option<Captures> {
+    let bindings = || paths.iter().filter_map(|p| p.get(name));
+    // No path changed it; or it names no function on any path, when the joined binding keeps its
+    // value half anyway (no function the ordinary lane names can drop it).
+    if !bindings().any(|b| fn_state_changed(outer, b))
+        || (!names_fn(outer) && !bindings().any(names_fn))
+    {
+        return None;
+    }
+    let mut fns: Vec<Local> = Vec::new();
+    let mut sure = true;
+    for p in paths {
+        let Some(b) = p.get(name) else {
+            continue;
+        };
+        let env = Env::new(ctx, p);
+        let Some(l) = resolve_local(name, &env, &top()) else {
+            continue;
+        };
+        add_fns(&mut fns, fn_parts(&l));
+        // A value half on a path keeps the joined binding's (the join is no surer than a path),
+        // unless it is only the ordinary lane's choice between the functions it names.
+        sure &= !has_src(&l) || value_half_inert(b);
+    }
+    // No function on any path, and no value one may be: the restored binding says no less.
+    if fns.is_empty() && sure {
+        return None;
+    }
+    closure_value_half(&mut fns, sure, outer);
+    let names = outer
+        .whole_captures
+        .as_ref()
+        .map(|c| c.0.clone())
+        .unwrap_or_default();
+    Some(Captures(names, Some(Rc::new(Bound { fns, sure }))))
+}
+
+/// A binding whose ordinary-lane closure `resolve_local` takes drops the value half whatever the
+/// interpretation found (`Bound::sure` is not asked there): when a joined or loop-carried value may
+/// be a function the lane does not follow, stand for it by an opaque function (calling it computes
+/// from, and releases, what it is given).
+fn closure_value_half(fns: &mut Vec<Local>, sure: bool, b: &ScopeBinding) {
+    if !sure && matches!(b.closure_lambda.as_deref(), Some(Expr::Lambda { .. })) {
+        add_fns(fns, vec![Local::Opaque(None)]);
+    }
+}
+
+/// Whether a path left a binding's function side other than the statement found it: another value
+/// the lane interpreted (`whole_captures` replaced: a `let`, an assignment and an expression-position
+/// write each make new ones), or another function, identity set or closure the ordinary lane names.
+/// A closure bound with no captures of its own (a loop variable's or a binder's, copied) is compared
+/// by its text.
+fn fn_state_changed(a: &ScopeBinding, b: &ScopeBinding) -> bool {
+    let same_captures = match (&a.whole_captures, &b.whole_captures) {
+        (Some(x), Some(y)) => {
+            Rc::ptr_eq(&x.0, &y.0)
+                && match (&x.1, &y.1) {
+                    (Some(p), Some(q)) => Rc::ptr_eq(p, q),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    let text = |s: &ScopeBinding| -> String {
+        let alts: Vec<String> = s
+            .field_closures
+            .iter()
+            .filter(|(k, _)| k.starts_with(ALT_CLOSURE_PREFIX))
+            .map(|(k, l)| format!("{k}={l:?}"))
+            .collect();
+        format!("{:?}{alts:?}", s.closure_lambda)
+    };
+    !same_captures
+        || a.fn_alias != b.fn_alias
+        || a.fn_identities != b.fn_identities
+        || a.closure_lambda.is_some() != b.closure_lambda.is_some()
+        || (a.whole_captures.is_none() && b.closure_lambda.is_some() && text(a) != text(b))
 }
 
 /// Whether `expr` is known to be a list, from its shape (never from a declared type).
@@ -1461,6 +1704,26 @@ pub(super) struct Retype {
     /// binders of `if let`, `match` and `while let`, lambda parameters. A binding of one in scope may
     /// be none of the `let`s `inits` holds.
     binders: BTreeSet<String>,
+    /// The names that never hold a struct, by the values bound to them (`scalar_names`): a formal
+    /// declared with a number type (the runtime checks it on entry) or a `let`, every binding of
+    /// which is such a value. Not a declared scalar type alone: the runtime checks no `let`'s
+    /// declared type, and no `str` or `bool` result (TY-UNENFORCED).
+    scalars: BTreeSet<String>,
+    /// The names of `binders` a binding of which an edge of `bound` may read (`stale_type_in`): a
+    /// formal, a pattern's binder, and a loop variable or lambda parameter whose loop body (lambda
+    /// body) binds a name from a value `type_roots` reads it in (`edge_reads`). The checker and the
+    /// runtime scope a loop variable and a lambda parameter lexically: an edge made outside that
+    /// body reads another binding of the name.
+    binders_read: BTreeSet<String>,
+    /// The names a `let` or a pattern binds from a part of the name itself (`let x = x[0]`,
+    /// `let x = x.f`, `let x = x.step()`): that edge to its own name is not kept (`assigned_shapes`),
+    /// but the parts it reads may have changed (`container_parts_stale`).
+    self_parts: BTreeSet<String>,
+    /// Per name, whether a `let` of it joins values of other part types (`joined_lets`: its
+    /// `scalar_leaf` reads only `Retype::scalars`, so the answer is the body's), and the struct type
+    /// it surely holds as a part (`literal_bound`): asked again at every receiver.
+    joined: RefCell<BTreeMap<String, bool>>,
+    literal: RefCell<BTreeMap<String, Option<String>>>,
     /// Which functions and methods return their own type (asked again at every read of a name
     /// assigned by one): per function and type, the formals whose arguments must keep it (`None`:
     /// it does not return one); per method and type, whether it does.
@@ -1588,9 +1851,7 @@ fn container_parts_stale(n: &str, env: &Env, depth: usize, seen: &mut Seen) -> b
     }
     let r = &env.ctx.whole_retype;
     r.changes.contains(n)
-        || r.inits
-            .get(n)
-            .is_some_and(|is| is.iter().any(|i| joined_container(i, env)))
+        || joined_lets(n, env)
         || r.bound.get(n).is_some_and(|roots| {
             roots
                 .iter()
@@ -1598,11 +1859,29 @@ fn container_parts_stale(n: &str, env: &Env, depth: usize, seen: &mut Seen) -> b
         })
 }
 
+/// Whether a `let` of `n` joins values not known to hold parts of one type (`joined_container`),
+/// memoized per body (`Retype::joined`): every receiver whose parts are read from `n` asks it
+/// again. The answer is a property of the `let`s: a scalar leaf (`scalar_leaf`) is a name bound
+/// once, whose one binding every scope that has it gives the same type, so a later query reuses it.
+fn joined_lets(n: &str, env: &Env) -> bool {
+    let r = &env.ctx.whole_retype;
+    if let Some(v) = r.joined.borrow().get(n) {
+        return *v;
+    }
+    let v = r
+        .inits
+        .get(n)
+        .is_some_and(|is| is.iter().any(|i| joined_container(i, env)));
+    r.joined.borrow_mut().insert(n.to_string(), v);
+    v
+}
+
 /// Whether a `let`'s initial value joins values (`each_leaf`) not known to hold parts of one type:
 /// the checker types a join by its first branch, so a container's element or entry type may be
 /// another value's. Known alike only when, scalars aside (`scalar_leaf`), every value is a struct
 /// literal, all of one type, or every value is a list or map literal whose every part is a struct
-/// literal, all of one type. A value the lane does not see, or a payload an arm yields, is not.
+/// literal, all of one type, or a list name every element of which surely is one (`listed_type`).
+/// A value the lane does not see, or a payload an arm yields, is not.
 fn joined_container(init: &Expr, env: &Env) -> bool {
     let mut count = 0usize;
     each_leaf(init, &mut |_| count += 1);
@@ -1633,6 +1912,18 @@ fn joined_container(init: &Expr, env: &Env) -> bool {
             // A variant's payloads are its parts (`Some(t)`, `E::A(T { .. })`; `None` has none):
             // a payload arm reads them (`Leaf::Payload`).
             Expr::EnumConstruct { fields, .. } => fields.iter().collect(),
+            // A list name whose every element surely is of one type (whether those elements' own
+            // parts may be stale is asked through the edge the binding has to the name).
+            Expr::Var(y) => {
+                match listed_type(y, env) {
+                    Some(t) => {
+                        containers = true;
+                        parts.insert(t);
+                    }
+                    None => other = true,
+                }
+                return;
+            }
             _ => {
                 other = true;
                 return;
@@ -1661,9 +1952,20 @@ fn joined_container(init: &Expr, env: &Env) -> bool {
 
 /// The struct type a name surely holds as a part (`joined_container`): every binding of it is a
 /// `let` of a literal of that one type, and it is never assigned (a formal, a pattern or a loop
-/// variable may be anything). A write into one of its fields keeps its type.
+/// variable may be anything). A write into one of its fields keeps its type. Memoized per body
+/// (`Retype::literal`): it reads only the body's tables.
 fn literal_bound(y: &str, env: &Env) -> Option<String> {
     let r = &env.ctx.whole_retype;
+    if let Some(t) = r.literal.borrow().get(y) {
+        return t.clone();
+    }
+    let t = literal_type_of(y, r);
+    r.literal.borrow_mut().insert(y.to_string(), t.clone());
+    t
+}
+
+/// `literal_bound`, unmemoized.
+fn literal_type_of(y: &str, r: &Retype) -> Option<String> {
     if r.binders.contains(y) || r.assigned.contains_key(y) {
         return None;
     }
@@ -1678,8 +1980,40 @@ fn literal_bound(y: &str, env: &Env) -> Option<String> {
         .then_some(first)
 }
 
+/// The struct type every element of the list `y` surely is (`list_keeps`: every binding of it is a
+/// `let` of a list of such values, and nothing is ever assigned, written or stored into it), tried
+/// for the type of each struct literal, or `literal_bound` name, a `let` of it lists.
+fn listed_type(y: &str, env: &Env) -> Option<String> {
+    let r = &env.ctx.whole_retype;
+    let mut tried: BTreeSet<String> = BTreeSet::new();
+    for init in r.inits.get(y)? {
+        let Expr::ArrayLiteral { elements } = init else {
+            continue;
+        };
+        for e in elements {
+            let t = match e {
+                Expr::StructLiteral { name, .. } => {
+                    Some(name.split('<').next().unwrap_or("").trim().to_string())
+                }
+                Expr::Var(z) => literal_bound(z, env),
+                _ => None,
+            };
+            let Some(t) = t else {
+                continue;
+            };
+            if tried.insert(t.clone()) && list_keeps(y, &t, env.ctx) {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
 /// Whether a value is surely a scalar (a number, a string, a bool), which has no parts: a literal,
-/// arithmetic on scalars, or a name bound once, which the scope gives a scalar type.
+/// arithmetic on scalars, or a name every binding of which holds one by its value
+/// (`Retype::scalars`). A scalar type the scope gives a name is not enough: neither the checker
+/// nor the runtime checks a `let`'s declared type (`let n: i64 = mk()` may bind a struct), nor a
+/// declared `str` or `bool` result (TY-UNENFORCED).
 fn scalar_leaf(e: &Expr, env: &Env) -> bool {
     let r = &env.ctx.whole_retype;
     match e {
@@ -1688,14 +2022,7 @@ fn scalar_leaf(e: &Expr, env: &Env) -> bool {
         Expr::Binary { op, lhs, rhs } => {
             op != "+" || (scalar_leaf(lhs, env) && scalar_leaf(rhs, env))
         }
-        Expr::Var(x) => {
-            r.inits.get(x).map_or(0, Vec::len) + usize::from(r.binders.contains(x)) <= 1
-                && env
-                    .scope
-                    .get(x)
-                    .and_then(|b| b.info.ty.as_deref())
-                    .is_some_and(|t| numeric_type(t) || matches!(t.trim(), "str" | "bool"))
-        }
+        Expr::Var(x) => r.scalars.contains(x),
         _ => false,
     }
 }
@@ -1714,7 +2041,10 @@ fn scalar_leaf(e: &Expr, env: &Env) -> bool {
 /// every `let` is judged as the checker would type it. Through an edge — a `let`'s edge to its own
 /// name among them (`assigned_shapes`), which reads another binding of it — which binding the edge
 /// reads is not known: every `let` must then be known to bind a `ty` (a join's rule), and a formal,
-/// pattern or loop variable of the name may be anything.
+/// pattern or loop variable of the name that an edge may read (`binders_read`) may be anything. A
+/// `let` or pattern binding the name from a part of itself (`self_parts`) reads the parts of another
+/// binding of it, which may have changed (`container_parts_stale`). A name the parts are built from
+/// (`Via::Element`) is the question for the parts (`loose` off), never for the own type.
 fn stale_type_in(n: &str, ty: &str, env: &Env, depth: usize, seen: &mut Seen, loose: bool) -> bool {
     let ctx = env.ctx;
     // The name asked about is a pair of its own: an edge to itself enters it as any binding.
@@ -1735,11 +2065,12 @@ fn stale_type_in(n: &str, ty: &str, env: &Env, depth: usize, seen: &mut Seen, lo
     let lets: &[Expr] = r.inits.get(n).map(Vec::as_slice).unwrap_or_default();
     let twice = lets.len() + usize::from(r.binders.contains(n)) > 1;
     let inits = if depth > 0 && twice {
-        r.binders.contains(n) || lets.iter().any(|i| init_retypes(i, ty, true, env, loose))
+        r.binders_read.contains(n) || lets.iter().any(|i| init_retypes(i, ty, true, env, loose))
     } else {
         lets.iter().any(|i| init_retypes(i, ty, false, env, loose))
     };
     inits
+        || (r.self_parts.contains(n) && container_parts_stale(n, env, depth + 1, seen))
         || r.assigned
             .get(n)
             .is_some_and(|vs| vs.iter().any(|v| !keeps_type(v, n, ty, ctx, 0, loose)))
@@ -1747,7 +2078,7 @@ fn stale_type_in(n: &str, ty: &str, env: &Env, depth: usize, seen: &mut Seen, lo
             roots.iter().any(|(root, via)| match via {
                 Via::Whole => stale_type_in(root, ty, env, depth + 1, seen, loose),
                 Via::Part => parts_stale(root, env, depth + 1, seen),
-                Via::Element => false,
+                Via::Element => !loose && parts_stale(root, env, depth + 1, seen),
             })
         })
 }
@@ -1759,22 +2090,28 @@ const NO_NAME: &str = "\u{1}none";
 /// declared or inferred for the name (neither is enforced: TY-UNENFORCED). The checker infers a
 /// join's type (`if`, `match`, a block's values) from its FIRST typed branch, and a cast's from the
 /// cast (the runtime leaves the value as it is). The only value is taken as given
-/// (`let s: T = get()`) unless it is a literal of another type or a name the scope gives another
-/// struct type. A join's values must each be known to be a `ty`: a literal of it, a call of a
-/// function returning one (`keeps_type`), or a name every binding of which is a `let` of one
-/// (`lets_keep`; its assignments and what it is bound from are followed as `Via::Whole`) — never
-/// a value the lane does not see. With the `loose` rules (the value's own type: `own_stale`), also
-/// a value `sure_value` knows (a position of a list of them), a name the value binds again (a
-/// block's `let`) every binding of which anywhere keeps it (`name_keeps`), and a `V(x) => x` arm
-/// whose scrutinee's every `V` payload is one (`payload_keeps`). `as_join`: the only value too (the
-/// `let` is one of several bindings of its name, and the type asked about may be another's:
-/// `stale_type_in`).
+/// (`let s: T = xs[0]`, `let s = w.f`: a declared type of a place or of the `let`, TY-UNENFORCED)
+/// unless it is a literal of another type or a name the scope gives another struct type — or a
+/// call (`typed_call`: `let s: T = get()`, `let s = f()` of a `fn f() -> T`), judged as a join's
+/// value is, since the runtime checks neither declared type. A join's values must each be known to
+/// be a `ty`: a literal of it, a call of a function returning one (`keeps_type`), or a name every
+/// binding of which is a `let` of one (`lets_keep`; its assignments and what it is bound from are
+/// followed as `Via::Whole`) — never a value the lane does not see. With the `loose` rules (the
+/// value's own type: `own_stale`), also a value `sure_value` knows (a position of a list of them),
+/// a name the value binds again (a block's `let`) every binding of which anywhere keeps it
+/// (`name_keeps`), and a `V(x) => x` arm whose scrutinee's every `V` payload is one
+/// (`payload_keeps`). `as_join`: the only value too (the `let` is one of several bindings of its
+/// name, and the type asked about may be another's: `stale_type_in`).
 fn init_retypes(init: &Expr, ty: &str, as_join: bool, env: &Env, loose: bool) -> bool {
     let mut count = 0usize;
     each_leaf(init, &mut |_| count += 1);
     let join = as_join || count != 1;
     let mut retyped = false;
     each_leaf(init, &mut |leaf| {
+        // A call's value is typed from the callee's declared result, or from the `let`'s own
+        // declared type, and the runtime checks neither for a struct (TY-UNENFORCED): as the only
+        // value too, it must be known to be a `ty`, as a join's value must.
+        let join = join || matches!(leaf, Leaf::Value(v) if typed_call(v, env.ctx));
         retyped |= match leaf {
             Leaf::Unseen => join,
             Leaf::Payload(scrutinee, variant) if loose => {
@@ -1820,6 +2157,24 @@ fn init_retypes(init: &Expr, ty: &str, as_join: bool, env: &Env, loose: bool) ->
         };
     });
     retyped
+}
+
+/// Whether a value is a call the checker types from a declaration the runtime does not check for a
+/// struct (TY-UNENFORCED): of a user function (its declared result), of a local or formal (the
+/// runtime calls one before a builtin of its name), of a name no builtin has, or of a method (its
+/// declared result). A builtin's result is typed from what it is given, which `type_roots` follows.
+fn typed_call(v: &Expr, ctx: &SemanticContext) -> bool {
+    let r = &ctx.whole_retype;
+    match v {
+        Expr::Call { callee, .. } => {
+            ctx.whole_fns.contains_key(callee)
+                || r.binders.contains(callee)
+                || r.inits.contains_key(callee)
+                || !crate::backends::run::is_builtin_name(callee)
+        }
+        Expr::CallExpr { .. } => true,
+        _ => false,
+    }
 }
 
 /// A value `each_leaf` reaches.
@@ -2095,6 +2450,56 @@ fn binds_in(e: &Expr, x: &str) -> bool {
     hit
 }
 
+/// Whether a statement or pattern in `stmts` (at any depth: value blocks, closures) makes an edge
+/// to `x` (`assigned_shapes`: a `let`, an assignment, a pattern, a loop variable, the binders of an
+/// `if let` or a `match`, bound from a value `type_roots` reads `x` in).
+fn edge_reads(stmts: &[Stmt], x: &str, ctx: &SemanticContext) -> bool {
+    let reads = |v: &Expr| {
+        let mut roots = Vec::new();
+        type_roots(v, ctx, Via::Whole, &mut roots);
+        roots.iter().any(|(r, _)| r == x)
+    };
+    let mut hit = false;
+    visit::each_stmt(stmts, &mut |s, _| {
+        hit |= match s {
+            Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => reads(init),
+            Stmt::Assign { value, .. } => reads(value),
+            Stmt::For {
+                source: crate::frontend::ForSource::Collection { expr },
+                ..
+            } => reads(expr),
+            Stmt::WhileLet { expr, .. } => reads(expr),
+            _ => false,
+        };
+    });
+    visit::each_expr_in_stmts(stmts, &mut |e| {
+        hit |= match e {
+            Expr::IfLet { scrutinee, .. } | Expr::Match { scrutinee, .. } => {
+                reads(scrutinee.as_ref())
+            }
+            _ => false,
+        };
+    });
+    hit
+}
+
+/// `edge_reads` in an expression (a lambda's body).
+fn edge_reads_in(e: &Expr, x: &str, ctx: &SemanticContext) -> bool {
+    let mut hit = false;
+    visit::each_expr(e, &mut |s| {
+        hit |= match s {
+            Expr::Block { stmts, .. } => edge_reads(stmts, x, ctx),
+            Expr::IfLet { scrutinee, .. } | Expr::Match { scrutinee, .. } => {
+                let mut roots = Vec::new();
+                type_roots(scrutinee, ctx, Via::Part, &mut roots);
+                roots.iter().any(|(r, _)| r == x)
+            }
+            _ => false,
+        };
+    });
+    hit
+}
+
 /// Whether the declared type of the part `seg` (a field's name, `WHOLE_ANY` for a position) of `n`
 /// may be stale: that part, or any, is written into; `n`'s own type (`own`, when known) may be; or
 /// its parts were built from a name that changes.
@@ -2129,17 +2534,32 @@ fn first_segment(place: &Expr) -> Option<String> {
 }
 
 /// The names a value's struct type (or its parts' types) is read from, and how (`Via`). A struct
-/// literal's own type, or a declared function result's, is read from no name.
+/// literal's own type, or a declared function result's, is read from no name; a call's result's
+/// parts may be what the callee writes (`WROTE`).
 fn type_roots(v: &Expr, ctx: &SemanticContext, via: Via, out: &mut Vec<(String, Via)>) {
     let part = via.max(Via::Part);
+    // A call's result as a value: its own type is the callee's result, its parts may be what the
+    // callee writes into a part of.
+    let parts = if via == Via::Whole { Via::Element } else { via };
     match v {
         Expr::Var(x) => out.push((x.clone(), via)),
         Expr::FieldAccess { base, .. } | Expr::Index { base, .. } => {
             type_roots(base, ctx, part, out)
         }
         Expr::CallExpr { callee, .. } => {
-            if let Expr::FieldAccess { base, .. } = callee.as_ref() {
-                type_roots(base, ctx, part, out);
+            match callee.as_ref() {
+                Expr::FieldAccess { base, field, .. } => {
+                    type_roots(base, ctx, part, out);
+                    // A method that writes into a part, or a function a field holds (no impl
+                    // declares the name).
+                    if !ctx.whole_methods.contains_key(field)
+                        || ctx.whole_part_writers.contains(&format!("impl {field}"))
+                    {
+                        out.push((WROTE.to_string(), parts));
+                    }
+                }
+                // A function value called (`f(x)(y)`) may be any function.
+                _ => out.push((WROTE.to_string(), parts)),
             }
         }
         // A builtin may return an element; a user function without a declared result may return
@@ -2150,6 +2570,14 @@ fn type_roots(v: &Expr, ctx: &SemanticContext, via: Via, out: &mut Vec<(String, 
                 for a in args {
                     type_roots(a, ctx, part, out);
                 }
+            }
+            // A user function that writes into a part, or a function value (`let g = setf;
+            // g(w, x)`, a closure): any function but a builtin.
+            let value = !user
+                && !crate::backends::run::is_builtin_name(callee)
+                && crate::frontend::builtin_variant_enum(callee).is_none();
+            if value || (user && ctx.whole_part_writers.contains(callee)) {
+                out.push((WROTE.to_string(), parts));
             }
         }
         // A literal's parts are what it is built from.
@@ -2888,7 +3316,9 @@ pub(super) fn assigned_shapes(
     body: &[Stmt],
     ctx: &SemanticContext,
 ) -> (BTreeSet<String>, BTreeSet<String>, Retype) {
-    // A builtin's name bound by a `let` anywhere in the body (a closure, say) is not the builtin.
+    // A builtin's name bound by a `let` anywhere in the body (a closure, say) is not the builtin —
+    // the runtime calls a local of that name first, and its locals are every name the body binds —
+    // except in a statement `push` (below).
     fn let_names(stmts: &[Stmt], out: &mut BTreeSet<String>) {
         for s in stmts {
             match s {
@@ -3022,6 +3452,23 @@ pub(super) fn assigned_shapes(
     visit::each_expr_in_stmts(body, &mut |e| {
         if let Expr::Call { callee, args } = e {
             if IN_PLACE.contains(&callee.as_str()) && !lets.contains(callee) {
+                if let Some(Expr::Var(n)) = args.first() {
+                    retype
+                        .written
+                        .entry(n.clone())
+                        .or_default()
+                        .insert(WHOLE_ANY.to_string());
+                }
+            }
+        }
+    });
+    // A statement `push(xs, v)` pushes in place whatever else `push` names: the runtime lowers it
+    // before looking at any local or function (`in_place_mark`'s `statement_push`), wherever a
+    // `let push` is. (As a value's last statement it calls the local instead: counting it anyway
+    // only adds.)
+    visit::each_stmt(body, &mut |s, _| {
+        if let Stmt::ExprStmt(Expr::Call { callee, args }) = s {
+            if callee == "push" {
                 if let Some(Expr::Var(n)) = args.first() {
                     retype
                         .written
@@ -3171,6 +3618,36 @@ pub(super) fn assigned_shapes(
         Expr::Lambda { params, .. } => retype.binders.extend(params.iter().cloned()),
         _ => {}
     });
+    // Those of them a binding of which an edge may read (`Retype::binders_read`): every formal and
+    // pattern binder; a loop variable or a lambda parameter only when its body makes an edge to it.
+    retype
+        .binders_read
+        .extend(params.iter().map(|(p, _)| p.clone()));
+    visit::each_stmt(body, &mut |s, _| match s {
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            retype.binders_read.extend(pattern.bound_names())
+        }
+        Stmt::For { var, body: b, .. } if edge_reads(b, var, ctx) => {
+            retype.binders_read.insert(var.clone());
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::IfLet { pattern, .. } => retype.binders_read.extend(pattern.bound_names()),
+        Expr::Match { arms, .. } => {
+            for a in arms {
+                retype.binders_read.extend(a.pattern.bound_names());
+            }
+        }
+        Expr::Lambda { params, body: lb } => {
+            for p in params {
+                if edge_reads_in(lb, p, ctx) {
+                    retype.binders_read.insert(p.clone());
+                }
+            }
+        }
+        _ => {}
+    });
     // And inside expressions: value blocks, and the binders of `if let` and `match`.
     visit::each_expr_in_stmts(body, &mut |e| match e {
         Expr::Block { stmts, .. } => binds(stmts, &mut bound),
@@ -3203,19 +3680,32 @@ pub(super) fn assigned_shapes(
             count != 1
         };
         for n in names {
-            let rs: Vec<(String, Via)> = roots
-                .iter()
-                .filter(|(r, v)| {
-                    r != n
-                        || (*by_let && (*v == Via::Whole || joined) && !binds_in(value, n.as_str()))
-                })
-                .cloned()
-                .collect();
+            let keep = |r: &String, v: &Via| {
+                r != n || (*by_let && (*v == Via::Whole || joined) && !binds_in(value, n.as_str()))
+            };
+            let rs: Vec<(String, Via)> =
+                roots.iter().filter(|(r, v)| keep(r, v)).cloned().collect();
+            // The edge dropped from a `let` or a pattern reading a PART of its own name (`let x =
+            // x[0]`, `let x = x.f`, `for x in x`): the type was read from that binding, but its
+            // parts may have changed since (`self_parts`). An assignment's is `keeps_type`'s.
+            if (*by_let || *via != Via::Whole)
+                && roots
+                    .iter()
+                    .any(|(r, v)| r == n && *v != Via::Whole && !keep(r, v))
+            {
+                retype.self_parts.insert(n.clone());
+            }
             if !rs.is_empty() {
                 retype.bound.entry(n.clone()).or_default().extend(rs);
             }
         }
     }
+    // The result of a call that may write into a part of a value (`type_roots`) has stale parts.
+    retype
+        .written
+        .entry(WROTE.to_string())
+        .or_default()
+        .insert(WHOLE_ANY.to_string());
     // A name bound from another as a whole (`let x = y`, a branch of one, `x = y`) holds its value,
     // with the parts written into it (`stale_part`, `parts_stale`). Values are copied, so a write
     // made after the binding does not reach it: counting it anyway only adds.
@@ -3257,6 +3747,19 @@ pub(super) fn assigned_shapes(
             break;
         }
     }
+    // The names that hold no struct by their values (`Retype::scalars`): the formals the runtime
+    // checks for a number on entry (`numeric_formals`), and `let`s of such values.
+    let formals: Vec<String> = params.iter().map(|(p, _)| p.clone()).collect();
+    let num: BTreeSet<String> = params
+        .iter()
+        .filter(|(_, t)| {
+            crate::middle::ty::unsigned_mask_width(t).is_some()
+                || crate::middle::ty::is_integer(t)
+                || crate::middle::ty::is_float(t)
+        })
+        .map(|(p, _)| p.clone())
+        .collect();
+    retype.scalars = body_names(&formals, &num, body, ctx).scalars;
     (not_list, not_map, retype)
 }
 
@@ -3281,6 +3784,17 @@ pub(super) fn expr_writes(
     let at = seeded(expr, &env);
     let w = walk(expr, &env, &at, &None);
     let view = w.view();
+    let written = written_names([expr]);
+    let mut in_place = BTreeSet::new();
+    visit::each_expr(expr, &mut |x| {
+        if let Expr::Call { callee, args } = x {
+            if IN_PLACE.contains(&callee.as_str()) {
+                if let Some(Expr::Var(v)) = args.first() {
+                    in_place.insert(v.clone());
+                }
+            }
+        }
+    });
     view.locals
         .iter()
         .filter(|(n, _)| scope.contains_key(*n))
@@ -3293,7 +3807,17 @@ pub(super) fn expr_writes(
                     .and_then(|b| b.whole_captures.as_ref())
                     .map(|c| c.0.clone())
                     .unwrap_or_default();
-                let sure = !has_src(l);
+                // Sure when no value may be there but the functions found, or when every value the
+                // expression writes to the name is one the lane follows ([`writes_seen`]).
+                let sure = !has_src(l)
+                    || writes_seen(
+                        n,
+                        |f| visit::each_stmt_in_expr(expr, f),
+                        |f| visit::each_expr(expr, f),
+                        &written,
+                        in_place.contains(n),
+                        &env,
+                    );
                 Captures(names, Some(Rc::new(Bound { fns, sure })))
             });
             (n.clone(), local_src(l), k.list, k.map, captures)
@@ -3700,16 +4224,30 @@ fn chosen_captures(
             });
         }
     });
+    // Only what the free names of the closure bound here hold is ever read from these captures
+    // (`Env::closure` keeps no other): the names `e` reads (a lambda in it, a helper's lambda with
+    // `e`'s arguments put in), and those of every closure a name it reads holds (its own, the
+    // alternatives, a container's). Keeping the rest made a chain of choices over closures
+    // (`let f2 = if c { |x| 1 } else { f1 }`, …) carry every earlier binding's captures in each later
+    // one: memory cubic in the chain's length.
+    let mut wanted = free_names(e);
     visit::each_expr(e, &mut |x| {
         if let Expr::Var(v) = x {
             if in_lambdas.contains(&(x as *const Expr as usize)) {
                 return;
             }
-            if let Some(c) = scope.get(v).and_then(|b| b.whole_captures.as_ref()) {
+            let Some(b) = scope.get(v) else {
+                return;
+            };
+            if let Some(c) = b.whole_captures.as_ref() {
                 caps = join_locals(&caps, &c.0);
+            }
+            for lam in b.closure_lambda.iter().chain(b.field_closures.values()) {
+                wanted.extend(free_names(lam));
             }
         }
     });
+    caps.retain(|n, _| wanted.contains(n));
     Captures(Rc::new(caps), None)
 }
 
@@ -3871,6 +4409,15 @@ fn bound_sure(b: &ScopeBinding) -> bool {
         .as_ref()
         .and_then(|c| c.1.as_deref())
         .is_none_or(|x| x.sure)
+}
+
+/// Whether the value half `resolve_local` gives a name of the caller's scope stands for no value
+/// but the functions the ordinary lane names: it names some (`Known`, as its `Named` cases trust; a
+/// choice between several, with no alias, keeps a value half there) and the lane's interpretation of
+/// what was bound, if any, followed every value (`bound_sure`). A name bound to a literal, an operator
+/// or a struct names none: calling it computes from what it is given, as on its own path.
+fn value_half_inert(b: &ScopeBinding) -> bool {
+    bound_sure(b) && matches!(&b.fn_identities, FnIdentitySet::Known(ns) if !ns.is_empty())
 }
 
 /// Whether a name of the caller's scope stands only for functions the lane follows, with no value
@@ -4074,6 +4621,109 @@ pub(super) fn compute_builders(ctx: &SemanticContext) -> BTreeMap<String, String
             return out;
         }
         out = next;
+    }
+}
+
+/// The functions and (`impl`-prefixed) methods a call of which may return a value with a part of
+/// another type than the declared or inferred type gives it, because it writes into a part of a
+/// value (a field or position assignment, an in-place builtin: `let mut c = self; c.f = x; return
+/// c`, `push(out, x); return out`) — directly, by calling one (by name, or naming one as a value),
+/// or by calling a function value it is given or binds (a formal or a local called, a callback a
+/// builtin returns what it returns, a call of a call), which may be one. The parts of what such a
+/// call returns are stale (`type_roots`: `WROTE`); its own type is its result's.
+pub(super) fn compute_part_writers(ctx: &SemanticContext) -> BTreeSet<String> {
+    let direct = |params: &[String], body: &[Stmt]| {
+        let b = bindings(body);
+        let local =
+            |n: &str| params.iter().any(|p| p == n) || b.lets.contains(n) || b.other.contains(n);
+        let mut hit = !b.parts.is_empty();
+        visit::each_stmt(body, &mut |s, _| {
+            hit |= matches!(s, Stmt::Assign { target, .. } if !matches!(target, Expr::Var(_)));
+        });
+        visit::each_expr_in_stmts(body, &mut |e| {
+            hit |= match e {
+                Expr::Call { callee, args } => {
+                    IN_PLACE.contains(&callee.as_str())
+                        || local(callee)
+                        || callback_args(callee, args).iter().any(|a| match a {
+                            // A lambda's body is this body's; a function's name, a writer or not;
+                            // a literal or arithmetic (a `reduce` seed) is no function.
+                            Expr::Lambda { .. }
+                            | Expr::Literal(_)
+                            | Expr::StrLiteral(_)
+                            | Expr::Binary { .. }
+                            | Expr::Unary { .. }
+                            | Expr::ArrayLiteral { .. }
+                            | Expr::MapLiteral { .. }
+                            | Expr::StructLiteral { .. }
+                            | Expr::EnumConstruct { .. } => false,
+                            Expr::Var(x) => local(x),
+                            _ => true,
+                        })
+                }
+                // A function value called: a call's result, or a field no impl declares a
+                // method for.
+                Expr::CallExpr { callee, .. } => match callee.as_ref() {
+                    Expr::FieldAccess { field, .. } => !ctx.whole_methods.contains_key(field),
+                    _ => true,
+                },
+                _ => false,
+            };
+        });
+        hit
+    };
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for (n, (params, body)) in &ctx.whole_fns {
+        if direct(params.as_slice(), body.as_slice()) {
+            out.insert(n.clone());
+        }
+    }
+    for (m, impls) in &ctx.whole_methods {
+        if impls
+            .iter()
+            .any(|(_, (params, body))| direct(params.as_slice(), body.as_slice()))
+        {
+            out.insert(format!("impl {m}"));
+        }
+    }
+    loop {
+        let calls = |body: &[Stmt]| {
+            let mut hit = false;
+            visit::each_expr_in_stmts(body, &mut |e| {
+                hit |= match e {
+                    Expr::Call { callee: n, .. } | Expr::Var(n) => out.contains(n),
+                    Expr::CallExpr { callee, .. } => matches!(callee.as_ref(),
+                        Expr::FieldAccess { field, .. } if out.contains(&format!("impl {field}"))),
+                    _ => false,
+                };
+            });
+            hit
+        };
+        let mut next = out.clone();
+        for (n, (_, body)) in &ctx.whole_fns {
+            if !out.contains(n) && calls(body.as_slice()) {
+                next.insert(n.clone());
+            }
+        }
+        for (m, impls) in &ctx.whole_methods {
+            let key = format!("impl {m}");
+            if !out.contains(&key) && impls.iter().any(|(_, (_, body))| calls(body.as_slice())) {
+                next.insert(key);
+            }
+        }
+        if next.len() == out.len() {
+            return out;
+        }
+        out = next;
+    }
+}
+
+/// The arguments a builtin may call as a function and return what it returns (`builtin_src`).
+fn callback_args<'e>(callee: &str, args: &'e [Expr]) -> &'e [Expr] {
+    match callee {
+        "map" | "map_values" | "flat_map" | "times" | "reduce" => args.get(1..).unwrap_or(&[]),
+        "call" | "apply" => args.get(..1).unwrap_or(&[]),
+        _ => &[],
     }
 }
 
@@ -4578,9 +5228,12 @@ fn resolve_local(n: &str, env: &Env, at: &At) -> Option<Local> {
             }
         }
     }
-    // And every function and closure that interpretation found.
+    // And every function and closure that interpretation found (distinct among themselves: each is
+    // compared only with what is named above, or a long chain of choices is compared pairwise at
+    // every read).
+    let listed = all.len();
     for l in bound.map(|x| x.fns.as_slice()).unwrap_or_default() {
-        if !all.contains(l) {
+        if !all[..listed].contains(l) {
             all.push(l.clone());
         }
     }
@@ -4706,6 +5359,10 @@ fn src(e: &Expr, env: &Env, at: &At) -> Option<WholeSrc> {
     // Out of stack (or past another analysis limit): the request is refused; answer the worst.
     if analysis_limit::cut() {
         return Some(WholeSrc::Computed(ANALYSIS_LIMIT_SOURCE.to_string()));
+    }
+    // A value construct the walk being read ran: what it held where it ran.
+    if let Some(w) = walked_here(e, env, at) {
+        return w.val;
     }
     let ctx = env.ctx;
     let rec = |x: &Expr| src(x, env, at);
@@ -5011,6 +5668,9 @@ struct Fx {
     /// The function values the value may be (a block's, `if`'s, `if let`'s or `match`'s), each read
     /// where its arm's names are bound.
     fns: Vec<Local>,
+    /// Walking an expression: the value constructs it ran (itself, or those its parts ran), read
+    /// as it ran them where its view is read ([`at_view`]).
+    walked: Option<Rc<Walked>>,
     egress: Option<WholeSrc>,
     brk: Option<Locals>,
     cont: Option<Locals>,
@@ -5043,6 +5703,7 @@ impl Fx {
             valued: false,
             known: false,
             fns: Vec::new(),
+            walked: None,
             egress: None,
             brk: None,
             cont: None,
@@ -5076,6 +5737,7 @@ impl Fx {
 
     /// Continue with what `next` (run from the names as they stand) did.
     fn then(&mut self, next: Fx) {
+        merge_walked(&mut self.walked, &next.walked);
         self.ret = join(self.ret.take(), next.ret);
         self.returned |= next.returned;
         self.egress = join(self.egress.take(), next.egress);
@@ -5097,6 +5759,7 @@ impl Fx {
     fn branches(&mut self, here: &At, arms: Vec<Fx>) {
         let mut after: Option<Locals> = None;
         for a in arms {
+            merge_walked(&mut self.walked, &a.walked);
             self.ret = join(self.ret.take(), a.ret);
             self.returned |= a.returned;
             self.val = join(self.val.take(), a.val);
@@ -5196,7 +5859,20 @@ fn walked_value(e: &Expr, x: &Fx, env: &Env) -> Option<WholeSrc> {
     if x.known {
         x.val.clone()
     } else {
-        src(e, env, &x.view())
+        at_view(x, env, |view| src(e, env, view))
+    }
+}
+
+/// `v`, what [`walked_value`] gave for `e` just walked, as `src` reads it: without the conditions
+/// around the walk, which only a value construct's walk joins in (its record, [`Walked`]).
+fn plain_value(e: &Expr, x: &Fx, v: &Option<WholeSrc>) -> Option<WholeSrc> {
+    match x
+        .walked
+        .as_ref()
+        .and_then(|w| w.get(&(e as *const Expr as usize)))
+    {
+        Some(r) => r.val.clone(),
+        None => v.clone(),
     }
 }
 
@@ -5208,7 +5884,7 @@ fn walked_local(e: &Expr, x: &Fx, env: &Env) -> Local {
             x.val.clone().map(WholeSrc::capped),
             kind_of(e, env, &x.view()),
         ),
-        _ => match let_local(e, env, &x.view()) {
+        _ => match at_view(x, env, |view| let_local(e, env, view)) {
             Local::Src(v, k) => Local::Src(v.map(WholeSrc::capped), k),
             other => other,
         },
@@ -5224,21 +5900,85 @@ fn walked_local(e: &Expr, x: &Fx, env: &Env) -> Local {
     }
 }
 
-/// The function values an expression just walked may be: those the walk collected where each arm's
-/// names were bound (a value block, `if`, `if let`, `match`), and [`passed_fns`] where the walk
-/// ended. There, a name a pattern bound inside an arm is read as the same name outside it (a
-/// binder that took a function apart is only a value, and the outer name may be that function):
-/// an arm's value block is read by its tail there, not run again.
+/// The function values an expression just walked may be: those the walk collected where it ran
+/// each block and arm (a value block, `if`, `if let`, `match`), else [`fns_in`] at the walk's
+/// view, with the value constructs inside read as the walk ran them ([`at_view`]).
 fn walked_fns(e: &Expr, x: &Fx, env: &Env) -> Vec<Local> {
-    let arms = matches!(
+    if is_construct(e) {
+        return x.fns.clone();
+    }
+    at_view(x, env, |view| {
+        let mut out = Vec::new();
+        fns_in(e, env, view, &mut out);
+        out
+    })
+}
+
+/// A value construct: a value block, `if`, `if let` or `match` (what a walk runs itself, and
+/// records: [`Walked`]).
+fn is_construct(e: &Expr) -> bool {
+    matches!(
         e,
         Expr::Block { .. } | Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. }
-    );
-    let mut fns = if arms { x.fns.clone() } else { Vec::new() };
-    let mut here = Vec::new();
-    passed_fns_in(e, env, &x.view(), !arms, &mut here);
-    add_fns(&mut fns, here);
-    fns
+    )
+}
+
+/// Evaluate `f` at the view of the walk `x` (the join of every state it passed through), with the
+/// value constructs the walk ran — a value block, `if`, `if let`, `match` — read as it ran them:
+/// each where the runtime runs it, after the parts before it, from the names they left. Run again
+/// from the view, a construct would read a write made after it (an arm's own write deciding its
+/// scrutinee), lose the order of its own parts (a guard's write before the arm, one argument's
+/// write before the next), and run every construct nested in it once more per level of nesting
+/// (round 38: O1, L9, L10, P1, P2).
+fn at_view<R>(x: &Fx, env: &Env, f: impl FnOnce(&At) -> R) -> R {
+    let view = x.view();
+    let Some(w) = &x.walked else {
+        return f(&view);
+    };
+    env.frames.borrow_mut().push((view.clone(), w.clone()));
+    let r = f(&view);
+    env.frames.borrow_mut().pop();
+    r
+}
+
+/// A value construct the innermost [`at_view`] reads, asked for at its view.
+fn walked_here(e: &Expr, env: &Env, at: &At) -> Option<WalkedAt> {
+    if !is_construct(e) {
+        return None;
+    }
+    let frames = env.frames.borrow();
+    let (view, w) = frames.last()?;
+    if !Rc::ptr_eq(&view.locals, &at.locals)
+        || view.use_scope != at.use_scope
+        || view.depth != at.depth
+    {
+        return None;
+    }
+    w.get(&(e as *const Expr as usize)).cloned()
+}
+
+/// Add the value constructs `from` ran to `into`; a construct run in both joins what each run
+/// found (a guard run once per alternative of an or-pattern, a block reached on two paths).
+fn merge_walked(into: &mut Option<Rc<Walked>>, from: &Option<Rc<Walked>>) {
+    if let Some(f) = from {
+        match into {
+            None => *into = Some(f.clone()),
+            Some(i) => {
+                let m = Rc::make_mut(i);
+                for (k, v) in f.iter() {
+                    match m.get_mut(k) {
+                        Some(cur) => {
+                            cur.val = join(cur.val.take(), v.val.clone());
+                            add_fns(&mut cur.fns, v.fns.clone());
+                        }
+                        None => {
+                            m.insert(*k, v.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Add `more` to `fns`, each once.
@@ -5269,60 +6009,179 @@ fn value_local(e: &Expr, s: &Option<WholeSrc>, env: &Env, at: &At) -> Local {
 }
 
 /// The function values an expression may yield as they are: given to a builtin, wrapped in a
-/// variant, taken by `?`, released, or chosen by a branch.
+/// variant, taken by `?`, released, or chosen by a branch ([`fns_in`]).
 fn passed_fns(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
-    passed_fns_in(e, env, at, true, out)
+    fns_in(e, env, at, out)
 }
 
-/// [`passed_fns`]; a value block, and an `if let` or `match` arm, is also run (`blocks`) for the
-/// value its run reads.
+/// A name bound again — by a `let`, a plain assignment, a pattern's binder or a loop variable — to
+/// `new`. When the name stood for a function (`before`) and `new` may be a function the lane does
+/// not follow — it has a value half, and the bound expression is not `exact` ([`exact_value`]): an
+/// element, a field, a call's result, `?`, a pattern's part — the name may still be that function:
+/// the lane follows no function taken out of a container (FV-OPEN-6), and a program taking one out
+/// under the name it had is caught this way however many blocks, arms and assignments rebind it
+/// (round 38: L1, L2, L3, L11). A binding the lane follows exactly (a lambda, an alias of a
+/// function, a choice between functions) replaces what the name stood for (O2).
 ///
-/// Each is run from the position `src` and the walk run it from — a value block where it stands,
-/// an arm where its pattern's binders are bound — so a block runs once however often it is asked
-/// for. A value block nested in a block's tail or in an arm is also run once from HERE, where the
-/// names those blocks and patterns bind are not bound, when one of them stands for a function here
-/// (a binder that took a function apart is only a value where it is bound, and the outer name may
-/// be that function: see `walked_fns`). Such a run (`Env::phantom`) starts such runs of its own
-/// only up to [`MAX_PHANTOM`] deep: a run for every combination of bound and unbound names doubles
-/// at every level of a nested value.
-fn passed_fns_in(e: &Expr, env: &Env, at: &At, blocks: bool, out: &mut Vec<Local>) {
-    fns_in(e, env, at, if blocks { Pass::Run } else { Pass::Read }, out);
-    let depth = env.phantom.get();
-    if blocks && depth < MAX_PHANTOM {
-        env.phantom.set(depth + 1);
-        fns_in(e, env, at, Pass::Unbound(false), out);
-        env.phantom.set(depth);
+/// This is the rule the runs with names unbound before round 38 approximated: a nested block also
+/// run with the names enclosing it unbound — at most two separated bands deep (`MAX_PHANTOM`), at a
+/// steep polynomial cost, and only below a `let` (not an assignment) of a name standing for a
+/// function.
+fn stick(n: &str, new: Local, exact: impl FnOnce() -> bool, env: &Env, before: &At) -> Local {
+    if !has_src(&new) {
+        return new;
+    }
+    // What it stood for as a function (`resolve_local`, read only where it may find one).
+    let old = match before.locals.get(n) {
+        Some(l) => fn_parts(l),
+        None if before.use_scope && env.scope.get(n).is_some_and(names_fn) => {
+            resolve_local(n, env, before).map_or_else(Vec::new, |l| fn_parts(&l))
+        }
+        // A user function (or an egress builtin) of that name, read as a value where no binding
+        // shadows it: the name stood for that function (round-38 cross-check 2.1: `let show =
+        // w[0]; show` in a block, with `show` a user function, is the function taken out of `w`).
+        None if !(before.use_scope && env.scope.contains_key(n))
+            && (env.is_user_fn(n) || super::is_egress_sink(n)) =>
+        {
+            vec![Local::Named(n.to_string())]
+        }
+        None => Vec::new(),
+    };
+    if old.is_empty() || exact() {
+        return new;
+    }
+    let mut all = match new {
+        Local::Any(ls) => ls,
+        l => vec![l],
+    };
+    add_fns(&mut all, old);
+    Local::Any(all)
+}
+
+/// Whether every value `e`, evaluated at `at`, may take is exactly what the lane takes it for as a
+/// function ([`leaves_seen`] for the interpreter's names): a lambda; a name standing only for
+/// functions (no value half) that `e` does not write; a user function or builtin named as a value;
+/// a literal, an operator, a list, map, struct or variant (no function at all); `identity` of one;
+/// a branch, arm or block of these. An element, a field, a call's result, `?`, or a pattern's part
+/// may be a function the lane lost.
+fn exact_value(e: &Expr, env: &Env, at: &At) -> bool {
+    exact_in(e, env, at, &BTreeMap::new(), &written_names([e]))
+}
+
+/// [`exact_value`], with the names `e`'s blocks and patterns bind (`inner`: whether each is exact)
+/// and the names it writes.
+fn exact_in(
+    e: &Expr,
+    env: &Env,
+    at: &At,
+    inner: &BTreeMap<String, bool>,
+    written: &BTreeSet<String>,
+) -> bool {
+    let rec = |x: &Expr, inner: &BTreeMap<String, bool>| exact_in(x, env, at, inner, written);
+    match e {
+        Expr::Lambda { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_) => true,
+        Expr::Var(n) => {
+            !written.contains(n)
+                && match inner.get(n) {
+                    Some(x) => *x,
+                    None => match at.locals.get(n) {
+                        Some(l) => !has_src(l),
+                        None if at.use_scope => env.scope.get(n).is_none_or(fn_only),
+                        // A user function, a builtin, or nothing.
+                        None => true,
+                    },
+                }
+        }
+        // The builtin hands its argument back (unless a function or a local takes the name).
+        Expr::Call { callee, args }
+            if callee == "identity"
+                && args.len() == 1
+                && !env.is_user_fn(callee)
+                && !inner.contains_key(callee.as_str())
+                && resolve_local(callee, env, at).is_none() =>
+        {
+            rec(&args[0], inner)
+        }
+        Expr::Cast { expr: x, .. }
+        | Expr::Tainted { inner: x, .. }
+        | Expr::Declassify { inner: x, .. } => rec(x, inner),
+        Expr::If { then, else_, .. } => rec(then, inner) && rec(else_, inner),
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            let whole = whole_binder(pattern).is_some() && rec(scrutinee, inner);
+            rec(then, &with_binders(inner, pattern, whole)) && rec(else_, inner)
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            let whole = rec(scrutinee, inner);
+            arms.iter().all(|a| {
+                let w = whole_binder(&a.pattern).is_some() && whole;
+                rec(&a.body, &with_binders(inner, &a.pattern, w))
+            })
+        }
+        // Its value: its tail, or its last statement, where its `let`s are bound.
+        Expr::Block { stmts, tail } => {
+            let mut bound = inner.clone();
+            for st in stmts {
+                match st {
+                    Stmt::Let { name, init, .. } => {
+                        let v = rec(init, &bound);
+                        bound.insert(name.clone(), v);
+                    }
+                    Stmt::LetPattern { pattern, init, .. } => {
+                        let v = whole_binder(pattern).is_some() && rec(init, &bound);
+                        bound = with_binders(&bound, pattern, v);
+                    }
+                    _ => {}
+                }
+            }
+            match (tail, stmts.last()) {
+                (Some(t), _) => rec(t, &bound),
+                (None, Some(Stmt::ExprStmt(x))) => rec(x, &bound),
+                (None, Some(Stmt::If { .. })) => false,
+                _ => true,
+            }
+        }
+        _ => false,
     }
 }
 
-/// How deep runs with names unbound nest ([`passed_fns_in`]). One level was not enough: a
-/// function reached only through two separated bands of unbound names (a binder, a plain `let`,
-/// then another binder of the same function name, inside a wrapper) was followed by the lane
-/// before round 37's bound and lost with a single level (round-37 cross-check, w1). Each level
-/// multiplies the runs by the nesting depth at most, so two stay polynomial.
-const MAX_PHANTOM: u8 = 2;
-
-/// How [`fns_in`] takes the parts of an expression: read here; read here, with each value block
-/// and arm also run where it runs; or run from here with the names enclosing it unbound, once one
-/// of those names stands for a function here (`true`).
-#[derive(Clone, Copy)]
-enum Pass {
-    Read,
-    Run,
-    Unbound(bool),
-}
-
-/// [`passed_fns_in`], one [`Pass`].
-fn fns_in(e: &Expr, env: &Env, at: &At, pass: Pass, out: &mut Vec<Local>) {
-    let reads = !matches!(pass, Pass::Unbound(_));
-    // A part inside a value block or an arm, where `names` are bound.
-    let under = |names: Vec<String>| match pass {
-        Pass::Unbound(hot) => Pass::Unbound(hot || names.iter().any(|n| fn_here(n, env, at))),
-        Pass::Read | Pass::Run => Pass::Read,
-    };
+/// The function values an expression may be, read at `at`: a value construct the walk being read
+/// ran as it ran it ([`at_view`]); one it did not, run here — a value block from `at`, an `if let`
+/// or `match` arm where its pattern's binders are bound — for the value its run reads.
+///
+/// Before round 38 the parts of a value block and of an arm were also read here with the names
+/// they bind unbound, and a nested block was also run with the names enclosing it unbound, standing
+/// in for a function the lane lost under a name that stood for one. [`stick`] keeps such a function
+/// on the name itself, where the lane may have lost it, at any depth.
+fn fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
+    if let Some(w) = walked_here(e, env, at) {
+        add_fns(out, w.fns);
+        return;
+    }
     match e {
-        Expr::Lambda { .. } if reads => out.push(env.closure(e, &at.locals, at.use_scope)),
-        Expr::Var(n) if reads => match resolve_local(n, env, at) {
+        Expr::Lambda { .. } => out.push(env.closure(e, &at.locals, at.use_scope)),
+        Expr::Var(n) => match resolve_local(n, env, at) {
             Some(l @ (Local::Closure(_) | Local::Named(_) | Local::Opaque(_))) => out.push(l),
             Some(Local::Any(ls)) => {
                 out.extend(ls.into_iter().filter(|l| !matches!(l, Local::Src(..))))
@@ -5342,20 +6201,28 @@ fn fns_in(e: &Expr, env: &Env, at: &At, pass: Pass, out: &mut Vec<Local>) {
                 && resolve_local(callee, env, at).is_none() =>
         {
             for a in args {
-                fns_in(a, env, at, pass, out);
+                fns_in(a, env, at, out);
             }
         }
         // `call(g, a..)` / `apply(g, [a..])` return what `g` returns, which may be an argument it
         // was given (`identity`, a user function or closure returning its parameter) — and `g` may
         // itself be `call` / `apply`, handing on what it was given in a list (`apply(apply,
         // [identity, [f]])`, `call(apply, identity, [f])`): a list literal's elements, at any depth.
+        // Or a function the callback makes or names itself ([`returned_fns`]).
         Expr::Call { callee, args }
             if matches!(callee.as_str(), "call" | "apply")
                 && !env.is_user_fn(callee)
                 && resolve_local(callee, env, at).is_none() =>
         {
             for a in args.iter().skip(1) {
-                spread_fns_in(a, env, at, pass, out);
+                spread_fns_in(a, env, at, out);
+            }
+            if let Some(g) = args.first() {
+                let binds = || match callee.as_str() {
+                    "call" => spread_locals(&args[1..], env, at),
+                    _ => apply_binds(args, env, at),
+                };
+                returned_fns(g, args, binds, env, at, out);
             }
         }
         // `reduce(xs, f, seed)` returns its accumulator: the seed, or what the fold returned from it.
@@ -5369,24 +6236,28 @@ fn fns_in(e: &Expr, env: &Env, at: &At, pass: Pass, out: &mut Vec<Local>) {
         {
             if let [_, fold, seed] = args.as_slice() {
                 let mut folds = Vec::new();
-                fns_in(fold, env, at, pass, &mut folds);
-                if !folds.is_empty() || !reads {
-                    fns_in(seed, env, at, pass, out);
+                fns_in(fold, env, at, &mut folds);
+                if !folds.is_empty() {
+                    fns_in(seed, env, at, out);
                 }
+            }
+            for g in args.iter().skip(1) {
+                returned_fns(g, args, || fold_binds(g, args, env, at), env, at, out);
             }
         }
         Expr::EnumConstruct { fields, .. } => {
             for f in fields {
-                fns_in(f, env, at, pass, out);
+                fns_in(f, env, at, out);
             }
         }
         Expr::Try(inner) | Expr::Declassify { inner, .. } | Expr::Cast { expr: inner, .. } => {
-            fns_in(inner, env, at, pass, out)
+            fns_in(inner, env, at, out)
         }
         Expr::If { then, else_, .. } => {
-            fns_in(then, env, at, pass, out);
-            fns_in(else_, env, at, pass, out);
+            fns_in(then, env, at, out);
+            fns_in(else_, env, at, out);
         }
+        // `then` where the pattern's binders are bound.
         Expr::IfLet {
             pattern,
             scrutinee,
@@ -5394,86 +6265,175 @@ fn fns_in(e: &Expr, env: &Env, at: &At, pass: Pass, out: &mut Vec<Local>) {
             else_,
             ..
         } => {
-            // Its branches read here (see `walked_fns`) ...
-            fns_in(then, env, at, under(pattern.bound_names()), out);
-            fns_in(else_, env, at, pass, out);
-            // ... and `then` as its run reads it, where the pattern's binders are bound.
-            if matches!(pass, Pass::Run) && may_pass_fn(then) {
+            fns_in(else_, env, at, out);
+            if may_pass_fn(then) {
                 let (s, whole) = scrutinee_at(scrutinee, env, at);
                 let inner = binders_at(env, at, pattern, &s, &whole);
-                fns_in(then, env, &inner, Pass::Run, out);
+                fns_in(then, env, &inner, out);
             }
         }
-        Expr::Block { stmts, tail } => {
-            // Its tail read here (see `walked_fns`) ...
-            if let Some(t) = tail {
-                fns_in(t, env, at, under(let_names(stmts)), out);
-            }
-            // ... and its value as its run reads it: the tail or — as the runtime reads a block
-            // (`split_tail_expr`) — the last statement, where the block's own `let`s are bound
-            // (the run `src` makes of it). A value block nested in its tail is run by that run.
-            let run = match pass {
-                Pass::Read => false,
-                Pass::Run => true,
-                Pass::Unbound(hot) => hot,
-            };
-            if run && may_pass_fn(e) {
-                out.extend(interp(stmts, tail.as_deref(), env, at, &None, Run::BLOCK_VALUE).fns);
-            }
+        // Its value as its run reads it: the tail or — as the runtime reads a block
+        // (`split_tail_expr`) — the last statement, where the block's own `let`s are bound (the run
+        // `src` makes of it).
+        Expr::Block { stmts, tail } if may_pass_fn(e) => {
+            out.extend(interp(stmts, tail.as_deref(), env, at, &None, Run::BLOCK_VALUE).fns);
         }
+        // Each arm where its binders are bound.
         Expr::Match {
             scrutinee, arms, ..
-        } => {
-            // Its arms read here (see `walked_fns`) ...
+        } if arms.iter().any(|a| may_pass_fn(&a.body)) => {
+            let (s, whole) = scrutinee_at(scrutinee, env, at);
             for a in arms {
-                fns_in(&a.body, env, at, under(a.pattern.bound_names()), out);
-            }
-            // ... and as their runs read them, where each arm's binders are bound.
-            if matches!(pass, Pass::Run) && arms.iter().any(|a| may_pass_fn(&a.body)) {
-                let (s, whole) = scrutinee_at(scrutinee, env, at);
-                for a in arms {
-                    let inner = binders_at(env, at, &a.pattern, &s, &whole);
-                    fns_in(&a.body, env, &inner, Pass::Run, out);
-                }
+                let inner = binders_at(env, at, &a.pattern, &s, &whole);
+                fns_in(&a.body, env, &inner, out);
             }
         }
         _ => {}
     }
 }
 
-/// Whether reading the name `n` here yields a function value (as `fns_in` reads a name).
-fn fn_here(n: &str, env: &Env, at: &At) -> bool {
-    match resolve_local(n, env, at) {
-        Some(Local::Src(..)) => false,
-        Some(Local::Any(ls)) => ls.iter().any(|l| !matches!(l, Local::Src(..))),
-        Some(_) => true,
-        None => env.is_user_fn(n) || crate::backends::run::is_builtin_name(n),
+/// The function values the callback `g` of `call` / `apply` / `reduce` returns when it makes or
+/// names one itself (`call(|x| print, 0)`, `apply(|x| |y| x, [p])`; round 38 L13): a closure's
+/// body read where its parameters are bound as the builtin binds them (`binds`). A function the
+/// callback is given comes back through the arguments (`fns_in`). One a `return` inside the body
+/// hands back, which the lane does not follow, or one a function the lane stopped following
+/// returns, stands for some function computing from, and releasing, everything the call can reach.
+fn returned_fns(
+    g: &Expr,
+    args: &[Expr],
+    binds: impl FnOnce() -> Vec<Local>,
+    env: &Env,
+    at: &At,
+    out: &mut Vec<Local>,
+) {
+    let parts: Vec<Local> = fn_parts(&arg_local(g, env, at))
+        .into_iter()
+        .filter(|l| matches!(l, Local::Closure(_) | Local::Opaque(_)))
+        .collect();
+    if parts.is_empty() {
+        return;
     }
+    let binds = binds();
+    let mut unknown = false;
+    for l in &parts {
+        let Local::Closure(c) = l else {
+            unknown = true;
+            continue;
+        };
+        let Expr::Lambda { params, body } = c.lam.as_ref() else {
+            continue;
+        };
+        if at.depth >= MAX_APPLY_DEPTH || returns_fn_in(body) {
+            unknown = true;
+            continue;
+        }
+        // Once per closure and arguments (a callback nested in a callback's body is read by the
+        // walk of that body and again here).
+        let cid = env.intern(c);
+        let epoch = env.epoch.get();
+        let hit = env.returned.borrow().get(&cid).and_then(|v| {
+            v.iter()
+                .find(|(b, ep, _)| *ep == epoch && *b == binds)
+                .map(|(_, _, fns)| fns.clone())
+        });
+        let fns = match hit {
+            Some(fns) => fns,
+            None => {
+                let mut locals = (*c.captured).clone();
+                for (i, p) in params.iter().enumerate() {
+                    let b = binds
+                        .get(i)
+                        .cloned()
+                        .unwrap_or(Local::Src(None, Kind::NONE));
+                    locals.insert(p.clone(), b);
+                }
+                let inner = At {
+                    locals: Rc::new(locals),
+                    use_scope: c.use_scope,
+                    depth: at.depth + 1,
+                };
+                let mut fns = Vec::new();
+                fns_in(body, env, &inner, &mut fns);
+                env.returned.borrow_mut().entry(cid).or_default().push((
+                    binds.clone(),
+                    epoch,
+                    fns.clone(),
+                ));
+                fns
+            }
+        };
+        add_fns(out, fns);
+    }
+    if unknown {
+        let mut seen = BTreeSet::new();
+        let mut all = None;
+        for a in args {
+            all = join(all, reach(&arg_local(a, env, at), env, &mut seen));
+        }
+        add_fns(out, vec![Local::Opaque(computed(all))]);
+    }
+}
+
+/// Whether a `return` in a closure's body may hand back a function value ([`may_pass_fn`]).
+fn returns_fn_in(body: &Expr) -> bool {
+    let mut hit = false;
+    visit::each_expr(body, &mut |x| {
+        if let Expr::Call { callee, args } = x {
+            hit |= callee == "return" && args.first().is_some_and(may_pass_fn);
+        }
+    });
+    hit
+}
+
+/// How `reduce` binds its fold `g` (among `args`): the accumulator — the seed, the other
+/// argument, or an element — and an element.
+fn fold_binds(g: &Expr, args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
+    let elem = args
+        .first()
+        .and_then(|x| src(x, env, at))
+        .and_then(|s| s.elem());
+    let seed = args
+        .iter()
+        .skip(1)
+        .find(|a| !std::ptr::eq(*a, g))
+        .and_then(|a| src(a, env, at));
+    vec![
+        Local::Src(join(seed, elem.clone()), Kind::NONE),
+        Local::Src(elem, Kind::NONE),
+    ]
 }
 
 /// [`fns_in`] of a `call` / `apply` operand: a list literal's elements, at any depth.
-fn spread_fns_in(e: &Expr, env: &Env, at: &At, pass: Pass, out: &mut Vec<Local>) {
+fn spread_fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
     match e {
         Expr::ArrayLiteral { elements } => {
             for x in elements {
-                spread_fns_in(x, env, at, pass, out);
+                spread_fns_in(x, env, at, out);
             }
         }
-        _ => fns_in(e, env, at, pass, out),
+        _ => fns_in(e, env, at, out),
     }
 }
 
-/// The names a statement list's `let`s bind.
-fn let_names(stmts: &[Stmt]) -> Vec<String> {
-    let mut names = Vec::new();
-    for s in stmts {
-        match s {
-            Stmt::Let { name, .. } => names.push(name.clone()),
-            Stmt::LetPattern { pattern, .. } => names.extend(pattern.bound_names()),
-            _ => {}
-        }
+/// [`arg_local`] of an operand `call` / `apply` hands its callback: with a list literal's function
+/// elements, at any depth, since a builtin applied as a value may spread it again (`apply(apply,
+/// [call, [print, p]])`, round 38 L12).
+fn spread_local(a: &Expr, env: &Env, at: &At) -> Local {
+    let l = arg_local(a, env, at);
+    if !matches!(a, Expr::ArrayLiteral { .. }) {
+        return l;
     }
-    names
+    let mut fns = Vec::new();
+    spread_fns_in(a, env, at, &mut fns);
+    if fns.is_empty() {
+        return l;
+    }
+    let mut all = match l {
+        Local::Any(ls) => ls,
+        l => vec![l],
+    };
+    add_fns(&mut all, fns);
+    Local::Any(all)
 }
 
 /// What a `match` / `if let` scrutinee evaluated at `at` holds, and what it is as a binding (a
@@ -5484,14 +6444,7 @@ fn let_names(stmts: &[Stmt]) -> Vec<String> {
 fn scrutinee_at(scrutinee: &Expr, env: &Env, at: &At) -> (Option<WholeSrc>, Local) {
     let node = scrutinee as *const Expr as usize;
     let names = Rc::as_ptr(&at.locals) as usize;
-    let key: ScrutineeKey = (
-        node,
-        names,
-        at.use_scope,
-        at.depth,
-        env.epoch.get(),
-        env.phantom.get(),
-    );
+    let key: ScrutineeKey = (node, names, at.use_scope, at.depth, env.epoch.get());
     let hit = env
         .scrutinees
         .borrow()
@@ -5510,14 +6463,7 @@ fn scrutinee_at(scrutinee: &Expr, env: &Env, at: &At) -> (Option<WholeSrc>, Loca
     let whole = value_local(scrutinee, &s, env, at);
     let deps = env.deps_since(reads_start, None);
     let limited = env.fallbacks.get() != fallbacks_start;
-    let key: ScrutineeKey = (
-        node,
-        names,
-        at.use_scope,
-        at.depth,
-        env.epoch.get(),
-        env.phantom.get(),
-    );
+    let key: ScrutineeKey = (node, names, at.use_scope, at.depth, env.epoch.get());
     env.scrutinees.borrow_mut().insert(
         key,
         (at.locals.clone(), deps, limited, s.clone(), whole.clone()),
@@ -5553,7 +6499,6 @@ fn interp(
         at.use_scope,
         at.depth,
         run.bits(),
-        env.phantom.get(),
     );
     let hit = env.blocks.borrow().get(&key).map(|(_, r)| r.clone());
     let r = match hit {
@@ -5642,7 +6587,9 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
         match st {
             Stmt::Let { name, init, .. } => {
                 let x = walk(init, env, &w.at, &none);
+                let before = x.view();
                 let v = walked_local(init, &x, env);
+                let v = stick(name, v, || exact_value(init, env, &before), env, &before);
                 w.then(x);
                 shadow(vec![name.clone()], &mut w);
                 let at = w.at.with([(name.clone(), v)]);
@@ -5652,15 +6599,20 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                 let x = walk(init, env, &w.at, &none);
                 let s = walked_value(init, &x, env);
                 let whole = walked_local(init, &x, env);
+                let before = x.view();
                 w.then(x);
                 shadow(pattern.bound_names(), &mut w);
                 let at = match whole_binder(pattern) {
-                    Some(b) => w.at.with([(b.to_string(), whole)]),
-                    None => w.at.with(
-                        pattern_binders(pattern, &s, ctx)
-                            .into_iter()
-                            .map(|(n, b)| (n, Local::Src(b, Kind::NONE))),
-                    ),
+                    Some(b) => {
+                        let l = stick(b, whole, || exact_value(init, env, &before), env, &before);
+                        w.at.with([(b.to_string(), l)])
+                    }
+                    None => {
+                        w.at.with(pattern_binders(pattern, &s, ctx).into_iter().map(|(n, b)| {
+                            let l = stick(&n, Local::Src(b, Kind::NONE), || false, env, &before);
+                            (n, l)
+                        }))
+                    }
                 };
                 w.move_to(at);
             }
@@ -5672,11 +6624,12 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                 let held = walked_value(value, &vx, env);
                 x.then(vx);
                 let view = x.view();
-                let mark = assign_mark_held(target, held, env, &view);
+                let mark = at_view(&x, env, |view| assign_mark_held(target, held, env, view));
                 w.then(x);
                 match target {
-                    // A plain assignment replaces what the name holds.
+                    // A plain assignment replaces what the name holds (see `stick`).
                     Expr::Var(r) => {
+                        let v = stick(r, v, || exact_value(value, env, &view), env, &view);
                         let at = w.at.with([(r.clone(), v)]);
                         w.move_to(at);
                     }
@@ -5706,9 +6659,9 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                     && matches!(args[0], Expr::Var(_)) =>
             {
                 let x = walk(&args[1], env, &w.at, &none);
-                let view = x.view();
+                let mark = at_view(&x, env, |view| in_place_mark(callee, args, true, env, view));
                 w.then(x);
-                if let Some((root, s, _)) = in_place_mark(callee, args, true, env, &view) {
+                if let Some((root, s, _)) = mark {
                     let old = match w.at.locals.get(&root) {
                         Some(l) => local_src(l),
                         None => src(&Expr::Var(root.clone()), env, &w.at),
@@ -5724,8 +6677,9 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                 if is_statement_sink(callee) && env.is_user_fn(callee) =>
             {
                 let x = walk(e, env, &w.at, &none);
-                let view = x.view();
-                let egress = join_all(args.iter().map(|a| src(a, env, &view)));
+                let egress = at_view(&x, env, |view| {
+                    join_all(args.iter().map(|a| src(a, env, view)))
+                });
                 w.then(x);
                 w.egress = join(w.egress.take(), egress);
                 if last {
@@ -5753,7 +6707,7 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                 else_,
             } => {
                 let x = walk(c, env, &w.at, &none);
-                let cc = computed(src(c, env, &x.view()));
+                let cc = computed(walked_value(c, &x, env));
                 w.then(x);
                 let here = w.at.clone();
                 // Only an `if` with an `else` is a value (the runtime's `stmt_as_tail_expr`).
@@ -5769,7 +6723,7 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                 let intro = |at_k: &At| loop_intro(body, &[c], &[], env, at_k);
                 let f = run_loop(env, &w.at, intro, |at_k| {
                     let mut x = walk(c, env, at_k, &none);
-                    let cc = computed(src(c, env, &x.view()));
+                    let cc = computed(walked_value(c, &x, env));
                     // The condition fails: the loop leaves here.
                     x.brk = join_opt_locals(x.brk.take(), Some((*x.at.locals).clone()));
                     let head = x.at.clone();
@@ -5792,26 +6746,31 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                     crate::frontend::ForSource::Collection { expr } => {
                         let x = walk(expr, env, &w.at, &none);
                         // How many times the body runs: only a computed collection's shape.
-                        let d = shape(src(expr, env, &x.view()));
+                        let d = shape(walked_value(expr, &x, env));
                         (x, d)
                     }
                     crate::frontend::ForSource::Range { start: s, end: e } => {
                         let mut x = walk(s, env, &w.at, &none);
                         let after_start = x.at.clone();
-                        x.then(walk(e, env, &after_start, &none));
-                        let view = x.view();
-                        let d = computed(join(src(s, env, &view), src(e, env, &view)));
+                        let ex = walk(e, env, &after_start, &none);
+                        merge_walked(&mut x.walked, &ex.walked);
+                        x.then(ex);
+                        let d = at_view(&x, env, |view| {
+                            computed(join(src(s, env, view), src(e, env, view)))
+                        });
                         (x, d)
                     }
                 };
                 // The collection is evaluated once, before the loop.
-                let v = for_var(source, env, &x.view());
+                let v = at_view(&x, env, |view| for_var(source, env, view));
                 w.then(x);
                 // Every iteration binds the variable to what the collection's elements hold.
                 let fixed = [(var.clone(), Local::Src(v.clone(), Kind::NONE))];
                 let intro = |at_k: &At| loop_intro(body, &[], &fixed, env, at_k);
                 let f = run_loop(env, &w.at, intro, |at_k| {
-                    let inner = at_k.with([(var.clone(), Local::Src(v.clone(), Kind::NONE))]);
+                    // An element may be a function the lane does not follow (see `stick`).
+                    let l = stick(var, Local::Src(v.clone(), Kind::NONE), || false, env, at_k);
+                    let inner = at_k.with([(var.clone(), l)]);
                     let mut b = interp(body, None, env, &inner, &decides, Run::LOOP_BODY);
                     // The loop variable does not outlive the loop.
                     b.restore(saved([var.clone()], at_k));
@@ -5833,7 +6792,7 @@ fn interp_uncached(stmts: &[Stmt], tail: Option<&Expr>, env: &Env, start: &At, r
                 };
                 let f = run_loop(env, &w.at, intro, |at_k| {
                     let mut x = walk(expr, env, at_k, &none);
-                    let s = src(expr, env, &x.view());
+                    let s = walked_value(expr, &x, env);
                     let whole = walked_local(expr, &x, env);
                     let cc = tested(pattern, &s, ctx);
                     // The pattern does not match: the loop leaves here.
@@ -6079,12 +7038,14 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
         w.egress = w.val.clone();
         return w;
     }
+    // A value construct's value as `src` reads it — without the conditions around it, which the
+    // branch holding it joins itself — for the views around it (`at_view`).
+    let mut plain: Option<Option<WholeSrc>> = None;
     match e {
         Expr::Call { callee, args } => {
             walk_seq(&mut w, args, env, cond);
-            let view = w.view();
             if callee == "return" {
-                let v = args.first().and_then(|a| src(a, env, &view));
+                let v = at_view(&w, env, |view| args.first().and_then(|a| src(a, env, view)));
                 w.returns(v, cond);
                 return w;
             }
@@ -6098,14 +7059,17 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
                 w.cont = join_opt_locals(w.cont.take(), Some((*w.at.locals).clone()));
                 return w;
             }
-            let egress = if is_direct_sink(callee, env) {
-                join_all(args.iter().map(|a| src(a, env, &view)))
-            } else {
-                call_fx(callee, args, env, &view, Want::Egress).egress
-            };
+            let (egress, mark) = at_view(&w, env, |view| {
+                let egress = if is_direct_sink(callee, env) {
+                    join_all(args.iter().map(|a| src(a, env, view)))
+                } else {
+                    call_fx(callee, args, env, view, Want::Egress).egress
+                };
+                (egress, in_place_mark(callee, args, false, env, view))
+            });
             w.egress = join(w.egress.take(), egress);
             // An in-place list builtin writes its variable wherever it appears.
-            if let Some((root, s, shifts)) = in_place_mark(callee, args, false, env, &view) {
+            if let Some((root, s, shifts)) = mark {
                 let old_local =
                     w.at.locals
                         .get(&root)
@@ -6127,8 +7091,9 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
                 walk_seq(&mut w, [callee.as_ref()], env, cond);
             }
             walk_seq(&mut w, args, env, cond);
-            let view = w.view();
-            let egress = callexpr_fx(callee, args, env, &view, Want::Egress).egress;
+            let egress = at_view(&w, env, |view| {
+                callexpr_fx(callee, args, env, view, Want::Egress).egress
+            });
             w.egress = join(w.egress.take(), egress);
         }
         Expr::If {
@@ -6138,19 +7103,27 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
             ..
         } => {
             let x = walk(c, env, at, cond);
-            let chose = computed(src(c, env, &x.view()));
+            let cv = walked_value(c, &x, env);
+            let chose_plain = computed(plain_value(c, &x, &cv));
+            let chose = computed(cv);
             let cc = join(cond.clone(), chose.clone());
             w.then(x);
             let here = w.at.clone();
             let a = walk(then, env, &here, &cc);
             let b = walk(else_, env, &here, &cc);
-            let known = a.known && b.known;
-            let val = join_all([chose, a.val.clone(), b.val.clone()]);
+            // Each branch's value where it ran.
+            let (tv, ev) = (walked_value(then, &a, env), walked_value(else_, &b, env));
+            plain = Some(join_all([
+                chose_plain,
+                plain_value(then, &a, &tv),
+                plain_value(else_, &b, &ev),
+            ]));
+            let val = join_all([chose, tv, ev]);
             let mut fns = walked_fns(then, &a, env);
             add_fns(&mut fns, walked_fns(else_, &b, env));
             w.branches(&here, vec![a, b]);
             w.val = val;
-            w.known = known;
+            w.known = true;
             w.fns = fns;
         }
         Expr::IfLet {
@@ -6161,7 +7134,8 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
             ..
         } => {
             let x = walk(scrutinee, env, at, cond);
-            let s = src(scrutinee, env, &x.view());
+            let s = walked_value(scrutinee, &x, env);
+            let s_plain = plain_value(scrutinee, &x, &s);
             let whole = walked_local(scrutinee, &x, env);
             let test = tested(pattern, &s, ctx);
             let cc = join(cond.clone(), test.clone());
@@ -6170,22 +7144,30 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
             let inner = binders_at(env, &here, pattern, &s, &whole);
             let mut a = walk(then, env, &inner, &cc);
             // Read where the binders are bound.
+            let then_val = walked_value(then, &a, env);
+            let then_plain = plain_value(then, &a, &then_val);
             let mut fns = walked_fns(then, &a, env);
             a.restore(saved(pattern.bound_names(), &here));
             let b = walk(else_, env, &here, &cc);
             add_fns(&mut fns, walked_fns(else_, &b, env));
-            let known = a.known && b.known;
-            let val = join_all([test, a.val.clone(), b.val.clone()]);
+            let ev = walked_value(else_, &b, env);
+            plain = Some(join_all([
+                tested(pattern, &s_plain, ctx),
+                then_plain,
+                plain_value(else_, &b, &ev),
+            ]));
+            let val = join_all([test, then_val, ev]);
             w.branches(&here, vec![a, b]);
             w.val = val;
-            w.known = known;
+            w.known = true;
             w.fns = fns;
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             let x = walk(scrutinee, env, at, cond);
-            let s = src(scrutinee, env, &x.view());
+            let s = walked_value(scrutinee, &x, env);
+            let s_plain = plain_value(scrutinee, &x, &s);
             let whole = walked_local(scrutinee, &x, env);
             w.then(x);
             let here = w.at.clone();
@@ -6193,13 +7175,14 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
             // the arms after it.
             let mut start = here.clone();
             let mut outs = Vec::new();
-            let mut known = true;
             let mut val = None;
+            let mut val_plain = None;
             let mut fns = Vec::new();
             for a in arms {
                 let inner = binders_at(env, &start, &a.pattern, &s, &whole);
                 let test = tested(&a.pattern, &s, ctx);
                 val = join(val, test.clone());
+                val_plain = join(val_plain, tested(&a.pattern, &s_plain, ctx));
                 let mut cc = join(cond.clone(), test);
                 let mut arm = Fx::tracking(&inner);
                 if let Some(g) = &a.guard {
@@ -6214,8 +7197,16 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
                         let again = walk(g, env, &once, &cc);
                         gx.branches(&once, vec![again, Fx::at(&once)]);
                     }
-                    let decided = computed(src(g, env, &gx.view()));
+                    let gv = walked_value(g, &gx, env);
+                    // (A guard run more than once: every run's value, conditions and all.)
+                    let decided_plain = computed(if runs > 1 {
+                        gv.clone()
+                    } else {
+                        plain_value(g, &gx, &gv)
+                    });
+                    let decided = computed(gv);
                     val = join(val, decided.clone());
+                    val_plain = join(val_plain, decided_plain);
                     cc = join(cc, decided);
                     arm.then(gx);
                     let mut failed = Fx::at(&arm.at);
@@ -6224,8 +7215,10 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
                 }
                 let after_guard = arm.at.clone();
                 let body = walk(&a.body, env, &after_guard, &cc);
-                known &= body.known;
-                val = join(val, body.val.clone());
+                // The body's value and function values where it ran (after its guard).
+                let bv = walked_value(&a.body, &body, env);
+                val_plain = join(val_plain, plain_value(&a.body, &body, &bv));
+                val = join(val, bv);
                 add_fns(&mut fns, walked_fns(&a.body, &body, env));
                 arm.then(body);
                 arm.restore(saved(a.pattern.bound_names(), &start));
@@ -6233,13 +7226,19 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
             }
             w.branches(&here, outs);
             w.val = val;
-            w.known = known;
+            w.known = true;
             w.fns = fns;
+            plain = Some(val_plain);
         }
         Expr::Block { stmts, tail } => {
             // Its `let`s end with it; its writes to outer names stay. A read after it sees where it
             // ended.
             let f = interp(stmts, tail.as_deref(), env, at, cond, Run::BLOCK_VALUE);
+            plain = Some(match cond {
+                // The same run (`interp` remembers it without the conditions).
+                Some(_) => interp(stmts, tail.as_deref(), env, at, &None, Run::BLOCK_VALUE).val,
+                None => f.val.clone(),
+            });
             w.val = f.val.clone();
             w.known = true;
             w.fns = f.fns.clone();
@@ -6254,7 +7253,7 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
         // `x?` returns an `Err` (or `None`) as it is, chosen by the variant.
         Expr::Try(x) => {
             walk_seq(&mut w, [x.as_ref()], env, cond);
-            let v = src(x, env, &w.view());
+            let v = at_view(&w, env, |view| src(x, env, view));
             let early = join(v.as_ref().and_then(WholeSrc::err_part), shape(v));
             w.returns(early, cond);
         }
@@ -6262,8 +7261,12 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
         Expr::Binary { op, lhs, rhs } if op == "&&" || op == "||" => {
             walk_seq(&mut w, [lhs.as_ref()], env, cond);
             let here = w.at.clone();
-            let cc = join(cond.clone(), computed(src(lhs, env, &w.view())));
+            let cc = join(
+                cond.clone(),
+                computed(at_view(&w, env, |view| src(lhs, env, view))),
+            );
             let right = walk(rhs, env, &here, &cc);
+            merge_walked(&mut w.walked, &right.walked);
             w.branches(&here, vec![right, Fx::at(&here)]);
         }
         Expr::Binary { lhs, rhs, .. } => {
@@ -6297,6 +7300,17 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
         | Expr::RawPtr { .. }
         | Expr::Other(_) => {}
     }
+    // A value construct: read as it ran here wherever the view of a walk around it is read
+    // (`at_view`), not run again from that view.
+    if let Some(val) = plain {
+        let ran = WalkedAt {
+            val,
+            fns: w.fns.clone(),
+        };
+        w.walked = Some(Rc::new(
+            [(e as *const Expr as usize, ran)].into_iter().collect(),
+        ));
+    }
     w
 }
 
@@ -6310,6 +7324,7 @@ fn walk_seq<'e>(
     for x in xs {
         let here = w.at.clone();
         let sub = walk(x, env, &here, cond);
+        merge_walked(&mut w.walked, &sub.walked);
         w.then(sub);
     }
 }
@@ -6525,6 +7540,11 @@ fn args_locals(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
     args.iter().map(|a| arg_local(a, env, at)).collect()
 }
 
+/// [`spread_local`] of each argument `call` hands its callback.
+fn spread_locals(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
+    args.iter().map(|a| spread_local(a, env, at)).collect()
+}
+
 /// How many parameters what a name stands for takes (0 when unknown).
 fn arity(l: &Local, env: &Env) -> usize {
     match l {
@@ -6596,10 +7616,8 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
                 use_scope: c.use_scope,
                 depth: at.depth + 1,
             };
-            let was = env.phantom.replace(0);
             let w = walk(body, env, &inner, &None);
-            let ret = join(src(body, env, &w.view()), w.ret);
-            env.phantom.set(was);
+            let ret = join(walked_value(body, &w, env), w.ret);
             let fx = FnFx {
                 // What the body evaluates to, and what a `return` inside it returns.
                 ret: ret.map(WholeSrc::capped),
@@ -7175,9 +8193,7 @@ fn specialize(
             (calls[depth].binds.clone(), calls[depth].grew)
         };
         let mark = env.reads.borrow().len();
-        let was = env.phantom.replace(0);
         let r = compute(&now);
-        env.phantom.set(was);
         let assumed = env.active.borrow().get(&key).cloned().unwrap_or_default();
         let reread = env.reads.borrow()[mark..].iter().any(|k| k == &key);
         let grew = env.calls.borrow()[depth].grew != grew_before;
@@ -7438,7 +8454,7 @@ fn builtin_src(f: &str, args: &[Expr], env: &Env, at: &At) -> Option<WholeSrc> {
         }
         "times" => join(computed(a0), holds(cb(1, one(None)))),
         "reduce" => join(shp0, reduce_src(args, env, at)),
-        "call" => cb(0, args_locals(args.get(1..).unwrap_or(&[]), env, at)),
+        "call" => cb(0, spread_locals(args.get(1..).unwrap_or(&[]), env, at)),
         "apply" => cb(0, apply_binds(args, env, at)),
         // A function value holds nothing until it is called.
         "compose" => None,
@@ -7474,12 +8490,27 @@ fn is_callback(x: &Expr, env: &Env, at: &At) -> bool {
 fn apply_binds(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
     match args.get(1) {
         Some(Expr::ArrayLiteral { elements }) => {
-            elements.iter().map(|x| arg_local(x, env, at)).collect()
+            elements.iter().map(|x| spread_local(x, env, at)).collect()
         }
         Some(x) => {
             let s = src(x, env, at);
+            // A function the operand may hold (a list literal's, handed on: `spread_local`) may be
+            // at any position.
+            let held = if spread_may_pass_fn(x) {
+                fn_parts(&arg_local(x, env, at))
+            } else {
+                Vec::new()
+            };
+            let with = |l: Local| {
+                if held.is_empty() {
+                    return l;
+                }
+                let mut all = vec![l];
+                add_fns(&mut all, held.clone());
+                Local::Any(all)
+            };
             if matches!(s, Some(WholeSrc::Value(_))) {
-                return vec![Local::Src(s, Kind::NONE)];
+                return vec![with(Local::Src(s, Kind::NONE))];
             }
             let n = args
                 .first()
@@ -7487,10 +8518,10 @@ fn apply_binds(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
                 .max(SPREAD);
             let mut binds: Vec<Local> = (0..n)
                 .map(|i| {
-                    Local::Src(
+                    with(Local::Src(
                         s.as_ref().and_then(|s| s.at_pos(&i.to_string())),
                         Kind::NONE,
-                    )
+                    ))
                 })
                 .collect();
             // A builtin passed as a value takes every element, however long the list: what any
@@ -7503,12 +8534,12 @@ fn apply_binds(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
                         .map(|(_, v)| Some(v.clone())),
                 );
                 if rest.is_some() {
-                    binds.push(Local::Src(rest, Kind::NONE));
+                    binds.push(with(Local::Src(rest, Kind::NONE)));
                 }
             }
             if !is_listish(x, env, at) {
                 let first = join(local_src(&binds[0]), s);
-                binds[0] = Local::Src(first, Kind::NONE);
+                binds[0] = with(Local::Src(first, Kind::NONE));
             }
             binds
         }
@@ -7603,7 +8634,7 @@ fn builtin_egress(f: &str, args: &[Expr], env: &Env, at: &At) -> Option<WholeSrc
             ];
             join(run(1, binds.clone()), run(2, binds))
         }
-        "call" => run(0, args_locals(args.get(1..).unwrap_or(&[]), env, at)),
+        "call" => run(0, spread_locals(args.get(1..).unwrap_or(&[]), env, at)),
         "apply" => run(0, apply_binds(args, env, at)),
         _ => {
             let lambdas: Vec<usize> = args
