@@ -4,6 +4,7 @@ This is an index, not a status database. The authorities stay where they are:
 
 | Authority | Location |
 |---|---|
+| Completion contract and evidence coverage | [Owner mandate](mission/EXECUTION_MANDATE_2026-09-23.md) and [requirement map](mission/REQUIREMENTS.md) |
 | Defect registry (open and closed soundness defects) | [`docs/CLAIMS.md`](CLAIMS.md) |
 | Execution roadmap | [`docs/COMPLETION_BLUEPRINT.md`](COMPLETION_BLUEPRINT.md) and [`docs/language/ROADMAP.md`](language/ROADMAP.md); reconciliation with [`docs/ROADMAP_AI_ERA.md`](ROADMAP_AI_ERA.md) is in progress (see Review) |
 | Soundness acceptance matrix (stable case ids, intended semantics, append-only outcome history) | [`tests/soundness/matrix/`](../tests/soundness/matrix/) — `registry.tsv`, `history.tsv`, `run.sh` |
@@ -22,6 +23,11 @@ per source-bound binary in `history.tsv`, not copied here.
    the declared semantic surface, with the remaining external trusted computing base stated.
 
 The mission is not finished until both hold. A 1.0 checkpoint may precede the second.
+The owner's mandate authorizes continuation across routine phase boundaries once criteria and
+receipts hold, and makes the full trust chain mandatory despite older "unscheduled research"
+wording. Required valid workloads must be restored; documenting their refusal is not completion.
+Mandatory disposable-guest witnesses and merge/release authorization remain unchanged.
+See the [authority reconciliation](mission/REQUIREMENTS.md#authority-reconciliation).
 
 ## Outcome vocabulary (release contract)
 
@@ -60,6 +66,8 @@ matrix is the reference for open defects.
 
 See the last section of this file's history in git, and the next-dependency line below.
 
-**Next dependency (2026-09-23):** declarative builtin registry for higher-order builtins (fixes the
-direct-lane `map` false accept and the refused valid `apply(f, positive)` twin), after the evidence
-tests stop depending on a live vulnerability.
+**Next dependency (2026-09-25):** complete the ordinary-lane alias unit and its matrix,
+corpus and gate evidence; then close the whole-struct round-39 bands regression before
+merging the remaining ordinary summary/precision/performance and whole-struct designs.
+These are implementation dependencies within the full [requirement map](mission/REQUIREMENTS.md),
+not a narrower completion contract. PR #44 remains a draft integration stack.
