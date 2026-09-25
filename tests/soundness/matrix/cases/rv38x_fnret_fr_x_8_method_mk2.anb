@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct B { n: i64 }
+impl B { fn mk2(self, q) { let h = || q; return h; } }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let b = B { n: 1 };
+    let g = b.mk2(p);
+    print(g());
+}

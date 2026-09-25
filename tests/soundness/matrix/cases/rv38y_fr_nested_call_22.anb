@@ -1,0 +1,5 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(call(|q| q.pub_n, call(|y21| y21, call(|y20| y20, call(|y19| y19, call(|y18| y18, call(|y17| y17, call(|y16| y16, call(|y15| y15, call(|y14| y14, call(|y13| y13, call(|y12| y12, call(|y11| y11, call(|y10| y10, call(|y9| y9, call(|y8| y8, call(|y7| y7, call(|y6| y6, call(|y5| y5, call(|y4| y4, call(|y3| y3, call(|y2| y2, call(|y1| y1, call(|y0| y0, p))))))))))))))))))))))));
+}

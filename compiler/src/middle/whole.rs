@@ -904,6 +904,11 @@ fn widen_local(l: &Local) -> Local {
 struct FnFx {
     ret: Option<WholeSrc>,
     egress: Option<WholeSrc>,
+    /// The function values it may return (`ret` is only the value half): a function or closure its
+    /// body returns or ends with — a function argument it forwards, a named function, a lambda, a
+    /// closure a branch chooses or a `let` holds — and one a callback it applies returns. Without
+    /// them a call's result, called, was a plain value that releases nothing (round 38, fnreturns).
+    fns: Vec<Local>,
 }
 
 /// Which half of a call's effect a caller needs (a builtin's two halves are computed apart, so a
@@ -981,9 +986,17 @@ struct WalkedAt {
 /// The value constructs a walk ran, not inside one another, by node ([`at_view`]).
 type Walked = BTreeMap<usize, WalkedAt>;
 
-/// A closure's body read for the function values it returns ([`returned_fns`]): the arguments,
-/// the epoch, and the functions.
-type Returned = (Vec<Local>, u64, Vec<Local>);
+/// A call evaluated ([`call_at`]): the names it was evaluated from (kept alive, so their address is
+/// not reused), the calls in progress it read, whether a limit shaped it, and what it does.
+type CalledAt = (Rc<Locals>, Vec<String>, bool, FnFx);
+
+/// Calls remembered per query ([`call_at`], [`fns_at`]): past this, all are forgotten (and evaluated
+/// again when asked for), so the memory a query holds stays bounded.
+const MAX_CALLS_AT: usize = 4096;
+
+/// The function values of a call evaluated at a position ([`fns_at`]): the names (kept alive), the
+/// calls in progress it read, whether a limit shaped it, and the functions.
+type FnsAt = (Rc<Locals>, Vec<String>, bool, Vec<Local>);
 
 /// A remembered closure application: the arguments, the epoch, the calls it read, the application
 /// depth when a limit shaped it, and the result.
@@ -1022,11 +1035,12 @@ struct Env<'a> {
     binder_ats: RefCell<BTreeMap<(usize, usize), Vec<BinderAt>>>,
     /// Scrutinees evaluated ([`scrutinee_at`]).
     scrutinees: RefCell<BTreeMap<ScrutineeKey, Scrutinized>>,
+    /// Calls evaluated for what they return ([`call_at`]), by the same key.
+    calls_at: RefCell<BTreeMap<ScrutineeKey, CalledAt>>,
+    /// Calls read for the function values they may be ([`fns_at`]), by the same key.
+    fns_at: RefCell<BTreeMap<ScrutineeKey, FnsAt>>,
     /// Closure applications made, by the closure's number.
     applies: RefCell<BTreeMap<usize, Vec<Applied>>>,
-    /// The function values a closure's body was read to return ([`returned_fns`]), by the
-    /// closure's number: the arguments, the epoch, and the functions.
-    returned: RefCell<BTreeMap<usize, Vec<Returned>>>,
     /// Every lambda a closure was made of, by its node's address (so no address is reused while the
     /// query runs); closures numbered by identity and captures; lambdas' free names.
     lams: RefCell<BTreeMap<usize, Rc<Expr>>>,
@@ -1063,8 +1077,9 @@ impl<'a> Env<'a> {
             block_order: RefCell::default(),
             binder_ats: RefCell::default(),
             scrutinees: RefCell::default(),
+            calls_at: RefCell::default(),
+            fns_at: RefCell::default(),
             applies: RefCell::default(),
-            returned: RefCell::default(),
             lams: RefCell::default(),
             interned: RefCell::default(),
             next_closure: Cell::new(0),
@@ -4373,7 +4388,9 @@ fn has_src(l: &Local) -> bool {
 }
 
 /// Whether `e` writes a lambda or names a function (a user function, a builtin, a name of the
-/// caller's scope bound to one): only then may the lane's interpretation of it find a function.
+/// caller's scope bound to one), or calls one that may return a function (a user function, a
+/// method, a name of the scope bound to one, a call's result, `compose`): only then may the lane's
+/// interpretation of it find a function.
 fn mentions_fn(e: &Expr, env: &Env) -> bool {
     let mut hit = false;
     visit::each_expr(e, &mut |x| match x {
@@ -4382,6 +4399,17 @@ fn mentions_fn(e: &Expr, env: &Env) -> bool {
             hit |= env.is_user_fn(n)
                 || crate::backends::run::is_builtin_name(n)
                 || env.scope.get(n).is_some_and(names_fn)
+        }
+        Expr::Call { callee, .. } => {
+            hit |= env.is_user_fn(callee)
+                || callee == "compose"
+                || env.scope.get(callee).is_some_and(names_fn)
+        }
+        Expr::CallExpr { callee, .. } => {
+            hit |= match callee.as_ref() {
+                Expr::FieldAccess { field, .. } => env.ctx.whole_methods.contains_key(field),
+                _ => true,
+            }
         }
         _ => {}
     });
@@ -5594,12 +5622,7 @@ fn src(e: &Expr, env: &Env, at: &At) -> Option<WholeSrc> {
                 rec(inner)
             }
         }
-        Expr::Call { callee, args } => {
-            join(call_fx(callee, args, env, at, Want::Ret).ret, typed(e))
-        }
-        Expr::CallExpr { callee, args } => {
-            join(callexpr_fx(callee, args, env, at, Want::Ret).ret, typed(e))
-        }
+        Expr::Call { .. } | Expr::CallExpr { .. } => join(call_at(e, env, at).ret, typed(e)),
         Expr::Lambda { .. }
         | Expr::Literal(_)
         | Expr::StrLiteral(_)
@@ -5659,6 +5682,8 @@ impl Run {
 struct Fx {
     at: At,
     ret: Option<WholeSrc>,
+    /// The function values a `return` (or `?`) may return (`ret` is only the value half).
+    ret_fns: Vec<Local>,
     returned: bool,
     val: Option<WholeSrc>,
     valued: bool,
@@ -5684,6 +5709,7 @@ struct Ran {
     /// `None`: the names it started from.
     after: Option<Rc<Locals>>,
     ret: Option<WholeSrc>,
+    ret_fns: Vec<Local>,
     returned: bool,
     val: Option<WholeSrc>,
     valued: bool,
@@ -5698,6 +5724,7 @@ impl Fx {
         Fx {
             at: at.clone(),
             ret: None,
+            ret_fns: Vec::new(),
             returned: false,
             val: None,
             valued: false,
@@ -5739,6 +5766,7 @@ impl Fx {
     fn then(&mut self, next: Fx) {
         merge_walked(&mut self.walked, &next.walked);
         self.ret = join(self.ret.take(), next.ret);
+        add_fns(&mut self.ret_fns, next.ret_fns);
         self.returned |= next.returned;
         self.egress = join(self.egress.take(), next.egress);
         self.brk = join_opt_locals(self.brk.take(), next.brk);
@@ -5761,6 +5789,7 @@ impl Fx {
         for a in arms {
             merge_walked(&mut self.walked, &a.walked);
             self.ret = join(self.ret.take(), a.ret);
+            add_fns(&mut self.ret_fns, a.ret_fns);
             self.returned |= a.returned;
             self.val = join(self.val.take(), a.val);
             self.valued |= a.valued;
@@ -5789,9 +5818,10 @@ impl Fx {
         self.move_to(at);
     }
 
-    /// A `return v` under `cond`.
-    fn returns(&mut self, v: Option<WholeSrc>, cond: &Option<WholeSrc>) {
+    /// A `return v` under `cond`, `fns` the function values `v` may be.
+    fn returns(&mut self, v: Option<WholeSrc>, fns: Vec<Local>, cond: &Option<WholeSrc>) {
         self.ret = join_all([self.ret.take(), v, cond.clone()]);
+        add_fns(&mut self.ret_fns, fns);
         self.returned = true;
     }
 
@@ -6179,6 +6209,59 @@ fn fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
         add_fns(out, w.fns);
         return;
     }
+    // A call's are remembered by its node and position ([`fns_at`]).
+    if matches!(e, Expr::Call { .. } | Expr::CallExpr { .. }) {
+        add_fns(out, fns_at(e, env, at));
+        return;
+    }
+    fns_in_uncached(e, env, at, out)
+}
+
+/// The function values a call (a `Call` or `CallExpr` node of the program, or of a lambda this query
+/// holds) evaluated at `at` may be, remembered by its node and position as its value is
+/// ([`call_at`]). An operand is read both for the functions it hands back (`fns_in`) and as a
+/// binding (`arg_local`, which reads them again), so a `call`, `apply` or `reduce` nested in the
+/// operand of another was read twice or three times per level: exponential in the nesting (a
+/// matrix case of 24 nested `reduce` seeds went from instant to a timeout in round 38). A result
+/// read from a call in progress is kept for its epoch only, with the calls it read.
+fn fns_at(e: &Expr, env: &Env, at: &At) -> Vec<Local> {
+    let key = |env: &Env| -> ScrutineeKey {
+        (
+            e as *const Expr as usize,
+            Rc::as_ptr(&at.locals) as usize,
+            at.use_scope,
+            at.depth,
+            env.epoch.get(),
+        )
+    };
+    let hit = env
+        .fns_at
+        .borrow()
+        .get(&key(env))
+        .map(|(_, deps, limited, fns)| (deps.clone(), *limited, fns.clone()));
+    if let Some((deps, limited, fns)) = hit {
+        env.reads.borrow_mut().extend(deps);
+        if limited {
+            env.fell_back();
+        }
+        return fns;
+    }
+    let reads_start = env.reads.borrow().len();
+    let fallbacks_start = env.fallbacks.get();
+    let mut fns = Vec::new();
+    fns_in_uncached(e, env, at, &mut fns);
+    let deps = env.deps_since(reads_start, None);
+    let limited = env.fallbacks.get() != fallbacks_start;
+    let mut memo = env.fns_at.borrow_mut();
+    if memo.len() >= MAX_CALLS_AT {
+        memo.clear();
+    }
+    memo.insert(key(env), (at.locals.clone(), deps, limited, fns.clone()));
+    fns
+}
+
+/// [`fns_in`] without the remembered reads.
+fn fns_in_uncached(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
     match e {
         Expr::Lambda { .. } => out.push(env.closure(e, &at.locals, at.use_scope)),
         Expr::Var(n) => match resolve_local(n, env, at) {
@@ -6194,6 +6277,26 @@ fn fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
             }
             None => {}
         },
+        // A call of a user function, or of a closure or function a name stands for, and a method
+        // or a call through a value, return the function values their bodies return
+        // (`FnFx::fns`): a function argument forwarded (`myid(show)`), a named function, a lambda,
+        // a closure a branch chooses or a `let` holds.
+        Expr::Call { callee, .. }
+            if env.is_user_fn(callee) || resolve_local(callee, env, at).is_some() =>
+        {
+            add_fns(out, call_at(e, env, at).fns)
+        }
+        Expr::CallExpr { .. } => add_fns(out, call_at(e, env, at).fns),
+        // `compose(f, g)` is a function running `g`, then `f` on what `g` returned: an opaque one
+        // over what both can reach (called, it computes from, and releases, its arguments too).
+        Expr::Call { callee, args } if callee == "compose" => {
+            let mut seen = BTreeSet::new();
+            let mut all = None;
+            for a in args {
+                all = join(all, reach(&arg_local(a, env, at), env, &mut seen));
+            }
+            out.push(Local::Opaque(all));
+        }
         // `identity(f)`, `max(f)` / `min(f)` of one value, a `get` default.
         Expr::Call { callee, args }
             if matches!(callee.as_str(), "identity" | "max" | "min" | "get")
@@ -6208,7 +6311,9 @@ fn fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
         // was given (`identity`, a user function or closure returning its parameter) — and `g` may
         // itself be `call` / `apply`, handing on what it was given in a list (`apply(apply,
         // [identity, [f]])`, `call(apply, identity, [f])`): a list literal's elements, at any depth.
-        // Or a function the callback makes or names itself ([`returned_fns`]).
+        // And what `g` returns of its own: a function or closure its body returns or is
+        // (`call(|| pr)`, `apply(|x| |y| x, [p])`, a `return` of one inside it), run with the
+        // arguments it is given.
         Expr::Call { callee, args }
             if matches!(callee.as_str(), "call" | "apply")
                 && !env.is_user_fn(callee)
@@ -6218,11 +6323,12 @@ fn fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
                 spread_fns_in(a, env, at, out);
             }
             if let Some(g) = args.first() {
-                let binds = || match callee.as_str() {
-                    "call" => spread_locals(&args[1..], env, at),
-                    _ => apply_binds(args, env, at),
+                let binds = if callee == "call" {
+                    spread_locals(&args[1..], env, at)
+                } else {
+                    apply_binds(args, env, at)
                 };
-                returned_fns(g, args, binds, env, at, out);
+                add_fns(out, apply_fx(&arg_local(g, env, at), binds, env, at).fns);
             }
         }
         // `reduce(xs, f, seed)` returns its accumulator: the seed, or what the fold returned from it.
@@ -6241,9 +6347,8 @@ fn fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
                     fns_in(seed, env, at, out);
                 }
             }
-            for g in args.iter().skip(1) {
-                returned_fns(g, args, || fold_binds(g, args, env, at), env, at, out);
-            }
+            // ... and what a fold returns (`reduce([1], |a, b| pr, zero)`).
+            add_fns(out, reduce_fns(args, env, at));
         }
         Expr::EnumConstruct { fields, .. } => {
             for f in fields {
@@ -6290,117 +6395,6 @@ fn fns_in(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
         }
         _ => {}
     }
-}
-
-/// The function values the callback `g` of `call` / `apply` / `reduce` returns when it makes or
-/// names one itself (`call(|x| print, 0)`, `apply(|x| |y| x, [p])`; round 38 L13): a closure's
-/// body read where its parameters are bound as the builtin binds them (`binds`). A function the
-/// callback is given comes back through the arguments (`fns_in`). One a `return` inside the body
-/// hands back, which the lane does not follow, or one a function the lane stopped following
-/// returns, stands for some function computing from, and releasing, everything the call can reach.
-fn returned_fns(
-    g: &Expr,
-    args: &[Expr],
-    binds: impl FnOnce() -> Vec<Local>,
-    env: &Env,
-    at: &At,
-    out: &mut Vec<Local>,
-) {
-    let parts: Vec<Local> = fn_parts(&arg_local(g, env, at))
-        .into_iter()
-        .filter(|l| matches!(l, Local::Closure(_) | Local::Opaque(_)))
-        .collect();
-    if parts.is_empty() {
-        return;
-    }
-    let binds = binds();
-    let mut unknown = false;
-    for l in &parts {
-        let Local::Closure(c) = l else {
-            unknown = true;
-            continue;
-        };
-        let Expr::Lambda { params, body } = c.lam.as_ref() else {
-            continue;
-        };
-        if at.depth >= MAX_APPLY_DEPTH || returns_fn_in(body) {
-            unknown = true;
-            continue;
-        }
-        // Once per closure and arguments (a callback nested in a callback's body is read by the
-        // walk of that body and again here).
-        let cid = env.intern(c);
-        let epoch = env.epoch.get();
-        let hit = env.returned.borrow().get(&cid).and_then(|v| {
-            v.iter()
-                .find(|(b, ep, _)| *ep == epoch && *b == binds)
-                .map(|(_, _, fns)| fns.clone())
-        });
-        let fns = match hit {
-            Some(fns) => fns,
-            None => {
-                let mut locals = (*c.captured).clone();
-                for (i, p) in params.iter().enumerate() {
-                    let b = binds
-                        .get(i)
-                        .cloned()
-                        .unwrap_or(Local::Src(None, Kind::NONE));
-                    locals.insert(p.clone(), b);
-                }
-                let inner = At {
-                    locals: Rc::new(locals),
-                    use_scope: c.use_scope,
-                    depth: at.depth + 1,
-                };
-                let mut fns = Vec::new();
-                fns_in(body, env, &inner, &mut fns);
-                env.returned.borrow_mut().entry(cid).or_default().push((
-                    binds.clone(),
-                    epoch,
-                    fns.clone(),
-                ));
-                fns
-            }
-        };
-        add_fns(out, fns);
-    }
-    if unknown {
-        let mut seen = BTreeSet::new();
-        let mut all = None;
-        for a in args {
-            all = join(all, reach(&arg_local(a, env, at), env, &mut seen));
-        }
-        add_fns(out, vec![Local::Opaque(computed(all))]);
-    }
-}
-
-/// Whether a `return` in a closure's body may hand back a function value ([`may_pass_fn`]).
-fn returns_fn_in(body: &Expr) -> bool {
-    let mut hit = false;
-    visit::each_expr(body, &mut |x| {
-        if let Expr::Call { callee, args } = x {
-            hit |= callee == "return" && args.first().is_some_and(may_pass_fn);
-        }
-    });
-    hit
-}
-
-/// How `reduce` binds its fold `g` (among `args`): the accumulator — the seed, the other
-/// argument, or an element — and an element.
-fn fold_binds(g: &Expr, args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
-    let elem = args
-        .first()
-        .and_then(|x| src(x, env, at))
-        .and_then(|s| s.elem());
-    let seed = args
-        .iter()
-        .skip(1)
-        .find(|a| !std::ptr::eq(*a, g))
-        .and_then(|a| src(a, env, at));
-    vec![
-        Local::Src(join(seed, elem.clone()), Kind::NONE),
-        Local::Src(elem, Kind::NONE),
-    ]
 }
 
 /// [`fns_in`] of a `call` / `apply` operand: a list literal's elements, at any depth.
@@ -6510,6 +6504,7 @@ fn interp(
             let r = Ran {
                 after: (*f.at.locals != *at.locals).then(|| f.at.locals.clone()),
                 ret: f.ret,
+                ret_fns: f.ret_fns,
                 returned: f.returned,
                 val: f.val,
                 valued: f.valued,
@@ -6542,6 +6537,7 @@ fn interp(
     } else {
         r.ret
     };
+    f.ret_fns = r.ret_fns;
     f.returned = r.returned;
     f.val = if r.valued {
         join(r.val, cond.clone())
@@ -6893,6 +6889,7 @@ fn run_loop_from(
         env.note_head(&cur);
         let f = body(&cur);
         acc.ret = join(acc.ret.take(), f.ret);
+        add_fns(&mut acc.ret_fns, f.ret_fns);
         acc.returned |= f.returned;
         acc.egress = join(acc.egress.take(), f.egress);
         acc.brk = join_opt_locals(acc.brk.take(), f.brk);
@@ -6945,6 +6942,7 @@ fn run_loop_from(
     env.note_head(&cur);
     let f = body(&cur);
     acc.ret = computed(join(acc.ret.take(), f.ret));
+    add_fns(&mut acc.ret_fns, f.ret_fns);
     acc.returned |= f.returned;
     acc.egress = computed(join(acc.egress.take(), f.egress));
     acc.brk = join_opt_locals(acc.brk.take(), f.brk);
@@ -7045,8 +7043,16 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
         Expr::Call { callee, args } => {
             walk_seq(&mut w, args, env, cond);
             if callee == "return" {
-                let v = at_view(&w, env, |view| args.first().and_then(|a| src(a, env, view)));
-                w.returns(v, cond);
+                // A function value returned (a formal holding one, a named function, a lambda, a
+                // closure a branch or `let` holds, one a call returns) is returned with it.
+                let (v, fns) = at_view(&w, env, |view| {
+                    let mut fns = Vec::new();
+                    if let Some(a) = args.first() {
+                        passed_fns(a, env, view, &mut fns);
+                    }
+                    (args.first().and_then(|a| src(a, env, view)), fns)
+                });
+                w.returns(v, fns, cond);
                 return w;
             }
             // `break` / `continue` in expression position (a braceless `match` arm) leave the loop
@@ -7243,6 +7249,7 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
             w.known = true;
             w.fns = f.fns.clone();
             w.ret = join(w.ret.take(), f.ret);
+            add_fns(&mut w.ret_fns, f.ret_fns);
             w.returned |= f.returned;
             w.egress = join(w.egress.take(), f.egress);
             w.brk = join_opt_locals(w.brk.take(), f.brk);
@@ -7253,9 +7260,15 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
         // `x?` returns an `Err` (or `None`) as it is, chosen by the variant.
         Expr::Try(x) => {
             walk_seq(&mut w, [x.as_ref()], env, cond);
-            let v = at_view(&w, env, |view| src(x, env, view));
+            // What `Err(f)?` returns may be a function value (a variant's payload is read as the
+            // variant, see `fns_in`).
+            let (v, fns) = at_view(&w, env, |view| {
+                let mut fns = Vec::new();
+                passed_fns(x, env, view, &mut fns);
+                (src(x, env, view), fns)
+            });
             let early = join(v.as_ref().and_then(WholeSrc::err_part), shape(v));
-            w.returns(early, cond);
+            w.returns(early, fns, cond);
         }
         // The right of `&&` / `||` runs only when the left does not decide.
         Expr::Binary { op, lhs, rhs } if op == "&&" || op == "||" => {
@@ -7332,12 +7345,57 @@ fn walk_seq<'e>(
 // ------------------------------------------------------------------------------------------------
 // Calls
 
+/// What a call (a `Call` or `CallExpr` node of the program, or of a lambda this query holds)
+/// evaluated at `at` returns: its value half and the function values it may be. Remembered by its
+/// node and position, as a scrutinee is ([`scrutinee_at`]): `src` reads the value half and
+/// `passed_fns` the function values, and an argument's binding reads both — evaluating the call, and
+/// so its own arguments, once for each would double the work at every level of nested calls. A
+/// result read from a call in progress is kept for its epoch only, with the calls it read.
+fn call_at(e: &Expr, env: &Env, at: &At) -> FnFx {
+    let key = |env: &Env| -> ScrutineeKey {
+        (
+            e as *const Expr as usize,
+            Rc::as_ptr(&at.locals) as usize,
+            at.use_scope,
+            at.depth,
+            env.epoch.get(),
+        )
+    };
+    let hit = env
+        .calls_at
+        .borrow()
+        .get(&key(env))
+        .map(|(_, deps, limited, fx)| (deps.clone(), *limited, fx.clone()));
+    if let Some((deps, limited, fx)) = hit {
+        env.reads.borrow_mut().extend(deps);
+        if limited {
+            env.fell_back();
+        }
+        return fx;
+    }
+    let reads_start = env.reads.borrow().len();
+    let fallbacks_start = env.fallbacks.get();
+    let fx = match e {
+        Expr::Call { callee, args } => call_fx(callee, args, env, at, Want::Ret),
+        Expr::CallExpr { callee, args } => callexpr_fx(callee, args, env, at, Want::Ret),
+        _ => return FnFx::default(),
+    };
+    let deps = env.deps_since(reads_start, None);
+    let limited = env.fallbacks.get() != fallbacks_start;
+    let mut memo = env.calls_at.borrow_mut();
+    if memo.len() >= MAX_CALLS_AT {
+        memo.clear();
+    }
+    memo.insert(key(env), (at.locals.clone(), deps, limited, fx.clone()));
+    fx
+}
+
 /// A call `callee(args)`: a user function (specialized), a local closure, or a builtin.
 fn call_fx(callee: &str, args: &[Expr], env: &Env, at: &At, want: Want) -> FnFx {
     if callee == "return" {
         return FnFx {
             ret: args.first().and_then(|a| src(a, env, at)),
-            egress: None,
+            ..FnFx::default()
         };
     }
     // A user function wins in call position (the runtime resolves it before a local of that name).
@@ -7347,13 +7405,14 @@ fn call_fx(callee: &str, args: &[Expr], env: &Env, at: &At, want: Want) -> FnFx 
     match resolve_local(callee, env, at) {
         Some(l) => apply_fx(&l, args_locals(args, env, at), env, at),
         None => match want {
+            // (A function value a builtin hands back is `fns_in`'s.)
             Want::Ret => FnFx {
                 ret: builtin_src(callee, args, env, at),
-                egress: None,
+                ..FnFx::default()
             },
             Want::Egress => FnFx {
-                ret: None,
                 egress: builtin_egress(callee, args, env, at),
+                ..FnFx::default()
             },
         },
     }
@@ -7370,7 +7429,7 @@ fn callexpr_fx(callee: &Expr, args: &[Expr], env: &Env, at: &At, want: Want) -> 
                 // not resolve.
                 return FnFx {
                     ret: computed(join_all(args.iter().map(|a| src(a, env, at)))),
-                    egress: None,
+                    ..FnFx::default()
                 };
             }
             let which = receiver(base, &recv, env, at);
@@ -7384,10 +7443,23 @@ fn callexpr_fx(callee: &Expr, args: &[Expr], env: &Env, at: &At, want: Want) -> 
             apply_fx(&l, args_locals(args, env, at), env, at)
         }
         // A value the lane cannot resolve (`fs[0](p)`, `h.f(p)`) may compute from any argument.
-        _ => FnFx {
-            ret: computed(join_all(args.iter().map(|a| src(a, env, at)))),
-            egress: None,
-        },
+        // A function value the callee may be (a call's result, `myid(show)(p)`; one a branch or
+        // `identity` hands back) is also applied: it was a value there, and released nothing.
+        _ => {
+            let mut out = FnFx {
+                ret: computed(join_all(args.iter().map(|a| src(a, env, at)))),
+                ..FnFx::default()
+            };
+            let mut fns = Vec::new();
+            passed_fns(callee, env, at, &mut fns);
+            if !fns.is_empty() {
+                let f = apply_fx(&Local::Any(fns), args_locals(args, env, at), env, at);
+                out.ret = join(out.ret, f.ret);
+                out.egress = f.egress;
+                out.fns = f.fns;
+            }
+            out
+        }
     }
 }
 
@@ -7488,17 +7560,8 @@ fn arg_local(a: &Expr, env: &Env, at: &At) -> Local {
 /// returns its argument).
 fn may_pass_fn(e: &Expr) -> bool {
     match e {
-        Expr::Lambda { .. } | Expr::Var(_) => true,
-        // `reduce`'s seed, when the fold before it is a function too (see `fns_in`).
-        Expr::Call { callee, args } if callee == "reduce" => {
-            matches!(args.as_slice(), [_, f, seed] if may_pass_fn(f) && may_pass_fn(seed))
-        }
-        Expr::Call { callee, args } => {
-            matches!(
-                callee.as_str(),
-                "identity" | "max" | "min" | "get" | "call" | "apply"
-            ) && args.iter().any(spread_may_pass_fn)
-        }
+        Expr::Lambda { .. } | Expr::Var(_) | Expr::CallExpr { .. } => true,
+        Expr::Call { callee, .. } => !matches!(callee.as_str(), "return" | "break" | "continue"),
         Expr::EnumConstruct { fields, .. } => fields.iter().any(may_pass_fn),
         Expr::Try(inner) | Expr::Declassify { inner, .. } | Expr::Cast { expr: inner, .. } => {
             may_pass_fn(inner)
@@ -7617,11 +7680,16 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
                 depth: at.depth + 1,
             };
             let w = walk(body, env, &inner, &None);
+            // The function values it evaluates to (`|x| |y| x`, `|| pr`), and those a `return`
+            // inside it returns.
+            let mut fns = walked_fns(body, &w, env);
+            add_fns(&mut fns, w.ret_fns.clone());
             let ret = join(walked_value(body, &w, env), w.ret);
             let fx = FnFx {
                 // What the body evaluates to, and what a `return` inside it returns.
                 ret: ret.map(WholeSrc::capped),
                 egress: w.egress,
+                fns,
             };
             let applied = Applied {
                 binds,
@@ -7652,10 +7720,18 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
             } else {
                 None
             };
-            FnFx {
-                ret: builtin_src(f, &args, env, &inner),
-                egress: join(sink, builtin_egress(f, &args, env, &inner)),
-            }
+            let ret = builtin_src(f, &args, env, &inner);
+            let egress = join(sink, builtin_egress(f, &args, env, &inner));
+            // A function value it hands back (`identity`, `call`, `apply`, `compose`, ...), as a
+            // call of it with these arguments would (`fns_in`).
+            let mut fns = Vec::new();
+            let call = Expr::Call {
+                callee: f.clone(),
+                args,
+            };
+            // (Not remembered: the call is no node of the program, and its address is reused.)
+            fns_in_uncached(&call, env, &inner, &mut fns);
+            FnFx { ret, egress, fns }
         }
         Local::Any(ls) => {
             let mut out = FnFx::default();
@@ -7663,9 +7739,11 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
                 let f = apply_fx(x, binds.clone(), env, at);
                 out.ret = join(out.ret, f.ret);
                 out.egress = join(out.egress, f.egress);
+                add_fns(&mut out.fns, f.fns);
             }
             out
         }
+        // It may also return a function computing from, and releasing, all of that.
         Local::Opaque(r) => {
             let mut seen = BTreeSet::new();
             let mut all = r.clone();
@@ -7675,12 +7753,13 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
             let all = computed(all);
             FnFx {
                 ret: all.clone(),
-                egress: all,
+                egress: all.clone(),
+                fns: vec![Local::Opaque(all)],
             }
         }
         Local::Src(..) => FnFx {
             ret: computed(join_all(binds.iter().map(local_src))),
-            egress: None,
+            ..FnFx::default()
         },
     }
 }
@@ -7697,7 +7776,9 @@ fn worst(binds: &[Local], callee: Option<&str>, env: &Env) -> FnFx {
     ));
     FnFx {
         ret: all.clone(),
-        egress: all,
+        egress: all.clone(),
+        // And it may return a function doing the same with what it is given in turn.
+        fns: vec![Local::Opaque(all)],
     }
 }
 
@@ -8156,9 +8237,11 @@ fn specialize(
         .then(|| env.ctx.whole_memo.borrow().get(&key).cloned())
         .flatten()
     {
+        // (Only a result returning no function value is kept there.)
         return FnFx {
             ret: r.0,
             egress: r.1,
+            fns: Vec::new(),
         };
     }
     if depth >= MAX_CALL_DEPTH || env.work.get() >= MAX_WORK || env.exhausted() {
@@ -8197,9 +8280,12 @@ fn specialize(
         let assumed = env.active.borrow().get(&key).cloned().unwrap_or_default();
         let reread = env.reads.borrow()[mark..].iter().any(|k| k == &key);
         let grew = env.calls.borrow()[depth].grew != grew_before;
+        let mut fns = assumed.fns.clone();
+        add_fns(&mut fns, r.fns.clone());
         let mut next = FnFx {
             ret: join(assumed.ret.clone(), r.ret.clone()),
             egress: join(assumed.egress.clone(), r.egress.clone()),
+            fns,
         };
         // Settled: the bindings stood, and the result computed from the running one adds nothing.
         if !grew && (!reread || next == assumed) {
@@ -8210,6 +8296,16 @@ fn specialize(
         if iter >= 1 {
             next.ret = next.ret.map(WholeSrc::widen);
             next.egress = next.egress.map(WholeSrc::widen);
+            // Function values still growing (a closure a recursive call keeps wrapping never
+            // settles): opaque over what they reach.
+            if next.fns != assumed.fns {
+                let mut widened = Vec::new();
+                add_fns(
+                    &mut widened,
+                    next.fns.iter().map(|l| widen_with(l, env)).collect(),
+                );
+                next.fns = widened;
+            }
         }
         env.active.borrow_mut().insert(key.clone(), next);
         env.epoch.set(env.epoch.get() + 1);
@@ -8226,6 +8322,7 @@ fn specialize(
         let w = worst(&last, Some(name), env);
         result.ret = join(result.ret, w.ret);
         result.egress = join(result.egress, w.egress);
+        add_fns(&mut result.fns, w.fns);
     }
     env.active.borrow_mut().remove(&key);
     result.ret = result.ret.map(WholeSrc::capped);
@@ -8238,8 +8335,9 @@ fn specialize(
         env.done.borrow_mut().insert(depth_key, result.clone());
     } else {
         // A callee's body reads only its formals: a result for bindings that name no closure (whose
-        // numbers are the query's own) holds in every query of this program.
-        if portable {
+        // numbers are the query's own) holds in every query of this program — one returning no
+        // function value (a closure it returns is the query's own too).
+        if portable && result.fns.is_empty() {
             env.ctx
                 .whole_memo
                 .borrow_mut()
@@ -8258,9 +8356,13 @@ fn call_fn(f: &str, binds: Vec<Local>, env: &Env) -> FnFx {
     specialize(format!("fn|{f}"), f, binds, env, |b| {
         let at = callee_at(params, b, None);
         let flow = interp(body, None, env, &at, &None, Run::BODY);
+        // The function values it returns, or its last statement is.
+        let mut fns = flow.ret_fns;
+        add_fns(&mut fns, flow.fns);
         FnFx {
             ret: join(flow.ret, flow.val),
             egress: flow.egress,
+            fns,
         }
     })
 }
@@ -8309,6 +8411,8 @@ fn call_method(m: &str, binds: Vec<Local>, recv: &Recv, env: &Env) -> FnFx {
                 let flow = interp(body, None, env, &at, &None, Run::BODY);
                 out.ret = join_all([out.ret, flow.ret, flow.val]);
                 out.egress = join(out.egress, flow.egress);
+                add_fns(&mut out.fns, flow.ret_fns);
+                add_fns(&mut out.fns, flow.fns);
             }
             out
         },
@@ -8604,6 +8708,51 @@ fn reduce_src(args: &[Expr], env: &Env, at: &At) -> Option<WholeSrc> {
         }
         _ => None,
     }
+}
+
+/// The function values `reduce` may return beyond its seed's (`fns_in`): what a fold returns
+/// (`reduce([1], |a, b| pr, zero)`), applied — to a fixpoint — to an accumulator that is the seed or
+/// what a fold returned before. Any function argument may be the fold (the runtime folds with the
+/// first closure, and a closure seed is the last argument). Unsettled: an opaque function over what
+/// all of them can reach, too.
+fn reduce_fns(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
+    let Some((list, rest)) = args.split_first() else {
+        return Vec::new();
+    };
+    let folds: Vec<Local> = rest
+        .iter()
+        .flat_map(|f| fn_parts(&arg_local(f, env, at)))
+        .collect();
+    if folds.is_empty() {
+        return Vec::new();
+    }
+    let elem = Local::Src(src(list, env, at).and_then(|s| s.elem()), Kind::NONE);
+    let held = Local::Src(reduce_src(args, env, at), Kind::NONE);
+    let mut acc: Vec<Local> = match rest {
+        [_, seed] => fn_parts(&arg_local(seed, env, at)),
+        _ => Vec::new(),
+    };
+    for _ in 0..MAX_ITER {
+        let mut now = vec![held.clone()];
+        now.extend(acc.iter().cloned());
+        let binds = vec![Local::Any(now), elem.clone()];
+        let mut next = acc.clone();
+        for f in &folds {
+            add_fns(&mut next, apply_fx(f, binds.clone(), env, at).fns);
+        }
+        if next == acc {
+            return acc;
+        }
+        acc = next;
+    }
+    env.fell_back();
+    let mut seen = BTreeSet::new();
+    let mut all = local_src(&held);
+    for l in folds.iter().chain(&acc).chain([&elem]) {
+        all = join(all, reach(l, env, &mut seen));
+    }
+    acc.push(Local::Opaque(all));
+    acc
 }
 
 /// Where a builtin's callbacks make a whole struct reach an egress, run with their parameters bound
