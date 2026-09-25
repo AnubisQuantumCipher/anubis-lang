@@ -1668,6 +1668,10 @@ and cannot verify later repairs.
     - `2536d046`: page cache, active or inactive, counts as free and is read again at every look; the
       look comes before any large allocation; the evidence lane's re-check keeps the check's budget;
       verify refutes a forged pass that a finding made before the limit disproves.
+    - `cf7e812c`: the reserve is sized to the memory left now (a long-lived language server no
+      longer refuses or exits with memory free); a limit in the evidence lane's own analysis is
+      reported as a limit and sealed as one, never as a program verdict; bundles appear under their
+      name only when complete; verify refutes claims no derivation produces.
     - **Still OPEN:** PERF-LONG-SUM (a sum of n terms costs time and memory quadratic in n) and
       PERF-FNCHAIN (CPU time is not bounded).
 

@@ -437,3 +437,21 @@ PASS, 32 silent accepts (all `open_*`), 96 wrong-class.
 | OR-FN-RETURNS | S4 | documented over-refusals: compose applied to a whole struct; a recursive helper returning an ever-wrapped closure | `rv38x_fnret_documented_refusal_*` (2, wrong-class) | documented |
 | IFC-CALLBACK-RETURN (ordinary) | S1 | still open, ordinary lane: `let g = call(|| pr); g(p.k)` (the whole-struct twin is fixed) | R38B-11 direct twin | open (the ordinary-lane unit) |
 | FV-OPEN-6 (payloads, fields) | S1 | still open: a function taken out of a variant payload by a pattern binder, a container or a field | `open_whole4_w11_ip_s07`, `open_whole4_w11_ip_l11/l12` | open |
+
+### Follow-up: cf7e812c (eighth review of the checker limits)
+
+Twelve findings on whole15d (the pushed head's pin, which carries 2536d046), each re-run by a
+verifier. None is an acceptance of a program that should fail; one was an rc-0 pass whose own
+bundle contradicted it.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| CHK-RESERVE-STALE | S3 | 2536d046: the reserve was sized from the process's first request (FIRST_USABLE): a language server whose memory had since shrunk refused valid programs and exited with hundreds of MiB free | review E1, B8-1 | **fixed** cf7e812c: the reserve is an eighth of what is usable now |
+| CHK-RESERVE-FLOOR | S4 | 2536d046: the reserve's fixed 128 MiB floor refused a program at 64% of a 280 MiB scope under ANUBIS_ANALYSIS_MEMORY_MIB | review B8-5 | **fixed** cf7e812c: the floor is at most a quarter of what is usable |
+| CHK-EVIDENCE-LIMIT-VERDICT | S2 | the evidence lane's re-check or claim derivation stopping at a limit was recorded as a program FAIL: reported as ANUBIS_EVIDENCE_VERDICT_FAILED / repair_program, or under an rc-0 pass with a contradicting pca.json | review B8-2, B8-3 | **fixed** cf7e812c: the bundle records the limit (rejected claim, FAIL) and the command reports ANUBIS_ANALYSIS_LIMIT |
+| CHK-PARTIAL-BUNDLE | S3 | an allocator exit inside the evidence lane left a bundle whose evidence and manifest said PASS, with no claim or hashes, while the exit text said nothing was written | review B8-4 | **fixed** cf7e812c: bundles are staged under a per-process `.partial` name and renamed when complete |
+| CHK-VERIFY-INCONSISTENT | S3 | pre-existing: a forged PASS claim with `typecheck_ok: false` was "could not be re-derived" when the re-derivation stopped at a limit | review E3 | **fixed** cf7e812c: a claim no derivation produces is refuted before re-deriving |
+| CHK-VERIFY-RESERVE-TEXT | S4 | 2536d046: verify blamed the budget and advised ANUBIS_ANALYSIS_MEMORY_MIB when the reserve had stopped it | review E5 | **fixed** cf7e812c |
+| CHK-INDEPENDENT-FINDINGS | S4 | pre-existing: `?` outside a Result function and a constant return of another type were dropped after a limit | review E2 | **fixed** cf7e812c: push_diag_independent |
+| CHK-ESCAPES | S3 | pre-existing: verify's signer line and evidence-verify's report printed a bundle's escape sequences; printable() let tag characters, line separators and fillers through | review E4, E6 | **fixed** cf7e812c |
+| CHK-PARSE-COUNT | S4 | pre-existing: the JSON summary counted "… and N more parse errors" as one error | review E7 | **fixed** cf7e812c: `omitted` |
