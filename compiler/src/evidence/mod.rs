@@ -428,7 +428,7 @@ fn build_evidence_bundle_tree_inner(
 
     // A check refused at the analysis limit ran out of stack or memory; running the same analysis
     // again for the bundle would only repeat that (and double the time to the refusal).
-    let limit_refusal = rejection.is_some_and(|r| r.contains("ANUBIS_ANALYSIS_LIMIT"));
+    let limit_refusal = rejection.is_some_and(crate::diagnostics::is_analysis_limit);
     if limit_refusal {
         checks.push(Check {
             name: "typecheck".into(),
@@ -789,7 +789,12 @@ fn build_evidence_bundle_tree_inner(
     // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
     // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Written before
     // the manifest hashing so it is covered by MANIFEST.sha256.
-    let mut claim = derive_claim_block_bound(&dir, &source, mode);
+    // A limit refusal's claim is not re-derived either (its tier and verdict are set below).
+    let mut claim = if limit_refusal {
+        derive_claim(&source, mode, false).0
+    } else {
+        derive_claim_block_bound(&dir, &source, mode)
+    };
     if let Some(rejection) = rejection {
         claim.tier = "rejected".into();
         claim.rejection = Some(rejection.to_string());
@@ -922,6 +927,12 @@ fn default_solver_backend() -> String {
 /// Re-derive the claim block from source. Deterministic and side-effect free — the single source of
 /// truth used both when emitting a PCA and when verifying one, so the two agree exactly.
 pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
+    derive_claim(source, mode, true).0
+}
+
+/// The claim block, and whether the analysis stopped at the checker's analysis limit (then its
+/// verdict is not a fact about the program). `analyze: false` records the parse only.
+fn derive_claim(source: &str, mode: &str, analyze: bool) -> (ClaimBlock, bool) {
     let source_sha256 = sha256_bytes(source.as_bytes());
     let tc_mode = match mode {
         "research" => crate::frontend::Mode::Research,
@@ -931,10 +942,15 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     let parse_res = crate::frontend::parse_source(source);
     let parse_ok = parse_res.is_ok();
     let mut typecheck_ok = false;
+    let mut limit = false;
     let mut solver_obligations = 0usize;
     let mut solver_all_discharged = true;
-    if let Ok(ast) = parse_res {
-        if let Ok(ir) = crate::middle::typecheck(ast, tc_mode) {
+    if let (Ok(ast), true) = (parse_res, analyze) {
+        let typed = crate::middle::typecheck(ast, tc_mode);
+        limit = typed
+            .as_ref()
+            .is_err_and(|e| crate::diagnostics::is_analysis_limit(e));
+        if let Ok(ir) = typed {
             typecheck_ok = true;
             let tainted = crate::middle::TaintPass::apply(ir);
             // The earlier schema translated `typecheck` returning Ok into `taint_clean: true`.
@@ -953,24 +969,27 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     } else {
         "FAIL"
     };
-    ClaimBlock {
-        pca_version: 2,
-        source_sha256,
-        mode: mode.to_string(),
-        tier: "checked".into(),
-        rejection: None,
-        parse_ok,
-        typecheck_ok,
-        solver_obligations,
-        solver_all_discharged,
-        solver_backend: default_solver_backend(),
-        zk_present: false,
-        zk_image_id: None,
-        zk_receipt_sha256: None,
-        zk_journal_sha256: None,
-        verdict: verdict.into(),
-        tool: tool_identity(),
-    }
+    (
+        ClaimBlock {
+            pca_version: 2,
+            source_sha256,
+            mode: mode.to_string(),
+            tier: "checked".into(),
+            rejection: None,
+            parse_ok,
+            typecheck_ok,
+            solver_obligations,
+            solver_all_discharged,
+            solver_backend: default_solver_backend(),
+            zk_present: false,
+            zk_image_id: None,
+            zk_receipt_sha256: None,
+            zk_journal_sha256: None,
+            verdict: verdict.into(),
+            tool: tool_identity(),
+        },
+        limit,
+    )
 }
 
 /// A ZK receipt binding derived STRUCTURALLY from a bundle's risc0 sidecars: the guest-bound
@@ -1044,14 +1063,19 @@ pub fn derive_zk_binding(dir: &Path) -> Option<ZkBinding> {
 /// when the bundle carries a genuine receipt. Used both when emitting a PCA and when verifying one,
 /// so the two agree exactly (including the ZK fields).
 pub fn derive_claim_block_bound(dir: &Path, source: &str, mode: &str) -> ClaimBlock {
-    let mut cb = derive_claim_block(source, mode);
+    derive_claim_bound(dir, source, mode).0
+}
+
+/// [`derive_claim_block_bound`], and whether its analysis stopped at the analysis limit.
+fn derive_claim_bound(dir: &Path, source: &str, mode: &str) -> (ClaimBlock, bool) {
+    let (mut cb, limit) = derive_claim(source, mode, true);
     if let Some(zk) = derive_zk_binding(dir) {
         cb.zk_present = true;
         cb.zk_image_id = Some(zk.image_id);
         cb.zk_receipt_sha256 = Some(zk.receipt_sha256);
         cb.zk_journal_sha256 = Some(zk.journal_sha256);
     }
-    cb
+    (cb, limit)
 }
 
 /// Verify a Proof-Carrying Artifact: first the hash / tamper validation, then — the PCA hardening —
@@ -1095,7 +1119,18 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // tampered receipt, a swapped ImageID, or a claim that lies about carrying a receipt makes the
     // re-derived block differ from the recorded one and fails closed here (the CLI additionally
     // re-verifies the receipt cryptographically against the ImageID).
-    let fresh = derive_claim_block_bound(dir, &source, &recorded.mode);
+    let (fresh, limit) = derive_claim_bound(dir, &source, &recorded.mode);
+    // A re-derivation stopped by the analysis limit (the verifying machine's memory, or a program
+    // past the checker's stack or depth) neither confirms nor refutes the recorded claim: say so,
+    // rather than "invalid", which reads as tampering.
+    if limit && !claim_semantically_matches(&fresh, &recorded) {
+        return Err(
+            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the checker reached \
+                    its analysis limit on this machine, so the bundle is neither confirmed nor \
+                    refuted (give the check more memory: ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
+                .into(),
+        );
+    }
     // If the bundle is signed, the signature must verify over the current claim + manifest. An
     // unsigned bundle is still a valid (unsigned) PCA. A forged/invalid signature fails closed.
     let sig_ok = match pca_signature_status(dir)? {

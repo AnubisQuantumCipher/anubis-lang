@@ -330,6 +330,24 @@ pub struct Counts {
 /// Extraction rather than invention: the compiler already prefixes its refusals
 /// with a stable code, and lifting it into a field is the whole point of this
 /// format. A message with no code gets the generic one instead of a guess.
+/// Whether a refusal is the analysis limit (by its leading code, never by a substring: a message can
+/// quote user text, such as an identifier named `ANUBIS_ANALYSIS_LIMIT` in a counterexample).
+pub fn is_analysis_limit(message: &str) -> bool {
+    leading_code(message) == "ANUBIS_ANALYSIS_LIMIT"
+}
+
+/// The diagnostics of a refusal: one, or for an analysis limit followed by findings (on the next
+/// line, `middle::analysis_limit::check`), the limit and then the findings as their own diagnostic
+/// (a known exfiltration is `program`, whatever the limit is).
+pub fn diagnostics_of_refusal(message: &str) -> Vec<Diagnostic> {
+    match message.split_once('\n') {
+        Some((limit, rest)) if is_analysis_limit(limit) && !rest.trim().is_empty() => {
+            vec![diagnostic_of_refusal(limit), diagnostic_of_refusal(rest)]
+        }
+        _ => vec![diagnostic_of_refusal(message)],
+    }
+}
+
 fn leading_code(message: &str) -> String {
     let head = message.split(':').next().unwrap_or("");
     let head = head.trim();
@@ -385,12 +403,34 @@ pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
 /// human renderer draws its carets from — not by reading back the rendered
 /// text. A format that re-parsed its own prose would drift the first time the
 /// caret rendering changed.
+/// Parse diagnostics reported one by one; the rest are counted in one more. Error recovery can
+/// report one per token of a malformed file.
+const MAX_PARSE_DIAGNOSTICS: usize = 200;
+
 pub fn diagnostics_of_parse_errors(source: &str, path: &str) -> Vec<Diagnostic> {
-    crate::frontend::parse_source_detailed(source)
-        .diagnostics
+    let all = crate::frontend::parse_source_detailed(source).diagnostics;
+    // Line starts, once: locating each error by walking the source from its start was quadratic
+    // (150000 errors took 52 s).
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    let locate = |offset: usize| {
+        let clamped = offset.min(source.len());
+        let line = starts.partition_point(|&s| s <= clamped).max(1);
+        let start = starts[line - 1];
+        let column = source[start..]
+            .char_indices()
+            .take_while(|(i, _)| start + i < clamped)
+            .count()
+            + 1;
+        (line, column)
+    };
+    let more = all.len().saturating_sub(MAX_PARSE_DIAGNOSTICS);
+    let mut out: Vec<Diagnostic> = all
         .iter()
+        .take(MAX_PARSE_DIAGNOSTICS)
         .map(|d| {
-            let (line, column) = crate::frontend::line_col(source, d.span.start);
+            let (line, column) = locate(d.span.start);
             Diagnostic {
                 type_tag: "anubis.diagnostic".into(),
                 schema: SCHEMA.into(),
@@ -415,7 +455,16 @@ pub fn diagnostics_of_parse_errors(source: &str, path: &str) -> Vec<Diagnostic> 
                 suggestions: Vec::new(),
             }
         })
-        .collect()
+        .collect();
+    if more > 0 {
+        let mut rest = diagnostic_of_refusal(&format!(
+            "ANUBIS_PARSE_ERROR: … and {more} more parse error{}",
+            if more == 1 { "" } else { "s" }
+        ));
+        rest.family = Family::Frontend;
+        out.push(rest);
+    }
+    out
 }
 
 /// Strip the compiler's variable prefix so a name matches the source.
@@ -811,7 +860,19 @@ mod tests {
         assert_eq!(d.status, Status::Undecided);
         assert_eq!(d.defect_locus, DefectLocus::Capability);
         assert_eq!(d.agent_action, AgentAction::RestateOrRaiseBudget);
-        // The analysis limit is a budget too, never a repair of the program.
+        // The analysis limit is a budget too, never a repair of the program; a finding reported
+        // beside it is its own diagnostic, and is the program's.
+        let both = diagnostics_of_refusal(
+            "ANUBIS_ANALYSIS_LIMIT: the checker ran out of stack\nANUBIS_SECRET_EXFILTRATION: s",
+        );
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].defect_locus, DefectLocus::Capability);
+        assert_eq!(both[1].code, "ANUBIS_SECRET_EXFILTRATION");
+        assert_eq!(both[1].defect_locus, DefectLocus::Program);
+        assert!(is_analysis_limit("ANUBIS_ANALYSIS_LIMIT: x"));
+        assert!(!is_analysis_limit(
+            "ANUBIS_ASSERTION_DISPROVED: counterexample ANUBIS_ANALYSIS_LIMIT = 5"
+        ));
         let limit = diagnostic_of_refusal("ANUBIS_ANALYSIS_LIMIT: the checker ran out of stack");
         assert_eq!(limit.code, "ANUBIS_ANALYSIS_LIMIT");
         assert_eq!(limit.defect_locus, DefectLocus::Capability);
@@ -1125,5 +1186,34 @@ mod tests {
             "the compiler does not yet ask z3 what it spent"
         );
         assert!(b.consumed.is_none(), "and so must not report a figure");
+    }
+}
+
+#[cfg(test)]
+mod parse_lane_tests {
+    use super::*;
+
+    /// The JSON parse lane locates errors exactly as `line_col` does, and counts past 200.
+    #[test]
+    fn parse_diagnostics_are_located_and_capped() {
+        let src = format!("fn main() {{\n  é {} }}\n", "let = ; ".repeat(300));
+        let all = crate::frontend::parse_source_detailed(&src).diagnostics;
+        assert!(all.len() > MAX_PARSE_DIAGNOSTICS);
+        let ds = diagnostics_of_parse_errors(&src, "t.anb");
+        assert_eq!(ds.len(), MAX_PARSE_DIAGNOSTICS + 1);
+        for (d, p) in ds.iter().take(MAX_PARSE_DIAGNOSTICS).zip(all.iter()) {
+            let loc = d.location.as_ref().unwrap();
+            assert_eq!(
+                (loc.line, loc.column),
+                crate::frontend::line_col(&src, p.span.start)
+            );
+        }
+        let last = ds.last().unwrap();
+        assert!(last.location.is_none());
+        assert!(
+            last.message.contains("more parse errors"),
+            "{}",
+            last.message
+        );
     }
 }

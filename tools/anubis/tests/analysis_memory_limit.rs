@@ -25,6 +25,10 @@ fn workdir(tag: &str) -> PathBuf {
 }
 
 fn check(tag: &str, source: &str, budget_mib: &str) -> (Output, Duration) {
+    check_with(tag, source, budget_mib, &[])
+}
+
+fn check_with(tag: &str, source: &str, budget_mib: &str, extra: &[&str]) -> (Output, Duration) {
     let dir = workdir(tag);
     let prog = dir.join(format!("{tag}.anb"));
     std::fs::write(&prog, source).unwrap();
@@ -34,6 +38,7 @@ fn check(tag: &str, source: &str, budget_mib: &str) -> (Output, Duration) {
         .arg(&prog)
         .arg("--out")
         .arg(dir.join("out"))
+        .args(extra)
         .env("ANUBIS_ANALYSIS_MEMORY_MIB", budget_mib)
         .output()
         .unwrap();
@@ -126,4 +131,50 @@ fn a_cascade_of_parse_errors_is_bounded() {
     );
     assert!(text.len() < 2_000_000, "{} bytes of output", text.len());
     assert!(took < Duration::from_secs(60), "took {took:?}");
+}
+
+/// A finding the analysis made is still reported when a limit is reached elsewhere (review of the
+/// checker limits: a secret exfiltration beside a self-calling closure was hidden behind the limit),
+/// and in JSON it is its own diagnostic, the program's.
+#[test]
+fn a_finding_beside_a_limit_is_kept() {
+    let src = "fn leak() uses(net.send) {\n    send(\"host\", 80, secret_source(\"api_key\"));\n}\n\
+               fn main() uses(net.send) {\n    leak();\n    let g = |s| 0;\n    g = |s| g(s);\n    g(0);\n}\n";
+    let (out, _) = check("finding", src, "100000");
+    let text = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("ANUBIS_ANALYSIS_LIMIT"), "{text}");
+    assert!(text.contains("ANUBIS_SECRET_EXFILTRATION"), "{text}");
+    // A depth limit does not tell anyone to add memory.
+    assert!(!text.contains("ANUBIS_ANALYSIS_MEMORY_MIB"), "{text}");
+    let (json, _) = check_with("finding-json", src, "100000", &["--message-format", "json"]);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains("anubis.diagnostic"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert!(
+        lines[0].contains("\"defect_locus\":\"capability\""),
+        "{stdout}"
+    );
+    assert!(lines[1].contains("ANUBIS_SECRET_EXFILTRATION"), "{stdout}");
+    assert!(
+        lines[1].contains("\"defect_locus\":\"program\""),
+        "{stdout}"
+    );
+}
+
+/// The hard memory exit still ends the JSON stream with a refusal, not with nothing.
+#[test]
+fn the_hard_exit_reports_in_json() {
+    let src = format!(
+        "fn main() {{\n    let s = {};\n    print(len(s));\n}}\n",
+        vec!["\"ab\""; 2000].join(" + ")
+    );
+    let (out, _) = check_with("hard", &src, "1", &["--message-format", "json"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("ANUBIS_ANALYSIS_LIMIT"), "{stdout}");
+    assert!(stdout.contains("anubis.summary"), "{stdout}");
 }

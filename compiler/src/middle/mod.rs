@@ -3768,6 +3768,12 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
         }
     }
 
+    // Past an analysis limit, a diagnostic that names the fail-closed stand-in is a consequence of
+    // the limit (which `analysis_limit::check` reports), not a finding; every other one is kept.
+    if analysis_limit::exhausted() {
+        ctx.diagnostics
+            .retain(|d| !d.message.contains(ANALYSIS_LIMIT_SOURCE));
+    }
     if !ctx.diagnostics.is_empty() {
         let messages = ctx
             .diagnostics

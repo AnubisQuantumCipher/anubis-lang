@@ -30,7 +30,7 @@
 //! check request nothing is limited. A program that embeds the compiler without installing the
 //! allocator has no memory budget, only the stack and depth limits.
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering::Relaxed};
 
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -39,13 +39,25 @@ static SOFT: AtomicUsize = AtomicUsize::new(0);
 /// Past this, the process exits (0: no request in progress).
 static HARD: AtomicUsize = AtomicUsize::new(0);
 static OVER: AtomicBool = AtomicBool::new(false);
+/// The soft budget of the request in progress, in bytes (for its refusal's message).
+static BUDGET: AtomicUsize = AtomicUsize::new(0);
+/// What the hard exit also writes to standard output (a machine-readable refusal, when the command
+/// line was asked for one), set once before a check.
+static EXIT_REPORT: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+static EXIT_REPORT_LEN: AtomicUsize = AtomicUsize::new(0);
 
 const MIB: usize = 1 << 20;
 /// The budgets when the platform reports no memory figure at all.
 const SOFT_DEFAULT: usize = 4096 * MIB;
 const HARD_DEFAULT: usize = 8192 * MIB;
-const EXIT_MESSAGE: &[u8] = b"\nANUBIS_ANALYSIS_LIMIT: the checker's analysis of this program exceeded its \
-memory budget (ANUBIS_ANALYSIS_MEMORY_MIB); the check did not complete, so the program is refused\n";
+/// The hard exit's refusal. Written from inside the allocator, so it cannot be formatted there.
+pub const HARD_EXIT_DIAGNOSTIC: &str = "ANUBIS_ANALYSIS_LIMIT: the checker's analysis of this \
+program kept allocating past its hard memory budget (two thirds of the memory free when the check \
+began, or twice ANUBIS_ANALYSIS_MEMORY_MIB); the check did not complete, so the program is \
+refused. This is a limit of the checker, not a finding about the program: simplify it, or give \
+the check more memory (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if the machine has it to spare. No \
+evidence bundle is written on this exit";
+const EXIT_NEWLINE: &[u8] = b"\n";
 
 /// The system allocator, counting the bytes in use.
 pub struct CountingAlloc;
@@ -96,9 +108,21 @@ fn charge(n: usize) {
 /// Exit at once with the diagnostic, allocating nothing (this runs inside the allocator).
 fn exit_over_budget() -> ! {
     #[cfg(unix)]
-    // SAFETY: `write` reads `EXIT_MESSAGE` only; `_exit` does not return.
+    // SAFETY: `write` reads static bytes only (the diagnostic, and the report `set_exit_report` was
+    // given, which is leaked, so it lives for the process); `_exit` does not return.
     unsafe {
-        libc::write(2, EXIT_MESSAGE.as_ptr().cast(), EXIT_MESSAGE.len());
+        libc::write(2, EXIT_NEWLINE.as_ptr().cast(), 1);
+        libc::write(
+            2,
+            HARD_EXIT_DIAGNOSTIC.as_ptr().cast(),
+            HARD_EXIT_DIAGNOSTIC.len(),
+        );
+        libc::write(2, EXIT_NEWLINE.as_ptr().cast(), 1);
+        let report = EXIT_REPORT.load(Relaxed);
+        let len = EXIT_REPORT_LEN.load(Relaxed);
+        if !report.is_null() && len > 0 {
+            libc::write(1, report.cast(), len);
+        }
         libc::_exit(1)
     }
     #[cfg(not(unix))]
@@ -108,6 +132,19 @@ fn exit_over_budget() -> ! {
 /// Declare that [`CountingAlloc`] is the global allocator (the command line, at start).
 pub fn install() {
     INSTALLED.store(true, Relaxed);
+}
+
+/// What the hard exit also writes to standard output (the command line's `--message-format json`
+/// refusal), so a consumer reading the stream sees a verdict rather than nothing.
+pub fn set_exit_report(report: &'static [u8]) {
+    EXIT_REPORT_LEN.store(0, Relaxed);
+    EXIT_REPORT.store(report.as_ptr().cast_mut(), Relaxed);
+    EXIT_REPORT_LEN.store(report.len(), Relaxed);
+}
+
+/// The soft budget of the request in progress (or the last one), in MiB.
+pub fn soft_budget_mib() -> usize {
+    BUDGET.load(Relaxed) / MIB
 }
 
 /// Whether the memory in use has passed the soft budget of the request in progress.
@@ -122,6 +159,7 @@ pub(crate) fn arm() -> Option<(usize, usize, bool)> {
         return None;
     }
     let (soft, hard) = budgets();
+    BUDGET.store(soft, Relaxed);
     let base = ALLOCATED.load(Relaxed);
     let prev = (SOFT.load(Relaxed), HARD.load(Relaxed), OVER.load(Relaxed));
     OVER.store(false, Relaxed);

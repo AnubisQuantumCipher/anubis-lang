@@ -4715,12 +4715,22 @@ pub fn parse_source_detailed(source: &str) -> ParseOutput {
 pub fn parse_source(source: &str) -> Result<AST, String> {
     let output = parse_source_detailed(source);
     if !output.diagnostics.is_empty() {
-        Err(output
+        // The first ones, then a count: every message joined made an 8.6 MB evidence field (written
+        // four times) for a 480 KB malformed file.
+        let more = output
+            .diagnostics
+            .len()
+            .saturating_sub(MAX_JOINED_PARSE_ERRORS);
+        let mut messages: Vec<String> = output
             .diagnostics
             .iter()
-            .map(|d| d.message.as_str())
-            .collect::<Vec<_>>()
-            .join("; "))
+            .take(MAX_JOINED_PARSE_ERRORS)
+            .map(|d| d.message.clone())
+            .collect();
+        if more > 0 {
+            messages.push(format!("… and {more} more parse errors"));
+        }
+        Err(messages.join("; "))
     } else {
         Ok(output.ast)
     }
@@ -4758,6 +4768,18 @@ const RENDER_WINDOW: usize = 80;
 /// per token of a malformed file, and each rendering repeats its line: a 6 KB file of nested
 /// blocks produced 5210 errors and 49.6 MB of text, and 3000 levels needed a 1.3 GB allocation.
 const MAX_RENDERED_PARSE_ERRORS: usize = 20;
+/// Parse error messages joined into `parse_source`'s error; the rest are counted.
+const MAX_JOINED_PARSE_ERRORS: usize = 200;
+
+/// A source character as a diagnostic shows it: a control character (an escape sequence in a hostile
+/// file would otherwise drive the terminal or log that shows it) as `\u{..}`, a tab as a space.
+fn shown_char(c: char) -> String {
+    match c {
+        '\t' => " ".into(),
+        c if c.is_control() => format!("\\u{{{:x}}}", c as u32),
+        c => c.to_string(),
+    }
+}
 
 pub fn render_parse_diagnostic(source: &str, diag: &ParseDiagnostic, path: Option<&str>) -> String {
     let (line, col) = line_col(source, diag.span.start);
@@ -4777,10 +4799,14 @@ pub fn render_parse_diagnostic(source: &str, diag: &ParseDiagnostic, path: Optio
     let to = (at + RENDER_WINDOW).min(chars.len());
     let lead = if from > 0 { "…" } else { "" };
     let tail = if to < chars.len() { "…" } else { "" };
-    let shown: String = chars[from..to].iter().collect();
+    let shown: String = chars[from..to].iter().map(|&c| shown_char(c)).collect();
+    let before: usize = chars[from..at]
+        .iter()
+        .map(|&c| shown_char(c).chars().count())
+        .sum();
     let gutter = line.to_string();
     let pad = " ".repeat(gutter.len());
-    let caret_pad = " ".repeat(at - from + lead.chars().count());
+    let caret_pad = " ".repeat(before + lead.chars().count());
     let carets = "^".repeat(underline_len.min(to.saturating_sub(at).max(1)));
     format!(
         "{file}:{line}:{col}: error: {msg}\n {pad} |\n {gutter} | {lead}{shown}{tail}\n {pad} | {caret_pad}{carets}",
@@ -4867,6 +4893,44 @@ mod diagnostic_render_tests {
         let caret = lines[3].split(" | ").nth(1).unwrap();
         let col = caret.chars().position(|c| c == '^').unwrap();
         assert_eq!(text.chars().nth(col), Some(')'), "{rendered}");
+    }
+
+    /// Control characters in the source are shown escaped, with the caret still under its column.
+    #[test]
+    fn render_parse_diagnostic_escapes_control_characters() {
+        let src = "fn main() { let s = \"\u{1b}]0;x\u{7}\"; let = 1; }\n";
+        let at = src.find("let =").unwrap() + 4;
+        let diag = ParseDiagnostic {
+            message: "expected a name".into(),
+            span: Span {
+                start: at,
+                end: at + 1,
+            },
+        };
+        let rendered = render_parse_diagnostic(src, &diag, None);
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "{rendered:?}"
+        );
+        assert!(rendered.contains("\\u{1b}]0;x\\u{7}"), "{rendered}");
+        let lines: Vec<&str> = rendered.lines().collect();
+        let text = lines[2].split(" | ").nth(1).unwrap();
+        let caret = lines[3].split(" | ").nth(1).unwrap();
+        let col = caret.chars().position(|c| c == '^').unwrap();
+        assert_eq!(text.chars().nth(col), Some('='), "{rendered}");
+    }
+
+    /// The joined parse error counts past the first 200.
+    #[test]
+    fn parse_source_error_counts_past_two_hundred() {
+        let src = format!("fn main() {{ {} }}\n", "let = ; ".repeat(400));
+        let err = parse_source(&src).unwrap_err();
+        assert!(
+            err.contains("more parse errors"),
+            "{}",
+            &err[err.len() - 80..]
+        );
+        assert!(err.matches("; ").count() <= MAX_JOINED_PARSE_ERRORS);
     }
 
     /// A cascade of errors renders the first ones and counts the rest.

@@ -2707,6 +2707,17 @@ fn cli_main() -> Result<()> {
                     ))
                 }
             };
+            // The hard memory exit (from inside the allocator, `anubis_compiler::resource`) cannot
+            // format anything: give it the JSON refusal now, so the stream never ends empty.
+            if json_mode {
+                let refusal = anubis_compiler::diagnostics::diagnostic_of_refusal(
+                    anubis_compiler::resource::HARD_EXIT_DIAGNOSTIC,
+                );
+                let report = anubis_compiler::diagnostics::render_with_coverage(&[refusal], None);
+                anubis_compiler::resource::set_exit_report(Box::leak(
+                    report.into_bytes().into_boxed_slice(),
+                ));
+            }
             // In `json` mode stdout carries the diagnostic stream and nothing else.
             macro_rules! say {
                 ($($t:tt)*) => { if !json_mode { println!($($t)*); } };
@@ -3035,7 +3046,7 @@ fn cli_main() -> Result<()> {
                         .map(diag::diagnostic_of)
                         .collect()
                 } else if let Some(err) = check_error.clone().or_else(|| verdict_failure.clone()) {
-                    vec![diag::diagnostic_of_refusal(&err)]
+                    diag::diagnostics_of_refusal(&err)
                 } else {
                     Vec::new()
                 };

@@ -22,9 +22,11 @@
 //!
 //! Reaching one is sticky for the request: every later closure body or walker entry is cut short,
 //! the walkers return a fail-closed answer, and `check` turns the request into an
-//! `ANUBIS_ANALYSIS_LIMIT` refusal, so a partial analysis never passes as a check. The refusal is
-//! reported alone: the other errors of such a request come from the fail-closed answers (a secret
-//! "past the analysis limit" in a program that has none), so they are not findings.
+//! `ANUBIS_ANALYSIS_LIMIT` refusal, so a partial analysis never passes as a check. The refusal names
+//! the limit that was reached (only the memory budget can be raised), and is followed, on the next
+//! line, by the findings the analysis made elsewhere in the program. The errors that only name the
+//! fail-closed stand-in (a secret "past the analysis limit" in a program with none) are dropped
+//! before that (`typecheck_request`); a genuine finding the limit did not touch is kept.
 //!
 //! Time is not bounded. An analysis stopped by none of these can still take long (a chain of 8000
 //! functions each calling the previous one runs past two minutes): it uses CPU, not the memory or
@@ -46,17 +48,43 @@ const DEPTH_LIMIT: usize = 4096;
 const RED_ZONE: usize = 1 << 20;
 /// Stack a request may use when the platform does not report the thread's stack.
 const FALLBACK_BUDGET: usize = 4 << 20;
-pub(super) const DIAGNOSTIC: &str = "ANUBIS_ANALYSIS_LIMIT: the checker ran out of stack or of \
-     its memory budget, or nested closure bodies more than 4096 deep, while analyzing this program \
-     (for example a closure that calls itself through a reassigned name, directly or through \
-     another closure, or expressions nested too deeply inside a chain of calls); it cannot bound \
-     what the program returns or does, so the program is refused. This is a limit of the checker, \
-     not a finding about the program: simplify the program, or give the check more memory \
-     (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if the machine has it to spare";
+/// No limit reached; the stack guard; the closure-depth cap; the memory budget.
+const NONE: u8 = 0;
+const STACK: u8 = 1;
+const DEPTH: u8 = 2;
+const MEMORY: u8 = 3;
+
+/// The refusal for the limit that was reached.
+pub(super) fn diagnostic(reason: u8) -> String {
+    let refused = "it cannot bound what the program returns or does, so the program is refused";
+    match reason {
+        MEMORY => format!(
+            "ANUBIS_ANALYSIS_LIMIT: the checker's analysis of this program exceeded its memory \
+             budget ({} MiB: half the memory free when the check began, or \
+             ANUBIS_ANALYSIS_MEMORY_MIB); {refused}. This is a limit of the checker, not a finding \
+             about the program: simplify it, or give the check more memory \
+             (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if the machine has it to spare",
+            crate::resource::soft_budget_mib()
+        ),
+        DEPTH => format!(
+            "ANUBIS_ANALYSIS_LIMIT: the checker followed more than {DEPTH_LIMIT} nested closure \
+             bodies while analyzing this program (a closure that calls itself through a reassigned \
+             name, directly or through another closure, need not end); {refused}. The checker \
+             cannot tell whether such a call ends: break the cycle, or make it a named function"
+        ),
+        _ => format!(
+            "ANUBIS_ANALYSIS_LIMIT: the checker ran out of stack while analyzing this program \
+             (expressions or closure bodies nested too deeply to analyze, or a closure that reaches \
+             itself through a reassigned name); {refused}. This is a limit of the checker, not a \
+             finding about the program: reduce the nesting"
+        ),
+    }
+}
 
 thread_local! {
-    static DEPTH: Cell<usize> = const { Cell::new(0) };
-    static EXHAUSTED: Cell<bool> = const { Cell::new(false) };
+    static DEPTH_NOW: Cell<usize> = const { Cell::new(0) };
+    /// The limit reached in the current request (`NONE` while none is).
+    static REASON: Cell<u8> = const { Cell::new(NONE) };
     /// The lowest stack address a walker may enter at, in the current request (0: no request).
     static FLOOR: Cell<usize> = const { Cell::new(0) };
 }
@@ -103,14 +131,23 @@ fn stack_bottom() -> Option<usize> {
 /// Whether the walker about to run must be cut short: a limit was reached earlier in the request,
 /// or the stack or the memory budget is nearly used up (which is then recorded).
 pub(super) fn cut() -> bool {
-    if EXHAUSTED.get() {
+    if REASON.get() != NONE {
         return true;
     }
-    if stack_pointer() < FLOOR.get() || crate::resource::over_budget() {
-        EXHAUSTED.set(true);
+    if stack_pointer() < FLOOR.get() {
+        REASON.set(STACK);
+        return true;
+    }
+    if crate::resource::over_budget() {
+        REASON.set(MEMORY);
         return true;
     }
     false
+}
+
+/// Whether a limit was reached in the current request.
+pub(super) fn exhausted() -> bool {
+    REASON.get() != NONE
 }
 
 /// One closure-body descent in progress.
@@ -119,31 +156,34 @@ pub(super) struct Frame;
 impl Frame {
     /// Enter a closure body, or `None` once a limit is reached (and the request is then refused).
     pub(super) fn enter() -> Option<Self> {
-        let depth = DEPTH.get();
-        if cut() || depth >= DEPTH_LIMIT {
-            EXHAUSTED.set(true);
+        let depth = DEPTH_NOW.get();
+        if cut() {
             return None;
         }
-        DEPTH.set(depth + 1);
+        if depth >= DEPTH_LIMIT {
+            REASON.set(DEPTH);
+            return None;
+        }
+        DEPTH_NOW.set(depth + 1);
         Some(Self)
     }
 }
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        DEPTH.set(DEPTH.get() - 1);
+        DEPTH_NOW.set(DEPTH_NOW.get() - 1);
     }
 }
 
 /// Run one check request. A limit reached anywhere inside it refuses the request: the limit comes
-/// first, then any other errors (found by an analysis that was cut short). Each request starts
-/// clean (an LSP or batch run checks many files in one process); the previous state is restored on
-/// return and on unwind, so requests may nest.
+/// first, then, on the next line, the other errors (the genuine findings; see `typecheck_request`).
+/// Each request starts clean (an LSP or batch run checks many files in one process); the previous
+/// state is restored on return and on unwind, so requests may nest.
 pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    struct Request(bool, usize, Option<(usize, usize, bool)>);
+    struct Request(u8, usize, Option<(usize, usize, bool)>);
     impl Drop for Request {
         fn drop(&mut self) {
-            EXHAUSTED.set(self.0);
+            REASON.set(self.0);
             FLOOR.set(self.1);
             if let Some(prev) = self.2.take() {
                 crate::resource::disarm(prev);
@@ -156,15 +196,19 @@ pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
         _ => here.saturating_sub(FALLBACK_BUDGET),
     };
     let _request = Request(
-        EXHAUSTED.replace(false),
+        REASON.replace(NONE),
         FLOOR.replace(floor.max(FLOOR.get())),
         crate::resource::arm(),
     );
     let result = f();
-    if !EXHAUSTED.get() {
+    let reason = REASON.get();
+    if reason == NONE {
         return result;
     }
-    Err(DIAGNOSTIC.into())
+    match result {
+        Ok(_) => Err(diagnostic(reason)),
+        Err(other) => Err(format!("{}\n{other}", diagnostic(reason))),
+    }
 }
 
 #[cfg(test)]
@@ -199,7 +243,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.starts_with("ANUBIS_ANALYSIS_LIMIT"), "{err}");
-        assert_eq!(DEPTH.get(), 0);
+        assert_eq!(DEPTH_NOW.get(), 0);
         assert_eq!(
             check(|| {
                 let _frame = Frame::enter().unwrap();
@@ -276,17 +320,32 @@ mod tests {
         assert!(err.starts_with("ANUBIS_ANALYSIS_LIMIT"), "{err}");
     }
 
-    /// Past the limit the other errors come from fail-closed answers (review of the checker limits:
-    /// a program with no secret was refused with a secret "past the analysis limit" beside the
-    /// limit), so the refusal is the limit alone. It is still a refusal.
+    /// A finding the analysis made is reported after the limit, on its own line (the fail-closed
+    /// stand-ins are dropped before this, in `typecheck_request`).
     #[test]
-    fn the_limit_is_reported_alone() {
+    fn findings_follow_the_limit() {
         let err = check::<()>(|| {
             recurse();
             Err("ANUBIS_SECRET_EXFILTRATION: x".into())
         })
         .unwrap_err();
-        assert_eq!(err, DIAGNOSTIC);
+        let (limit, rest) = err.split_once('\n').unwrap();
+        assert!(limit.starts_with("ANUBIS_ANALYSIS_LIMIT"), "{err}");
+        assert_eq!(rest, "ANUBIS_SECRET_EXFILTRATION: x");
+    }
+
+    /// Only the memory budget can be raised, so only its refusal says so.
+    #[test]
+    fn each_limit_names_itself() {
+        assert!(diagnostic(MEMORY).contains("ANUBIS_ANALYSIS_MEMORY_MIB"));
+        for reason in [STACK, DEPTH] {
+            let d = diagnostic(reason);
+            assert!(d.starts_with("ANUBIS_ANALYSIS_LIMIT: "), "{d}");
+            assert!(!d.contains("ANUBIS_ANALYSIS_MEMORY_MIB"), "{d}");
+            assert!(!d.contains("memory"), "{d}");
+        }
+        assert!(diagnostic(DEPTH).contains("4096 nested closure bodies"));
+        assert!(diagnostic(STACK).contains("ran out of stack"));
     }
 
     #[test]
@@ -308,7 +367,7 @@ mod tests {
                 panic!("test unwind");
             })
         });
-        assert_eq!(DEPTH.get(), 0);
+        assert_eq!(DEPTH_NOW.get(), 0);
         assert_eq!(FLOOR.get(), 0);
         assert_eq!(check(|| Ok(())), Ok(()));
     }
