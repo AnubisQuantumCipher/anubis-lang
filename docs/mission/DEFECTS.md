@@ -424,3 +424,16 @@ wrong-class.
 | FV-OPEN-6 (round 38) | S1 | still open: a function taken out of a container, caught before only through a name coincidence | `open_rv38c_fut`, `_fut_nc`, `_u_mk_nocoinc`, `_u_main_nc` | open |
 | OR-WHOLE-R38 | S4 | documented over-refusals: a loop variable over a list of functions is not followed; a lambda's write to a captured name is taken as reaching it; a sticky container rebind; an expression-position write keeping a stale alias (needs the ordinary lane); a block-local let under the twice rule | `rv38x_bound_acc_b15_*`, `rv38y_b2_v8`, `rv38y_b2_u4b`, `rv38x_bands_ovr_sticky_container_rebind`, `rv38_r38b_14_*`, `rv38x_domai_rv38d2_o1_or5_*` (wrong-class) | documented |
 | PERF-R38B-13 | S3 | a nested capture chain costs 80-110 s on every pin (pre-existing) | review round 38 | open |
+
+### Follow-up: 2f0b2805 (whole-struct lane, review round 38: fnreturns)
+
+The fifth round-38 fix design, rebased onto bands, plus fns_at. Matrix at 2f0b2805: 1620 cases, 1492
+PASS, 32 silent accepts (all `open_*`), 96 wrong-class.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| WHOLE-FN-RETURNS | S1 | a call's result was a plain value: a function a user function, method, closure, `call` / `apply` callback or `reduce` fold returns, a call through a value, `compose` (3 regressions against whole10) | `rv38_r38b_l4..l8_*`, `rv38_r38b_7..11_*`, `rv38x_fnret_*`, `open_whole2_B2`, `open_whole4_w11_ip_s06`, `open_whole7_r30_c04` | **fixed** 2f0b2805 |
+| PERF-NESTED-CALL-OPERANDS | S3 | nested call / apply / reduce operands read again per level (introduced at f878d41c) | `rv30_valid_perf5_reduce_seed_nesting_exponential`, `rv38y_fr_nested_*` | **fixed** 2f0b2805: fns_at |
+| OR-FN-RETURNS | S4 | documented over-refusals: compose applied to a whole struct; a recursive helper returning an ever-wrapped closure | `rv38x_fnret_documented_refusal_*` (2, wrong-class) | documented |
+| IFC-CALLBACK-RETURN (ordinary) | S1 | still open, ordinary lane: `let g = call(|| pr); g(p.k)` (the whole-struct twin is fixed) | R38B-11 direct twin | open (the ordinary-lane unit) |
+| FV-OPEN-6 (payloads, fields) | S1 | still open: a function taken out of a variant payload by a pattern binder, a container or a field | `open_whole4_w11_ip_s07`, `open_whole4_w11_ip_l11/l12` | open |

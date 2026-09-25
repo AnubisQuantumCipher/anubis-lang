@@ -1597,6 +1597,12 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — whole-struct lane, review round 38, fnreturns (`2f0b2805`).**
+    - A call returns the function values its body returns: 10 more round-38 findings fixed (3
+      regressions against whole10 among them) and 3 older open cases closed; the nested-operand cost
+      of f878d41c is gone (fns_at).
+    - Matrix at this pin: 1620 cases, 1492 PASS, 32 silent accepts (all `open_*`), 96 wrong-class.
+
     **UPDATE 2026-09-25 — whole-struct lane, review round 38 (`f878d41c`).**
     - Round 38 confirmed 46 findings; this commit fixes 34 of them (12 regressions among them: nine
       against the pin before round 37, three against whole10), each a matrix case with a runtime
