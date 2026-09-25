@@ -14752,6 +14752,17 @@ fn analyze_closure_body_effect(
     }
 }
 
+/// How a diagnostic names what a call calls (`None`: `expr` is not a call). Kept out of
+/// `analyze_expr_effect`, whose arms must each walk every field of a call (the walker-completeness
+/// gate).
+fn called_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Call { callee, .. } => Some(format!("`{callee}`")),
+        Expr::CallExpr { .. } => Some("the called method or value".to_string()),
+        _ => None,
+    }
+}
+
 fn analyze_expr_effect(
     expr: &Expr,
     mode: Mode,
@@ -14766,12 +14777,8 @@ fn analyze_expr_effect(
     // The whole-struct lane at a call: a user function or method (its body specialized to these
     // arguments), a closure, or a builtin applying a callback, that makes a whole struct with a
     // `secret` field — or a value computed from one — reach an egress sink inside it.
-    if mode == Mode::Safe && matches!(expr, Expr::Call { .. } | Expr::CallExpr { .. }) {
+    if let Some(callee) = called_name(expr).filter(|_| mode == Mode::Safe) {
         if let Some(source) = whole::call_egress(expr, scope, ctx) {
-            let callee = match expr {
-                Expr::Call { callee, .. } => format!("`{callee}`"),
-                _ => "the called method or value".to_string(),
-            };
             ctx.emit(
                 SemanticDiagnostic {
                     code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),

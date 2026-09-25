@@ -188,6 +188,9 @@ if cargo test --all >"$OUT/g3_test.log" 2>&1; then
   gate "G3_test" "PASS" "${TEST_COUNT:-?} tests passed"
 else
   gate "G3_test" "FAIL" "test failures (see g3_test.log)"
+  # g3_test.log stays on the runner: name the failing tests where the job log shows them.
+  grep -E '^test .* FAILED$|panicked at|^failures:$|^    [A-Za-z0-9_:]+$|^error(\[|:)|signal: |overflowed' \
+    "$OUT/g3_test.log" | head -80 | sed 's/^/  g3: /' || true
 fi
 
 # ── G4: cargo build --release ──
