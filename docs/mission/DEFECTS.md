@@ -455,3 +455,20 @@ bundle contradicted it.
 | CHK-INDEPENDENT-FINDINGS | S4 | pre-existing: `?` outside a Result function and a constant return of another type were dropped after a limit | review E2 | **fixed** cf7e812c: push_diag_independent |
 | CHK-ESCAPES | S3 | pre-existing: verify's signer line and evidence-verify's report printed a bundle's escape sequences; printable() let tag characters, line separators and fillers through | review E4, E6 | **fixed** cf7e812c |
 | CHK-PARSE-COUNT | S4 | pre-existing: the JSON summary counted "… and N more parse errors" as one error | review E7 | **fixed** cf7e812c: `omitted` |
+
+### Follow-up: e7b56507 (review of 1696925b: or-pattern arms and trailing push; first of the landing steps)
+
+The review of 1696925b confirmed 59 findings (2 leak regressions, 34 older leaks, 17 over-refusals
+and 6 costs of 1696925b). Six fix designs and a cross-check; this commit lands the two clusters that
+hold the regressions. Matrix at e7b56507: 1761 cases, 1632 PASS, 32 silent accepts (all `open_*`),
+97 wrong-class.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| IFC-OR-PATTERN | S1 | every lane bound all of an or-pattern arm's names for the whole arm, hiding the outer binding a non-binding alternative runs with (a regression of 1696925b in the return summary; older in the enforcing lane and the parameter summaries) | `ro3_reg_or_pattern_ret`, `ro3_or_pattern_enf`, `ro3_or_pattern_param`, `ro3x_orpat_*` | **fixed** e7b56507: one sub-arm per alternative in every lane |
+| IFC-BINDER-SPAN | S1 | a binder with no span equalled an outer binding with none, so an all-binding match cleared the outer label | `ro3_enf_equal_span_binder_shadow` | **fixed** e7b56507 |
+| IFC-TAIL-PUSH | S1 | a trailing `push(xs, v);` (the block's value at runtime) was never judged as the returned container (a regression of 1696925b in arm blocks; older elsewhere); a failed guard's push, a push nested in an expression, a loop header's sink before seeding | `ro3_reg_arm_tail_push_ret`, `ro3_tail_push_*`, `ro3_failed_guard_push_*`, `ro3_enf_*`, `ro3x_push_*` | **fixed** e7b56507 |
+| OR-GUARD-BINDER-JOIN | S3 | 1696925b: a failed guard's join carried the arm's binders onto outer names of the same spelling | `ro3_or_failed_guard_binder_join` | **fixed** e7b56507 |
+| PERF-NESTED-PARAM-FLOW | S3 | 1696925b: the parameter-flow closure walked statements nesting statements again per level (p5_scrut_10: 79.5 s) | `ro3y_perf_p5_scrut_10` | **fixed** e7b56507: shallow_param_flow (2.8 s) |
+| OR-PUSH-NAMED-USER-FN | S4 | documented: a user function named `push` is judged as any user call, by its arguments (as every pin judges one of another name) | `ro3x_push_va2` (wrong-class) | documented |
+| ORDRET3-REST | S1 | still open: the review's alias (15 leaks), summary (9 leaks), over-refusal (15) and cost (6) clusters | review of 1696925b | the next units |

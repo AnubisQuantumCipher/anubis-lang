@@ -1597,6 +1597,12 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — ordinary lane: review of `1696925b`, first landing step (`e7b56507`).**
+    - Both regressions of 1696925b fixed (or-pattern arms in the return summary; a function ending in
+      `push(xs, v);`), with their older siblings in every lane; 13 findings and 128 more programs
+      added to the matrix. The review's other clusters land next.
+    - Matrix at this pin: 1761 cases, 1632 PASS, 32 silent accepts (all `open_*`), 97 wrong-class.
+
     **UPDATE 2026-09-25 — whole-struct lane, review round 38, fnreturns (`2f0b2805`).**
     - A call returns the function values its body returns: 10 more round-38 findings fixed (3
       regressions against whole10 among them) and 3 older open cases closed; the nested-operand cost
