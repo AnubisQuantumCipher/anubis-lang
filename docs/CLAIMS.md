@@ -1609,7 +1609,11 @@ and cannot verify later repairs.
     - The language fixture runner matched `ERROR_CONTAINS:` in its own AST dump, so every needle
       passed on any failure; it now reads the checker's output only (GATE-FIXTURE-NEEDLE).
     - Matrix at this pin: 1112 cases, 1013 PASS, 23 silent accepts, 76 wrong-class.
-    - **Still OPEN:** PERF-LONG-SUM (a sum of n terms costs time and memory quadratic in n).
+    - `d8404410`: the memory budgets come from the memory free (the first version refused valid
+      programs that fit several times over); a limit refusal is reported alone and classed as a
+      budget, not a defect in the program; parse-error rendering is bounded.
+    - **Still OPEN:** PERF-LONG-SUM (a sum of n terms costs time and memory quadratic in n) and
+      PERF-FNCHAIN (CPU time is not bounded).
 
     **UPDATE 2026-09-24 (night) — the whole-struct lane as an abstract interpreter (`0731ecf7`).**
     - The lane is now `middle/whole.rs`: one walker and one sequential abstract interpreter, calls
