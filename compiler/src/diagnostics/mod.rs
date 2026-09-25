@@ -312,16 +312,25 @@ pub struct Coverage {
 pub const MAX_UNCERTIFIED_NAMED: usize = 100;
 pub const MAX_NAME: usize = 240;
 
-/// The names a coverage report shows: the first `MAX_UNCERTIFIED_NAMED`, each cut to `MAX_NAME`
-/// characters (`…` marks a cut).
+/// The characters kept from the start and the end of a name cut to `MAX_NAME`.
+const NAME_HEAD: usize = 160;
+const NAME_TAIL: usize = 60;
+
+/// The names a coverage report shows: the first `MAX_UNCERTIFIED_NAMED`, each longer than
+/// `MAX_NAME` characters cut to its first and last characters around `…`, with the start of the
+/// SHA-256 of the whole name (obligations over one long sum share their start, and cut to it alone
+/// all read the same: seventh review of the checker limits, N9).
 pub fn named_uncertified(names: &[String]) -> Vec<String> {
     names
         .iter()
         .take(MAX_UNCERTIFIED_NAMED)
         .map(|n| {
-            if n.chars().count() > MAX_NAME {
-                let cut: String = n.chars().take(MAX_NAME).collect();
-                format!("{cut}…")
+            let chars: Vec<char> = n.chars().collect();
+            if chars.len() > MAX_NAME {
+                let head: String = chars[..NAME_HEAD].iter().collect();
+                let tail: String = chars[chars.len() - NAME_TAIL..].iter().collect();
+                let digest = crate::package::merkle::sha256_hex(n.as_bytes());
+                format!("{head}…{tail} #{}", &digest[..12])
             } else {
                 n.clone()
             }
@@ -440,20 +449,33 @@ pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
     }
 }
 
-/// Text for a human reader, with every control character but a newline or a tab shown as `\u{..}`
-/// (a message can quote user text, such as a map key, and escape sequences in it would otherwise
-/// drive the terminal or log that shows it). JSON output escapes on its own.
+/// Text for a human reader, with every control character but a newline or a tab, and every
+/// invisible character that reorders or hides text (bidirectional overrides and isolates, zero-width
+/// marks), shown as `\u{..}` (a message can quote user text, such as a map key, and such characters
+/// in it would otherwise drive, or disguise what is shown by, the terminal or log that shows it).
+/// JSON output escapes on its own.
 pub fn printable(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text
-        .chars()
-        .any(|c| c.is_control() && c != '\n' && c != '\t')
-    {
+    fn hidden(c: char) -> bool {
+        (c.is_control() && c != '\n' && c != '\t')
+            || matches!(
+                c,
+                '\u{00ad}'
+                    | '\u{061c}'
+                    | '\u{180e}'
+                    | '\u{200b}'..='\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{feff}'
+            )
+    }
+    if !text.chars().any(hidden) {
         return std::borrow::Cow::Borrowed(text);
     }
     std::borrow::Cow::Owned(
         text.chars()
             .map(|c| {
-                if c.is_control() && c != '\n' && c != '\t' {
+                if hidden(c) {
                     format!("\\u{{{:x}}}", c as u32)
                 } else {
                     c.to_string()
@@ -822,6 +844,30 @@ pub fn render_jsonl(checks: &[SolverCheck]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn printable_shows_hidden_characters() {
+        assert_eq!(printable("a\nb\tc"), "a\nb\tc");
+        assert_eq!(printable("x\u{1b}[2J"), "x\\u{1b}[2J");
+        // A right-to-left override would reorder what the reader sees.
+        assert_eq!(printable("ab\u{202e}cd"), "ab\\u{202e}cd");
+        assert_eq!(printable("a\u{200b}b"), "a\\u{200b}b");
+    }
+
+    #[test]
+    fn long_coverage_names_stay_distinct() {
+        let prefix = "(bvadd ".repeat(100);
+        let names: Vec<String> = (0..3).map(|i| format!("{prefix}{i})")).collect();
+        let shown = named_uncertified(&names);
+        assert_eq!(shown.len(), 3);
+        assert!(shown.iter().all(|n| n.chars().count() <= MAX_NAME));
+        let distinct: std::collections::BTreeSet<&String> = shown.iter().collect();
+        assert_eq!(distinct.len(), 3, "{shown:?}");
+        assert_eq!(
+            named_uncertified(&["short".to_string()]),
+            vec!["short".to_string()]
+        );
+    }
 
     fn disproved_check() -> SolverCheck {
         SolverCheck {

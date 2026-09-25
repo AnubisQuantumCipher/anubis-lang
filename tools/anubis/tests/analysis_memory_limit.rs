@@ -177,6 +177,37 @@ fn the_hard_exit_reports_in_json() {
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("ANUBIS_ANALYSIS_LIMIT"), "{stdout}");
     assert!(stdout.contains("anubis.summary"), "{stdout}");
+    // The exit names the budget it passed, in the text and in the JSON, never the stand-in the
+    // allocator writes it over (seventh review of the checker limits, N4).
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("hard budget") {
+        assert!(stderr.contains("memory budget (1 MiB"), "{stderr}");
+        assert!(stdout.contains(r#""limit":1"#), "{stdout}");
+    }
+    assert!(
+        !stdout.contains(anubis_compiler::resource::EXIT_MIB),
+        "{stdout}"
+    );
+    assert!(
+        !stderr.contains(anubis_compiler::resource::EXIT_MIB),
+        "{stderr}"
+    );
+}
+
+/// A finding that needs no analysis (a duplicate parameter, a `break` outside a loop) is reported
+/// even when it is raised after a limit (seventh review of the checker limits, N5).
+#[test]
+fn a_finding_that_needs_no_analysis_is_kept_after_a_limit() {
+    let src = "fn main() {\n    let g = |s| 0;\n    g = |s| g(s);\n    g(0);\n    print(helper(1, 2));\n}\nfn helper(x: i64, x: i64) -> i64 {\n    break;\n    return x;\n}\n";
+    let (json, _) = check_with("independent", src, "100000", &["--message-format", "json"]);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    assert_eq!(json.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("ANUBIS_ANALYSIS_LIMIT"), "{stdout}");
+    assert!(stdout.contains("ANUBIS_DUPLICATE_PARAM"), "{stdout}");
+    assert!(
+        stdout.contains("ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP"),
+        "{stdout}"
+    );
 }
 
 /// Past a limit, what the fail-closed answers produce is not reported, whatever it says: here a

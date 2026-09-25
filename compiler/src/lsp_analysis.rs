@@ -42,10 +42,13 @@ pub fn analyze_source(source: &str) -> (Vec<LspDiagnostic>, Option<TypedIR>, Opt
                 end_character: (ec.saturating_sub(1)) as u32,
                 severity: 1,
                 code: Some("ANUBIS_PARSE".into()),
-                message: format!(
-                    "… and {} more parse errors",
-                    detailed.diagnostics.len() - MAX_PARSE_DIAGNOSTICS
-                ),
+                message: {
+                    let more = detailed.diagnostics.len() - MAX_PARSE_DIAGNOSTICS;
+                    format!(
+                        "… and {more} more parse error{}",
+                        if more == 1 { "" } else { "s" }
+                    )
+                },
             });
             break;
         }

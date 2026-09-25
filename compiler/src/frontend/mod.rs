@@ -4728,7 +4728,10 @@ pub fn parse_source(source: &str) -> Result<AST, String> {
             .map(|d| d.message.clone())
             .collect();
         if more > 0 {
-            messages.push(format!("… and {more} more parse errors"));
+            messages.push(format!(
+                "… and {more} more parse error{}",
+                if more == 1 { "" } else { "s" }
+            ));
         }
         Err(messages.join("; "))
     } else {

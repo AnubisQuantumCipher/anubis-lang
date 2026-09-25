@@ -3195,6 +3195,18 @@ impl SemanticContext {
         self.diagnostics.push(diag);
     }
 
+    /// Record an enforcing diagnostic computed from the program's text alone (no walker, no answer
+    /// a limit could have made fail-closed): it is reported even when raised after a limit. Dropped
+    /// with the rest, a duplicate parameter or a `break` outside a loop went unreported beside a
+    /// limit (seventh review of the checker limits, N5).
+    fn push_diag_independent(&mut self, diag: SemanticDiagnostic) {
+        if self.limit_mark.is_some() || analysis_limit::exhausted() {
+            self.independent_after_limit.push(diag);
+        } else {
+            self.diagnostics.push(diag);
+        }
+    }
+
     fn emit(&mut self, diag: SemanticDiagnostic, shadow_gated: bool) {
         if shadow_gated {
             // A shadow-gated (not-yet-promoted) check NEVER enters the enforcing `diagnostics`
@@ -3231,6 +3243,8 @@ struct SemanticContext {
     /// How many diagnostics had been raised when the first one after an analysis limit was: those
     /// from there on came from fail-closed answers (`typecheck_request` drops them).
     limit_mark: Option<usize>,
+    /// Diagnostics raised after a limit that do not depend on any analysis ([`Self::push_diag_independent`]).
+    independent_after_limit: Vec<SemanticDiagnostic>,
     /// Application-site witnesses produced by the builtin gate-tag resolver for the function
     /// currently being analyzed. Reset per item; never part of its declared/inferred effect row.
     applied_builtin_leg2: bool,
@@ -3706,6 +3720,12 @@ pub fn analysis_limit_memory_prefix() -> &'static str {
 }
 
 /// The analysis limit the last check request on this thread reached, if any (`typecheck_ex`).
+/// Whether the last check request on this thread reached a limit and still reported findings made
+/// before it (which hold on any machine).
+pub fn last_analysis_kept_findings() -> bool {
+    analysis_limit::kept()
+}
+
 pub fn last_analysis_limit() -> Option<AnalysisLimit> {
     analysis_limit::last()
 }
@@ -3851,6 +3871,8 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
     if let Some(mark) = ctx.limit_mark {
         ctx.diagnostics.truncate(mark);
     }
+    let independent = std::mem::take(&mut ctx.independent_after_limit);
+    ctx.diagnostics.extend(independent);
     if !ctx.diagnostics.is_empty() {
         let messages = ctx
             .diagnostics
@@ -6307,7 +6329,7 @@ fn analyze_function(
     let mut seen_params = BTreeSet::new();
     for (pname, _) in params {
         if !seen_params.insert(pname.clone()) {
-            ctx.push_diag(SemanticDiagnostic {
+            ctx.push_diag_independent(SemanticDiagnostic {
                 code: Some("ANUBIS_DUPLICATE_PARAM".into()),
                 message: format!("duplicate parameter `{}` in function `{}`", pname, name),
                 span: Some((span.start, span.end)),
@@ -6327,7 +6349,7 @@ fn analyze_function(
     // property (there is no loop, and no input makes one appear), and `check` accepting a program
     // that cannot run is the gap this closes.
     for kw in crate::middle::loopctl::unenclosed_loop_control(body) {
-        ctx.push_diag(SemanticDiagnostic {
+        ctx.push_diag_independent(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP".into()),
             message: format!("`{}` in function `{}` has no enclosing loop", kw, name),
             span: Some((span.start, span.end)),

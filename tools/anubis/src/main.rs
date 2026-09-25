@@ -2386,15 +2386,29 @@ static ALLOC: anubis_compiler::resource::CountingAlloc = anubis_compiler::resour
 /// committed.
 const MAIN_STACK: usize = 64 << 20;
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
     anubis_compiler::resource::install();
-    let worker = std::thread::Builder::new()
+    let result = std::thread::Builder::new()
         .name("main".into())
         .stack_size(MAIN_STACK)
-        .spawn(cli_main)?;
-    match worker.join() {
-        Ok(result) => result,
-        Err(panic) => std::panic::resume_unwind(panic),
+        .spawn(cli_main)
+        .map_err(anyhow::Error::from)
+        .and_then(|worker| match worker.join() {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        });
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        // An error can quote a bundle's or a program's own text (a `verify` of a stranger's bundle
+        // quotes an unknown field's name): shown like every diagnostic, so its control characters
+        // cannot drive the terminal (seventh review of the checker limits, N8).
+        Err(e) => {
+            eprintln!(
+                "Error: {}",
+                anubis_compiler::diagnostics::printable(&format!("{e:?}"))
+            );
+            std::process::ExitCode::FAILURE
+        }
     }
 }
 
@@ -2707,16 +2721,21 @@ fn cli_main() -> Result<()> {
                     ))
                 }
             };
-            // The hard memory exit (from inside the allocator, `anubis_compiler::resource`) cannot
-            // format anything: give it the JSON refusal now, so the stream never ends empty.
+            // The memory exits (from inside the allocator, `anubis_compiler::resource`) cannot
+            // format anything: give them the JSON refusals now, so the stream never ends empty.
             if json_mode {
-                let refusal = anubis_compiler::diagnostics::diagnostic_of_refusal(
-                    anubis_compiler::resource::HARD_EXIT_DIAGNOSTIC,
+                let report = |text: &str| -> &'static [u8] {
+                    let refusal = anubis_compiler::diagnostics::diagnostic_of_refusal(text);
+                    Box::leak(
+                        anubis_compiler::diagnostics::render_with_coverage(&[refusal], None)
+                            .into_bytes()
+                            .into_boxed_slice(),
+                    )
+                };
+                anubis_compiler::resource::set_exit_reports(
+                    report(anubis_compiler::resource::HARD_EXIT_DIAGNOSTIC),
+                    report(anubis_compiler::resource::RESERVE_EXIT_DIAGNOSTIC),
                 );
-                let report = anubis_compiler::diagnostics::render_with_coverage(&[refusal], None);
-                anubis_compiler::resource::set_exit_report(Box::leak(
-                    report.into_bytes().into_boxed_slice(),
-                ));
             }
             // In `json` mode stdout carries the diagnostic stream and nothing else.
             macro_rules! say {
@@ -6022,14 +6041,21 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             let manifest_text = std::fs::read_to_string(bundle.join("evidence.json"))?;
             let manifest: EvidenceManifest = serde_json::from_str(&manifest_text)?;
             let report_path = bundle.join("bounty-report.md");
+            // A bundle's text is the bundle author's: shown without its control characters.
+            let shown = |t: &str| anubis_compiler::diagnostics::printable(t).into_owned();
             if report_path.exists() {
-                println!("{}", std::fs::read_to_string(report_path)?);
+                println!("{}", shown(&std::fs::read_to_string(report_path)?));
             } else {
                 println!("Anubis evidence report");
-                println!("bundle: {}", bundle.display());
-                println!("verdict: {}", manifest.verdict);
+                println!("bundle: {}", shown(&bundle.display().to_string()));
+                println!("verdict: {}", shown(&manifest.verdict));
                 for check in manifest.checks {
-                    println!("{}: {} - {}", check.name, check.status, check.detail);
+                    println!(
+                        "{}: {} - {}",
+                        shown(&check.name),
+                        shown(&check.status),
+                        shown(&check.detail)
+                    );
                 }
             }
             Ok(())

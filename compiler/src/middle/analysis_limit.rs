@@ -72,6 +72,12 @@ pub enum AnalysisLimit {
 pub(crate) const MEMORY_PREFIX: &str =
     "ANUBIS_ANALYSIS_LIMIT: the checker's analysis of this program exceeded its memory budget (";
 
+/// Whether the last check request on this thread reached a limit and still reported findings made
+/// before it (a complete analysis of what it had covered: the same on any machine).
+pub(crate) fn kept() -> bool {
+    KEPT.get()
+}
+
 /// The limit the last check request on this thread reached, if any.
 pub(crate) fn last() -> Option<AnalysisLimit> {
     match LAST.get() {
@@ -87,6 +93,16 @@ pub(super) fn diagnostic(reason: u8) -> String {
     let refused = "it cannot bound what the program returns or does past that point, so the \
                    program is refused (any findings made before it are listed after this)";
     match reason {
+        // The reserve, not the budget: the machine or the check's cgroup is nearly out of memory.
+        // Nothing of the check's own can be raised, so the refusal names no budget.
+        MEMORY if crate::resource::reserve_hit() => format!(
+            "ANUBIS_ANALYSIS_LIMIT: the memory left to this check (on the machine, or in the \
+             memory-capped cgroup it runs in) fell below the {} MiB the checker keeps free, before \
+             its memory budget was reached; {refused}. This is a limit of the checker, not a \
+             finding about the program: other processes are using the memory it needs (raising \
+             ANUBIS_ANALYSIS_MEMORY_MIB does not change that); run it with more memory free",
+            crate::resource::reserve_mib()
+        ),
         MEMORY => format!(
             "{MEMORY_PREFIX}{} MiB: half the memory free when the check began, or \
              ANUBIS_ANALYSIS_MEMORY_MIB); {refused}. This is a limit of the checker, not a finding \
@@ -116,6 +132,8 @@ thread_local! {
     static REASON: Cell<u8> = const { Cell::new(NONE) };
     /// The limit the last finished request reached (`last`).
     static LAST: Cell<u8> = const { Cell::new(NONE) };
+    /// Whether the last finished request reached a limit and still reported findings (`kept`).
+    static KEPT: Cell<bool> = const { Cell::new(false) };
     /// The lowest stack address a walker may enter at, in the current request (0: no request).
     static FLOOR: Cell<usize> = const { Cell::new(0) };
 }
@@ -211,7 +229,7 @@ impl Drop for Frame {
 /// Each request starts clean (an LSP or batch run checks many files in one process); the previous
 /// state is restored on return and on unwind, so requests may nest.
 pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    struct Request(u8, usize, Option<(usize, usize, bool)>);
+    struct Request(u8, usize, Option<crate::resource::Armed>);
     impl Drop for Request {
         fn drop(&mut self) {
             REASON.set(self.0);
@@ -234,6 +252,7 @@ pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
     let result = f();
     let reason = REASON.get();
     LAST.set(reason);
+    KEPT.set(reason != NONE && result.is_err());
     if reason == NONE {
         return result;
     }
