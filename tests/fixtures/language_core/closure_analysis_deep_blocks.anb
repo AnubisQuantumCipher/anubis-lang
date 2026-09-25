@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Regression: the closure-analysis limit counts closure bodies, not block nesting (20 nested value blocks).
+fn main() {
+    let x = 3;
+    let v = if x > 0 { let y19 = x; if x > 0 { let y18 = x; if x > 0 { let y17 = x; if x > 0 { let y16 = x; if x > 0 { let y15 = x; if x > 0 { let y14 = x; if x > 0 { let y13 = x; if x > 0 { let y12 = x; if x > 0 { let y11 = x; if x > 0 { let y10 = x; if x > 0 { let y9 = x; if x > 0 { let y8 = x; if x > 0 { let y7 = x; if x > 0 { let y6 = x; if x > 0 { let y5 = x; if x > 0 { let y4 = x; if x > 0 { let y3 = x; if x > 0 { let y2 = x; if x > 0 { let y1 = x; if x > 0 { let y0 = x; x } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 } } else { 0 };
+    print(v);
+}

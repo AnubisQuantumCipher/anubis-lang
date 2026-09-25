@@ -20,6 +20,10 @@ getrandom.workspace = true
 tracing.workspace = true
 ariadne.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# Stack bounds and memory size for the analysis limits (`middle/analysis_limit.rs`, `resource.rs`).
+libc = "0.2"
+
 [dev-dependencies]
 proptest.workspace = true
 pretty_assertions.workspace = true

@@ -14,6 +14,7 @@ pub mod middle;
 pub mod package;
 pub mod project;
 pub mod resolve;
+pub mod resource;
 pub mod selfhost_schema;
 pub mod stdlib;
 

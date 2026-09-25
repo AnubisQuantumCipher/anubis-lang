@@ -998,7 +998,7 @@ impl<'a> Env<'a> {
     /// Whether the query has used up its steps (and counts one more).
     fn exhausted(&self) -> bool {
         self.steps.set(self.steps.get() + 1);
-        self.steps.get() > MAX_STEPS
+        self.steps.get() > MAX_STEPS || analysis_limit::cut()
     }
 
     /// Record the names at the head of a loop iteration (`loop_carried`): only a loop of the scope
@@ -2950,6 +2950,10 @@ fn is_listish(e: &Expr, env: &Env, at: &At) -> bool {
 
 /// What `e` holds.
 fn src(e: &Expr, env: &Env, at: &At) -> Option<WholeSrc> {
+    // Out of stack (or past another analysis limit): the request is refused; answer the worst.
+    if analysis_limit::cut() {
+        return Some(WholeSrc::Computed(ANALYSIS_LIMIT_SOURCE.to_string()));
+    }
     let ctx = env.ctx;
     let rec = |x: &Expr| src(x, env, at);
     let pt = ctx.place_types();
@@ -3986,6 +3990,13 @@ fn leave(cur: At, mut acc: Fx) -> Fx {
 fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
     let ctx = env.ctx;
     let mut w = Fx::tracking(at);
+    // Out of stack (or past another analysis limit): the request is refused; answer the worst.
+    if analysis_limit::cut() {
+        w.val = Some(WholeSrc::Computed(ANALYSIS_LIMIT_SOURCE.to_string()));
+        w.valued = true;
+        w.egress = w.val.clone();
+        return w;
+    }
     match e {
         Expr::Call { callee, args } => {
             walk_seq(&mut w, args, env, cond);

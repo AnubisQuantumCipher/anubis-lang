@@ -1,0 +1,4 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ANALYSIS_LIMIT
+// Regression: closure analysis must terminate without aborting.
+fn main() { let g = |s| 0; g = |s| g(s); g(0); }

@@ -23,6 +23,13 @@ pub(super) const UNMODELED_PREFIX: &str = "__anubis_carrier_unmodeled_";
 /// Prefix of the per-loop symbol that stands for a `for` variable over stable bounds.
 pub(super) const FOR_VAR_PREFIX: &str = "__anubis_carrier_forvar_";
 
+/// Nodes one resolution may produce. Resolution replaces each never-assigned `let` by its value, so
+/// a run of `let a = a + ...` builds values that grow with every `let` (1500 such lines built a tree
+/// 384,000 deep, which overflowed the stack when copied), and `let a = a + a` doubles them. A value
+/// larger than this is not modeled: it becomes the alias placeholder, which the discharge treats as an
+/// unexpressible value and, in call position, as an unknown function — never as a fact.
+const RESOLVE_NODE_LIMIT: usize = 4096;
+
 /// A path condition over stable values: `expr` (or `!expr` when `negate`) holds wherever the site runs.
 #[derive(Debug, Clone)]
 pub(super) struct Guard {
@@ -107,6 +114,11 @@ struct Collector<'a> {
     /// User-defined free function names: in CALL position these win over any same-named local or
     /// formal, exactly as the runtime resolves them.
     user_fns: &'a BTreeSet<String>,
+    /// Nesting of `resolve` calls (0 outside one), the nodes the outermost one may still produce,
+    /// and whether it ran out (`RESOLVE_NODE_LIMIT`).
+    resolving: usize,
+    budget: usize,
+    oversized: bool,
 }
 
 /// Collect every carrier site of `body`, the body of function `fn_name` with the given formals.
@@ -140,6 +152,9 @@ pub(super) fn collect_carrier_items(
         counter: 0,
         fn_name,
         user_fns,
+        resolving: 0,
+        budget: 0,
+        oversized: false,
     };
     for f in formals {
         if !func_like.contains(f) {
@@ -230,11 +245,58 @@ impl Collector<'_> {
 
     /// `e` with every callee-internal name replaced: stable names by their value, everything else by
     /// its placeholder. Global names (functions, builtins) are kept. Blocks, `match` and `if let`
-    /// values, and lambdas, are not modeled as values.
+    /// values, and lambdas, are not modeled as values. A result larger than `RESOLVE_NODE_LIMIT` is
+    /// the alias placeholder instead.
     fn resolve(&mut self, e: &Expr) -> Expr {
+        let outermost = self.resolving == 0;
+        if outermost {
+            self.budget = RESOLVE_NODE_LIMIT;
+            self.oversized = false;
+        }
+        let r = if self.budget == 0 {
+            self.oversized = true;
+            Expr::Other(String::new())
+        } else {
+            self.budget -= 1;
+            self.resolving += 1;
+            let r = self.resolve_node(e);
+            self.resolving -= 1;
+            r
+        };
+        if outermost && self.oversized {
+            return Expr::Var(self.fresh_placeholder("alias"));
+        }
+        r
+    }
+
+    /// A stable name's value, charged against the resolution's budget.
+    fn charge(&mut self, value: Expr) -> Expr {
+        let mut stack = vec![&value];
+        let mut nodes = 0usize;
+        while let Some(x) = stack.pop() {
+            nodes += 1;
+            if nodes > self.budget {
+                self.budget = 0;
+                self.oversized = true;
+                return Expr::Other(String::new());
+            }
+            for_each_child_expr(x, &mut |c| stack.push(c));
+        }
+        self.budget -= nodes;
+        value
+    }
+
+    fn resolve_node(&mut self, e: &Expr) -> Expr {
+        // Out of stack or memory: the request is refused (`analysis_limit`); stop copying.
+        if super::analysis_limit::cut() {
+            return Expr::Other(String::new());
+        }
         match e {
             Expr::Var(n) => match self.lookup(n) {
-                Some(Binding::Stable { value, .. }) => value.clone(),
+                Some(Binding::Stable { value, .. }) => {
+                    let value = value.clone();
+                    self.charge(value)
+                }
                 Some(Binding::Reassigned { placeholder, .. })
                 | Some(Binding::Opaque { placeholder }) => Expr::Var(placeholder.clone()),
                 None => e.clone(),
@@ -476,6 +538,9 @@ impl Collector<'_> {
     // ---- walking ----------------------------------------------------------------------------
 
     fn walk_expr(&mut self, e: &Expr) {
+        if super::analysis_limit::cut() {
+            return;
+        }
         match e {
             Expr::Call { callee, args } => {
                 for a in args {
@@ -679,6 +744,9 @@ impl Collector<'_> {
     /// Walk a statement list in the current scope. Returns true when the list definitely does not
     /// fall through (it ends in, or reaches, `return` / `break` / `continue` on every path).
     fn walk_stmt_list(&mut self, stmts: &[Stmt]) -> bool {
+        if super::analysis_limit::cut() {
+            return false;
+        }
         for st in stmts {
             match st {
                 Stmt::Let { name, init, .. } => {
@@ -1304,6 +1372,9 @@ impl FnLikeVisitor<'_> {
     /// A call/store: mark formals in FUNCTION positions (callee, applyable args, stored values); recurse
     /// into the rest as data.
     fn expr(&mut self, e: &Expr) {
+        if super::analysis_limit::cut() {
+            return;
+        }
         match e {
             Expr::Call { callee, args } => {
                 // `callee` is a name; if it is a formal/alias it is applied — unless a user function
@@ -1421,6 +1492,9 @@ impl FnLikeVisitor<'_> {
 
     /// Recurse the data sub-parts of a place target without marking (an index base / field base read).
     fn data_children(&mut self, e: &Expr) {
+        if super::analysis_limit::cut() {
+            return;
+        }
         let mut kids: Vec<Expr> = Vec::new();
         for_each_child_expr(e, &mut |c| kids.push(c.clone()));
         for c in &kids {

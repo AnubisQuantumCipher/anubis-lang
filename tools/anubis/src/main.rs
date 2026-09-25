@@ -2374,7 +2374,30 @@ fn seal_vz_execution_receipt(
     Ok(receipt.receipt_hash)
 }
 
+/// Every allocation is counted, so a check stays within its memory budget: past it the check is
+/// refused, and it can never exhaust the machine (`anubis_compiler::resource`).
+#[global_allocator]
+static ALLOC: anubis_compiler::resource::CountingAlloc = anubis_compiler::resource::CountingAlloc;
+
+/// The checker's analyses recurse over the program. Run on a stack well above the 8 MiB main thread:
+/// a deep but valid program would otherwise reach the checker's stack guard and be refused
+/// (`ANUBIS_ANALYSIS_LIMIT`, compiler/src/middle/analysis_limit.rs). Only the pages used are
+/// committed.
+const MAIN_STACK: usize = 64 << 20;
+
 fn main() -> Result<()> {
+    anubis_compiler::resource::install();
+    let worker = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(MAIN_STACK)
+        .spawn(cli_main)?;
+    match worker.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn cli_main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();

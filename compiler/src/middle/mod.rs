@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+mod analysis_limit;
 pub(crate) mod capability;
 /// Compile-time carrier classification. TOTAL over `Expr` with no wildcard arm, so adding a
 /// variant BREAKS THE BUILD until someone states what it can carry — the forcing function that
@@ -3633,6 +3634,11 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
 /// Typecheck with an explicit verification-lane flag (Phase-3 C5). Prefer `typecheck` for the
 /// default lane; pass `verified=true` for `--verified` / fail-closed effect declarations.
 pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
+    // One request: an analysis limit reached anywhere in it refuses it (`analysis_limit`).
+    analysis_limit::check(|| typecheck_request(ast, mode, verified))
+}
+
+fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
     // Item-21 D9: give an unannotated free-function parameter the struct type every one of its
     // (visible, direct) callers passes, so a declared field qualifier read through it is honored
     // exactly as for the annotated spelling. Analysis copy only: lowering uses its own AST.
@@ -8455,6 +8461,9 @@ fn discharge_carried_call_requires(
     outer_args: &[Expr],
     depth: u32,
 ) -> bool {
+    if analysis_limit::cut() {
+        return true;
+    }
     let Some((formals, items)) = ctx.fn_carrier_items.get(outer_callee).cloned() else {
         return true;
     };
@@ -9041,7 +9050,7 @@ fn discharge_resolved_call_requires_d(
     args: &[Expr],
     depth: u32,
 ) -> bool {
-    if depth > FN_ALIAS_MAX_DEPTH {
+    if depth > FN_ALIAS_MAX_DEPTH || analysis_limit::cut() {
         note_return_values_trip();
         return true;
     }
@@ -9456,6 +9465,10 @@ fn discharge_calls_in_expr(
     scope: &BTreeMap<String, ScopeBinding>,
     expr: &Expr,
 ) {
+    // Out of stack or memory: the request is refused (`analysis_limit`).
+    if analysis_limit::cut() {
+        return;
+    }
     match expr {
         Expr::Call { callee, args } => {
             discharge_resolved_call_requires(
@@ -10667,6 +10680,10 @@ fn analyze_stmts(
     assumptions: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    if analysis_limit::cut() {
+        note_return_values_trip();
+        return;
+    }
     // Once a statement that always exits has run, the rest of this block cannot execute: its
     // obligations hold vacuously (`return; f(-1);` is not a violation). Everything is still analyzed
     // for the other lanes.
@@ -14709,6 +14726,32 @@ fn scope_with_closure_params(
     local
 }
 
+/// Enter a closure body for analysis, or `None` once `analysis_limit` refuses the request. The cut-off
+/// is noted, so nothing computed around it is memoized.
+fn closure_frame() -> Option<analysis_limit::Frame> {
+    let frame = analysis_limit::Frame::enter();
+    if frame.is_none() {
+        note_return_values_trip();
+    }
+    frame
+}
+
+/// What `expr_source` answers past an analysis limit: the value may hold anything.
+const ANALYSIS_LIMIT_SOURCE: &str = "a value past the analysis limit";
+
+/// `analyze_expr_effect` on a closure body, bounded by `analysis_limit`.
+fn analyze_closure_body_effect(
+    body: &Expr,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    if let Some(_frame) = closure_frame() {
+        analyze_expr_effect(body, mode, scope, effects, ctx);
+    }
+}
+
 fn analyze_expr_effect(
     expr: &Expr,
     mode: Mode,
@@ -14716,6 +14759,10 @@ fn analyze_expr_effect(
     effects: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    if analysis_limit::cut() {
+        note_return_values_trip();
+        return;
+    }
     // The whole-struct lane at a call: a user function or method (its body specialized to these
     // arguments), a closure, or a builtin applying a callback, that makes a whole struct with a
     // `secret` field — or a value computed from one — reach an egress sink inside it.
@@ -15397,7 +15444,11 @@ fn analyze_expr_effect(
                             binding.fn_identities = elem_callable_ids.clone();
                             local.insert(p.clone(), binding);
                         }
-                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                        if matches!(args.get(i), Some(Expr::Lambda { .. })) {
+                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                        } else {
+                            analyze_closure_body_effect(body, mode, &local, effects, ctx);
+                        }
                     } else if let Some(Expr::Var(fname)) = args.get(i) {
                         // The closure arg is a NAMED function / builtin (`each(xs, shell)`, `apply(store, t)`,
                         // `map(xs, snd)`) — the builtin applies it to each element, so the ELEMENT flows to
@@ -15497,7 +15548,7 @@ fn analyze_expr_effect(
                         };
                         local.insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                     }
-                    analyze_expr_effect(body, mode, &local, effects, ctx);
+                    analyze_closure_body_effect(body, mode, &local, effects, ctx);
                 }
             }
             // Task #48-A: a closure passed to a USER FN that APPLIES that param position
@@ -15548,7 +15599,9 @@ fn analyze_expr_effect(
                                                 labelled_param_binding(p, false, None, false),
                                             );
                                         }
-                                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                                        analyze_closure_body_effect(
+                                            body, mode, &local, effects, ctx,
+                                        );
                                     }
                                 }
                             }
@@ -15690,7 +15743,11 @@ fn analyze_expr_effect(
                                 .with_labels(),
                             );
                         }
-                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                        if matches!(args.get(i), Some(Expr::Lambda { .. })) {
+                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                        } else {
+                            analyze_closure_body_effect(body, mode, &local, effects, ctx);
+                        }
                     }
                 }
             }
@@ -16063,7 +16120,7 @@ fn analyze_expr_effect(
                             local
                                 .insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                         }
-                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                        analyze_closure_body_effect(body, mode, &local, effects, ctx);
                     }
                 }
             }
@@ -16216,7 +16273,7 @@ fn analyze_expr_effect(
                                     labelled_param_binding(p, pt.is_some(), pt, ps),
                                 );
                             }
-                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                            analyze_closure_body_effect(body, mode, &local, effects, ctx);
                         }
                     }
                 }
@@ -25310,6 +25367,9 @@ fn discharge_applied_closure(
     callee: &Expr,
     args: &[Expr],
 ) -> Option<bool> {
+    if analysis_limit::cut() {
+        return Some(true);
+    }
     let lam = closure_of(ctx, scope, callee)?;
     let Expr::Lambda { params, body } = *lam else {
         return None;
@@ -29091,6 +29151,10 @@ fn expr_source(
     struct_fields: &PlaceTypes<'_>,
     lane: SourceLane,
 ) -> Option<String> {
+    if analysis_limit::cut() {
+        note_return_values_trip();
+        return Some(ANALYSIS_LIMIT_SOURCE.into());
+    }
     match expr {
         Expr::Var(name) => lane.var_source(name, scope),
         Expr::Binary { lhs, rhs, .. } => expr_source(
@@ -29170,6 +29234,9 @@ fn expr_source(
                 })
             } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
                 let capture = if let Expr::Lambda { params, body } = lam.as_ref() {
+                    let Some(_frame) = closure_frame() else {
+                        return Some(ANALYSIS_LIMIT_SOURCE.into());
+                    };
                     let mut inner = scope.clone();
                     for p in params {
                         inner.remove(p);
@@ -29648,6 +29715,9 @@ fn expr_source(
                 }
             }
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
+                let Some(_frame) = closure_frame() else {
+                    return Some(ANALYSIS_LIMIT_SOURCE.into());
+                };
                 let mut inner = scope.clone();
                 for p in params {
                     inner.remove(p);
@@ -34067,6 +34137,47 @@ mod fn_identity_spine_tests {
         assert!(matches!(applies[0], Expr::Index { base, .. }
             if matches!(base.as_ref(), Expr::Var(n) if n == "functions")));
         let _ = params;
+    }
+
+    /// One carrier resolution is bounded (crash review, 2026-09-24): `let a = a + a` doubles the
+    /// inlined value with every line, 2^41 nodes after 40 of them. Past the bound the value is the
+    /// alias placeholder, which is never a fact and, called, never a known function.
+    #[test]
+    fn carrier_resolution_is_bounded() {
+        let var = |n: &str| Expr::Var(n.into());
+        let let_a = |init: Expr| Stmt::Let {
+            name: "a".into(),
+            ty: None,
+            init,
+            span: Span::default(),
+        };
+        let mut body = vec![let_a(var("y"))];
+        for _ in 0..40 {
+            body.push(let_a(Expr::Binary {
+                op: "+".into(),
+                lhs: Box::new(var("a")),
+                rhs: Box::new(var("a")),
+            }));
+        }
+        body.push(Stmt::ExprStmt(Expr::Call {
+            callee: "g".into(),
+            args: vec![var("a")],
+        }));
+        let items = contract_carrier::collect_carrier_items(
+            "t",
+            &["g".into(), "y".into()],
+            &body,
+            &BTreeSet::new(),
+        );
+        let args: Vec<&Expr> = items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                contract_carrier::CarrierKind::Apply { args, .. } => args.first(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(args.len(), 1);
+        assert!(contract_carrier::mentions_unmodeled(args[0]));
     }
 }
 

@@ -1,0 +1,3 @@
+// EXPECT: PASS
+// Regression: closure analysis must terminate without aborting.
+fn main() { let g = |s| s; let h = |s| g(s); print(h(0)); }
