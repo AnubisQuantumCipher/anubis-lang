@@ -1622,6 +1622,9 @@ and cannot verify later repairs.
     - `eac6baf7`: a limit refusal names the limit reached and keeps the findings the analysis made
       beside it; `verify` says when it could not re-derive a claim at the limit; the JSON lane is
       bounded for parse errors and never ends empty on the hard memory exit.
+    - `0275f5f3`: what a limit leaves behind is dropped by position, never by text; `verify` decides
+      integrity first; checks side by side in one memory-capped scope refuse instead of being
+      killed together (the allocator re-reads the scope's headroom as the check grows).
     - **Still OPEN:** PERF-LONG-SUM (a sum of n terms costs time and memory quadratic in n) and
       PERF-FNCHAIN (CPU time is not bounded).
 

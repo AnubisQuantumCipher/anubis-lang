@@ -299,3 +299,21 @@ three pre-existing leaks. Matrix at b72244c7: 1145 cases, 1041 PASS, 29 silent a
 | FV-OPEN-6 (container, shadow) | S1 | still open, pre-existing: a closure fetched from a list or map whose captured name is shadowed before the call | `open_whole13_rv36x_c1`, `open_whole13_rv36x_c2` | open |
 | IFC-ORDINARY-RETURN | S1 | still open, pre-existing, ordinary lane: a field-read secret assigned in a nested block of a callee and returned is lost; a call through a joined function alias checks one of its functions | `open_whole13_r36_r36_spec_3`, `open_whole13_rv36x_oh3` | open (its own unit: a fix to the returns alone turns `rv36x_oh1` and oh2, rejected today, into accepts) |
 | PERF-STEP-SIZE | S3 | still open: the interpreter's step budget counts steps, not the size of the values each step copies (a 201-entry record in 22 names: 15 s a query) | review round 36 spec-4 | open (documented) |
+
+### Follow-up: 0275f5f3, efed68bb (sixth review of the checker limits; CI)
+
+Twelve findings on crashfix11 (eac6baf7), each re-run by a verifier.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| CHK-LIMIT-POSITION | S2 | eac6baf7 filtered the diagnostics a limit leaves behind by their text: an artifact that did not quote the stand-in (a public binding "initialized from a secret value" in a program with no secret) was reported as a finding, and a genuine one quoting user text equal to the stand-in (a map key) was hidden | review F1 (`stp_*`), F2 (`k4_hide`) | **fixed** 0275f5f3: by position (`SemanticContext::push_diag` marks where the first one after the limit begins) |
+| CHK-LIMIT-REACH | S3 | a finding in a part of the program the analysis did not reach before the limit is not reported | review F4 | documented: that part was not analyzed; the program is refused regardless |
+| CHK-VERIFY-ORDER | S2 | eac6baf7's verify returned "could not be re-derived" before its tamper checks, and for a forged claim over a program past the closure-depth cap (the same on every machine) | review F3 | **fixed** 0275f5f3: integrity first; only a MEMORY limit gives that answer |
+| CHK-SCOPE-SIDE-BY-SIDE | S1 | pre-existing: checks run side by side in one memory-capped scope each armed with the whole scope's headroom, and the scope's OOM killer ended them all with no output before any budget refused | review F8, B1 | **fixed** 0275f5f3: budgets from what the tightest cgroup has left; the allocator reads that again every 64 MiB, without allocating, and refuses below a reserve |
+| CHK-LIMIT-JSON | S3 | a stack or closure-depth refusal carried the same machine-readable action as a memory one (raise the budget), and its text named a cycle the program may not have | review F5, F6 | **fixed** 0275f5f3: only a memory refusal carries a `budget`; the texts say which limit and that memory does not change the others |
+| CHK-PATH-LIMIT | S4 | a parse rejection of a file named `ANUBIS_ANALYSIS_LIMIT` was taken for a limit refusal | review F7 | **fixed** 0275f5f3 |
+| CHK-CONTROL-SEMANTIC | S3 | pre-existing: semantic diagnostics quoting user text (a map key) reached the terminal with its control characters | review F9 | **fixed** 0275f5f3: human output escapes them |
+| CHK-LSP-PARSE | S3 | pre-existing: the LSP located each parse error by walking the source (60000 errors: 16.5 s, 11 MB) | review F10 | **fixed** 0275f5f3: a line index, 200 errors then a count (23 ms, 36 KB) |
+| CHK-COVERAGE-SIZE | S3 | pre-existing: the coverage report named every obligation by its whole SMT term (a 1000-term sum: 8.5 MB of JSON) | review F11 | **fixed** 0275f5f3: 100 names of at most 240 characters, and a count (25 KB) |
+| CI-MACOS-CLIPPY | S3 | the hosted gate (macOS) failed clippy: Linux-only memory readers were dead code there | CI run 36090194164 | **fixed** efed68bb |
+| CI-MACOS-FIXTURES | S3 | the hosted gate (macOS) fails the language fixtures; the cause is not known here (the gate's log stays on the runner) | CI run 36090194164 | open: efed68bb prints every failing gate's log end into the job log |
