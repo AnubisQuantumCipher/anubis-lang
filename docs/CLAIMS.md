@@ -1612,6 +1612,9 @@ and cannot verify later repairs.
     - `d8404410`: the memory budgets come from the memory free (the first version refused valid
       programs that fit several times over); a limit refusal is reported alone and classed as a
       budget, not a defect in the program; parse-error rendering is bounded.
+    - `eac6baf7`: a limit refusal names the limit reached and keeps the findings the analysis made
+      beside it; `verify` says when it could not re-derive a claim at the limit; the JSON lane is
+      bounded for parse errors and never ends empty on the hard memory exit.
     - **Still OPEN:** PERF-LONG-SUM (a sum of n terms costs time and memory quadratic in n) and
       PERF-FNCHAIN (CPU time is not bounded).
 

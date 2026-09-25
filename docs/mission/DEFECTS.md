@@ -267,3 +267,19 @@ curried-chain and shadowing-`let` aborts, and the 100000-term sum: CHK-DEEP-AST)
 | CHK-EVIDENCE-RERUN | S4 | the rejection evidence of a limit refusal re-ran the whole analysis, so a refusal took up to 2.2 times as long as the accept before the limits | review P4 (`hf_d_500`) | **fixed** d8404410 |
 | CHK-PARSE-RENDER | S2 | parse-error rendering repeated each error's whole source line, outside any budget: a 6 KB malformed file produced 49.6 MB of text, 3000 nested blocks a 1.3 GB allocation that the scope's OOM killer ended | review `vblock_400`, `vblock_3000` | **fixed** d8404410: 20 errors rendered, the rest counted; lines windowed to 80 characters each side |
 | PERF-FNCHAIN | S3 | still open, pre-existing on every pin: a chain of 8000 functions, each calling the previous one, takes the checker past two minutes (superlinear interprocedural passes); CPU time is not bounded by the limits, which bound stack and memory | review `fnchain_8000` | open |
+
+### Follow-up: eac6baf7 (fifth review of the checker limits)
+
+Eight findings on crashfix10 (d8404410), each re-run by a verifier: three introduced by d8404410's
+reporting change, five pre-existing reporting gaps.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| CHK-LIMIT-HIDES | S1 | d8404410 reported a limit refusal alone, so a genuine finding the limit never touched (a secret exfiltration beside a self-calling closure) vanished from the output, the JSON and the evidence; the verdict stayed a refusal | review R1 (`leak_cycle`) | **fixed** eac6baf7: only diagnostics naming the fail-closed stand-in are dropped; findings follow the limit, and in JSON are their own diagnostic |
+| CHK-LIMIT-ADVICE | S3 | one message and one JSON class for three limits: a closure-depth or stack refusal advised raising the memory budget, which cannot change it | review R2 (`self_cycle`) | **fixed** eac6baf7: the refusal names its limit; only the memory one mentions ANUBIS_ANALYSIS_MEMORY_MIB |
+| CHK-LIMIT-DETECT | S3 | the evidence bundle recognized a limit refusal by a substring, so a counterexample naming a variable `ANUBIS_ANALYSIS_LIMIT` (or a comment beside a parse error) skipped the bundle's analysis and recorded a false cause | review R3 (`name_assert`, `comment_parse`) | **fixed** eac6baf7: by the leading code |
+| CHK-PCA-RERUN | S4 | pre-existing: a limit refusal's PCA claim re-ran the whole analysis (a refusal cost two analyses) | review R4 | **fixed** eac6baf7 |
+| CHK-JSON-PARSE | S3 | pre-existing: the JSON parse lane located each error by walking the source from its start (150000 errors: 52 s, 59 MB), and `parse_source` joined every message (an 8.6 MB evidence field for a 480 KB file) | review R5 (`longerr_*`) | **fixed** eac6baf7: a line index; 200 diagnostics and 200 joined messages, then a count |
+| CHK-HARD-EXIT-JSON | S3 | pre-existing: the hard memory exit left `--message-format json` output empty (indistinguishable from a clean run to a consumer counting findings) and its message implied ANUBIS_ANALYSIS_MEMORY_MIB was set | review R6 (`elifs_1000` at 600 MB) | **fixed** eac6baf7: a JSON refusal prepared before the check is written on that exit; no evidence bundle can be written there (documented) |
+| CHK-VERIFY-LIMIT | S3 | pre-existing: `verify` re-derives a bundle's claim under the analysis budget; on a busier machine a genuine bundle printed "bundle valid: false", indistinguishable from tampering | review R7 | **fixed** eac6baf7: it reports that the claim could not be re-derived (an error); a tampered bundle still never verifies |
+| CHK-RENDER-CONTROL | S3 | pre-existing: a parse error's rendered source line copied control characters verbatim, so a file's escape sequences reached the terminal or CI log of whoever checked it | review R8 (`h6_escape`) | **fixed** eac6baf7: escaped (`\u{1b}`), the caret still under its column |
