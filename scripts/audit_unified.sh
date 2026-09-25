@@ -158,9 +158,13 @@ gate() {
   GATE_RESULTS+=("{\"gate\":\"$name\",\"status\":\"$status\",\"detail\":\"$detail\"}")
   GATE_NAMES+=("$name")
   printf '%-6s %-40s %s\n' "$status" "$name" "$detail" | tee -a "$LOG"
-  # A failing gate's log stays on the runner: show its end where the job log shows it.
-  if [[ "$status" == "FAIL" && "$detail" =~ see\ ([A-Za-z0-9_.-]+\.log) ]]; then
-    tail -n 60 "$OUT/${BASH_REMATCH[1]}" 2>/dev/null | sed "s/^/  $name: /" || true
+  # A failing gate's logs stay on the runner: show the end of each one its detail names where the
+  # job log shows it (a gate with a self-test names two, and only the second held the cause).
+  if [[ "$status" == "FAIL" ]]; then
+    local logf
+    for logf in $(grep -oE '[A-Za-z0-9_.-]+\.log' <<<"$detail" | sort -u); do
+      tail -n 60 "$OUT/$logf" 2>/dev/null | sed "s/^/  $name: /" || true
+    done
   fi
 }
 
