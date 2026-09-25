@@ -330,3 +330,22 @@ Matrix at 9dc7be91: 1207 cases, 1094 PASS, 34 silent accepts (all `open_*`), 79 
 | EX-VAULT-CONTACTS | S3 | the vault_contacts example sent its file data (tainted) to print and save_vault through a loop the return summary did not see | both copies of vault_contacts.anb | **fixed** 9dc7be91: declassify at the parse boundary |
 | OR-ORDRET-ORDER | S4 | documented over-refusal: inside one nested statement, writes are order-free and names conflated (a label cleared later in the branch, an inner shadow, a read before a later write, another match arm's write) | `rv36o_or_*` (4, wrong-class) | documented |
 | IFC-JOIN-BREAK-SHADOW | S1 | still open, pre-existing: the enforcing lane's and the value-block lane's joins (merge_taint_over) keep only end states and skip paths that shadow the name; the parameter-return summary (body_param_returns) has the same two holes | `open_rv36o_sib_*` (7) | open |
+
+### Follow-up: 2536d046 (seventh review of the checker limits)
+
+Eleven findings on crashfix13 (efed68bb, the code of 0275f5f3), each re-run by a verifier. None is an
+acceptance: in no probe did a check pass after a limit, and no tampered or forged bundle verified.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| CHK-CACHE-ACTIVE | S3 | 0275f5f3 counted only a cgroup's inactive file cache as free: a scope holding page cache read twice refused valid programs (interp_1400 in 1000M with 734 MB of cache: a 137 MiB budget) | review N2, BUDGET-1 | **fixed** 2536d046: active and inactive file cache count as free |
+| CHK-CACHE-LIVE | S2 | pre-existing: the cache was counted once, at the start, so the headroom looks overstated what was left as the kernel reclaimed it, and checks side by side in a scope holding page cache were killed together again | review N3 | **fixed** 2536d046: read at every look |
+| CHK-LOOK-COARSE | S2 | pre-existing: a look every 64 MiB, before the pending allocation, let two or three checks in a 600M scope (or two with doubling arrays in 1000M/1500M) overshoot the cap together | review BUDGET-2 | **fixed** 2536d046: a look every eighth of the reserve (4 to 64 MiB) and before any allocation that large, against what would be left after it |
+| CHK-EVIDENCE-STARVED | S3 | 0275f5f3: `check --evidence` re-checks the program in the same process, armed from headroom net of the first check's own memory: a valid program passed, then "verdict: FAIL", an agent told to repair it, and its bundle called tampered | review N1 | **fixed** 2536d046: a request takes at least what the process's first could use |
+| CHK-RESERVE-REPORT | S3 | 0275f5f3: the reserve's exit claimed a hard budget the check had not reached; no memory exit's JSON named a budget; setting ANUBIS_ANALYSIS_MEMORY_MIB, as advised, turned the reserve off | review N4 | **fixed** 2536d046: the reserve's own text and report; the hard exit names its budget; the reserve stays on |
+| CHK-INDEPENDENT-FINDINGS | S3 | 0275f5f3: findings that need no analysis (a duplicate parameter, a `break` outside a loop) were dropped with the rest after a limit | review N5 | **fixed** 2536d046 |
+| CHK-VERIFY-HARD-EXIT | S3 | pre-existing: verify re-derived before deciding integrity, so a tampered bundle whose re-derivation reached the hard budget ended with the check's exit text and no verdict | review N6 | **fixed** 2536d046: integrity first |
+| CHK-VERIFY-KEPT-FINDING | S3 | pre-existing: a forged PASS over a program with a finding made before the memory limit answered "could not be re-derived" at every memory size | review N7 | **fixed** 2536d046: refuted |
+| CHK-CONTROL-VERIFY | S3 | pre-existing: verify printed a bundle's escape-laden field names raw, and `report` a bundle's text; bidirectional overrides were never escaped | review N8 | **fixed** 2536d046: every printed error and report goes through printable(), which also shows bidi and zero-width characters |
+| CHK-COVERAGE-NAMES | S4 | 0275f5f3: 100 names cut to 240 characters could all read the same | review N9 | **fixed** 2536d046: first 160 and last 60 characters and a digest |
+| CHK-DISARM | S4 | 0275f5f3: after a request the allocator kept looking and could exit outside any check | review note | **fixed** 2536d046 |
