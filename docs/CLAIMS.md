@@ -1597,6 +1597,14 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — the ordinary lane's return summaries (`9dc7be91`).**
+    - A secret or tainted value assigned in a nested block of a callee and returned is labelled
+      (IFC-ORDINARY-RETURN), and a call through a joined function binding checks every function it
+      may hold. 29 silent accepts closed (27 new matrix cases, 2 existing `open_*`).
+    - Matrix at this pin: 1207 cases, 1094 PASS, 34 silent accepts (all `open_*`), 79 wrong-class.
+    - **Still OPEN:** IFC-JOIN-BREAK-SHADOW (a label live at a loop break, or a path that shadows the
+      name, lost at the enforcing and value-block joins and in the parameter-return summary).
+
     **UPDATE 2026-09-25 — whole-struct lane, review round 36 (`b72244c7`).**
     - Round 36 confirmed 24 findings in the lane; 17 leaks and all 3 over-refusals and 2 of the 3
       costs are fixed, each a matrix case with a runtime witness.

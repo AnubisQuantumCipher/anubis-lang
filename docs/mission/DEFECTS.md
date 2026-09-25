@@ -317,3 +317,16 @@ Twelve findings on crashfix11 (eac6baf7), each re-run by a verifier.
 | CHK-COVERAGE-SIZE | S3 | pre-existing: the coverage report named every obligation by its whole SMT term (a 1000-term sum: 8.5 MB of JSON) | review F11 | **fixed** 0275f5f3: 100 names of at most 240 characters, and a count (25 KB) |
 | CI-MACOS-CLIPPY | S3 | the hosted gate (macOS) failed clippy: Linux-only memory readers were dead code there | CI run 36090194164 | **fixed** efed68bb |
 | CI-MACOS-FIXTURES | S3 | the hosted gate (macOS) fails the language fixtures; the cause is not known here (the gate's log stays on the runner) | CI run 36090194164 | open: efed68bb prints every failing gate's log end into the job log |
+
+### Follow-up: 9dc7be91 (IFC-ORDINARY-RETURN)
+
+The ordinary lane's return summaries (secret and taint) and calls through a joined function binding.
+Matrix at 9dc7be91: 1207 cases, 1094 PASS, 34 silent accepts (all `open_*`), 79 wrong-class.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| IFC-ORDINARY-RETURN | S1 | pre-existing: the return summary behind secret_fns / tainting_fns (body_returns) restored the scope after a nested block, so a secret or tainted value a branch, loop, match arm or value block assigned to an outer binding and then returned was lost; a `for` variable or `while let` binder took nothing from its header | `open_whole13_r36_r36_spec_3`, `rv36o_*` (26 leaks, 21 valid twins) | **fixed** 9dc7be91 |
+| IFC-ALIAS-UNION | S1 | pre-existing: a call through a local binding that may hold several functions (a join) checked the egress, sinks and returned parameters of one preferred name; fixing the return summary alone would have turned two rejected leaks into accepts | `open_whole13_rv36x_oh3`, `rv36x_oh1`, `rv36o_alias_*` | **fixed** 9dc7be91 |
+| EX-VAULT-CONTACTS | S3 | the vault_contacts example sent its file data (tainted) to print and save_vault through a loop the return summary did not see | both copies of vault_contacts.anb | **fixed** 9dc7be91: declassify at the parse boundary |
+| OR-ORDRET-ORDER | S4 | documented over-refusal: inside one nested statement, writes are order-free and names conflated (a label cleared later in the branch, an inner shadow, a read before a later write, another match arm's write) | `rv36o_or_*` (4, wrong-class) | documented |
+| IFC-JOIN-BREAK-SHADOW | S1 | still open, pre-existing: the enforcing lane's and the value-block lane's joins (merge_taint_over) keep only end states and skip paths that shadow the name; the parameter-return summary (body_param_returns) has the same two holes | `open_rv36o_sib_*` (7) | open |
