@@ -158,6 +158,10 @@ gate() {
   GATE_RESULTS+=("{\"gate\":\"$name\",\"status\":\"$status\",\"detail\":\"$detail\"}")
   GATE_NAMES+=("$name")
   printf '%-6s %-40s %s\n' "$status" "$name" "$detail" | tee -a "$LOG"
+  # A failing gate's log stays on the runner: show its end where the job log shows it.
+  if [[ "$status" == "FAIL" && "$detail" =~ see\ ([A-Za-z0-9_.-]+\.log) ]]; then
+    tail -n 60 "$OUT/${BASH_REMATCH[1]}" 2>/dev/null | sed "s/^/  $name: /" || true
+  fi
 }
 
 echo "=== ANUBIS UNIFIED GATE SUITE ===" | tee "$LOG"

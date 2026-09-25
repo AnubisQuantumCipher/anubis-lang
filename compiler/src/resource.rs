@@ -36,10 +36,9 @@
 //! check request nothing is limited. A program that embeds the compiler without installing the
 //! allocator has no memory budget, only the stack and depth limits.
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{
-    AtomicBool, AtomicPtr, AtomicUsize,
-    Ordering::{Acquire, Relaxed, Release},
-};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::Ordering::{Acquire, Release};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering::Relaxed};
 
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -55,8 +54,11 @@ static RESERVE: AtomicUsize = AtomicUsize::new(0);
 /// The cgroup with the least memory left when the request began: its `memory.current` and
 /// `memory.max` (NUL-terminated paths, leaked, so the allocator can read them without allocating)
 /// and its inactive file cache then.
+#[cfg(target_os = "linux")]
 static CG_CURRENT: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "linux")]
 static CG_MAX: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "linux")]
 static CG_CACHE: AtomicUsize = AtomicUsize::new(0);
 /// How much allocation passes between two readings of the headroom.
 const LOOK_EVERY: usize = 64 * MIB;
@@ -269,6 +271,7 @@ fn available_memory() -> Option<usize> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn mem_available(meminfo: &str) -> Option<usize> {
     let kib = meminfo
         .lines()
@@ -398,6 +401,7 @@ unsafe fn read_raw(path: *const u8, buf: &mut [u8]) -> Option<usize> {
 }
 
 /// The decimal number at the start of `bytes`.
+#[cfg(target_os = "linux")]
 fn leading_number(bytes: impl Iterator<Item = u8>) -> Option<usize> {
     let mut v: usize = 0;
     let mut any = false;
@@ -412,6 +416,7 @@ fn leading_number(bytes: impl Iterator<Item = u8>) -> Option<usize> {
 }
 
 /// `inactive_file` from a cgroup's `memory.stat` (page cache the kernel reclaims first).
+#[cfg(target_os = "linux")]
 fn inactive_file(stat: &str) -> usize {
     stat.lines()
         .find_map(|l| l.strip_prefix("inactive_file "))
@@ -429,10 +434,11 @@ fn physical_memory() -> Option<usize> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn mem_available_reads_the_meminfo_line() {
         let meminfo = "MemTotal:       32000000 kB\nMemFree:         1000000 kB\n\
@@ -442,6 +448,7 @@ mod tests {
         assert_eq!(mem_available("MemAvailable: lots\n"), None);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn leading_number_reads_digits() {
         assert_eq!(
@@ -458,6 +465,7 @@ mod tests {
         assert!(left_now().is_some_and(|l| l > 0));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn inactive_file_reads_the_stat_line() {
         let stat = "anon 1000\nfile 5000\nactive_file 3000\ninactive_file 2000\n";
