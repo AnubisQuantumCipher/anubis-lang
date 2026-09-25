@@ -1,0 +1,36 @@
+{
+  "schema": "anubis.candidate-verification.v1",
+  "status": "failed-incomplete",
+  "source_base": "2990eab2c6ad856fd2f1bfc25fa77c3e6a60b92a",
+  "candidate_patch": "candidate.patch",
+  "command": [
+    "cargo",
+    "test",
+    "--workspace",
+    "--release",
+    "--no-fail-fast"
+  ],
+  "command_rc": 101,
+  "failure_test": "recursive_closure_source_reports_limit_and_recovers",
+  "failure_target": "anubis-compiler --test closure_analysis_limit",
+  "failure": "stack overflow, SIGABRT",
+  "rustc": "1.97.0-nightly (82bee9650 2026-05-09)",
+  "host": "Linux aarch64 QEMU guest; not a disposable Tart/VZ guest",
+  "RUST_MIN_STACK": "unset",
+  "supervisor": "systemd user scope, MemoryMax=14G, MemorySwapMax=0, core dumps disabled",
+  "continuation": "driver stopped by lead during solver-debug, before matrix/corpus/gates",
+  "driver_rc": 143,
+  "non_claims": [
+    "not a passing unit receipt",
+    "not a disposable-guest crash witness",
+    "baseline differential not measured",
+    "matrix/corpus/gates not completed",
+    "not a shipped compiler regression classification"
+  ],
+  "sha256": {
+    "source-manifest.json": "ccbd7471b353f23f1aa80c17ed68dd009aa2fa9cc99830f3397ea84f08af8f04",
+    "verify_unit.py": "f61043a6cbcf43ec23078c2390f4574e815b95fc0d6b52437b6baea861bcc553",
+    "workspace-release.log": "db60729c751f6fe8672cfc9493db0b551f35b8dec443c481a7fa2ca8e46d2abf",
+    "candidate.patch": "586474cc777c6c17f299d4829633365077e633e15061fdaca9dbfd55fcaa159a"
+  }
+}

@@ -8,6 +8,12 @@ mapper and not yet independently reproduced by the integrator. This inventory fe
 Severity: S1 unsound/false-claim in a shipped assurance; S2 gate/evidence that can pass without asking
 its question; S3 precision/over-rejection or crash on input; S4 correctness/quality; S5 docs/hygiene.
 
+## Alias candidate verification (2026-09-25; not shipped)
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| CAND-ALIAS-STACK | S3 | Workspace release tests abort in `recursive_closure_source_reports_limit_and_recovers` on the uncommitted alias candidate. Matching baseline differential is not yet measured. | [Complete failure receipt](../evidence/ALIAS_CANDIDATE_VERIFY_2026-09-25/README.md), source patch, manifest and full cargo log; cargo rc 101. | open; blocks candidate integration; follow-up deliberate crash verification requires the mandated guest |
+
 ## Assurance chain (03)
 
 | id | sev | defect | evidence | state |

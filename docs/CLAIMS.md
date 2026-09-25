@@ -15,6 +15,14 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-25 — unshipped alias candidate verification failed.** Workspace release
+testing aborted in `closure_analysis_limit::recursive_closure_source_reports_limit_and_recovers`.
+The [failure receipt](evidence/ALIAS_CANDIDATE_VERIFY_2026-09-25/README.md) preserves the exact
+candidate source delta and complete log. CAND-ALIAS-STACK remains open; the candidate is not
+integrated, its baseline differential is unmeasured, and this local observation is not the
+mandatory disposable-guest crash witness. Publishing the receipt does not close any soundness
+or precision requirement.
+
 ### The disease — proven across eight separate classes
 
 > **A user writes something down, or a producer computes a label, and a consumer ignores it or
