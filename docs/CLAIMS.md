@@ -1597,6 +1597,17 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-24 (night) — the whole-struct lane as an abstract interpreter (`0731ecf7`).**
+    - The lane is now `middle/whole.rs`: one walker and one sequential abstract interpreter, calls
+      specialized at the call site, and one classification of every builtin that fails closed.
+    - It closes FV-OPEN-5 and the 45 routes review round 26 found. Review rounds 27–35 found 537
+      defects in nine versions of the rewrite; all are matrix cases and all are fixed.
+    - Matrix at this pin: 1108 cases, 1009 PASS, 23 silent accepts (all `open_*`; the pre-change pin
+      has 295 on the same matrix), 76 wrong-class (documented refusals).
+    - **Still OPEN:** implicit flow (IFC-PC-EGRESS), closures through containers, expressions,
+      reassignment or `compose`, and `panic` (FV-OPEN-6), `open_whole2_B2`, FV-OPEN-4, L-SHADOW-1,
+      FV-ENUM-SECRET, IFC-LOOP-CARRIED-VALUEBLOCK.
+
     **UPDATE 2026-09-24 (evening) — whole-struct routes through list builtins, callbacks and
     formals (`9aadfe41`).**
     - A whole struct with a `secret` field is now followed through element-passing list builtins,
