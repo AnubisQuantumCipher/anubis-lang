@@ -251,6 +251,11 @@ pub struct Diagnostic {
     /// Absent when the compiler does not track where this refusal came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
+    /// How many findings this diagnostic stands for without reporting them one by one (the parse
+    /// lane reports at most 200 and counts the rest in one more); absent for a single finding. The
+    /// summary's counts include them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted: usize,
     /// Absent when no solver ran. Reporting a budget against a parse error
     /// would imply work was spent deciding something, and invite the reader to
     /// raise a bound that had nothing to do with the refusal.
@@ -446,6 +451,7 @@ pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
         location: None,
         budget,
         suggestions: Vec::new(),
+        omitted: 0,
     }
 }
 
@@ -459,14 +465,46 @@ pub fn printable(text: &str) -> std::borrow::Cow<'_, str> {
         (c.is_control() && c != '\n' && c != '\t')
             || matches!(
                 c,
+                // Format characters (general category Cf): the soft hyphen, prepended number marks,
+                // zero-width and joiner marks, bidirectional marks, overrides and isolates,
+                // invisible operators, the byte order mark, interlinear annotation, tag characters.
                 '\u{00ad}'
+                    | '\u{0600}'..='\u{0605}'
                     | '\u{061c}'
+                    | '\u{06dd}'
+                    | '\u{070f}'
+                    | '\u{0890}'..='\u{0891}'
+                    | '\u{08e2}'
                     | '\u{180e}'
                     | '\u{200b}'..='\u{200f}'
                     | '\u{202a}'..='\u{202e}'
                     | '\u{2060}'..='\u{2064}'
-                    | '\u{2066}'..='\u{2069}'
+                    | '\u{2066}'..='\u{206f}'
                     | '\u{feff}'
+                    | '\u{fff9}'..='\u{fffb}'
+                    | '\u{110bd}'
+                    | '\u{110cd}'
+                    | '\u{13430}'..='\u{1343f}'
+                    | '\u{1bca0}'..='\u{1bca3}'
+                    | '\u{1d173}'..='\u{1d17a}'
+                    | '\u{e0001}'
+                    | '\u{e0020}'..='\u{e007f}'
+                    // Line and paragraph separators (Zl, Zp): many viewers break the line there.
+                    | '\u{2028}'
+                    | '\u{2029}'
+                    // Fillers and selectors that show nothing: the combining grapheme joiner,
+                    // Hangul fillers, Khmer inherent vowels, Mongolian and other variation selectors.
+                    | '\u{034f}'
+                    | '\u{115f}'
+                    | '\u{1160}'
+                    | '\u{17b4}'
+                    | '\u{17b5}'
+                    | '\u{180b}'..='\u{180d}'
+                    | '\u{180f}'
+                    | '\u{3164}'
+                    | '\u{fe00}'..='\u{fe0f}'
+                    | '\u{ffa0}'
+                    | '\u{e0100}'..='\u{e01ef}'
             )
     }
     if !text.chars().any(hidden) {
@@ -529,6 +567,7 @@ pub fn diagnostics_of_parse_errors(source: &str, path: &str) -> Vec<Diagnostic> 
                 }),
                 budget: None,
                 suggestions: Vec::new(),
+                omitted: 0,
             }
         })
         .collect();
@@ -538,6 +577,9 @@ pub fn diagnostics_of_parse_errors(source: &str, path: &str) -> Vec<Diagnostic> 
             if more == 1 { "" } else { "s" }
         ));
         rest.family = Family::Frontend;
+        // Counted as the errors it stands for, not as one (eighth review of the checker limits,
+        // E7: 834 parse errors were summarized as 201).
+        rest.omitted = more;
         out.push(rest);
     }
     out
@@ -762,6 +804,7 @@ pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
             None
         },
         suggestions: Vec::new(),
+        omitted: 0,
     }
 }
 
@@ -799,18 +842,21 @@ pub fn render(diagnostics: &[Diagnostic]) -> String {
 /// As [`render`], and states how much of the verdict carries a witness.
 pub fn render_with_coverage(diagnostics: &[Diagnostic], coverage: Option<Coverage>) -> String {
     let mut counts = Counts {
-        total: diagnostics.len(),
+        total: 0,
         disproved: 0,
         undecided: 0,
         replay_mismatch: 0,
         refused: 0,
     };
     for d in diagnostics {
+        // A count line stands for the findings it counts ([`Diagnostic::omitted`]).
+        let n = if d.omitted > 0 { d.omitted } else { 1 };
+        counts.total += n;
         match d.status {
-            Status::Disproved => counts.disproved += 1,
-            Status::Undecided => counts.undecided += 1,
-            Status::ReplayMismatch => counts.replay_mismatch += 1,
-            Status::Refused => counts.refused += 1,
+            Status::Disproved => counts.disproved += n,
+            Status::Undecided => counts.undecided += n,
+            Status::ReplayMismatch => counts.replay_mismatch += n,
+            Status::Refused => counts.refused += n,
         }
     }
 
@@ -852,6 +898,41 @@ mod tests {
         // A right-to-left override would reorder what the reader sees.
         assert_eq!(printable("ab\u{202e}cd"), "ab\\u{202e}cd");
         assert_eq!(printable("a\u{200b}b"), "a\\u{200b}b");
+        // Line and paragraph separators, tag characters, interlinear annotation and blank fillers
+        // (eighth review of the checker limits, E6).
+        for c in [
+            '\u{2028}',
+            '\u{2029}',
+            '\u{e0069}',
+            '\u{fff9}',
+            '\u{115f}',
+            '\u{3164}',
+            '\u{ffa0}',
+            '\u{034f}',
+            '\u{fe0f}',
+            '\u{17b4}',
+        ] {
+            let shown = printable(&format!("a{c}b")).into_owned();
+            assert_eq!(shown, format!("a\\u{{{:x}}}b", c as u32));
+        }
+        assert_eq!(printable("plain ascii, é and 中"), "plain ascii, é and 中");
+    }
+
+    #[test]
+    fn a_count_line_counts_the_errors_it_stands_for() {
+        let source = "fn main() {\n".to_string() + &"    let = ;\n".repeat(300) + "}\n";
+        let diags = diagnostics_of_parse_errors(&source, "f.anb");
+        let rest = diags.last().expect("diagnostics");
+        assert!(rest.omitted > 0);
+        let rendered = render(&diags);
+        let summary: serde_json::Value =
+            serde_json::from_str(rendered.lines().last().expect("summary")).unwrap();
+        let total = summary["counts"]["total"].as_u64().unwrap() as usize;
+        assert_eq!(total, diags.len() - 1 + rest.omitted);
+        assert_eq!(
+            summary["counts"]["refused"].as_u64().unwrap() as usize,
+            total
+        );
     }
 
     #[test]

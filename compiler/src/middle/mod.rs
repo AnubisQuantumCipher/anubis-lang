@@ -4391,6 +4391,12 @@ pub fn last_analysis_limit() -> Option<AnalysisLimit> {
     analysis_limit::last()
 }
 
+/// Whether the memory limit the last check request on this thread reached was the reserve's (the
+/// memory left to it ran low), not its own budget's.
+pub fn last_analysis_by_reserve() -> bool {
+    analysis_limit::by_reserve()
+}
+
 pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
     // One request: an analysis limit reached anywhere in it refuses it (`analysis_limit`).
     analysis_limit::check(|| typecheck_request(ast, mode, verified))
@@ -6963,7 +6969,9 @@ fn analyze_function(
         let opaque = norm == "any" || norm == "unknown";
         if !r.is_empty() && !result_like && !opaque && !ty::is_generic(r) && body_contains_try(body)
         {
-            ctx.push_diag(SemanticDiagnostic {
+            // A syntax walk and the declared type: it needs no analysis, so it is reported after an
+            // analysis limit too (eighth review of the checker limits, E2).
+            ctx.push_diag_independent(SemanticDiagnostic {
                 code: Some("ANUBIS_TRY_OUTSIDE_RESULT".into()),
                 message: format!(
                     "`{name}` uses the `?` operator but declares `-> {r}`; `?` requires the function to return `Option` or `Result`"
@@ -28102,7 +28110,9 @@ fn check_one_return(
     if is_constant_expr(expr) {
         if let Some(actual) = infer_expr_type_scoped(expr, scope) {
             if !types_assignable(rty, &actual) {
-                ctx.push_diag(SemanticDiagnostic {
+                // A constant's type against the declared one: no analysis, so it is reported after
+                // an analysis limit too (E2).
+                ctx.push_diag_independent(SemanticDiagnostic {
                     code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
                     message: format!(
                         "function declared `-> {}` but returns a value of type `{}`",

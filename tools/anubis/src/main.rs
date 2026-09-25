@@ -2689,6 +2689,10 @@ fn cli_main() -> Result<()> {
                     out.join("bounty-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
+                // The bundle's own analysis stopped at a limit: report the limit (B8-2 / B8-3).
+                if let Some(limit) = &bundle.limit {
+                    return Err(anyhow!("{}", limit));
+                }
                 require_passing_build_evidence(&bundle.manifest.verdict)?;
             }
 
@@ -3021,7 +3025,12 @@ fn cli_main() -> Result<()> {
                     out.join("check-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
-                if check_error.is_none() && bundle.manifest.verdict != "PASS" {
+                if let (None, Some(limit)) = (&check_error, &bundle.limit) {
+                    // The bundle's own analysis stopped at a limit with nothing found: a limit of
+                    // the checker, reported as one, not a verdict about the program to repair
+                    // (eighth review of the checker limits, B8-2 / B8-3).
+                    verdict_failure = Some(limit.clone());
+                } else if check_error.is_none() && bundle.manifest.verdict != "PASS" {
                     verdict_failure = Some(format!(
                         "ANUBIS_EVIDENCE_VERDICT_FAILED: check produced verdict={} and therefore \
                          cannot exit successfully",
@@ -5959,7 +5968,13 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             // Report (and optionally require) the signature.
             match pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))? {
                 Some((sig_ok, signer)) => {
-                    println!("signed: {} (signer {})", sig_ok, signer);
+                    // The signer is the bundle's own text when it is not a valid key (eighth review of the
+                    // checker limits, E4).
+                    println!(
+                        "signed: {} (signer {})",
+                        sig_ok,
+                        anubis_compiler::diagnostics::printable(&signer)
+                    );
                     if let Some(expected) = &pubkey {
                         if !sig_ok || signer != expected.trim() {
                             eprintln!("signature required by --pubkey did not match");

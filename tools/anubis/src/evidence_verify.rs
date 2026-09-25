@@ -922,10 +922,16 @@ fn short_path(path: &Path) -> String {
         .to_string()
 }
 
-/// Human-readable summary lines for CLI.
+/// Human-readable summary lines for CLI. Every part that can quote a bundle's own text (a path,
+/// a check's detail, a classification, a note) is shown through `printable`: a stranger's bundle
+/// must not drive the terminal (eighth review of the checker limits, E4).
 pub fn format_human(report: &EvidenceVerifyReport) -> String {
+    use anubis_compiler::diagnostics::printable;
     let mut lines = Vec::new();
-    lines.push(format!("anubis evidence-verify: {}", report.path));
+    lines.push(format!(
+        "anubis evidence-verify: {}",
+        printable(&report.path)
+    ));
     lines.push(format!(
         "overall: {}  checks={}",
         if report.ok { "PASS" } else { "FAIL" },
@@ -939,17 +945,19 @@ pub fn format_human(report: &EvidenceVerifyReport) -> String {
         };
         lines.push(format!(
             "  [{mark}] {} ({}) — {}",
-            c.id, c.classification, c.detail
+            printable(&c.id),
+            printable(&c.classification.to_string()),
+            printable(&c.detail)
         ));
     }
     if !report.classifications_seen.is_empty() {
         lines.push(format!(
             "classifications: {}",
-            report.classifications_seen.join(", ")
+            printable(&report.classifications_seen.join(", "))
         ));
     }
     for n in &report.notes {
-        lines.push(format!("note: {n}"));
+        lines.push(format!("note: {}", printable(n)));
     }
     lines.join("\n")
 }

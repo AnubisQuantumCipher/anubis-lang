@@ -107,10 +107,11 @@ pub const HARD_EXIT_DIAGNOSTIC: &str = concat!(
     " MiB: half the memory free when the check began, or ANUBIS_ANALYSIS_MEMORY_MIB) and kept \
      allocating past its hard budget (two thirds of that memory, or twice the variable) where the \
      analysis could not stop it, so the process stopped at once: the analysis did not complete (a \
-     check refuses the program; a verify neither confirms nor refutes the bundle), and nothing it \
-     would have written was written. This is a limit of the checker, not a finding about the \
-     program: simplify it, or give the check more memory (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if \
-     the machine has it to spare"
+     check refuses the program; a verify neither confirms nor refutes the bundle), and no report or \
+     evidence bundle it was making was completed (an unfinished bundle is left under a name ending \
+     in .partial). This is a limit of the checker, not a finding about the program: simplify it, or \
+     give the check more memory (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if the machine has it to \
+     spare"
 );
 /// The reserve's exit: the machine, or the cgroup the check runs in, is nearly out of memory, and
 /// no budget of the check's own is the cause, so it names none.
@@ -118,9 +119,10 @@ pub const RESERVE_EXIT_DIAGNOSTIC: &str = "ANUBIS_ANALYSIS_LIMIT: the memory lef
 (on the machine, or in the memory-capped cgroup it runs in) fell below half the reserve the checker \
 keeps free, so the process stopped at once, before the kernel's out-of-memory killer could end it: \
 the analysis did not complete (a check refuses the program; a verify neither confirms nor refutes \
-the bundle), and nothing it would have written was written. This is a limit of the checker, not a \
-finding about the program: other processes are using the memory it needs (raising \
-ANUBIS_ANALYSIS_MEMORY_MIB does not change that); run it with more memory free";
+the bundle), and no report or evidence bundle it was making was completed (an unfinished bundle is \
+left under a name ending in .partial). This is a limit of the checker, not a finding about the \
+program: other processes are using the memory it needs (raising ANUBIS_ANALYSIS_MEMORY_MIB does \
+not change that); run it with more memory free";
 const EXIT_NEWLINE: &[u8] = b"\n";
 
 /// The system allocator, counting the bytes in use.
@@ -333,13 +335,19 @@ pub(crate) fn arm() -> Option<Armed> {
     if !INSTALLED.load(Relaxed) {
         return None;
     }
-    let usable = process_usable();
+    let now = usable_memory();
+    let usable = process_usable(now);
     let (soft, hard) = budgets(usable);
     BUDGET.store(soft, Relaxed);
     let base = ALLOCATED.load(Relaxed);
-    // An eighth of what is usable, at least 128 MiB, is kept free (under
-    // ANUBIS_ANALYSIS_MEMORY_MIB too); the headroom is read every eighth of that, 4 to 64 MiB.
-    let reserve = usable.map_or(0, |u| (u / 8).max(128 * MIB));
+    // An eighth of what is usable NOW is kept free (under ANUBIS_ANALYSIS_MEMORY_MIB too), at least
+    // 128 MiB, or a quarter of it in a smaller scope; the headroom is read every eighth of that, 4
+    // to 64 MiB. Not the first request's figure the budgets may take (`process_usable`): the
+    // reserve is compared with what is really left at every look, and a long-lived process (the
+    // language server, `anubis test`) whose memory had since shrunk refused, then exited, with
+    // plenty left (eighth review of the checker limits, E1 / B8-1). The floor was a fixed 128 MiB:
+    // in a 280 MiB scope a program peaking at 64% of it was refused under the variable (B8-5).
+    let reserve = now.or(usable).map_or(0, reserve_for);
     let step = (reserve / 8).clamp(MIN_LOOK_STEP, MAX_LOOK_STEP);
     #[cfg(target_os = "linux")]
     match cgroup_scan() {
@@ -373,6 +381,12 @@ pub(crate) fn arm() -> Option<Armed> {
     Some(prev)
 }
 
+/// The memory kept free when `usable` is usable: an eighth of it, at least 128 MiB, or a quarter of
+/// it in a scope under 512 MiB ([`arm`]).
+fn reserve_for(usable: usize) -> usize {
+    (usable / 8).max((128 * MIB).min(usable / 4))
+}
+
 /// Put back what `arm` replaced (after the outermost request: no budget, no reserve, no reading).
 pub(crate) fn disarm(prev: Armed) {
     NEXT_LOOK.store(prev.next_look, Relaxed);
@@ -390,9 +404,9 @@ pub(crate) fn disarm(prev: Armed) {
 /// process's to reuse: without this, the evidence lane's re-check of a program `check` had just
 /// passed was armed with a fraction of the budget and refused it (seventh review of the checker
 /// limits, N1). What is really left is still read at every look, against the reserve.
-fn process_usable() -> Option<usize> {
+fn process_usable(now: Option<usize>) -> Option<usize> {
     let first = FIRST_USABLE.load(Relaxed);
-    match usable_memory() {
+    match now {
         Some(now) => {
             if first == 0 {
                 FIRST_USABLE.store(now, Relaxed);
@@ -650,6 +664,23 @@ mod tests {
             decimal(usize::MAX, &mut buf),
             usize::MAX.to_string().as_bytes()
         );
+    }
+
+    #[test]
+    fn the_reserve_is_an_eighth_at_least_128_mib_or_a_quarter_of_a_small_scope() {
+        assert_eq!(reserve_for(3000 * MIB), 375 * MIB);
+        assert_eq!(reserve_for(600 * MIB), 128 * MIB);
+        assert_eq!(reserve_for(512 * MIB), 128 * MIB);
+        // A 280 MiB scope keeps 70 MiB free, not 128 (B8-5).
+        assert_eq!(reserve_for(280 * MIB), 70 * MIB);
+    }
+
+    #[test]
+    fn the_exits_say_an_unfinished_bundle_may_be_left() {
+        for text in [HARD_EXIT_DIAGNOSTIC, RESERVE_EXIT_DIAGNOSTIC] {
+            assert!(text.contains(".partial"), "{text}");
+            assert!(!text.contains("nothing it would have written was written"));
+        }
     }
 
     #[test]

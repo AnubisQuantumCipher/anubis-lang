@@ -68,6 +68,10 @@ pub struct SourceTreeEntry {
 pub struct EvidenceBundle {
     pub dir: PathBuf,
     pub manifest: EvidenceManifest,
+    /// The analysis limit the bundle's own analysis stopped at (its re-check, or the derivation of
+    /// its claim), with no finding before it: the bundle records no verdict about the program, and
+    /// the command reports this limit rather than a program verdict.
+    pub limit: Option<String>,
 }
 
 fn sha256_bytes(data: &[u8]) -> String {
@@ -312,7 +316,23 @@ fn build_evidence_bundle_tree_inner(
     rejection: Option<&str>,
 ) -> Result<EvidenceBundle, String> {
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let dir = out_base.join(format!("evidence-{}-{}", ts, mode));
+    // The bundle is written under a name ending in `.partial` and renamed when it is complete: a
+    // process the allocator ends at the hard budget or the reserve (it cannot unwind) left a bundle
+    // whose evidence and manifest said PASS but had no claim or hashes (eighth review of the checker
+    // limits, B8-4).
+    // The name is this build's own (process and sequence number): checks started in one directory
+    // in the same second must not write into, or clear, each other's unfinished bundle.
+    let final_name = format!("evidence-{}-{}", ts, mode);
+    static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = out_base.join(format!(
+        ".{final_name}.{}.{}.partial",
+        std::process::id(),
+        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    if dir.exists() {
+        // Left by an earlier process of the same number, in the same second: unfinished.
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let source_hash = crate::package::merkle::merkle_root(files.to_vec());
@@ -441,6 +461,9 @@ fn build_evidence_bundle_tree_inner(
                 .into(),
         });
     }
+    // The analysis limit this bundle's own analysis stopped at, with no finding before it (see
+    // [`EvidenceBundle::limit`]).
+    let mut lane_limit: Option<String> = None;
     if let (Ok(ast), false) = (parse_res, limit_refusal) {
         let tc_mode = match mode {
             "research" => crate::frontend::Mode::Research,
@@ -652,11 +675,21 @@ fn build_evidence_bundle_tree_inner(
                         .join(","),
                 });
             }
-            Err(err) => checks.push(Check {
-                name: "typecheck".into(),
-                status: "FAIL".into(),
-                detail: err,
-            }),
+            Err(err) => {
+                // The re-check is a request of its own: stopped at a limit (another process took
+                // the memory, or two checks share a scope) with nothing found, it says nothing
+                // about the program the command already checked (B8-2).
+                if crate::diagnostics::is_analysis_limit(&err)
+                    && !crate::middle::last_analysis_kept_findings()
+                {
+                    lane_limit = Some(err.clone());
+                }
+                checks.push(Check {
+                    name: "typecheck".into(),
+                    status: "FAIL".into(),
+                    detail: err,
+                })
+            }
         }
     }
 
@@ -709,6 +742,42 @@ fn build_evidence_bundle_tree_inner(
         }
         if let Some(check) = risc0_metadata_check(&dir) {
             checks.push(check);
+        }
+    }
+
+    // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
+    // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Derived before
+    // the manifest is written, so a limit it stops at is in the bundle's verdict: the claim's own
+    // analysis is a third request, and a limit there was written as `typecheck_ok: false, verdict:
+    // FAIL` under a command that had passed, rc 0 (B8-3). A limit refusal's claim is not
+    // re-derived (its tier and verdict are set below), nor one whose re-check already stopped.
+    let derived = if limit_refusal || lane_limit.is_some() {
+        derive_claim(&source, mode, false)
+    } else {
+        derive_claim_bound(&dir, &source, mode)
+    };
+    if lane_limit.is_none() && derived.limit.is_some() && !derived.kept_finding {
+        lane_limit = Some(derived.limit_text.clone().unwrap_or_else(|| {
+            "ANUBIS_ANALYSIS_LIMIT: the analysis of the bundle's claim stopped at the analysis \
+             limit"
+                .into()
+        }));
+    }
+    let mut claim = derived.claim;
+    if rejection.is_none() {
+        if let Some(limit) = &lane_limit {
+            checks.push(Check {
+                name: "evidence_analysis_limit".into(),
+                status: "FAIL".into(),
+                detail: format!(
+                    "this bundle's own analysis stopped at the analysis limit, so it records no \
+                     verdict about the program: {limit}"
+                ),
+            });
+            claim = derive_claim(&source, mode, false).claim;
+            claim.tier = "rejected".into();
+            claim.rejection = Some(limit.clone());
+            claim.verdict = "FAIL".into();
         }
     }
 
@@ -789,15 +858,8 @@ fn build_evidence_bundle_tree_inner(
     std::fs::write(dir.join("evidence.json"), &json).map_err(|e| e.to_string())?;
     // v1 schema prefers manifest.json as well
     std::fs::write(dir.join("manifest.json"), &json).map_err(|e| e.to_string())?;
-    // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
-    // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Written before
-    // the manifest hashing so it is covered by MANIFEST.sha256.
-    // A limit refusal's claim is not re-derived either (its tier and verdict are set below).
-    let mut claim = if limit_refusal {
-        derive_claim(&source, mode, false).claim
-    } else {
-        derive_claim_block_bound(&dir, &source, mode)
-    };
+    // The claim block (derived above) is written before the manifest hashing so it is covered by
+    // MANIFEST.sha256.
     if let Some(rejection) = rejection {
         claim.tier = "rejected".into();
         claim.rejection = Some(rejection.to_string());
@@ -812,7 +874,34 @@ fn build_evidence_bundle_tree_inner(
     }
     write_manifest_hashes(&dir)?;
 
-    Ok(EvidenceBundle { dir, manifest })
+    // Complete: under its own name (a new one, if a bundle of this second already holds it, or
+    // another process takes it first: a directory is never renamed over one that has files).
+    let mut n = 1;
+    let done = loop {
+        let name = if n == 1 {
+            final_name.clone()
+        } else {
+            format!("{final_name}-{n}")
+        };
+        let done = out_base.join(name);
+        if !done.exists() {
+            match std::fs::rename(&dir, &done) {
+                Ok(()) => break done,
+                Err(e) if !done.exists() => return Err(e.to_string()),
+                Err(_) => {}
+            }
+        }
+        n += 1;
+    };
+    Ok(EvidenceBundle {
+        dir: done,
+        manifest,
+        limit: if rejection.is_none() {
+            lane_limit
+        } else {
+            None
+        },
+    })
 }
 
 pub fn validate_bundle(dir: &Path) -> Result<bool, String> {
@@ -940,6 +1029,10 @@ struct Derived {
     claim: ClaimBlock,
     /// The analysis limit the analysis stopped at, if any.
     limit: Option<crate::middle::AnalysisLimit>,
+    /// Stopped at a limit: the refusal it stopped with.
+    limit_text: Option<String>,
+    /// Stopped at the memory limit because the memory left ran low (the reserve), not the budget.
+    by_reserve: bool,
     /// Whether, stopped at a limit, it still reported findings made before it: those hold on any
     /// machine, so the program does not type-check whatever memory a re-derivation had.
     kept_finding: bool,
@@ -956,6 +1049,8 @@ fn derive_claim(source: &str, mode: &str, analyze: bool) -> Derived {
     let parse_ok = parse_res.is_ok();
     let mut typecheck_ok = false;
     let mut limit = None;
+    let mut limit_text = None;
+    let mut by_reserve = false;
     let mut kept_finding = false;
     let mut solver_obligations = 0usize;
     let mut solver_all_discharged = true;
@@ -963,6 +1058,10 @@ fn derive_claim(source: &str, mode: &str, analyze: bool) -> Derived {
         let typed = crate::middle::typecheck(ast, tc_mode);
         limit = crate::middle::last_analysis_limit();
         kept_finding = crate::middle::last_analysis_kept_findings();
+        by_reserve = crate::middle::last_analysis_by_reserve();
+        if let (Err(e), Some(_)) = (&typed, limit) {
+            limit_text = Some(e.clone());
+        }
         if let Ok(ir) = typed {
             typecheck_ok = true;
             let tainted = crate::middle::TaintPass::apply(ir);
@@ -1002,6 +1101,8 @@ fn derive_claim(source: &str, mode: &str, analyze: bool) -> Derived {
             tool: tool_identity(),
         },
         limit,
+        limit_text,
+        by_reserve,
         kept_finding,
     }
 }
@@ -1182,10 +1283,19 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
             true // legacy bundle without an entitlement profile
         }
     };
+    // A claim no derivation produces is refuted as it stands: a PASS needs the parse, the type
+    // check and every obligation discharged, and no rejection (a forged PASS with `typecheck_ok:
+    // false` was answered "could not be re-derived" when the re-derivation stopped at a limit;
+    // eighth review of the checker limits, E3).
+    let consistent = recorded.verdict != "PASS"
+        || (recorded.parse_ok
+            && recorded.typecheck_ok
+            && recorded.solver_all_discharged
+            && recorded.rejection.is_none());
     // Integrity decides first, before any re-derivation (which can stop at a limit, or end the
     // process at the hard memory budget): a bundle whose files, source binding, signature,
     // confinement or entitlements do not check is invalid, whatever the analysis could re-derive.
-    if !(hashes_ok && source_bound && sig_ok && confine_ok && entitlement_ok) {
+    if !(hashes_ok && source_bound && sig_ok && confine_ok && entitlement_ok && consistent) {
         return Ok(false);
     }
     // Re-derive the full claim — including the ZK binding — from the bundle's own artifacts. A
@@ -1200,16 +1310,23 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // refuted as it stands. So is a claim that the program type-checks when the stopped analysis
     // still found something wrong before the limit: that finding holds on any machine.
     if !matches && derived.limit == Some(crate::middle::AnalysisLimit::Memory) {
-        if derived.kept_finding && recorded.typecheck_ok {
+        if derived.kept_finding && (recorded.typecheck_ok || recorded.verdict == "PASS") {
             return Ok(false);
         }
-        return Err(
+        // The reserve, not the budget, may have stopped it: then more budget does not help (E5).
+        return Err(if derived.by_reserve {
+            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the memory left to the \
+             check (on the machine, or in the memory-capped cgroup it runs in) fell below the \
+             reserve the checker keeps free, so the intact bundle is neither confirmed nor \
+             refuted (other processes are using the memory it needs, and raising \
+             ANUBIS_ANALYSIS_MEMORY_MIB does not change that: run it with more memory free)"
+        } else {
             "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the checker's \
-                    analysis reached its memory budget on this machine, so the intact bundle is \
-                    neither confirmed nor refuted (give the check more memory: \
-                    ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
-                .into(),
-        );
+             analysis reached its memory budget on this machine, so the intact bundle is \
+             neither confirmed nor refuted (give the check more memory: \
+             ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
+        }
+        .into());
     }
     Ok(matches)
 }
@@ -2212,6 +2329,78 @@ fn main() uses(io.read) {
             !verify_pca(&bundle.dir).unwrap(),
             "missing semantic evidence must not downgrade verify to integrity-only success"
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_refutes_a_pass_claim_no_derivation_produces() {
+        // A PASS verdict beside `typecheck_ok: false` (eighth review of the checker limits, E3):
+        // refuted as it stands, not left to a re-derivation that may stop at a limit.
+        let base = unique_dir("inconsistent");
+        let good = "fn main() { let x = 1; print(x); }";
+        let bundle = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        let mut lie = derive_claim_block(good, "safe");
+        assert_eq!(lie.verdict, "PASS");
+        lie.typecheck_ok = false;
+        write_json(&bundle.dir.join("pca.json"), &lie).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle(&bundle.dir).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_bundle_is_complete_under_its_name_and_never_overwritten() {
+        // Built under a `.partial` name and renamed when complete (B8-4); a second bundle of the
+        // same second takes a name of its own.
+        let base = unique_dir("staged");
+        let good = "fn main() { let x = 1; print(x); }";
+        let a = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        let b = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        assert_ne!(a.dir, b.dir);
+        for bundle in [&a, &b] {
+            let name = bundle
+                .dir
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            assert!(name.starts_with("evidence-"), "{name}");
+            assert!(bundle.dir.join("MANIFEST.sha256").exists());
+            assert!(bundle.dir.join("pca.json").exists());
+            assert!(bundle.limit.is_none());
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+        let partial = std::fs::read_dir(&base)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().ends_with(".partial"));
+        assert!(!partial);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn bundles_built_side_by_side_in_one_directory_are_all_complete() {
+        // Checks started together in one directory stage apart and take distinct names.
+        let base = unique_dir("side-by-side");
+        let good = "fn main() { let x = 1; print(x); }";
+        let dirs: Vec<std::path::PathBuf> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        build_evidence_bundle(good, "safe", None, vec![], &base, None, None)
+                            .unwrap()
+                            .dir
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let distinct: std::collections::BTreeSet<&std::path::PathBuf> = dirs.iter().collect();
+        assert_eq!(distinct.len(), 4);
+        for dir in &dirs {
+            assert!(verify_pca(dir).unwrap(), "{}", dir.display());
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

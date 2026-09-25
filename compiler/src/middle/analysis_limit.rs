@@ -78,6 +78,13 @@ pub(crate) fn kept() -> bool {
     KEPT.get()
 }
 
+/// Whether the memory limit the last check request on this thread reached was the reserve's (the
+/// memory left fell below what the checker keeps free), not its budget's. Read while the request is
+/// armed: `disarm` puts back the flag the allocator keeps.
+pub(crate) fn by_reserve() -> bool {
+    BY_RESERVE.get()
+}
+
 /// The limit the last check request on this thread reached, if any.
 pub(crate) fn last() -> Option<AnalysisLimit> {
     match LAST.get() {
@@ -134,6 +141,8 @@ thread_local! {
     static LAST: Cell<u8> = const { Cell::new(NONE) };
     /// Whether the last finished request reached a limit and still reported findings (`kept`).
     static KEPT: Cell<bool> = const { Cell::new(false) };
+    /// Whether the memory limit the last finished request reached was the reserve's (`by_reserve`).
+    static BY_RESERVE: Cell<bool> = const { Cell::new(false) };
     /// The lowest stack address a walker may enter at, in the current request (0: no request).
     static FLOOR: Cell<usize> = const { Cell::new(0) };
 }
@@ -253,6 +262,7 @@ pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
     let reason = REASON.get();
     LAST.set(reason);
     KEPT.set(reason != NONE && result.is_err());
+    BY_RESERVE.set(reason == MEMORY && crate::resource::reserve_hit());
     if reason == NONE {
         return result;
     }

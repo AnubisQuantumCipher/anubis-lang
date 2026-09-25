@@ -210,6 +210,19 @@ fn a_finding_that_needs_no_analysis_is_kept_after_a_limit() {
     );
 }
 
+/// So are `?` in a function declaring a plain return type, and a constant returned against the
+/// declared type (eighth review of the checker limits, E2).
+#[test]
+fn syntax_level_findings_are_kept_after_a_limit() {
+    let src = "fn main() {\n    let g = |s| 0;\n    g = |s| g(s);\n    g(0);\n    print(helper(1));\n    print(h2(1));\n}\nfn helper(x: i64) -> i64 {\n    let y = foo(x)?;\n    return y;\n}\nfn h2(x: i64) -> i64 {\n    return \"s\";\n}\nfn foo(x: i64) -> Option<i64> {\n    return Some(x);\n}\n";
+    let (json, _) = check_with("syntax-level", src, "100000", &["--message-format", "json"]);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    assert_eq!(json.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("ANUBIS_ANALYSIS_LIMIT"), "{stdout}");
+    assert!(stdout.contains("ANUBIS_TRY_OUTSIDE_RESULT"), "{stdout}");
+    assert!(stdout.contains("ANUBIS_RETURN_TYPE_MISMATCH"), "{stdout}");
+}
+
 /// Past a limit, what the fail-closed answers produce is not reported, whatever it says: here a
 /// public binding "initialized from a secret value" in a program with no secret (review of the
 /// checker limits).
