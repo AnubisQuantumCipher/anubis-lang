@@ -1,0 +1,11 @@
+struct T { k: tainted<i64>, pub_n: i64 }
+fn f(q: T) {
+    let x = q.k;
+    let r = 0;
+    r = x;
+    return r;
+}
+fn main() {
+    let p = T { k: 42, pub_n: 3 };
+    println(f(p));
+}

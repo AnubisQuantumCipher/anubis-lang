@@ -1619,3 +1619,144 @@ rv38y_fr_nested_call_22	WHOLE-R38	slice	ACCEPT	carrier	round-38 integration prob
 rv38y_fr_nested_apply_22	WHOLE-R38	slice	ACCEPT	carrier	round-38 integration probe: calls nested 22 deep in the operands of call/apply/reduce (cost exponential in the nesting until fns_at). — runtime k=42 prints 3; k=123456 prints 3
 rv38y_fr_nested_call_22_leak	WHOLE-R38	slice	REJECT	carrier	round-38 integration probe: calls nested 22 deep in the operands of call/apply/reduce (cost exponential in the nesting until fns_at). — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
 rv38y_fr_nested_reduce_seed_leak	WHOLE-R38	slice	REJECT	carrier	round-38 integration probe: calls nested 22 deep in the operands of call/apply/reduce (cost exponential in the nesting until fns_at). — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+ro3_reg_or_pattern_ret	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: REG-OR-PATTERN-RET. REGRESSION of 1696925b. — runtime k=42 prints 42; k=123456 prints 123456
+ro3_reg_or_pattern_ret_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of REG-OR-PATTERN-RET. — check-only: every available pin refuses it before it runs.
+ro3_or_pattern_enf	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: OR-PATTERN-ENF. — runtime k=42 prints 42; k=123456 prints 123456
+ro3_or_pattern_enf_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of OR-PATTERN-ENF. — check-only: every available pin refuses it before it runs.
+ro3_or_pattern_param	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: OR-PATTERN-PARAM. — runtime k=42 prints 42; k=123456 prints 123456
+ro3_or_pattern_param_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of OR-PATTERN-PARAM. — check-only: every available pin refuses it before it runs.
+ro3_enf_equal_span_binder_shadow	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: ENF-EQUAL-SPAN-BINDER-SHADOW. — runtime k=42 prints 42; k=123456 prints 123456
+ro3_enf_equal_span_binder_shadow_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of ENF-EQUAL-SPAN-BINDER-SHADOW. — check-only: every available pin refuses it before it runs.
+ro3_or_failed_guard_binder_join	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	review of 1696925b, overrefusal: OR-FAILED-GUARD-BINDER-JOIN. — runtime k=42 prints 5; k=123456 prints 5
+ro3_reg_arm_tail_push_ret	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: REG-ARM-TAIL-PUSH-RET. REGRESSION of 1696925b. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_reg_arm_tail_push_ret_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of REG-ARM-TAIL-PUSH-RET. — check-only: every available pin refuses it before it runs.
+ro3_tail_push_ret	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: TAIL-PUSH-RET. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_tail_push_param	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: TAIL-PUSH-PARAM. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_tail_push_param_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of TAIL-PUSH-PARAM. — check-only: every available pin refuses it before it runs.
+ro3_failed_guard_push_ret	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: FAILED-GUARD-PUSH-RET. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_failed_guard_push_ret_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of FAILED-GUARD-PUSH-RET. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_failed_guard_push_param	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: FAILED-GUARD-PUSH-PARAM. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_failed_guard_push_param_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of FAILED-GUARD-PUSH-PARAM. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_enf_expr_pos_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: ENF-EXPR-POS-PUSH. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_enf_expr_pos_push_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of ENF-EXPR-POS-PUSH. — check-only: every available pin refuses it before it runs.
+ro3_enf_arm_tail_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: ENF-ARM-TAIL-PUSH. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3_enf_loop_header_sink	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b, leak: ENF-LOOP-HEADER-SINK. — runtime k=42 prints 0 \n 42 \n 42; k=123456 prints 0 \n 123456 \n 123456
+ro3_enf_loop_header_sink_twin	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	review of 1696925b: direct twin of ENF-LOOP-HEADER-SINK. — check-only: every available pin refuses it before it runs.
+ro3x_orpat_reg_or_pattern_ret_guard_or1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test REG-OR-PATTERN-RET_guard [or1]. — runtime k=42 prints 43; k=123456 prints 123457
+ro3x_orpat_reg_or_pattern_ret_taint_or9	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test REG-OR-PATTERN-RET_taint [or9]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_reg_guard_writes_outer_old_1_og2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test REG_guard_writes_outer(OLD=1) [og2]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_reg_body_writes_outer_old_1_w1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test REG_body_writes_outer(OLD=1) [w1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_ret_value_position_or6	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test RET_value_position [or6]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_ret_value_block_vb1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test RET_value_block [vb1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_guard_or2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_guard [or2]. — runtime k=42 prints 43; k=123456 prints 123457
+ro3x_orpat_enf_value_position_or7	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_value_position [or7]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_value_position_taint_or7t	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_value_position_taint [or7t]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_egress_in_arm_e1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_egress_in_arm [e1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_egress_in_value_arm_e2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_egress_in_value_arm [e2]. — runtime k=42 prints 42 \n 0; k=123456 prints 123456 \n 0
+ro3x_orpat_enf_body_writes_outer_w2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_body_writes_outer [w2]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_fn_value_fn1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_fn_value [fn1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_list_alternatives_lst1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_list_alternatives [lst1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_value_block_vb2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_value_block [vb2]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_guard_writes_outer_keep_og1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_guard_writes_outer(keep) [og1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_enf_failed_guard_nonbinder_write_keep_o11w	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ENF_failed_guard_nonbinder_write(keep) [o11w]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_param_body_writes_outer_w3	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test PARAM_body_writes_outer [w3]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_param_value_position_vp	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test PARAM_value_position [vp]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_paramsink_arm_ps1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test PARAMSINK_arm [ps1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_paramsink_value_ps2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test PARAMSINK_value [ps2]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_paramsink_value_block_ps3	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test PARAMSINK_value_block [ps3]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_paramsink_after_join_ps4	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test PARAMSINK_after_join [ps4]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_adj_paramsink_stmt_guard_gs1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test ADJ_PARAMSINK_stmt_guard [gs1]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_span_param_b2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test SPAN_param [b2]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_span_while_let_b11	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test SPAN_while_let [b11]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_span_two_arms_b12	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test SPAN_two_arms [b12]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_span_if_let_outer_b20	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test SPAN_if_let_outer [b20]. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_orpat_whole_stmt_wh1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test WHOLE_stmt [wh1]. — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+ro3x_orpat_whole_value_wh2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test WHOLE_value [wh2]. — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+ro3x_orpat_whole_summary_wh4	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test WHOLE_summary [wh4]. — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+ro3x_orpat_twin_reg_taint_or9d	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test twin_REG_taint [or9d]. — check-only: every available pin refuses it before it runs.
+ro3x_orpat_twin_fn_value_fn1d	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test twin_fn_value [fn1d]. — check-only: every available pin refuses it before it runs.
+ro3x_orpat_twin_span_param_b2d	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test twin_SPAN_param [b2d]. — check-only: every available pin refuses it before it runs.
+ro3x_orpat_twin_whole_stmt_wh1d	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test twin_WHOLE_stmt [wh1d]. — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+ro3x_orpat_twin_whole_value_wh2d	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test twin_WHOLE_value [wh2d]. — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+ro3x_orpat_twin_whole_summary_wh4d	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design orpat, test twin_WHOLE_summary [wh4d]. — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+ro3x_orpat_failedguard_writes_binder_old_0_runtime_prints_5_o11x	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test FAILEDGUARD_writes_binder(OLD=0, runtime prints 5) [o11x]. — runtime k=42 prints 5; k=123456 prints 5
+ro3x_orpat_span_overrefusal_old_1_prints_the_if_let_binder_3_by_con	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test SPAN_overrefusal(OLD=1; prints the if-let binder 3 by construction; no pin runs . — check-only: every available pin refuses it before it runs.
+ro3x_orpat_review_twin_o11b_o11b	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test review_twin_o11b [o11b]. — runtime k=42 prints 5; k=123456 prints 5
+ro3x_orpat_review_twin_o11c_o11c	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test review_twin_o11c [o11c]. — runtime k=42 prints 5; k=123456 prints 5
+ro3x_orpat_valid_ret_pub_outer_vt1	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_RET_pub_outer [vt1]. — runtime k=42 prints 3; k=123456 prints 3
+ro3x_orpat_valid_ret_all_alternatives_bind_vt2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_RET_all_alternatives_bind [vt2]. — runtime k=42 prints 3; k=123456 prints 3
+ro3x_orpat_valid_enf_pub_outer_vt3	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_ENF_pub_outer [vt3]. — runtime k=42 prints 3 \n 3; k=123456 prints 3 \n 3
+ro3x_orpat_valid_enf_all_alternatives_bind_vt4	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_ENF_all_alternatives_bind [vt4]. — runtime k=42 prints 3 \n 3; k=123456 prints 3 \n 3
+ro3x_orpat_valid_param_other_param_vt5	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_PARAM_other_param [vt5]. — runtime k=42 prints 3; k=123456 prints 3
+ro3x_orpat_valid_bindingfree_or_guard_vt6	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_bindingfree_or_guard [vt6]. — runtime k=42 prints 7; k=123456 prints 7
+ro3x_orpat_valid_span_for_vs1	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_SPAN_for [vs1]. — runtime k=42 prints 3; k=123456 prints 3
+ro3x_orpat_valid_span_param_vs2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_SPAN_param [vs2]. — runtime k=42 prints 3 \n 0; k=123456 prints 3 \n 0
+ro3x_orpat_valid_span_binder_body_vs3	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_SPAN_binder_body [vs3]. — runtime k=42 prints 3; k=123456 prints 3
+ro3x_orpat_valid_perf_nested_binding_or_depth12_time_it_base_23_ms	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design orpat, test valid_perf_nested_binding_or_depth12 (time it; base 23 ms) [perf_or12]. — check-only: every available pin refuses it before it runs.
+ro3x_push_r_t7i	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_t7i. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_t3	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_t3. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_t2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_t2. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_t7p	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_t7p. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_j2g	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_j2g. — runtime k=42 prints x \n [0, 42]; k=123456 prints x \n [0, 123456]
+ro3x_push_e_guard_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test e_guard_push. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_e_assign_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test e_assign_push. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_j2i	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_j2i. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_m2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_m2. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_m3	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_m3. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_m6	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_m6. — runtime k=42 prints [42, 0]; k=123456 prints [123456, 0]
+ro3x_push_e_arm_semi	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test e_arm_semi. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_e_iflet_semi	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test e_iflet_semi. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_m1i	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_m1i. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_w2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_w2. — runtime k=42 prints 0 \n 42 \n 42; k=123456 prints 0 \n 123456 \n 123456
+ro3x_push_r_w3	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_w3. — runtime k=42 prints 0 \n 42 \n 42; k=123456 prints 0 \n 123456 \n 123456
+ro3x_push_w5_wl_shadow_scrut_write	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test w5_wl_shadow_scrut_write. — runtime k=42 prints 0 \n 0 \n 42; k=123456 prints 0 \n 0 \n 123456
+ro3x_push_e_wl_scrut_sink	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test e_wl_scrut_sink. — runtime k=42 prints 42 \n 42; k=123456 prints 123456 \n 123456
+ro3x_push_e_wl_binder_sink	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test e_wl_binder_sink. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_push_pv1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test pv1. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_pv2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test pv2. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_push_pv3	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test pv3. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_push_pv5	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test pv5. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_ps_vblock_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_vblock_push. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_ps_vblock_assign	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_vblock_assign. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_push_ps_ifcond_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_ifcond_push. — runtime k=42 prints x \n [0, 42]; k=123456 prints x \n [0, 123456]
+ro3x_push_ps_iflet_tail_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_iflet_tail_push. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_ps_guard_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_guard_push. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_ps_guard_sink	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_guard_sink. — runtime k=42 prints 42 \n a; k=123456 prints 123456 \n a
+ro3x_push_ps_for_src_sink	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_for_src_sink. — runtime k=42 prints 42 \n i; k=123456 prints 123456 \n i
+ro3x_push_ps_vb_tail	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_vb_tail. — runtime k=42 prints 44; k=123456 prints 123458
+ro3x_push_ps_vb_tail2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_vb_tail2. — runtime k=42 prints 42; k=123456 prints 123456
+ro3x_push_r_m4	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_m4. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_r_m5	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_m5. — runtime k=42 prints [0, 42]; k=123456 prints [0, 123456]
+ro3x_push_pv4	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test pv4. — check-only: every available pin refuses it before it runs.
+ro3x_push_r_vb1	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_vb1. — check-only: every available pin refuses it before it runs.
+ro3x_push_r_vb2	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test r_vb2. — check-only: every available pin refuses it before it runs.
+ro3x_push_ps_arm_semi_push	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	ordinary-lane fix design push, test ps_arm_semi_push. — check-only: every available pin refuses it before it runs.
+ro3x_push_va1	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test va1. — runtime k=42 prints [0, 3]; k=123456 prints [0, 3]
+ro3x_push_va2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test va2. (documented over-refusal: a user function named push is judged as any user call, by its arguments) — runtime k=42 prints 0; k=123456 prints 0
+ro3x_push_va3	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test va3. — runtime k=42 prints [0, 3]; k=123456 prints [0, 3]
+ro3x_push_vb1p	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vb1p. — runtime k=42 prints [0, 1]; k=123456 prints [0, 1]
+ro3x_push_vb2p	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vb2p. — runtime k=42 prints [0, 7]; k=123456 prints [0, 7]
+ro3x_push_vc1	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vc1. — runtime k=42 prints [0, 3]; k=123456 prints [0, 3]
+ro3x_push_vc2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vc2. — runtime k=42 prints [0, 1]; k=123456 prints [0, 1]
+ro3x_push_vd1	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vd1. — runtime k=42 prints [0, 1]; k=123456 prints [0, 1]
+ro3x_push_vd2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vd2. — runtime k=42 prints 0; k=123456 prints 0
+ro3x_push_ve2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test ve2. — runtime k=42 prints [0, 3]; k=123456 prints [0, 3]
+ro3x_push_ve3	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test ve3. — runtime k=42 prints [0, 3]; k=123456 prints [0, 3]
+ro3x_push_ve4	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test ve4. — runtime k=42 prints [0]; k=123456 prints [0]
+ro3x_push_ve5	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test ve5. — runtime k=42 prints [0]; k=123456 prints [0]
+ro3x_push_ve6	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test ve6. — runtime k=42 prints [0]; k=123456 prints [0]
+ro3x_push_vf1	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vf1. — runtime k=42 prints 0 \n 3 \n 3; k=123456 prints 0 \n 3 \n 3
+ro3x_push_vf2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vf2. — runtime k=42 prints 0 \n 0 \n 0; k=123456 prints 0 \n 0 \n 0
+ro3x_push_vf3	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vf3. — runtime k=42 prints 0 \n 3 \n 3; k=123456 prints 0 \n 3 \n 3
+ro3x_push_vg1	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg1. — runtime k=42 prints [0, 1]; k=123456 prints [0, 1]
+ro3x_push_vg2	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg2. — runtime k=42 prints 0 \n 0 \n 1; k=123456 prints 0 \n 0 \n 1
+ro3x_push_vg3	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg3. — runtime k=42 prints [0, 1]; k=123456 prints [0, 1]
+ro3x_push_vg4	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg4. — runtime k=42 prints 1; k=123456 prints 1
+ro3x_push_vg5	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg5. — runtime k=42 prints 1 \n i; k=123456 prints 1 \n i
+ro3x_push_vg6	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg6. — runtime k=42 prints 1 \n a; k=123456 prints 1 \n a
+ro3x_push_vg7	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg7. — runtime k=42 prints 0; k=123456 prints 0
+ro3x_push_vg8	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test vg8. — runtime k=42 prints [0, 1]; k=123456 prints [0, 1]
+ro3x_push_or_elseless_if_push	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test or_elseless_if_push. — runtime k=42 prints 0; k=123456 prints 0
+ro3x_push_or_insert_tail	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test or_insert_tail. — runtime k=42 prints 0; k=123456 prints 0
+ro3x_push_or_elseless_if_val	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	ordinary-lane fix design push, test or_elseless_if_val. — check-only: every available pin refuses it before it runs.
+ro3y_perf_p5_scrut_10	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	round-38 bands design perf program: 72-79 s before the ordinary lane read nested statements of a parameter flow shallowly (shallow_param_flow), 2.8 s after. — runtime k=42 prints 51; k=123456 prints 51

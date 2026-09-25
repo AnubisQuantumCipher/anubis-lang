@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let x = p.k;
+    let v = match 1 { 1 | x => { println(x); 0 } };
+    print(v);
+}

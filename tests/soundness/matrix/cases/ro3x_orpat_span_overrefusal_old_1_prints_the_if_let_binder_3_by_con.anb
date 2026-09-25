@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let o = Some(p.pub_n);
+    if let Some(x) = o {
+        match p.k {
+            x => { }
+        }
+        println(x);
+    }
+}

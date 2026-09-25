@@ -5559,9 +5559,11 @@ fn src(e: &Expr, env: &Env, at: &At) -> Option<WholeSrc> {
         } => {
             let (s, whole) = scrutinee_at(scrutinee, env, at);
             let mut out = None;
-            for a in arms {
-                let inner = binders_at(env, at, &a.pattern, &s, &whole);
-                out = join(out, tested(&a.pattern, &s, ctx));
+            // An or-pattern arm one alternative at a time: a name an alternative does not bind is
+            // the outer one there (`arm_patterns`).
+            for (a, p) in super::sub_arms(arms) {
+                let inner = binders_at(env, at, p, &s, &whole);
+                out = join(out, tested(p, &s, ctx));
                 if let Some(g) = &a.guard {
                     out = join(out, computed(src(g, env, &inner)));
                 }
@@ -6388,8 +6390,9 @@ fn fns_in_uncached(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
             scrutinee, arms, ..
         } if arms.iter().any(|a| may_pass_fn(&a.body)) => {
             let (s, whole) = scrutinee_at(scrutinee, env, at);
-            for a in arms {
-                let inner = binders_at(env, at, &a.pattern, &s, &whole);
+            // One alternative of an or-pattern arm at a time (`arm_patterns`).
+            for (a, p) in super::sub_arms(arms) {
+                let inner = binders_at(env, at, p, &s, &whole);
                 fns_in(&a.body, env, &inner, out);
             }
         }
@@ -7184,16 +7187,18 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
             let mut val = None;
             let mut val_plain = None;
             let mut fns = Vec::new();
-            for a in arms {
-                let inner = binders_at(env, &start, &a.pattern, &s, &whole);
-                let test = tested(&a.pattern, &s, ctx);
+            // An or-pattern arm one alternative at a time: a name an alternative does not bind is
+            // the outer one there, read and written (`arm_patterns`).
+            for (a, p) in super::sub_arms(arms) {
+                let inner = binders_at(env, &start, p, &s, &whole);
+                let test = tested(p, &s, ctx);
                 val = join(val, test.clone());
-                val_plain = join(val_plain, tested(&a.pattern, &s_plain, ctx));
+                val_plain = join(val_plain, tested(p, &s_plain, ctx));
                 let mut cc = join(cond.clone(), test);
                 let mut arm = Fx::tracking(&inner);
                 if let Some(g) = &a.guard {
                     // The guard runs once for each alternative of the pattern that matches.
-                    let runs = match &a.pattern {
+                    let runs = match p {
                         crate::frontend::Pattern::Or(ps) => ps.len().max(1),
                         _ => 1,
                     };
@@ -7216,7 +7221,7 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
                     cc = join(cc, decided);
                     arm.then(gx);
                     let mut failed = Fx::at(&arm.at);
-                    failed.restore(saved(a.pattern.bound_names(), &start));
+                    failed.restore(saved(p.bound_names(), &start));
                     start = start.with_locals(join_locals(&start.locals, &failed.at.locals));
                 }
                 let after_guard = arm.at.clone();
@@ -7227,7 +7232,7 @@ fn walk(e: &Expr, env: &Env, at: &At, cond: &Option<WholeSrc>) -> Fx {
                 val = join(val, bv);
                 add_fns(&mut fns, walked_fns(&a.body, &body, env));
                 arm.then(body);
-                arm.restore(saved(a.pattern.bound_names(), &start));
+                arm.restore(saved(p.bound_names(), &start));
                 outs.push(arm);
             }
             w.branches(&here, outs);

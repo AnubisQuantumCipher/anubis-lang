@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn g(v) {
+    let o = Some(1);
+    while let Some(z) = o {
+        println(z);
+        break;
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    g(p.k);
+}

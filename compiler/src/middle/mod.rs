@@ -11415,8 +11415,10 @@ fn analyze_value_block(
         Expr::Block { stmts, tail } => {
             // Without an explicit tail, a bare call as the block's last statement is its value (the
             // runtime's `split_tail_expr`): an ordinary call, so a user function named `push` there
-            // is not an in-place write (round 32, D5). A `return` or a statement-only sink stays a
-            // statement; every other statement kind is analyzed as one, where its writes are tracked.
+            // is not an in-place write (round 32, D5); the builtin still is, and
+            // `seed_value_nested_labels` labels its container. A `return` or a statement-only sink
+            // stays a statement; every other statement kind is analyzed as one, where its writes are
+            // tracked.
             let (stmts, tail): (&[Stmt], Option<&Expr>) = match (stmts.split_last(), tail) {
                 (Some((Stmt::ExprStmt(e @ Expr::Call { callee, .. }), head)), None)
                     if callee != "return" && !whole::is_statement_sink(callee) =>
@@ -12766,20 +12768,21 @@ fn analyze_stmts(
                 // arms after it.
                 let mut tried = scope.clone();
                 let mut arm_scopes = Vec::new();
-                for arm in arms {
+                // An or-pattern arm one alternative at a time ([`sub_arms`]).
+                for (arm, pattern) in sub_arms(arms) {
                     let mut arm_scope = tried.clone();
                     seed_effect_pattern(
                         &mut arm_scope,
-                        &arm.pattern,
+                        pattern,
                         scrutinee,
                         &st,
                         ss,
                         &ctx.place_types(),
                         ctx,
                     );
-                    propagate_pattern_closures(&mut arm_scope, scrutinee, &arm.pattern);
+                    propagate_pattern_closures(&mut arm_scope, scrutinee, pattern);
                     let scrut_whole = whole::whole_value_source(scrutinee, scope, ctx);
-                    for (n, src) in whole::pattern_binders(&arm.pattern, &scrut_whole, ctx) {
+                    for (n, src) in whole::pattern_binders(pattern, &scrut_whole, ctx) {
                         if let (Some(b), Some(src)) = (arm_scope.get_mut(&n), src) {
                             whole::whole_mark(&mut b.whole_struct, src);
                         }
@@ -12787,7 +12790,7 @@ fn analyze_stmts(
                     // The arm's pattern binds names (`Shape::Box { center, .. }`) that the arm body reads;
                     // seed them so `analyze_stmts`' unknown-variable check does not false-fire on a valid
                     // destructured binding.
-                    for n in arm.pattern.bound_names() {
+                    for n in pattern.bound_names() {
                         ctx.known_bindings.insert(n);
                     }
                     if let Some(guard) = &arm.guard {
@@ -12801,10 +12804,21 @@ fn analyze_stmts(
                             scope,
                             ctx,
                         );
-                        if expr_nests_stmts(guard) {
+                        if expr_nests_stmts(guard) || holds_builtin_push(&[guard], ctx) {
                             seed_value_nested_labels(&[guard], &mut arm_scope, ctx);
+                            // What the failed guard wrote reaches the arms after it, but a binder
+                            // is not the outer binding of its name: joined by name, the arm binder
+                            // `x` (seeded from a secret scrutinee) labelled a public outer `x` the
+                            // guard never touched (OR-FAILED-GUARD-BINDER-JOIN).
+                            let binders: BTreeSet<String> =
+                                pattern.bound_names().into_iter().collect();
+                            let failed: BTreeMap<String, ScopeBinding> = arm_scope
+                                .iter()
+                                .filter(|(n, _)| !binders.contains(*n))
+                                .map(|(n, b)| (n.clone(), b.clone()))
+                                .collect();
                             for domain in enforcing_label_domains(ctx) {
-                                label_join(domain, &mut tried, &arm_scope);
+                                label_join(domain, &mut tried, &failed);
                             }
                         }
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
@@ -14041,7 +14055,9 @@ fn analyze_stmts(
                         ctx,
                     );
                 }
-                analyze_expr_effect(cond, mode, scope, effects, ctx);
+                // The condition runs at every head: its calls are checked below, once the labels the
+                // loop carries there are seeded. Its effects keep their place in the row.
+                let cond_effects_at = effects.len();
                 if expr_taint_source(
                     cond,
                     scope,
@@ -14101,6 +14117,12 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
                 );
+                // The condition at the seeded head. Checked before the seeding, a sink in it never saw
+                // what the body leaves for the next test: `while show(x) && i < 2 { x = p.k; .. }`
+                // printed the secret.
+                let later_effects = effects.split_off(cond_effects_at);
+                analyze_expr_effect(cond, mode, scope, effects, ctx);
+                effects.extend(later_effects);
                 // The body runs only when `cond` holds. It is re-evaluated at every iteration over the
                 // CURRENT (havoced) values, so it is a sound path condition at the start of the body; a
                 // write in the body to a variable it mentions removes the fact from that point on.
@@ -14179,7 +14201,9 @@ fn analyze_stmts(
                         ctx,
                     );
                 }
-                analyze_expr_effect(expr, mode, scope, effects, ctx);
+                // The scrutinee runs at every head: its calls are checked below, once the labels the
+                // loop carries there are seeded. Its effects keep their place in the row.
+                let scrut_effects_at = effects.len();
                 effects.push("loop".into());
                 // Invalidate any write embedded in the `while let` scrutinee (see the `if` handler).
                 invalidate_embedded_writes(ctx, assumptions, expr);
@@ -14285,6 +14309,31 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
                 );
+                // The scrutinee at the seeded head. Checked before the seeding, a sink in it never saw
+                // what the body leaves for the next test (`while let Some(z) = showo(x)` printed the
+                // secret the body set `x` to). The binders are not bound where it runs: a name it
+                // reads is the outer binding. The body cannot write one a binder shadows; a write in
+                // the scrutinee itself can, and the seeding joined what it carries into the binder,
+                // so then the binder's labels are kept too (fail-closed).
+                let mut head = scope.clone();
+                for n in pattern.bound_names() {
+                    match snap_scope.get(&n) {
+                        Some(outer) => {
+                            head.insert(n, outer.clone());
+                        }
+                        None => {
+                            head.remove(&n);
+                        }
+                    }
+                }
+                if expr_nests_writes(expr) {
+                    for domain in enforcing_label_domains(ctx) {
+                        label_join(domain, &mut head, scope);
+                    }
+                }
+                let later_effects = effects.split_off(scrut_effects_at);
+                analyze_expr_effect(expr, mode, &head, effects, ctx);
+                effects.extend(later_effects);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -16873,18 +16922,19 @@ fn analyze_expr_effect(
                     ctx,
                 );
             }
-            for arm in arms {
+            // An or-pattern arm one alternative at a time ([`sub_arms`]).
+            for (arm, pattern) in sub_arms(arms) {
                 let mut local = scope.clone();
                 seed_effect_pattern(
                     &mut local,
-                    &arm.pattern,
+                    pattern,
                     scrutinee,
                     &st,
                     ss,
                     &ctx.place_types(),
                     ctx,
                 );
-                propagate_pattern_closures(&mut local, scrutinee, &arm.pattern);
+                propagate_pattern_closures(&mut local, scrutinee, pattern);
                 // A LAMBDA arm value is opaque at its definition, and this file's own justification
                 // for that is "safe only if EVERY application site descends". A closure built in an
                 // arm and returned OUT of the match breaks that premise: the arm's bindings are gone
@@ -29432,6 +29482,44 @@ fn arm_value_exprs<'e>(guard: Option<&'e Expr>, body: &'e Expr) -> Vec<&'e Expr>
     v
 }
 
+/// The sub-arms the runtime tries for a `match` arm, in order, as the pattern each one binds
+/// (`backends/run.rs` `lower_match_expr`): a top-level or-pattern arm `A | B if g => body` runs as
+/// `A if g => body` and then `B if g => body`, each alternative binding only its OWN names. A name
+/// one alternative does not bind is the OUTER binding in the guard and the body there, read and
+/// written: `let x = q.k; match 1 { 1 | x => { r = x; } }` gives `r` the outer, secret `x`, and
+/// `1 | x => { x = q.k; }` writes it. Walking such an arm once with every alternative's names bound
+/// hid that binding (REG-OR-PATTERN-RET, OR-PATTERN-ENF, OR-PATTERN-PARAM). An or-pattern none of
+/// whose alternatives binds stays one sub-arm: its guard and body run under the same bindings
+/// whichever alternative matched (`1 | 2 | 3 => ..` is walked once), and a guard run again for a
+/// later matching alternative repeats writes the walks already close order-free.
+fn arm_patterns(arm: &crate::frontend::MatchArm) -> Vec<&Pattern> {
+    match &arm.pattern {
+        Pattern::Or(alts) if alts.iter().any(|p| !p.bound_names().is_empty()) => {
+            alts.iter().collect()
+        }
+        p => vec![p],
+    }
+}
+
+/// Every sub-arm of `arms` ([`arm_patterns`]) with its arm, in the order the runtime tries them.
+fn sub_arms(
+    arms: &[crate::frontend::MatchArm],
+) -> impl Iterator<Item = (&crate::frontend::MatchArm, &Pattern)> {
+    arms.iter()
+        .flat_map(|arm| arm_patterns(arm).into_iter().map(move |p| (arm, p)))
+}
+
+/// The identity (`info.span`) of a binding a pattern binds in the enforcing lane: never a source
+/// span (no offset starts at `usize::MAX`) and never another pattern's. The enforcing joins
+/// ([`merge_taint_over`], [`merge_fn_alias_over`], [`relabel_shadowing_join`]) take a path's
+/// binding for the outer one when their spans are equal; a binder seeded with no span equalled an
+/// outer binding with none (a parameter, a `for` variable, a `while let` binder), so a `match`
+/// whose every arm binds the name merged the clean binders over the outer binding, clearing it, and
+/// the shadow repair never ran (ENF-EQUAL-SPAN-BINDER-SHADOW).
+fn pattern_binder_span(pattern: &Pattern) -> (usize, usize) {
+    (usize::MAX, pattern as *const Pattern as usize)
+}
+
 /// Whether `e` binds a pattern (`match` arms, `if let`) anywhere inside, lambdas included.
 fn expr_binds_patterns(e: &Expr) -> bool {
     let mut found = false;
@@ -29446,6 +29534,14 @@ fn expr_nests_stmts(e: &Expr) -> bool {
     let mut found = false;
     visit::each_stmt_in_expr(e, &mut |_, in_lambda| found |= !in_lambda);
     found
+}
+
+/// Whether running `e` may write a binding of the frame it runs in: it holds statements (a value
+/// block, a block arm) or an in-place `push` / `insert` ([`in_place_pushes`]), outside lambda bodies.
+/// A match guard that does and then fails leaves those writes to the arms after it: one whose only
+/// write was `nope(push(xs, q.k))` reached the next arm's `return xs` with `xs` clean.
+fn expr_nests_writes(e: &Expr) -> bool {
+    expr_nests_stmts(e) || !in_place_pushes(&[e]).is_empty()
 }
 
 fn is_loop_stmt(stmt: &Stmt) -> bool {
@@ -29991,13 +30087,17 @@ fn seed_expression_nested_labels(
 }
 
 /// [`seed_expression_nested_labels`] for expressions that run at another point: a statement-position
-/// arm's guard (with its binders bound) and a value block's tail (after its statements).
+/// arm's guard (with its binders bound) and a value block's tail (after its statements). An in-place
+/// `push` / `insert` among them writes its container too ([`holds_builtin_push`]): one in an argument,
+/// a condition or a guard (`let n = len(push(xs, k))`), or an arm's or block's last call (`_ => {
+/// push(xs, p.k) }`, `;` or not, which [`analyze_value_block`] reads as the value), labelled nothing,
+/// and a later `println(xs)` printed the secret.
 fn seed_value_nested_labels(
     exprs: &[&Expr],
     scope: &mut BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) {
-    if !exprs.iter().any(|e| expr_nests_stmts(e)) {
+    if !exprs.iter().any(|e| expr_nests_stmts(e)) && !holds_builtin_push(exprs, ctx) {
         return;
     }
     let types = ctx.place_types();
@@ -30005,6 +30105,37 @@ fn seed_value_nested_labels(
         let nested = nested_may_labels(exprs, scope, domain, &types);
         apply_nested_labels(domain, scope, &nested);
     }
+}
+
+/// Whether `exprs` hold, outside lambda bodies, a `push` / `insert` the runtime runs as the in-place
+/// builtin. These are in EXPRESSION position (an argument, a condition, a guard, an arm's or a block's
+/// value), where a user function of that name is called instead (`backends/run.rs` `Expr::Call`: user
+/// functions, then locals, then builtins) and writes nothing here (matrix
+/// `rv32_valid_r32b_d5_main_arm_last_push_overrefusal`); a local of that name still counts
+/// (fail-closed). A statement `push` nested in a block is always the builtin: the callers' own
+/// [`expr_nests_stmts`] test covers it.
+fn holds_builtin_push(exprs: &[&Expr], ctx: &SemanticContext) -> bool {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Lambda { body, .. } = x {
+                visit::each_expr(body, &mut |y| {
+                    in_lambda.insert(y as *const Expr);
+                });
+            }
+        });
+    }
+    let mut found = false;
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Call { callee, args } = x {
+                found |= is_in_place_push(callee, args)
+                    && !ctx.user_fn_names.contains(callee.as_str())
+                    && !in_lambda.contains(&(x as *const Expr));
+            }
+        });
+    }
+    found
 }
 
 /// The enforcing lane's joins keep a path's label only when the path's binding is the outer one
@@ -30351,6 +30482,15 @@ enum BlockLabelDomain<'a> {
 }
 
 impl BlockLabelDomain<'_> {
+    /// Whether `name` is a user function (each has a parameter-return summary).
+    fn is_user_fn(self, name: &str) -> bool {
+        match self {
+            Self::Taint { param_returns, .. } | Self::Secret { param_returns, .. } => {
+                param_returns.contains_key(name)
+            }
+        }
+    }
+
     fn lane(self) -> ReturnSummaryLane {
         match self {
             Self::Taint { .. } => ReturnSummaryLane::Taint,
@@ -30618,8 +30758,16 @@ fn walk_block_labels(
                 // The reduced value-label model is explicit-flow-only, but it must still traverse the
                 // condition. The enforcing lane owns the separate secret-PC rejection.
                 drop(domain.expr_source(cond, &cur, struct_fields));
-                let then_exits =
-                    walk_block_labels(then, cur.clone(), walk, stmt_is_tail, None, true)?;
+                // Without an `else` the statement is not a value (the runtime's `split_tail_expr`
+                // yields `0`), so its branch's last statement is not the function's.
+                let then_exits = walk_block_labels(
+                    then,
+                    cur.clone(),
+                    walk,
+                    stmt_is_tail && else_.is_some(),
+                    None,
+                    true,
+                )?;
                 let else_exits = match else_ {
                     Some(body) => {
                         walk_block_labels(body, cur.clone(), walk, stmt_is_tail, None, true)?
@@ -30694,18 +30842,18 @@ fn walk_block_labels(
             }) => {
                 let source = domain.expr_source(scrutinee, &cur, struct_fields);
                 let mut arm_exits = Vec::with_capacity(arms.len());
-                // Arms are tried in order: a guard that runs and fails leaves what it wrote to the
-                // arms after it.
+                // Arms are tried in order, an or-pattern arm one alternative at a time
+                // ([`sub_arms`]): a guard that runs and fails leaves what it wrote to the arms after it.
                 let mut tried = cur.clone();
-                for arm in arms {
-                    let names = arm.pattern.bound_names();
+                for (arm, pattern) in sub_arms(arms) {
+                    let names = pattern.bound_names();
                     let seed = |scope: &mut LabelScope| {
-                        domain.seed_pattern(scope, &arm.pattern, &source, struct_fields)
+                        domain.seed_pattern(scope, pattern, &source, struct_fields)
                     };
                     arm_exits.push(walk.scoped(&tried, &names, site, seed, |w, scope| {
                         w.arm_body(arm.guard.as_ref(), &arm.body, scope, stmt_is_tail, seeds)
                     })?);
-                    if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_stmts(g)) {
+                    if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_writes(g)) {
                         let failed = walk.scoped(&tried, &names, site, seed, |w, mut scope| {
                             let mut exits = FlowExits::none();
                             w.value_writes(&[guard], &mut scope, seeds, &mut exits)?;
@@ -30737,7 +30885,7 @@ fn walk_block_labels(
                 let else_exits = walk.arm_body(None, else_, cur.clone(), stmt_is_tail, seeds)?;
                 walk.merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
             }
-            Stmt::ExprStmt(Expr::Call { callee, args })
+            Stmt::ExprStmt(call @ Expr::Call { callee, args })
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
             {
                 if let Some(root) = assign_target_root(&args[0]) {
@@ -30749,6 +30897,17 @@ fn walk_block_labels(
                             domain.taint_place(binding, source);
                         }
                     }
+                }
+                // The list's last statement, `;` or not, is its value (the runtime's
+                // `split_tail_expr`): the builtin `push` yields the container it just wrote, the
+                // builtin `insert` yields `0`, a user function or local of either name what it
+                // returns. Never judged, a function (or an arm or branch that is its value) ending
+                // in `push(xs, q.k);` returned the secret.
+                let builtin_insert = callee == "insert"
+                    && !domain.is_user_fn(callee)
+                    && !cur.contains_key(callee.as_str());
+                if stmt_is_tail && !builtin_insert {
+                    walk.judge(call, &cur, seeds)?;
                 }
                 true
             }
@@ -31745,11 +31904,12 @@ fn expr_source(
                 struct_fields,
                 lane,
             );
-            arms.iter().find_map(|arm| {
+            // One alternative of an or-pattern arm at a time ([`sub_arms`]).
+            sub_arms(arms).find_map(|(arm, pattern)| {
                 let mut local = scope.clone();
                 seed_pattern(
                     &mut local,
-                    &arm.pattern,
+                    pattern,
                     &scrut,
                     lane.seed_pattern_lane(),
                     struct_fields,
@@ -32597,7 +32757,7 @@ fn seed_effect_pattern(
                     tainted: taint.is_some(),
                     taint_source: taint.clone(),
                     declassified: false,
-                    span: None,
+                    span: Some(pattern_binder_span(pattern)),
                 },
                 closure_arity: None,
                 closure_lambda: None,
@@ -33384,6 +33544,44 @@ fn nested_may_labels(
     }
 }
 
+/// The parameters a value may carry, read order-free from every name it mentions (outside a
+/// well-formed `declassify`, which releases): an over-approximation of [`expr_param_return_flow`]
+/// for a value that holds statements, used inside the order-free closure. Evaluating such a value
+/// exactly walks its blocks, whose own closures evaluate the values nested in them again: time
+/// exponential in how deeply value blocks nest in scrutinees (`match identity(if c { ..; match
+/// identity(..) { .. } } ..)`, eleven levels: 71 s where the checker before the ordered joins took
+/// 2 s). The closure is order-free already, so reading every name the value mentions loses nothing
+/// it kept.
+fn shallow_param_flow(e: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTreeSet<usize> {
+    let mut released: BTreeSet<*const Expr> = BTreeSet::new();
+    visit::each_expr(e, &mut |x| {
+        if let Expr::Declassify {
+            inner,
+            policy,
+            reason,
+        } = x
+        {
+            if declassify_wellformed(policy, reason) {
+                visit::each_expr(inner, &mut |y| {
+                    released.insert(y as *const Expr);
+                });
+            }
+        }
+    });
+    let mut out = BTreeSet::new();
+    visit::each_expr(e, &mut |x| {
+        if released.contains(&(x as *const Expr)) {
+            return;
+        }
+        if let Expr::Var(n) = x {
+            if let Some(ps) = flow.get(n) {
+                out.extend(ps.iter().copied());
+            }
+        }
+    });
+    out
+}
+
 /// The param-flow twin of [`nested_may_labels`] for [`body_param_returns`]: every name any statement
 /// nested in `exprs` may bind or assign, with the parameters it may carry there (order-free,
 /// name-keyed, lambdas skipped).
@@ -33471,7 +33669,11 @@ fn nested_param_flow(
         let (targets, sources) = &writes[i];
         let mut set = BTreeSet::new();
         for s in sources {
-            set.extend(expr_param_return_flow(s, &may, known));
+            set.extend(if expr_nests_stmts(s) {
+                shallow_param_flow(s, &may)
+            } else {
+                expr_param_return_flow(s, &may, known)
+            });
         }
         let mut changed = Vec::new();
         if set.is_empty() {
@@ -34228,17 +34430,18 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             for stmt in stmts {
                 apply_stmt_param_flow(stmt, &mut local);
             }
-            tail.as_ref()
-                .map(|t| expr_param_flow(t, &local))
-                .unwrap_or_default()
+            match tail {
+                Some(t) => expr_param_flow(t, &local),
+                None => stmts_value_param_flow(stmts, &local),
+            }
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             let scrut = expr_param_flow(scrutinee, flow);
-            arms.iter().fold(BTreeSet::new(), |mut acc, arm| {
+            sub_arms(arms).fold(BTreeSet::new(), |mut acc, (arm, pattern)| {
                 let mut local = flow.clone();
-                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut local, pattern, &scrut);
                 acc.extend(expr_param_flow(&arm.body, &local));
                 acc
             })
@@ -34301,6 +34504,35 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
     }
 }
 
+/// What a statement list with no tail slot yields, read in `flow` (the flow after it): its last bare
+/// expression (a `push` yields its container), or a last `if`/`else`'s condition and both branches'
+/// values — the runtime's `split_tail_expr`. [`expr_param_flow`] read the tail slot alone, so `let ys
+/// = if c { let t = v; t + 0; } else { 0 }; println(ys)` left `v` out of the egress summary.
+fn stmts_value_param_flow(
+    stmts: &[Stmt],
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+) -> BTreeSet<usize> {
+    match stmts.last() {
+        Some(Stmt::ExprStmt(e)) => expr_param_flow(e, flow),
+        Some(Stmt::If {
+            cond,
+            then,
+            else_: Some(else_),
+        }) => {
+            let mut s = expr_param_flow(cond, flow);
+            for branch in [then, else_] {
+                let mut local = flow.clone();
+                for stmt in branch {
+                    apply_stmt_param_flow(stmt, &mut local);
+                }
+                s.extend(stmts_value_param_flow(branch, &local));
+            }
+            s
+        }
+        _ => BTreeSet::new(),
+    }
+}
+
 /// Apply one statement's scope effect to a value-position block's param-flow map `local` — the shared
 /// per-statement step of `expr_param_flow`'s `Block` arm. Handles straight-line `let`/`Assign` (incl.
 /// field/index write to the root) AND a NESTED statement-`match`/`if let`/`push` that reassigns an outer
@@ -34341,9 +34573,9 @@ fn apply_stmt_param_flow(stmt: &Stmt, local: &mut BTreeMap<String, BTreeSet<usiz
         }) => {
             let scrut = expr_param_flow(scrutinee, local);
             let base = local.clone();
-            for arm in arms {
+            for (arm, pattern) in sub_arms(arms) {
                 let mut c = base.clone();
-                seed_flow_pattern(&mut c, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut c, pattern, &scrut);
                 if let Expr::Block { stmts, .. } = &arm.body {
                     for s in stmts {
                         apply_stmt_param_flow(s, &mut c);
@@ -34408,6 +34640,25 @@ fn seed_flow_pattern(
     }
 }
 
+/// The parameter-sink summaries' twin of the label lanes' nested writes: the statements nested in
+/// `exprs` (a value block, an expression-position arm) and every in-place `push` / `insert` in them,
+/// outside lambda bodies, write outer names before what reads them there runs. Each outer name they
+/// assign gains, order-free, every parameter it may take there ([`nested_param_flow`]; no return
+/// summaries yet, so a call carries every argument). The walk below read none of them:
+/// `let n = len(push(xs, v)); println(xs)`, an arm `_ => { push(xs, v) }` and `let n = if c { x = v;
+/// 0 } else { 0 }; println(x)` left the parameter out of the egress summary.
+fn sink_flow_nested_writes(exprs: &[&Expr], flow: &mut BTreeMap<String, BTreeSet<usize>>) {
+    if !exprs.iter().any(|e| expr_nests_writes(e)) {
+        return;
+    }
+    let nested = nested_param_flow(exprs, flow, &BTreeMap::new());
+    for name in &nested.assigned {
+        if let (Some(m), Some(f)) = (nested.may.get(name), flow.get_mut(name)) {
+            f.extend(m.iter().copied());
+        }
+    }
+}
+
 /// Walk a body collecting parameter indices that reach a sink under the current
 /// `known_param_sinks` summary. Scope-aware (snapshot/restore around blocks).
 fn body_param_sinks(
@@ -34424,6 +34675,9 @@ fn body_param_sinks(
     // the param→egress summary and `leak(secret)` compiled (soundness hunt2 [13]).
     let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
     for stmt in stmts {
+        // What the statements and in-place writes nested in its own expressions write reaches what
+        // the statement reads (before its own write, as in the label lanes).
+        sink_flow_nested_writes(&stmt_value_exprs(stmt), flow);
         match stmt {
             Stmt::Let { name, init, .. } => {
                 // A sink can hide inside the initializer (e.g. `let _ = sink(x)`).
@@ -34527,13 +34781,67 @@ fn body_param_sinks(
                     );
                     let before = flow.clone();
                     union_flow_into(flow, &b);
+                    // The condition runs again at every head, its own nested writes too.
+                    sink_flow_nested_writes(&[cond], flow);
                     if *flow == before {
                         break;
                     }
                 }
+                // ... and its sinks see what the loop carries there: read only on entry, `while
+                // show(x) { x = v; }` left `v` out of the summary.
+                collect_param_sinks_in_expr(
+                    cond,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
             }
-            Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
+            // The scrutinee runs at every head (its sinks were never read) and the binders carry what
+            // it yields (they carried nothing).
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
+                let bound = flow.len() + 1;
+                for _ in 0..bound {
+                    collect_param_sinks_in_expr(
+                        expr,
+                        flow,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
+                    let mut b = flow.clone();
+                    seed_flow_pattern(&mut b, pattern, &expr_param_flow(expr, flow));
+                    body_param_sinks(
+                        body,
+                        &mut b,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
+                    let before = flow.clone();
+                    union_flow_into(flow, &b);
+                    sink_flow_nested_writes(&[expr], flow);
+                    if *flow == before {
+                        break;
+                    }
+                }
+                collect_param_sinks_in_expr(
+                    expr,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
+            }
+            Stmt::Loop { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let bound = flow.len() + 1;
@@ -34557,6 +34865,22 @@ fn body_param_sinks(
             Stmt::For {
                 body, source, var, ..
             } => {
+                // The range or collection is evaluated once, before the first iteration: a sink in it
+                // was never read.
+                let src_exprs: Vec<&Expr> = match source {
+                    crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                    crate::frontend::ForSource::Collection { expr } => vec![expr],
+                };
+                for e in src_exprs {
+                    collect_param_sinks_in_expr(
+                        e,
+                        flow,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
+                }
                 // Loop var inherits collection/range param flow (conservative).
                 let src_flow = match source {
                     crate::frontend::ForSource::Range { start, end } => {
@@ -34636,9 +34960,27 @@ fn body_param_sinks(
                     found,
                 );
                 let scrut = expr_param_flow(scrutinee, flow);
-                for arm in arms {
+                for (arm, pattern) in sub_arms(arms) {
                     let mut c = flow.clone();
-                    seed_flow_pattern(&mut c, &arm.pattern, &scrut);
+                    seed_flow_pattern(&mut c, pattern, &scrut);
+                    // The guard and a bare body write too (a guard that fails leaves its writes to
+                    // the later arms: `c` joins `flow` below), and a sink in the guard was never read:
+                    // it runs with the binders bound, before the body
+                    // (`_ if (if true { send(v); false } else { false }) => ..`).
+                    sink_flow_nested_writes(
+                        &arm_value_exprs(arm.guard.as_ref(), &arm.body),
+                        &mut c,
+                    );
+                    if let Some(guard) = &arm.guard {
+                        collect_param_sinks_in_expr(
+                            guard,
+                            &c,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
+                    }
                     match &arm.body {
                         Expr::Block { stmts, tail } => {
                             body_param_sinks(
@@ -34650,6 +34992,7 @@ fn body_param_sinks(
                                 found,
                             );
                             if let Some(t) = tail {
+                                sink_flow_nested_writes(&[&**t], &mut c);
                                 collect_param_sinks_in_expr(
                                     t,
                                     &c,
@@ -34693,6 +35036,7 @@ fn body_param_sinks(
                 let scrut = expr_param_flow(scrutinee, flow);
                 let mut c = flow.clone();
                 seed_flow_pattern(&mut c, pattern, &scrut);
+                // A bare branch or a block's tail writes too (`if let .. { push(xs, v) }`).
                 match then.as_ref() {
                     Expr::Block { stmts, tail } => {
                         body_param_sinks(
@@ -34704,6 +35048,7 @@ fn body_param_sinks(
                             found,
                         );
                         if let Some(t) = tail {
+                            sink_flow_nested_writes(&[&**t], &mut c);
                             collect_param_sinks_in_expr(
                                 t,
                                 &c,
@@ -34714,14 +35059,17 @@ fn body_param_sinks(
                             );
                         }
                     }
-                    other => collect_param_sinks_in_expr(
-                        other,
-                        &c,
-                        sink_pred,
-                        known_param_sinks,
-                        known_method_param_sinks,
-                        found,
-                    ),
+                    other => {
+                        sink_flow_nested_writes(&[other], &mut c);
+                        collect_param_sinks_in_expr(
+                            other,
+                            &c,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
+                    }
                 }
                 union_flow_into(flow, &c);
                 let mut e2 = flow.clone();
@@ -34736,6 +35084,7 @@ fn body_param_sinks(
                             found,
                         );
                         if let Some(t) = tail {
+                            sink_flow_nested_writes(&[&**t], &mut e2);
                             collect_param_sinks_in_expr(
                                 t,
                                 &e2,
@@ -34746,14 +35095,17 @@ fn body_param_sinks(
                             );
                         }
                     }
-                    other => collect_param_sinks_in_expr(
-                        other,
-                        &e2,
-                        sink_pred,
-                        known_param_sinks,
-                        known_method_param_sinks,
-                        found,
-                    ),
+                    other => {
+                        sink_flow_nested_writes(&[other], &mut e2);
+                        collect_param_sinks_in_expr(
+                            other,
+                            &e2,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
+                    }
                 }
                 union_flow_into(flow, &e2);
             }
@@ -34971,9 +35323,9 @@ fn collect_param_sinks_in_expr(
                 found,
             );
             let scrut = expr_param_flow(scrutinee, flow);
-            for arm in arms {
+            for (arm, pattern) in sub_arms(arms) {
                 let mut local = flow.clone();
-                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut local, pattern, &scrut);
                 if let Some(guard) = &arm.guard {
                     collect_param_sinks_in_expr(
                         guard,
@@ -35272,40 +35624,33 @@ fn expr_param_return_flow(
                 acc
             })
         }
-        // Value-position block: delegate the block's STATEMENT flow to `body_param_returns` — THE single
-        // stmt walker — so the value-position walker and the function-body walker share one implementation
-        // and cannot re-diverge. `discard` is a throwaway `found`: a value-position block does not
-        // accumulate returns (a `return` inside it is collected by the enclosing body walker's own
-        // `expr_returns`), and `tail = false` so no block statement is mis-read as an implicit return.
-        // This replaces a former hand-rolled loop whose `_ => {}` arm DROPPED nested control-flow (a
-        // value-position under-approximation — a missed leak: `send({ let r=0; if c { r=x; } r })` slipped
-        // through); the block now inherits the driver's branch may-union, so a param assigned only inside a
-        // nested branch reaches the tail. The tail is then evaluated in the block's post-statement `local`.
+        // Value-position block: walked by the function-body walker ([`ParamWalk`]) — THE single stmt
+        // walker, so the two cannot re-diverge (a former hand-rolled loop here dropped nested control
+        // flow: `send({ let r=0; if c { r=x; } r })`) — in TAIL mode: what it collects is the block's
+        // VALUE, its tail after its statements (their writes reach the flow it is read in) or, with no
+        // tail slot, what its last statement yields (the runtime's `split_tail_expr`: a bare expression
+        // — `push(xs, v);` yields the container — or both branches of a last `if`/`else`). The value was
+        // read from the tail slot alone, so `let ys = if c { push(xs, v); } else { [0] }` (or `{ let t
+        // = v; t + 0; }`) carried nothing and `return ys` returned the parameter under a clean summary.
+        // A `return` in the block is collected too, which adds only what the enclosing walk returns
+        // anyway (its own `expr_returns`). A block no path falls out of yields nothing.
         Expr::Block { stmts, tail } => {
-            let mut discard = BTreeSet::new();
-            let mut walk = ParamWalk {
+            let mut value = BTreeSet::new();
+            ParamWalk {
                 known: known_param_return,
-                found: &mut discard,
+                found: &mut value,
                 heads: BTreeMap::new(),
-            };
-            // The tail runs after the statements: its own nested writes reach the flow it is read in.
-            let exits = walk.block(stmts, flow.clone(), false, tail.as_deref(), false);
-            let local = exits
-                .fall
-                .or(exits.brk)
-                .or(exits.cont)
-                .unwrap_or_else(|| flow.clone());
-            tail.as_ref()
-                .map(|t| expr_param_return_flow(t, &local, known_param_return))
-                .unwrap_or_default()
+            }
+            .block(stmts, flow.clone(), true, tail.as_deref(), false);
+            value
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
-            arms.iter().fold(BTreeSet::new(), |mut acc, arm| {
+            sub_arms(arms).fold(BTreeSet::new(), |mut acc, (arm, pattern)| {
                 let mut local = flow.clone();
-                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut local, pattern, &scrut);
                 acc.extend(expr_param_return_flow(
                     &arm.body,
                     &local,
@@ -35854,7 +36199,9 @@ impl ParamWalk<'_> {
                     true
                 }
                 Stmt::If { then, else_, .. } => {
-                    let then_exits = self.block(then, cur.clone(), stmt_is_tail, None, true);
+                    // Without an `else` the statement yields `0` ([`walk_block_labels`]).
+                    let then_tail = stmt_is_tail && else_.is_some();
+                    let then_exits = self.block(then, cur.clone(), then_tail, None, true);
                     let else_exits = match else_ {
                         Some(body) => self.block(body, cur.clone(), stmt_is_tail, None, true),
                         None => FlowExits::falling(cur.clone()),
@@ -35889,7 +36236,7 @@ impl ParamWalk<'_> {
                 }
                 // `push(xs, v)` / `insert(map, k, v)` MUTATES the container to include the value(s):
                 // weak-union their flow into the container (task #48-f).
-                Stmt::ExprStmt(Expr::Call { callee, args })
+                Stmt::ExprStmt(call @ Expr::Call { callee, args })
                     if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
                 {
                     if let Expr::Var(container) = &args[0] {
@@ -35897,6 +36244,17 @@ impl ParamWalk<'_> {
                             let rhs = expr_param_return_flow(a, &cur, self.known);
                             cur.entry(container.clone()).or_default().extend(rhs);
                         }
+                    }
+                    // As the list's last statement it is also its value ([`walk_block_labels`]); the
+                    // builtin `insert` yields `0`. With no summaries (`known` empty: the sink
+                    // summaries' closure) a user function of that name is not told apart: it counts.
+                    let builtin_insert = callee == "insert"
+                        && !self.known.is_empty()
+                        && !self.known.contains_key(callee.as_str())
+                        && !cur.contains_key(callee.as_str())
+                        && !lambdas.contains_key(callee.as_str());
+                    if stmt_is_tail && !builtin_insert {
+                        self.note_return(call, &cur, &lambdas);
                     }
                     true
                 }
@@ -35917,13 +36275,14 @@ impl ParamWalk<'_> {
                     // Arms are tried in order: a guard that runs and fails leaves what it wrote to
                     // the arms after it.
                     let mut tried = cur.clone();
-                    for arm in arms {
-                        let names = arm.pattern.bound_names();
-                        let seed = |f: &mut ParamFlow| seed_flow_pattern(f, &arm.pattern, &scrut);
+                    // An or-pattern arm one alternative at a time ([`sub_arms`]).
+                    for (arm, pattern) in sub_arms(arms) {
+                        let names = pattern.bound_names();
+                        let seed = |f: &mut ParamFlow| seed_flow_pattern(f, pattern, &scrut);
                         arm_exits.push(self.scoped(&tried, &names, site, seed, |walk, f| {
                             walk.arm_body(arm.guard.as_ref(), &arm.body, f, stmt_is_tail, &lambdas)
                         }));
-                        if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_stmts(g)) {
+                        if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_writes(g)) {
                             let failed = self.scoped(&tried, &names, site, seed, |walk, mut f| {
                                 let mut exits = FlowExits::none();
                                 walk.value_writes(&[guard], &mut f, &lambdas, &mut exits);
