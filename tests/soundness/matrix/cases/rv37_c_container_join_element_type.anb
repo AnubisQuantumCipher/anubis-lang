@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+impl T { fn show(self) -> str { return "t ${self.v}"; } }
+impl U { fn show(self) -> str { return "u ${self.inner}"; } }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let us = [U { inner: p }];
+  let ts = if p.pub_n > 100 { [T { v: 0 }] } else { us };
+  println(ts[0].show());
+}

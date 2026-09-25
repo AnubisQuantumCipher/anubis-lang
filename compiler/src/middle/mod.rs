@@ -245,7 +245,9 @@ struct ScopeBinding {
     /// field (`p.pub_n`) does not.
     whole_struct: Option<whole::WholeSrc>,
     /// For a closure written here: what the names it closes over held when it was written (a later
-    /// `let` of the same name must not change what the closure sees).
+    /// `let` of the same name must not change what the closure sees); and, for a value bound here that
+    /// the whole-struct lane interprets itself, what that value may be as a function
+    /// (`whole::value_captures`).
     whole_captures: Option<whole::Captures>,
     /// Whether this binding is known to be a list from the shape of what was bound (`[]`, `xs + [x]`),
     /// never from a declared type, which the checker does not enforce. The whole-struct lane reads
@@ -3539,6 +3541,9 @@ struct SemanticContext {
     /// specialization (`whole.rs`). A method name maps to every impl declaring it, `self` first.
     whole_fns: BTreeMap<String, whole::WholeBody>,
     whole_methods: BTreeMap<String, Vec<(String, whole::WholeBody)>>,
+    /// The formals each of those declares with a number type, by (impl type or `""`, name), `None`
+    /// for a key two functions share (`whole::numeric_formals`): the runtime checks them at entry.
+    whole_num_formals: whole::NumFormals,
     /// The functions and `impl`-prefixed methods that may build a struct with a `secret` field, with
     /// the sources of what they build (`whole::compute_builders`).
     whole_builders: BTreeMap<String, String>,
@@ -3827,6 +3832,7 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
             .map(|(n, ps, b)| (n.clone(), (ps.clone(), b.to_vec())))
             .collect();
         collect_impl_methods_typed(&ast.items, &mut ctx.whole_methods);
+        ctx.whole_num_formals = whole::numeric_formals(&ast.items);
         ctx.whole_builders = whole::compute_builders(&ctx);
         ctx.whole_released = whole::compute_released(&ctx);
     }
@@ -10737,13 +10743,18 @@ fn whole_expression_writes(
         | Stmt::SpecBlock { .. } => Vec::new(),
     };
     for e in exprs {
-        for (root, src, list, map) in whole::expr_writes(e, scope, ctx) {
+        for (root, src, list, map, captures) in whole::expr_writes(e, scope, ctx) {
             if let Some(b) = scope.get_mut(&root) {
                 if let Some(src) = src {
                     whole::whole_mark(&mut b.whole_struct, src);
                 }
                 b.whole_list &= list;
                 b.whole_map &= map;
+                // A function or closure written there (`g = id1` in an arm): every one the name
+                // may be now (the ordinary lane's `fn_alias` / identities do not see this write).
+                if captures.is_some() {
+                    b.whole_captures = captures;
+                }
             }
         }
     }
@@ -10764,11 +10775,12 @@ fn seed_loop_carried_whole(
 }
 
 /// What a closure stored by `let` or assignment closes over (see `ScopeBinding::whole_captures`): a
-/// lambda's, taken now; an alias's, the aliased closure's; and, when the binding holds a closure the
-/// value chooses (`closure`: a branch, arm or block choosing a lambda, a helper returning or
-/// forwarding one), what the names the value reads hold now and what the closures it names closed
-/// over (`whole::chosen_captures`) — otherwise the closure's names would be read where it is called,
-/// after a later `let` of one.
+/// lambda's, taken now; an alias's, the aliased closure's; and, for any other value
+/// (`whole::value_captures`), what the closure it chooses closes over when the binding holds one
+/// (`closure`: a branch, arm or block choosing a lambda, a helper returning or forwarding one) —
+/// otherwise the closure's names would be read where it is called, after a later `let` of one — and
+/// what the whole-struct lane's own interpretation of the value finds it may be as a function: every
+/// candidate, over the names bound where it is made, not only the one this lane binds.
 fn whole_captures_of(
     value: &Expr,
     closure: bool,
@@ -10778,8 +10790,7 @@ fn whole_captures_of(
     match value {
         Expr::Lambda { .. } => Some(whole::closure_captures(value, scope, ctx)),
         Expr::Var(v) => scope.get(v).and_then(|b| b.whole_captures.clone()),
-        _ if closure => Some(whole::chosen_captures(value, scope, ctx)),
-        _ => None,
+        _ => whole::value_captures(value, closure, scope, ctx),
     }
 }
 

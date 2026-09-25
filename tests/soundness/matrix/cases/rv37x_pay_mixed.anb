@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+impl T { fn show(self, o) -> str { return "t ${self.v}"; } }
+impl U { fn show(self, o) -> str { return "u ${o}"; } }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let t0 = T { v: 5 };
+  let u0 = U { inner: p };
+  let o = if p.pub_n > 1 { Some(u0) } else { Some(t0) };
+  let x: T = if let Some(t) = o { t } else { T { v: 0 } };
+  println(x.show(p));
+}

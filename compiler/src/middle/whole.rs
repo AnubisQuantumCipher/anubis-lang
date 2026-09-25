@@ -99,8 +99,11 @@ const MERGE_NEST: usize = 3;
 /// an unknown builtin's callback), at least.
 const SPREAD: usize = 64;
 /// Block runs remembered per query. Every run from a new state is remembered, and nested loops
-/// produce one per iteration of every enclosing loop: past this, runs are not remembered (they
-/// still count as steps), so the memory a query holds is bounded.
+/// produce one per iteration of every enclosing loop: past this, the oldest run is forgotten (runs
+/// still count as steps), so the memory a query holds is bounded. A run is asked for again soon
+/// after it is made — the value and the function values of what was just walked (`src`,
+/// `passed_fns` where the walk ended) — so the recent runs are the ones kept: keeping the first
+/// ones instead runs every level of a value nested past the bound again, twice as often per level.
 const MAX_BLOCKS: usize = 256;
 
 /// The builtins that write their first argument (a variable) in place.
@@ -717,9 +720,24 @@ enum Local {
 }
 
 /// What a closure written in the caller's scope closes over, as it was when the closure was made
-/// (the runtime copies every free local into the closure then).
+/// (the runtime copies every free local into the closure then); and, for a name of that scope
+/// bound from a value the lane interprets itself (`value_captures`, `expr_writes`), what the value
+/// may be as a function.
 #[derive(Clone, Debug)]
-pub(super) struct Captures(Rc<Locals>);
+pub(super) struct Captures(Rc<Locals>, Option<Rc<Bound>>);
+
+/// What the lane's own interpretation of a value bound in the caller's scope finds it may be as a
+/// function: every function and closure (each closing over what its names held where it was made:
+/// a block's `let`, a pattern's binder, a name of the scope as it stood then), and whether that is
+/// all it may be (`sure`: every value it may take is a function the interpretation follows, or no
+/// function at all). The ordinary lane's choice (`closure_lambda`, `fn_alias`, a `Known` identity
+/// set) is added to these, and a function it names is taken without the name's value half only when
+/// `sure`.
+#[derive(Debug)]
+struct Bound {
+    fns: Vec<Local>,
+    sure: bool,
+}
 
 type Locals = BTreeMap<String, Local>;
 
@@ -921,8 +939,9 @@ struct Active {
 }
 
 /// A statement list (its address and length), the names it runs from (their address; the entry
-/// keeps them alive), and the rest of the position.
-type BlockKey = (usize, usize, usize, usize, bool, u32, u8);
+/// keeps them alive), the rest of the position, and how many runs with names unbound it is inside
+/// (`Env::phantom`).
+type BlockKey = (usize, usize, usize, usize, bool, u32, u8, u8);
 
 /// A position made by binding a pattern: the base names (kept alive), what the scrutinee held, and
 /// the position.
@@ -930,6 +949,16 @@ type BinderAt = (Rc<Locals>, Option<WholeSrc>, At);
 
 /// A result computed from running approximations: the epoch, the result, and the calls it read.
 type Tentative = (u64, FnFx, Vec<String>);
+
+/// A `match` / `if let` scrutinee's node, the position it was evaluated at (its names' address,
+/// whether they fall back to the caller's scope, the application depth), the epoch, and how many runs
+/// with names unbound it was evaluated inside (`Env::phantom`).
+type ScrutineeKey = (usize, usize, bool, u32, u64, u8);
+
+/// A scrutinee evaluated ([`scrutinee_at`]): the names it was evaluated from (kept alive, so their
+/// address is not reused), the calls in progress it read, whether a limit shaped it, what it holds,
+/// and what it is as a binding.
+type Scrutinized = (Rc<Locals>, Vec<String>, bool, Option<WholeSrc>, Local);
 
 /// A remembered closure application: the arguments, the epoch, the calls it read, the application
 /// depth when a limit shaped it, and the result.
@@ -963,7 +992,11 @@ struct Env<'a> {
     epoch: Cell<u64>,
     tentative: RefCell<BTreeMap<String, Tentative>>,
     blocks: RefCell<BTreeMap<BlockKey, (Rc<Locals>, Ran)>>,
+    /// The keys of `blocks`, oldest first (see `MAX_BLOCKS`).
+    block_order: RefCell<std::collections::VecDeque<BlockKey>>,
     binder_ats: RefCell<BTreeMap<(usize, usize), Vec<BinderAt>>>,
+    /// Scrutinees evaluated ([`scrutinee_at`]).
+    scrutinees: RefCell<BTreeMap<ScrutineeKey, Scrutinized>>,
     /// Closure applications made, by the closure's number.
     applies: RefCell<BTreeMap<usize, Vec<Applied>>>,
     /// Every lambda a closure was made of, by its node's address (so no address is reused while the
@@ -978,6 +1011,11 @@ struct Env<'a> {
     /// outermost loop; and how many loops deep the interpretation is.
     heads: RefCell<Option<Locals>>,
     loops: Cell<usize>,
+    /// How many runs of value blocks with the names enclosing them unbound are in progress
+    /// (`passed_fns_in`): such a run starts runs of its own only up to [`MAX_PHANTOM`] deep, and
+    /// the block runs of each depth are remembered apart. A callee or a closure body runs as it
+    /// does anywhere (what it returns is remembered for every caller).
+    phantom: Cell<u8>,
 }
 
 impl<'a> Env<'a> {
@@ -996,7 +1034,9 @@ impl<'a> Env<'a> {
             epoch: Cell::new(0),
             tentative: RefCell::default(),
             blocks: RefCell::default(),
+            block_order: RefCell::default(),
             binder_ats: RefCell::default(),
+            scrutinees: RefCell::default(),
             applies: RefCell::default(),
             lams: RefCell::default(),
             interned: RefCell::default(),
@@ -1005,6 +1045,7 @@ impl<'a> Env<'a> {
             scoped: RefCell::default(),
             heads: RefCell::default(),
             loops: Cell::new(0),
+            phantom: Cell::new(0),
         }
     }
 
@@ -1092,6 +1133,17 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// [`scope_local`], remembered for the query as `is_scope_value` remembers it (the caller's
+    /// scope does not change while a query runs).
+    fn scoped_local(&self, n: &str) -> Option<Local> {
+        if let Some(v) = self.scoped.borrow().get(n) {
+            return v.clone();
+        }
+        let v = scope_local(n, self);
+        self.scoped.borrow_mut().insert(n.to_string(), v.clone());
+        v
+    }
+
     fn free_names(&self, id: usize, lam: &Expr) -> Rc<BTreeSet<String>> {
         if let Some(f) = self.free.borrow().get(&id) {
             return f.clone();
@@ -1170,10 +1222,9 @@ fn binders_at(
     whole: &Local,
 ) -> At {
     // A binder that takes the whole scrutinee (`match f { g => g() }`, `let (g) = f`) is what the
-    // scrutinee is, a function value included.
-    if let Some(b) = whole_binder(p) {
-        return at.with([(b.to_string(), whole.clone())]);
-    }
+    // scrutinee is, a function value included. Its position is remembered too, so `src` and
+    // `passed_fns` read an arm at the same one (and share what they evaluate there).
+    let whole_name = whole_binder(p);
     let key = (p as *const _ as usize, Rc::as_ptr(&at.locals) as usize);
     if let Some(hit) = env.binder_ats.borrow().get(&key).and_then(|v| {
         v.iter()
@@ -1182,16 +1233,20 @@ fn binders_at(
                     && src == s
                     && a.use_scope == at.use_scope
                     && a.depth == at.depth
+                    && whole_name.is_none_or(|b| a.locals.get(b) == Some(whole))
             })
             .map(|(_, _, a)| a.clone())
     }) {
         return hit;
     }
-    let made = at.with(
-        pattern_binders(p, s, env.ctx)
-            .into_iter()
-            .map(|(n, b)| (n, Local::Src(b, Kind::NONE))),
-    );
+    let made = match whole_name {
+        Some(b) => at.with([(b.to_string(), whole.clone())]),
+        None => at.with(
+            pattern_binders(p, s, env.ctx)
+                .into_iter()
+                .map(|(n, b)| (n, Local::Src(b, Kind::NONE))),
+        ),
+    };
     env.binder_ats.borrow_mut().entry(key).or_default().push((
         at.locals.clone(),
         s.clone(),
@@ -1411,11 +1466,19 @@ pub(super) struct Retype {
     /// it does not return one); per method and type, whether it does.
     fn_own: RefCell<BTreeMap<(String, String), OwnFormals>>,
     method_own: RefCell<BTreeMap<(String, String), bool>>,
+    /// Which names surely hold a type, per name, type and question (`memo_sure`): the value
+    /// (`name_keeps`), every element (`list_keeps`), or every payload of a variant
+    /// (`payload_keeps`).
+    sure: SureMemo,
 }
 
+/// `Retype::sure`.
+type SureMemo = RefCell<BTreeMap<(String, String, u8), bool>>;
+
 /// Whether a function returns its own type for a given type: the formals whose arguments must keep
-/// it, or `None` when it does not return one.
-type OwnFormals = Option<Vec<usize>>;
+/// it (`true`: whose every element must — it returns an element of that argument), or `None` when
+/// it does not return one.
+type OwnFormals = Option<Vec<(usize, bool)>>;
 
 /// How a bound name's type is read from another name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1431,13 +1494,27 @@ pub(super) enum Via {
 
 /// Whether `n`'s declared or inferred struct type `ty` may not be what it holds: a `let` of it may
 /// bind another type (`init_retypes`), it is assigned a value not known to be a `ty`
-/// (`keeps_type`), or it is bound from a name whose type may be stale.
+/// (`keeps_type`), or it is bound from a name whose type may be stale. This is the question for
+/// its parts (`stale_part`): a type kept only by the `loose` rules (`own_stale`) says nothing of
+/// what its parts hold, whose declared types are not enforced (TY-UNENFORCED).
 fn stale_type(n: &str, ty: &str, env: &Env) -> bool {
-    stale_type_in(n, ty, env, 0, &mut Seen::new())
+    stale_type_in(n, ty, env, 0, &mut Seen::new(), false)
 }
 
-/// The (name, type) pairs one staleness query has entered, by name.
-type Seen = BTreeMap<String, BTreeSet<String>>;
+/// `stale_type` for the value itself, where a method call on it dispatches by its type: also with
+/// the `loose` rules, which know a value's own type but not what its parts hold (a `Some(x) => x`
+/// arm, a block's `let`, a position of a list of literals, a local always holding one — the
+/// judgment for its parts stays `stale_type`'s).
+fn own_stale(n: &str, ty: &str, env: &Env) -> bool {
+    stale_type_in(n, ty, env, 0, &mut Seen::new(), true)
+}
+
+/// The (name, type, `loose`) triples one staleness query has entered, by name.
+type Seen = BTreeMap<String, BTreeSet<(String, bool)>>;
+
+/// Marks the name a staleness query asks about (its binding in scope), entered apart from the same
+/// name reached through an edge (any of its bindings: `stale_type_in`).
+const HERE: &str = "\u{1}here";
 
 /// Whether `n` surely holds a `ty`: every `let` of it and every assignment to it is known to keep
 /// the type (a literal of it, itself, a method or function returning one), and nothing it is bound
@@ -1445,10 +1522,10 @@ type Seen = BTreeMap<String, BTreeSet<String>>;
 fn sure_type(n: &str, ty: &str, env: &Env) -> bool {
     env.ctx.whole_retype.inits.get(n).is_some_and(|inits| {
         !inits.is_empty()
-            && inits
-                .iter()
-                .all(|i| keeps_type(i, n, ty, env.ctx, 0) && !matches!(i, Expr::Var(x) if x == n))
-    }) && !stale_type(n, ty, env)
+            && inits.iter().all(|i| {
+                keeps_type(i, n, ty, env.ctx, 0, true) && !matches!(i, Expr::Var(x) if x == n)
+            })
+    }) && !own_stale(n, ty, env)
 }
 
 /// The struct type a scope binding surely holds when the checker has none for it (an assignment by
@@ -1482,14 +1559,145 @@ fn scope_type(n: &str, env: &Env) -> Option<String> {
 }
 
 /// Whether the parts of `root` may not be what their declared types say: it is written into, or its
-/// own type may be stale (when it has none known, whether it changes at all).
+/// own type may be stale (when it has none known, whether its parts may be of other types:
+/// `container_parts_stale`).
 fn parts_stale(root: &str, env: &Env, depth: usize, seen: &mut Seen) -> bool {
     let r = &env.ctx.whole_retype;
     r.written.contains_key(root)
         || match scope_type(root, env) {
-            Some(t) => stale_type_in(root, &t, env, depth, seen),
-            None => r.changes.contains(root),
+            Some(t) => stale_type_in(root, &t, env, depth, seen, false),
+            None => container_parts_stale(root, env, depth, seen),
         }
+}
+
+/// Whether the parts of `n`, a name the scope gives no struct type (a container, or a name of no
+/// known type), may be of other types than the checker gives them: it changes (written into,
+/// assigned, or bound from one that is: `changes`), a `let` of it joins values (the checker takes a
+/// join's element or entry type from its first branch: `joined_container`), or the parts of a name
+/// it is bound from may be stale (`parts_stale`, which covers a name its parts were built from).
+fn container_parts_stale(n: &str, env: &Env, depth: usize, seen: &mut Seen) -> bool {
+    // The name's parts, entered once per query like a (name, type) pair.
+    const PARTS: &str = "\u{1}parts";
+    let key = (PARTS.to_string(), false);
+    if seen.get(n).is_some_and(|tys| tys.contains(&key)) {
+        return false;
+    }
+    seen.entry(n.to_string()).or_default().insert(key);
+    if depth > 64 {
+        return true;
+    }
+    let r = &env.ctx.whole_retype;
+    r.changes.contains(n)
+        || r.inits
+            .get(n)
+            .is_some_and(|is| is.iter().any(|i| joined_container(i, env)))
+        || r.bound.get(n).is_some_and(|roots| {
+            roots
+                .iter()
+                .any(|(root, _)| parts_stale(root, env, depth + 1, seen))
+        })
+}
+
+/// Whether a `let`'s initial value joins values (`each_leaf`) not known to hold parts of one type:
+/// the checker types a join by its first branch, so a container's element or entry type may be
+/// another value's. Known alike only when, scalars aside (`scalar_leaf`), every value is a struct
+/// literal, all of one type, or every value is a list or map literal whose every part is a struct
+/// literal, all of one type. A value the lane does not see, or a payload an arm yields, is not.
+fn joined_container(init: &Expr, env: &Env) -> bool {
+    let mut count = 0usize;
+    each_leaf(init, &mut |_| count += 1);
+    if count == 1 {
+        return false;
+    }
+    let mut own: BTreeSet<String> = BTreeSet::new();
+    let mut parts: BTreeSet<String> = BTreeSet::new();
+    let mut containers = false;
+    let mut other = false;
+    let ty_of = |name: &str| name.split('<').next().unwrap_or("").trim().to_string();
+    each_leaf(init, &mut |leaf| {
+        let v = match leaf {
+            Leaf::Value(v) => v,
+            Leaf::Unseen | Leaf::Payload(..) => {
+                other = true;
+                return;
+            }
+        };
+        let elements: Vec<&Expr> = match v {
+            v if scalar_leaf(v, env) => return,
+            Expr::StructLiteral { name, .. } => {
+                own.insert(ty_of(name.as_str()));
+                return;
+            }
+            Expr::ArrayLiteral { elements } => elements.iter().collect(),
+            Expr::MapLiteral { entries, .. } => entries.iter().map(|(_, v)| v).collect(),
+            // A variant's payloads are its parts (`Some(t)`, `E::A(T { .. })`; `None` has none):
+            // a payload arm reads them (`Leaf::Payload`).
+            Expr::EnumConstruct { fields, .. } => fields.iter().collect(),
+            _ => {
+                other = true;
+                return;
+            }
+        };
+        containers = true;
+        for e in elements {
+            match e {
+                Expr::StructLiteral { name, .. } => {
+                    parts.insert(ty_of(name.as_str()));
+                }
+                // A scalar is no struct of another type (a method called on it stops the program).
+                e if scalar_leaf(e, env) => {}
+                Expr::Var(y) => match literal_bound(y, env) {
+                    Some(t) => {
+                        parts.insert(t);
+                    }
+                    None => other = true,
+                },
+                _ => other = true,
+            }
+        }
+    });
+    other || own.len() > 1 || parts.len() > 1 || (containers && !own.is_empty())
+}
+
+/// The struct type a name surely holds as a part (`joined_container`): every binding of it is a
+/// `let` of a literal of that one type, and it is never assigned (a formal, a pattern or a loop
+/// variable may be anything). A write into one of its fields keeps its type.
+fn literal_bound(y: &str, env: &Env) -> Option<String> {
+    let r = &env.ctx.whole_retype;
+    if r.binders.contains(y) || r.assigned.contains_key(y) {
+        return None;
+    }
+    let mut tys = r.inits.get(y)?.iter().map(|i| match i {
+        Expr::StructLiteral { name, .. } => {
+            Some(name.split('<').next().unwrap_or("").trim().to_string())
+        }
+        _ => None,
+    });
+    let first = tys.next()??;
+    tys.all(|t| t.as_deref() == Some(first.as_str()))
+        .then_some(first)
+}
+
+/// Whether a value is surely a scalar (a number, a string, a bool), which has no parts: a literal,
+/// arithmetic on scalars, or a name bound once, which the scope gives a scalar type.
+fn scalar_leaf(e: &Expr, env: &Env) -> bool {
+    let r = &env.ctx.whole_retype;
+    match e {
+        Expr::Literal(_) | Expr::StrLiteral(_) | Expr::Unary { .. } => true,
+        // `+` concatenates lists.
+        Expr::Binary { op, lhs, rhs } => {
+            op != "+" || (scalar_leaf(lhs, env) && scalar_leaf(rhs, env))
+        }
+        Expr::Var(x) => {
+            r.inits.get(x).map_or(0, Vec::len) + usize::from(r.binders.contains(x)) <= 1
+                && env
+                    .scope
+                    .get(x)
+                    .and_then(|b| b.info.ty.as_deref())
+                    .is_some_and(|t| numeric_type(t) || matches!(t.trim(), "str" | "bool"))
+        }
+        _ => false,
+    }
 }
 
 /// `stale_type` at `depth` bindings from the name asked about: whether any (name, type) reachable
@@ -1499,28 +1707,45 @@ fn parts_stale(root: &str, env: &Env, depth: usize, seen: &mut Seen) -> bool {
 /// `true` is returned straight up), so it is either finished and was not, or still being decided
 /// further up (a cycle of bindings reads no type from outside it). Pairs, not names: a name read
 /// as another type (a name bound again under another type) is a pair of its own.
-fn stale_type_in(n: &str, ty: &str, env: &Env, depth: usize, seen: &mut Seen) -> bool {
+///
+/// A name bound more than once (by `let`s, or by a `let` and a formal, a pattern or a loop variable)
+/// is one entry in these tables, keyed by name, while `ty` is the type of ONE binding
+/// (TY-SHADOW-RETYPE). At the name asked about (`depth == 0`), `ty` is its binding's in scope, and
+/// every `let` is judged as the checker would type it. Through an edge — a `let`'s edge to its own
+/// name among them (`assigned_shapes`), which reads another binding of it — which binding the edge
+/// reads is not known: every `let` must then be known to bind a `ty` (a join's rule), and a formal,
+/// pattern or loop variable of the name may be anything.
+fn stale_type_in(n: &str, ty: &str, env: &Env, depth: usize, seen: &mut Seen, loose: bool) -> bool {
     let ctx = env.ctx;
-    if seen.get(n).is_some_and(|tys| tys.contains(ty)) {
+    // The name asked about is a pair of its own: an edge to itself enters it as any binding.
+    let key = if depth == 0 {
+        (format!("{ty}{HERE}"), loose)
+    } else {
+        (ty.to_string(), loose)
+    };
+    if seen.get(n).is_some_and(|tys| tys.contains(&key)) {
         return false;
     }
-    seen.entry(n.to_string())
-        .or_default()
-        .insert(ty.to_string());
+    seen.entry(n.to_string()).or_default().insert(key);
     // One too long to follow may be stale.
     if depth > 64 {
         return true;
     }
     let r = &ctx.whole_retype;
-    r.inits
-        .get(n)
-        .is_some_and(|is| is.iter().any(|i| init_retypes(i, ty, env)))
+    let lets: &[Expr] = r.inits.get(n).map(Vec::as_slice).unwrap_or_default();
+    let twice = lets.len() + usize::from(r.binders.contains(n)) > 1;
+    let inits = if depth > 0 && twice {
+        r.binders.contains(n) || lets.iter().any(|i| init_retypes(i, ty, true, env, loose))
+    } else {
+        lets.iter().any(|i| init_retypes(i, ty, false, env, loose))
+    };
+    inits
         || r.assigned
             .get(n)
-            .is_some_and(|vs| vs.iter().any(|v| !keeps_type(v, n, ty, ctx, 0)))
+            .is_some_and(|vs| vs.iter().any(|v| !keeps_type(v, n, ty, ctx, 0, loose)))
         || r.bound.get(n).is_some_and(|roots| {
             roots.iter().any(|(root, via)| match via {
-                Via::Whole => stale_type_in(root, ty, env, depth + 1, seen),
+                Via::Whole => stale_type_in(root, ty, env, depth + 1, seen, loose),
                 Via::Part => parts_stale(root, env, depth + 1, seen),
                 Via::Element => false,
             })
@@ -1538,32 +1763,45 @@ const NO_NAME: &str = "\u{1}none";
 /// struct type. A join's values must each be known to be a `ty`: a literal of it, a call of a
 /// function returning one (`keeps_type`), or a name every binding of which is a `let` of one
 /// (`lets_keep`; its assignments and what it is bound from are followed as `Via::Whole`) — never
-/// a name the value binds again (a block's `let`, a pattern) or a value the lane does not see.
-fn init_retypes(init: &Expr, ty: &str, env: &Env) -> bool {
+/// a value the lane does not see. With the `loose` rules (the value's own type: `own_stale`), also
+/// a value `sure_value` knows (a position of a list of them), a name the value binds again (a
+/// block's `let`) every binding of which anywhere keeps it (`name_keeps`), and a `V(x) => x` arm
+/// whose scrutinee's every `V` payload is one (`payload_keeps`). `as_join`: the only value too (the
+/// `let` is one of several bindings of its name, and the type asked about may be another's:
+/// `stale_type_in`).
+fn init_retypes(init: &Expr, ty: &str, as_join: bool, env: &Env, loose: bool) -> bool {
     let mut count = 0usize;
     each_leaf(init, &mut |_| count += 1);
-    let join = count != 1;
+    let join = as_join || count != 1;
     let mut retyped = false;
     each_leaf(init, &mut |leaf| {
         retyped |= match leaf {
-            None => join,
-            Some(Expr::StructLiteral { name, .. }) => {
+            Leaf::Unseen => join,
+            Leaf::Payload(scrutinee, variant) if loose => {
+                join && !payload_keeps(scrutinee, variant, ty, env.ctx)
+            }
+            Leaf::Payload(..) => join,
+            Leaf::Value(Expr::StructLiteral { name, .. }) => {
                 name.split('<').next().unwrap_or("").trim() != ty
             }
-            Some(Expr::Var(x)) if binds_in(init, x) => join,
+            // Which binding of the name the value reads is not known here: every one keeps `ty`.
+            Leaf::Value(Expr::Var(x)) if loose && binds_in(init, x) => {
+                join && !name_keeps(x, ty, env.ctx)
+            }
+            Leaf::Value(Expr::Var(x)) if binds_in(init, x) => join,
             // A join's name: one the scope gives `ty` (whether it may be stale is asked through the
             // `Via::Whole` edge the binding already has to it, in the same walk), or else one every
             // binding of which is a `let` keeping `ty` (its assignments and what it is bound from:
             // `Via::Whole`); the only value, one the scope does not give another struct type.
-            Some(Expr::Var(x)) if join => match scope_type(x, env) {
+            Leaf::Value(Expr::Var(x)) if join => match scope_type(x, env) {
                 Some(t) => t != ty,
-                None => !lets_keep(x, ty, env.ctx),
+                None => !lets_keep(x, ty, env.ctx, loose),
             },
-            Some(Expr::Var(x)) => scope_type(x, env).is_some_and(|t| t != ty),
+            Leaf::Value(Expr::Var(x)) => scope_type(x, env).is_some_and(|t| t != ty),
             // A join's method call on a name the scope gives `ty`, of a method of `ty` returning
             // its own type (whether the receiver may be stale is asked through its `Via::Part` edge,
             // in the same walk).
-            Some(v @ Expr::CallExpr { callee: method, .. })
+            Leaf::Value(v @ Expr::CallExpr { callee: method, .. })
                 if join
                     && matches!(method.as_ref(), Expr::FieldAccess { base, .. }
                     if matches!(base.as_ref(), Expr::Var(x)
@@ -1575,39 +1813,249 @@ fn init_retypes(init: &Expr, ty: &str, env: &Env) -> bool {
                 let Expr::Var(x) = base.as_ref() else {
                     return;
                 };
-                !keeps_type(v, x, ty, env.ctx, 0)
+                !keeps_type(v, x, ty, env.ctx, 0, loose)
             }
-            Some(v) => join && !keeps_type(v, NO_NAME, ty, env.ctx, 0),
+            Leaf::Value(v) if loose => join && !sure_value(v, ty, env.ctx),
+            Leaf::Value(v) => join && !keeps_type(v, NO_NAME, ty, env.ctx, 0, false),
         };
     });
     retyped
 }
 
+/// A value `each_leaf` reaches.
+#[derive(Clone, Copy)]
+enum Leaf<'e> {
+    /// A block value the lane does not follow.
+    Unseen,
+    /// A value as it is.
+    Value(&'e Expr),
+    /// What a `V(x) => x` arm yields (`payload_arm`): the payload of the scrutinee (`.0`) when it
+    /// is a `V` (`.1`: the enum and the variant).
+    Payload(&'e Expr, (&'e str, &'e str)),
+}
+
+/// The enum and variant of an arm whose value is the whole payload its pattern binds: a tuple
+/// variant pattern with one binder (`Some(x)`, `Ok(x)`, `E::V(x)`) and the value that binder.
+fn payload_arm<'e>(
+    pattern: &'e crate::frontend::Pattern,
+    value: &Expr,
+) -> Option<(&'e str, &'e str)> {
+    use crate::frontend::Pattern;
+    let Pattern::EnumVariant {
+        enum_name,
+        variant,
+        bindings,
+        named_bindings,
+    } = pattern
+    else {
+        return None;
+    };
+    let [Pattern::Binding(x)] = bindings.as_slice() else {
+        return None;
+    };
+    let mut value = value;
+    while let Expr::Block {
+        stmts,
+        tail: Some(t),
+    } = value
+    {
+        if !stmts.is_empty() {
+            break;
+        }
+        value = t.as_ref();
+    }
+    (named_bindings.is_empty() && matches!(value, Expr::Var(v) if v == x))
+        .then_some((enum_name.as_str(), variant.as_str()))
+}
+
+/// `memo_sure`'s questions.
+const SURE_NAME: u8 = 0;
+const SURE_LIST: u8 = 1;
+const SURE_PAYLOAD: u8 = 2;
+
+/// A `name_keeps` / `list_keeps` / `payload_keeps` answer, memoized per body. A question asked
+/// again while it is being decided (names bound from each other) is answered `false`.
+fn memo_sure(
+    ctx: &SemanticContext,
+    key: (String, String, u8),
+    decide: impl FnOnce() -> bool,
+) -> bool {
+    let memo = &ctx.whole_retype.sure;
+    if let Some(v) = memo.borrow().get(&key) {
+        return *v;
+    }
+    memo.borrow_mut().insert(key.clone(), false);
+    let v = decide();
+    memo.borrow_mut().insert(key, v);
+    v
+}
+
+/// Whether a value is known to be a `ty` (or no struct at all) wherever it is read: what
+/// `keeps_type` keeps without a name, a name every binding of which is one (`name_keeps`), or a
+/// position of a list every element of which is one (`list_keeps`; a position out of range stops
+/// the program).
+fn sure_value(e: &Expr, ty: &str, ctx: &SemanticContext) -> bool {
+    match e {
+        Expr::Var(x) => name_keeps(x, ty, ctx),
+        Expr::Index { base, .. } => {
+            matches!(base.as_ref(), Expr::Var(r) if list_keeps(r, ty, ctx))
+        }
+        _ => keeps_type(e, NO_NAME, ty, ctx, 0, true),
+    }
+}
+
+/// Whether every binding of `x` holds a `ty`, whichever one a read of `x` finds: none is a formal,
+/// a pattern, a loop variable or a lambda parameter (nor is `x` a function's name), and every `let`
+/// of it and every assignment to it is one (`keeps_type`, `sure_value`). A write into a part of it
+/// keeps its own type.
+fn name_keeps(x: &str, ty: &str, ctx: &SemanticContext) -> bool {
+    memo_sure(ctx, (x.to_string(), ty.to_string(), SURE_NAME), || {
+        let r = &ctx.whole_retype;
+        let keeps = |v: &Expr| keeps_type(v, x, ty, ctx, 0, true) || sure_value(v, ty, ctx);
+        !r.binders.contains(x)
+            && !ctx.whole_fns.contains_key(x)
+            && r.inits.get(x).is_some_and(|is| {
+                !is.is_empty()
+                    && is
+                        .iter()
+                        .all(|i| !matches!(i, Expr::Var(y) if y == x) && keeps(i))
+            })
+            && r.assigned.get(x).is_none_or(|vs| vs.iter().all(keeps))
+    })
+}
+
+/// Whether `r` is a list every element of which is a `ty`: every binding of it is a `let` of a list
+/// literal of such values or of another such list (`elems_keep`), never a formal, a pattern, a loop
+/// variable or a lambda parameter, and nothing is ever assigned to it, written or stored into it,
+/// or into what it is built from (`changes`).
+fn list_keeps(r: &str, ty: &str, ctx: &SemanticContext) -> bool {
+    memo_sure(ctx, (r.to_string(), ty.to_string(), SURE_LIST), || {
+        let rt = &ctx.whole_retype;
+        !rt.binders.contains(r)
+            && !rt.changes.contains(r)
+            && !rt.written.contains_key(r)
+            && !ctx.whole_fns.contains_key(r)
+            && rt.inits.get(r).is_some_and(|is| {
+                !is.is_empty()
+                    && is
+                        .iter()
+                        .all(|i| !matches!(i, Expr::Var(y) if y == r) && elems_keep(i, ty, ctx))
+            })
+    })
+}
+
+/// Whether every element of a list value is a `ty`: a list literal of such values (`sure_value`),
+/// or a name `list_keeps`.
+fn elems_keep(e: &Expr, ty: &str, ctx: &SemanticContext) -> bool {
+    match e {
+        Expr::ArrayLiteral { elements } => elements.iter().all(|x| sure_value(x, ty, ctx)),
+        Expr::Var(r) => list_keeps(r, ty, ctx),
+        _ => false,
+    }
+}
+
+/// Whether every payload a pattern of `variant` (enum, variant) may bind from `s` is a `ty`: the
+/// runtime matches an enum value by both names and binds its first field (`0` when it has none).
+/// So a construct of that variant with such a first field, a construct of any other (the pattern
+/// does not match it), a choice of such values, a name every binding of which is a `let` of one
+/// and which nothing is ever assigned to or written into (`changes`), or a call of a function
+/// every return of which is one given what its arguments keep (`fn_returns_payload`).
+fn payload_keeps(s: &Expr, variant: (&str, &str), ty: &str, ctx: &SemanticContext) -> bool {
+    match s {
+        Expr::EnumConstruct {
+            enum_name,
+            variant: v,
+            fields,
+            ..
+        } => {
+            (enum_name.as_str(), v.as_str()) != variant
+                || fields.first().is_none_or(|p| sure_value(p, ty, ctx))
+        }
+        Expr::If { then, else_, .. } => {
+            payload_keeps(then, variant, ty, ctx) && payload_keeps(else_, variant, ty, ctx)
+        }
+        Expr::Block {
+            stmts,
+            tail: Some(t),
+        } if stmts.is_empty() => payload_keeps(t, variant, ty, ctx),
+        Expr::Call { callee, args } => {
+            fn_returns_payload(callee, variant, ty, ctx).is_some_and(|formals| {
+                formals.iter().all(|&(i, elems)| {
+                    args.get(i).is_some_and(|a| {
+                        if elems {
+                            elems_keep(a, ty, ctx)
+                        } else {
+                            sure_value(a, ty, ctx)
+                        }
+                    })
+                })
+            })
+        }
+        Expr::Var(o) => {
+            let q = format!("{}|{}::{}", ty, variant.0, variant.1);
+            memo_sure(ctx, (o.clone(), q, SURE_PAYLOAD), || {
+                let r = &ctx.whole_retype;
+                !r.binders.contains(o)
+                    && !r.changes.contains(o)
+                    && !r.written.contains_key(o)
+                    && !ctx.whole_fns.contains_key(o)
+                    && r.inits.get(o).is_some_and(|is| {
+                        !is.is_empty()
+                            && is.iter().all(|i| {
+                                !matches!(i, Expr::Var(y) if y == o)
+                                    && payload_keeps(i, variant, ty, ctx)
+                            })
+                    })
+            })
+        }
+        _ => false,
+    }
+}
+
 /// Whether every binding of `x` is a `let` known to bind a `ty` (`keeps_type`), not a formal, a
 /// pattern or a loop variable.
-fn lets_keep(x: &str, ty: &str, ctx: &SemanticContext) -> bool {
+fn lets_keep(x: &str, ty: &str, ctx: &SemanticContext, loose: bool) -> bool {
     let r = &ctx.whole_retype;
     !r.binders.contains(x)
         && r.inits.get(x).is_some_and(|is| {
             !is.is_empty()
-                && is
-                    .iter()
-                    .all(|i| keeps_type(i, x, ty, ctx, 0) && !matches!(i, Expr::Var(y) if y == x))
+                && is.iter().all(|i| {
+                    keeps_type(i, x, ty, ctx, 0, loose) && !matches!(i, Expr::Var(y) if y == x)
+                })
         })
 }
 
 /// Calls `f` on each value `v` may be, through the joins the checker infers one type for (`if`,
 /// `if let`, `match`, a block's values) and what leaves a value as it is (a cast, `declassify`).
-/// `None`: a block value the lane does not follow.
-fn each_leaf(v: &Expr, f: &mut dyn FnMut(Option<&Expr>)) {
+/// An arm yielding the whole payload its pattern binds is that payload of the scrutinee
+/// (`Leaf::Payload`).
+fn each_leaf(v: &Expr, f: &mut dyn FnMut(Leaf<'_>)) {
     match v {
-        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+        Expr::If { then, else_, .. } => {
             each_leaf(then, f);
             each_leaf(else_, f);
         }
-        Expr::Match { arms, .. } => {
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            match payload_arm(pattern, then) {
+                Some(variant) => f(Leaf::Payload(scrutinee.as_ref(), variant)),
+                None => each_leaf(then, f),
+            }
+            each_leaf(else_, f);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             for a in arms {
-                each_leaf(&a.body, f);
+                match payload_arm(&a.pattern, &a.body) {
+                    Some(variant) => f(Leaf::Payload(scrutinee.as_ref(), variant)),
+                    None => each_leaf(&a.body, f),
+                }
             }
         }
         Expr::Block { tail: Some(t), .. } => each_leaf(t, f),
@@ -1615,17 +2063,17 @@ fn each_leaf(v: &Expr, f: &mut dyn FnMut(Option<&Expr>)) {
             let mut tails = Vec::new();
             tail_values(stmts, &mut tails);
             if tails.is_empty() {
-                f(None);
+                f(Leaf::Unseen);
             }
             for t in &tails {
                 match t {
                     Some(t) => each_leaf(t, f),
-                    None => f(None),
+                    None => f(Leaf::Unseen),
                 }
             }
         }
         Expr::Cast { expr: inner, .. } | Expr::Declassify { inner, .. } => each_leaf(inner, f),
-        other => f(Some(other)),
+        other => f(Leaf::Value(other)),
     }
 }
 
@@ -1652,15 +2100,16 @@ fn binds_in(e: &Expr, x: &str) -> bool {
 /// its parts were built from a name that changes.
 fn stale_part(n: &str, seg: &str, own: Option<&str>, env: &Env) -> bool {
     let r = &env.ctx.whole_retype;
+    let mut seen = Seen::new();
     r.written.get(n).is_some_and(|ws| {
         ws.contains(WHOLE_ANY) || ws.contains(seg) || (seg == WHOLE_ANY && !ws.is_empty())
     }) || match own {
         Some(t) => stale_type(n, t, env),
-        None => r.changes.contains(n),
+        None => container_parts_stale(n, env, 0, &mut seen),
     } || r.bound.get(n).is_some_and(|roots| {
         roots
             .iter()
-            .any(|(root, via)| *via == Via::Element && parts_stale(root, env, 0, &mut Seen::new()))
+            .any(|(root, via)| *via == Via::Element && parts_stale(root, env, 1, &mut seen))
     })
 }
 
@@ -1747,7 +2196,7 @@ fn type_roots(v: &Expr, ctx: &SemanticContext, via: Via, out: &mut Vec<(String, 
 
 /// Whether `v`, assigned to `n`, is known to be a `ty`: a literal of it, `n` itself, a method of
 /// `ty` on `n` that returns one, or a function whose every return is one (or a formal given one).
-fn keeps_type(v: &Expr, n: &str, ty: &str, ctx: &SemanticContext, depth: u32) -> bool {
+fn keeps_type(v: &Expr, n: &str, ty: &str, ctx: &SemanticContext, depth: u32, loose: bool) -> bool {
     if depth > 8 {
         return false;
     }
@@ -1756,7 +2205,8 @@ fn keeps_type(v: &Expr, n: &str, ty: &str, ctx: &SemanticContext, depth: u32) ->
         Expr::StructLiteral { name, .. } => name.split('<').next().unwrap_or("").trim() == ty,
         Expr::Var(x) => x == n,
         Expr::If { then, else_, .. } => {
-            keeps_type(then, n, ty, ctx, depth) && keeps_type(else_, n, ty, ctx, depth)
+            keeps_type(then, n, ty, ctx, depth, loose)
+                && keeps_type(else_, n, ty, ctx, depth, loose)
         }
         Expr::IfLet {
             pattern,
@@ -1765,43 +2215,49 @@ fn keeps_type(v: &Expr, n: &str, ty: &str, ctx: &SemanticContext, depth: u32) ->
             ..
         } => {
             !binds_n(pattern)
-                && keeps_type(then, n, ty, ctx, depth)
-                && keeps_type(else_, n, ty, ctx, depth)
+                && keeps_type(then, n, ty, ctx, depth, loose)
+                && keeps_type(else_, n, ty, ctx, depth, loose)
         }
         Expr::Match { arms, .. } => arms
             .iter()
-            .all(|a| !binds_n(&a.pattern) && keeps_type(&a.body, n, ty, ctx, depth)),
+            .all(|a| !binds_n(&a.pattern) && keeps_type(&a.body, n, ty, ctx, depth, loose)),
         // A block that binds `n` again yields that `n`, not the outer one.
         Expr::Block { stmts, tail } => {
             if rebinds(stmts, n) {
                 return false;
             }
             match tail {
-                Some(t) => keeps_type(t, n, ty, ctx, depth),
+                Some(t) => keeps_type(t, n, ty, ctx, depth, loose),
                 None => {
                     let mut tails = Vec::new();
                     tail_values(stmts, &mut tails);
                     !tails.is_empty()
                         && tails.iter().all(|t| {
                             t.as_ref()
-                                .is_some_and(|t| keeps_type(t, n, ty, ctx, depth + 1))
+                                .is_some_and(|t| keeps_type(t, n, ty, ctx, depth + 1, loose))
                         })
                 }
             }
         }
-        Expr::Declassify { inner, .. } => keeps_type(inner, n, ty, ctx, depth),
+        Expr::Declassify { inner, .. } => keeps_type(inner, n, ty, ctx, depth, loose),
         Expr::CallExpr { callee, .. } => match callee.as_ref() {
             Expr::FieldAccess { base, field, .. } if matches!(base.as_ref(), Expr::Var(x) if x == n) => {
-                method_returns_own(ty, field, ctx)
+                method_returns_own(ty, field, ctx, loose)
             }
             _ => false,
         },
         // `state = step(state)`: a function every return of which is a `ty` (a literal, or a
-        // formal, never bound again in its body, given one).
-        Expr::Call { callee, args } => match fn_returns_own(callee, ty, ctx) {
-            Some(formals) => formals.iter().all(|i| {
-                args.get(*i)
-                    .is_some_and(|a| keeps_type(a, n, ty, ctx, depth + 1))
+        // formal, never bound again in its body, given one — or an element of a formal given a list
+        // of them).
+        Expr::Call { callee, args } => match fn_returns_own(callee, ty, ctx, loose) {
+            Some(formals) => formals.iter().all(|&(i, elems)| {
+                args.get(i).is_some_and(|a| {
+                    if elems {
+                        elems_keep(a, ty, ctx)
+                    } else {
+                        keeps_type(a, n, ty, ctx, depth + 1, loose)
+                    }
+                })
             }),
             None => false,
         },
@@ -1810,10 +2266,14 @@ fn keeps_type(v: &Expr, n: &str, ty: &str, ctx: &SemanticContext, depth: u32) ->
 }
 
 /// Per function and type (memoized): `Some(formals)` when every value the function returns is a
-/// `ty` literal, or one of those formals as given (never bound again in the body), or a call of
-/// such a function on them; `None` otherwise.
-fn fn_returns_own(f: &str, ty: &str, ctx: &SemanticContext) -> Option<Vec<usize>> {
-    let key = (f.to_string(), ty.to_string());
+/// `ty` literal, or one of those formals as given (never bound again in the body), or an element of
+/// one (`true`: a position of it, or a loop variable over it, which nothing is written into), or a
+/// call of such a function on them; `None` otherwise.
+fn fn_returns_own(f: &str, ty: &str, ctx: &SemanticContext, loose: bool) -> OwnFormals {
+    let key = (
+        f.to_string(),
+        format!("{}{}", ty, if loose { "|loose" } else { "" }),
+    );
     if let Some(v) = ctx.whole_retype.fn_own.borrow().get(&key) {
         return v.clone();
     }
@@ -1827,9 +2287,75 @@ fn fn_returns_own(f: &str, ty: &str, ctx: &SemanticContext) -> Option<Vec<usize>
         if rets.is_empty() {
             return None;
         }
-        let mut need: BTreeSet<usize> = BTreeSet::new();
+        let mut need: BTreeSet<(usize, bool)> = BTreeSet::new();
         for r in &rets {
-            own_value(r.as_ref()?, params, body, ty, ctx, &mut need, 0)?;
+            own_value(
+                r.as_ref()?,
+                (params.as_slice(), body.as_slice()),
+                ty,
+                ctx,
+                &mut need,
+                0,
+                loose,
+            )?;
+        }
+        Some(need.into_iter().collect())
+    });
+    ctx.whole_retype
+        .fn_own
+        .borrow_mut()
+        .insert(key, result.clone());
+    result
+}
+
+/// `fn_returns_own` for the payload of `variant` (memoized with it): `Some(formals)` when every
+/// value the function returns is a construct of another variant, or one of `variant` whose first
+/// field (if any) is a `ty` given those formals (`own_value`); `None` otherwise.
+fn fn_returns_payload(
+    f: &str,
+    variant: (&str, &str),
+    ty: &str,
+    ctx: &SemanticContext,
+) -> OwnFormals {
+    let key = (
+        f.to_string(),
+        format!("{}|{}::{}", ty, variant.0, variant.1),
+    );
+    if let Some(v) = ctx.whole_retype.fn_own.borrow().get(&key) {
+        return v.clone();
+    }
+    ctx.whole_retype
+        .fn_own
+        .borrow_mut()
+        .insert(key.clone(), None);
+    let result = ctx.whole_fns.get(f).and_then(|(params, body)| {
+        let rets = body_returns(body);
+        if rets.is_empty() {
+            return None;
+        }
+        let mut need: BTreeSet<(usize, bool)> = BTreeSet::new();
+        for r in &rets {
+            let Expr::EnumConstruct {
+                enum_name,
+                variant: v,
+                fields,
+                ..
+            } = r.as_ref()?
+            else {
+                return None;
+            };
+            let matched = (enum_name.as_str(), v.as_str()) == variant;
+            if let Some(p) = fields.first().filter(|_| matched) {
+                own_value(
+                    p,
+                    (params.as_slice(), body.as_slice()),
+                    ty,
+                    ctx,
+                    &mut need,
+                    0,
+                    true,
+                )?;
+            }
         }
         Some(need.into_iter().collect())
     });
@@ -1841,15 +2367,15 @@ fn fn_returns_own(f: &str, ty: &str, ctx: &SemanticContext) -> Option<Vec<usize>
 }
 
 /// Whether a value a function returns is a `ty` (adding to `need` the formals whose arguments must
-/// be one); `None`: not known to be.
+/// be one, or whose every element must: `true`); `None`: not known to be.
 fn own_value(
     e: &Expr,
-    params: &[String],
-    body: &[Stmt],
+    (params, body): (&[String], &[Stmt]),
     ty: &str,
     ctx: &SemanticContext,
-    need: &mut BTreeSet<usize>,
+    need: &mut BTreeSet<(usize, bool)>,
     depth: u32,
+    loose: bool,
 ) -> Option<()> {
     if depth > 8 {
         return None;
@@ -1860,30 +2386,62 @@ fn own_value(
             .position(|p| p == x)
             .filter(|_| !rebinds(body, x))
     };
+    // A formal whose elements are read: nothing is written or stored into it either.
+    let elems_of = |x: &str| formal(x).filter(|_| !bindings(body).parts.contains_key(x));
     match e {
         Expr::StructLiteral { name, .. } => {
             (name.split('<').next().unwrap_or("").trim() == ty).then_some(())
         }
         Expr::Var(x) => {
-            need.insert(formal(x)?);
+            let one = match formal(x) {
+                Some(i) => (i, false),
+                None if !loose || params.contains(x) || ctx.whole_fns.contains_key(x) => {
+                    return None
+                }
+                // A local always holding a `ty` built here (`let mut v = T { .. }; v.f = x; v`).
+                None if own_locals(params, body, ctx, |v, set| match v {
+                    Expr::StructLiteral { name, .. } => {
+                        name.split('<').next().unwrap_or("").trim() == ty
+                    }
+                    Expr::Var(y) => set.contains(y),
+                    _ => false,
+                })
+                .contains(x) =>
+                {
+                    return Some(())
+                }
+                // A loop variable over a formal, bound nowhere else.
+                None => (elems_of(loop_over(x, body)?)?, true),
+            };
+            need.insert(one);
+            Some(())
+        }
+        // A position of a formal (out of range, the program stops).
+        Expr::Index { base, .. } if loose => {
+            let Expr::Var(xs) = base.as_ref() else {
+                return None;
+            };
+            need.insert((elems_of(xs)?, true));
             Some(())
         }
         Expr::If { then, else_, .. } => {
-            own_value(then, params, body, ty, ctx, need, depth + 1)?;
-            own_value(else_, params, body, ty, ctx, need, depth + 1)
+            own_value(then, (params, body), ty, ctx, need, depth + 1, loose)?;
+            own_value(else_, (params, body), ty, ctx, need, depth + 1, loose)
         }
         Expr::Block {
             stmts,
             tail: Some(t),
-        } if stmts.is_empty() => own_value(t, params, body, ty, ctx, need, depth + 1),
-        Expr::Declassify { inner, .. } => own_value(inner, params, body, ty, ctx, need, depth + 1),
+        } if stmts.is_empty() => own_value(t, (params, body), ty, ctx, need, depth + 1, loose),
+        Expr::Declassify { inner, .. } => {
+            own_value(inner, (params, body), ty, ctx, need, depth + 1, loose)
+        }
         // A `match` / `if let` whose every value is one, binding no formal again.
         Expr::Match { arms, .. } => {
             for a in arms {
                 if a.pattern.bound_names().iter().any(|b| params.contains(b)) {
                     return None;
                 }
-                own_value(&a.body, params, body, ty, ctx, need, depth + 1)?;
+                own_value(&a.body, (params, body), ty, ctx, need, depth + 1, loose)?;
             }
             Some(())
         }
@@ -1896,18 +2454,21 @@ fn own_value(
             if pattern.bound_names().iter().any(|b| params.contains(b)) {
                 return None;
             }
-            own_value(then, params, body, ty, ctx, need, depth + 1)?;
-            own_value(else_, params, body, ty, ctx, need, depth + 1)
+            own_value(then, (params, body), ty, ctx, need, depth + 1, loose)?;
+            own_value(else_, (params, body), ty, ctx, need, depth + 1, loose)
         }
         // A call of such a function: each formal it needs is given a literal of `ty` or a formal
-        // of this one.
+        // of this one (one whose elements it needs, a formal whose elements this one returns).
         Expr::Call { callee, args } => {
-            for i in fn_returns_own(callee, ty, ctx)? {
+            for (i, elems) in fn_returns_own(callee, ty, ctx, loose)? {
                 match args.get(i)? {
                     Expr::StructLiteral { name, .. }
-                        if name.split('<').next().unwrap_or("").trim() == ty => {}
+                        if !elems && name.split('<').next().unwrap_or("").trim() == ty => {}
+                    Expr::Var(x) if !elems => {
+                        need.insert((formal(x)?, false));
+                    }
                     Expr::Var(x) => {
-                        need.insert(formal(x)?);
+                        need.insert((elems_of(x)?, true));
                     }
                     _ => return None,
                 }
@@ -1919,9 +2480,13 @@ fn own_value(
 }
 
 /// Whether every value `ty`'s method `m` returns is a `ty` (a literal, `self` never bound again in
-/// the body, or another such method of `self`). Memoized.
-fn method_returns_own(ty: &str, m: &str, ctx: &SemanticContext) -> bool {
-    let key = (m.to_string(), ty.to_string());
+/// the body, a local always holding one given `self` (`own_locals`), or another such method of
+/// either). Memoized.
+fn method_returns_own(ty: &str, m: &str, ctx: &SemanticContext, loose: bool) -> bool {
+    let key = (
+        m.to_string(),
+        format!("{}{}", ty, if loose { "|loose" } else { "" }),
+    );
     if let Some(v) = ctx.whole_retype.method_own.borrow().get(&key) {
         return *v;
     }
@@ -1930,19 +2495,32 @@ fn method_returns_own(ty: &str, m: &str, ctx: &SemanticContext) -> bool {
         .borrow_mut()
         .insert(key.clone(), false);
     let result = ctx.whole_methods.get(m).is_some_and(|impls| {
-        let bodies: Vec<&Vec<Stmt>> = impls
+        let bodies: Vec<(&Vec<String>, &Vec<Stmt>)> = impls
             .iter()
             .filter(|(t, _)| t == ty)
-            .map(|(_, (_, body))| body)
+            .map(|(_, (params, body))| (params, body))
             .collect();
         !bodies.is_empty()
-            && bodies.iter().all(|body| {
+            && bodies.iter().all(|(params, body)| {
                 let out = body_returns(body);
-                let self_ok = !rebinds(body, "self");
+                // The receiver: the first formal, recognized only as `self` (the runtime binds the
+                // receiver there, as `callee_at` does; a formal named `self` in another position is
+                // an argument), while the body never binds it again.
+                let recv = params
+                    .first()
+                    .map(String::as_str)
+                    .filter(|r| *r == "self" && !rebinds(body, r));
+                let locals = if loose {
+                    own_locals(params, body, ctx, |v, set| {
+                        own_method_value(v, ty, recv, set, ctx, 0, true)
+                    })
+                } else {
+                    BTreeSet::new()
+                };
                 !out.is_empty()
                     && out.iter().all(|r| {
                         r.as_ref()
-                            .is_some_and(|e| own_method_value(e, ty, self_ok, ctx, 0))
+                            .is_some_and(|e| own_method_value(e, ty, recv, &locals, ctx, 0, loose))
                     })
             })
     });
@@ -1950,20 +2528,35 @@ fn method_returns_own(ty: &str, m: &str, ctx: &SemanticContext) -> bool {
     result
 }
 
-fn own_method_value(e: &Expr, ty: &str, self_ok: bool, ctx: &SemanticContext, depth: u32) -> bool {
+/// Whether a value a method of `ty` returns is a `ty`, given the receiver (`recv`: the method's
+/// first formal `self`, when the body never binds it again) and the locals always holding one.
+fn own_method_value(
+    e: &Expr,
+    ty: &str,
+    recv: Option<&str>,
+    locals: &BTreeSet<String>,
+    ctx: &SemanticContext,
+    depth: u32,
+    loose: bool,
+) -> bool {
     if depth > 8 {
         return false;
     }
+    // The receiver, or a local always holding a `ty`.
+    let own_name = |x: &str| recv == Some(x) || locals.contains(x);
     match e {
         Expr::StructLiteral { name, .. } => name.split('<').next().unwrap_or("").trim() == ty,
-        Expr::Var(x) => self_ok && x == "self",
+        Expr::Var(x) => own_name(x),
         Expr::If { then, else_, .. } => {
-            own_method_value(then, ty, self_ok, ctx, depth + 1)
-                && own_method_value(else_, ty, self_ok, ctx, depth + 1)
+            own_method_value(then, ty, recv, locals, ctx, depth + 1, loose)
+                && own_method_value(else_, ty, recv, locals, ctx, depth + 1, loose)
         }
         Expr::Match { arms, .. } => arms.iter().all(|a| {
-            !a.pattern.bound_names().iter().any(|b| b == "self")
-                && own_method_value(&a.body, ty, self_ok, ctx, depth + 1)
+            !a.pattern
+                .bound_names()
+                .iter()
+                .any(|b| recv == Some(b.as_str()))
+                && own_method_value(&a.body, ty, recv, locals, ctx, depth + 1, loose)
         }),
         Expr::IfLet {
             pattern,
@@ -1971,47 +2564,193 @@ fn own_method_value(e: &Expr, ty: &str, self_ok: bool, ctx: &SemanticContext, de
             else_,
             ..
         } => {
-            !pattern.bound_names().iter().any(|b| b == "self")
-                && own_method_value(then, ty, self_ok, ctx, depth + 1)
-                && own_method_value(else_, ty, self_ok, ctx, depth + 1)
+            !pattern
+                .bound_names()
+                .iter()
+                .any(|b| recv == Some(b.as_str()))
+                && own_method_value(then, ty, recv, locals, ctx, depth + 1, loose)
+                && own_method_value(else_, ty, recv, locals, ctx, depth + 1, loose)
         }
-        // A free function every return of which is one, given literals of the type or `self`.
-        Expr::Call { callee, args } => fn_returns_own(callee, ty, ctx).is_some_and(|need| {
-            need.iter().all(|i| match args.get(*i) {
-                Some(Expr::StructLiteral { name, .. }) => {
-                    name.split('<').next().unwrap_or("").trim() == ty
-                }
-                Some(Expr::Var(x)) => self_ok && x == "self",
-                _ => false,
+        // A free function every return of which is one, given literals of the type or the receiver.
+        Expr::Call { callee, args } => fn_returns_own(callee, ty, ctx, loose).is_some_and(|need| {
+            need.iter().all(|&(i, elems)| {
+                !elems
+                    && match args.get(i) {
+                        Some(Expr::StructLiteral { name, .. }) => {
+                            name.split('<').next().unwrap_or("").trim() == ty
+                        }
+                        Some(Expr::Var(x)) => own_name(x),
+                        _ => false,
+                    }
             })
         }),
         Expr::Block { stmts, tail } => {
-            if rebinds(stmts, "self") {
+            if recv.is_some_and(|r| rebinds(stmts, r)) {
                 return false;
             }
             match tail {
-                Some(t) => own_method_value(t, ty, self_ok, ctx, depth + 1),
+                Some(t) => own_method_value(t, ty, recv, locals, ctx, depth + 1, loose),
                 None => {
                     let mut tails = Vec::new();
                     tail_values(stmts, &mut tails);
                     !tails.is_empty()
                         && tails.iter().all(|t| {
-                            t.as_ref()
-                                .is_some_and(|t| own_method_value(t, ty, self_ok, ctx, depth + 1))
+                            t.as_ref().is_some_and(|t| {
+                                own_method_value(t, ty, recv, locals, ctx, depth + 1, loose)
+                            })
                         })
                 }
             }
         }
-        Expr::Declassify { inner, .. } => own_method_value(inner, ty, self_ok, ctx, depth + 1),
+        Expr::Declassify { inner, .. } => {
+            own_method_value(inner, ty, recv, locals, ctx, depth + 1, loose)
+        }
         Expr::CallExpr { callee, .. } => match callee.as_ref() {
-            Expr::FieldAccess { base, field, .. }
-                if self_ok && matches!(base.as_ref(), Expr::Var(x) if x == "self") =>
-            {
-                method_returns_own(ty, field, ctx)
+            Expr::FieldAccess { base, field, .. } => {
+                matches!(base.as_ref(), Expr::Var(x) if own_name(x))
+                    && method_returns_own(ty, field, ctx, loose)
             }
             _ => false,
         },
         _ => false,
+    }
+}
+
+/// The locals of a function that always hold a `ty` (the greatest such set): each bound only by
+/// `let`s (never a formal, a pattern, a loop variable or a lambda parameter, nor a function's
+/// name), every `let` of it and assignment to it one given the others (`own`), and written into
+/// only under a field (a field write keeps a struct's type; a position write or an in-place builtin
+/// may not) — `let mut c = self; c.n = 1; return c`, `let mut v = T { .. }; v.f = x; return v`.
+fn own_locals(
+    params: &[String],
+    body: &[Stmt],
+    ctx: &SemanticContext,
+    own: impl Fn(&Expr, &BTreeSet<String>) -> bool,
+) -> BTreeSet<String> {
+    let b = bindings(body);
+    let mut out: BTreeSet<String> = b
+        .lets
+        .iter()
+        .filter(|n| {
+            !params.contains(*n)
+                && !b.other.contains(*n)
+                && !ctx.whole_fns.contains_key(*n)
+                && b.parts
+                    .get(*n)
+                    .is_none_or(|ws| ws.iter().all(|(field, _)| *field))
+        })
+        .cloned()
+        .collect();
+    loop {
+        let before = out.clone();
+        out.retain(|n| {
+            b.values
+                .get(n)
+                .is_none_or(|vs| vs.iter().all(|v| own(v, &before)))
+        });
+        if out == before {
+            return out;
+        }
+    }
+}
+
+/// Every binding a body gives a name (in any statement, value block or closure of it): the values
+/// of its `let`s and assignments, what is written into a part of it (`true`: under a field) or
+/// stored into it by an in-place builtin (`false`), and the names bound some other way (a pattern,
+/// a loop variable, a lambda parameter).
+#[derive(Default)]
+struct Bindings<'a> {
+    lets: BTreeSet<String>,
+    values: BTreeMap<String, Vec<&'a Expr>>,
+    parts: BTreeMap<String, Vec<(bool, &'a Expr)>>,
+    other: BTreeSet<String>,
+}
+
+fn bindings(body: &[Stmt]) -> Bindings<'_> {
+    let mut b = Bindings::default();
+    visit::each_stmt(body, &mut |s, _| match s {
+        Stmt::Let { name, init, .. } => {
+            b.lets.insert(name.clone());
+            b.values.entry(name.clone()).or_default().push(init);
+        }
+        Stmt::Assign {
+            target: Expr::Var(n),
+            value,
+        } => b.values.entry(n.clone()).or_default().push(value),
+        Stmt::Assign { target, value } => {
+            if let Some(r) = place_root(target) {
+                let field = first_segment(target).is_some_and(|seg| seg != WHOLE_ANY);
+                b.parts
+                    .entry(r.to_string())
+                    .or_default()
+                    .push((field, value));
+            }
+        }
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            b.other.extend(pattern.bound_names())
+        }
+        Stmt::For { var, .. } => {
+            b.other.insert(var.clone());
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::IfLet { pattern, .. } => b.other.extend(pattern.bound_names()),
+        Expr::Match { arms, .. } => {
+            for a in arms {
+                b.other.extend(a.pattern.bound_names());
+            }
+        }
+        Expr::Lambda { params, .. } => b.other.extend(params.iter().cloned()),
+        // An in-place builtin stores its other arguments into its first.
+        Expr::Call { callee, args } if IN_PLACE.contains(&callee.as_str()) => {
+            if let Some((Expr::Var(n), rest)) = args.split_first() {
+                b.parts
+                    .entry(n.clone())
+                    .or_default()
+                    .extend(rest.iter().map(|a| (false, a)));
+            }
+        }
+        _ => {}
+    });
+    b
+}
+
+/// The name a loop variable iterates when that loop is its only binding in `body` (`for x in xs`).
+fn loop_over<'b>(x: &str, body: &'b [Stmt]) -> Option<&'b str> {
+    let mut loops: Vec<&'b Expr> = Vec::new();
+    let mut other = false;
+    visit::each_stmt(body, &mut |s, _| match s {
+        Stmt::For { var, source, .. } if var == x => match source {
+            crate::frontend::ForSource::Collection { expr } => loops.push(expr),
+            crate::frontend::ForSource::Range { .. } => other = true,
+        },
+        Stmt::Let { name, .. } => other |= name == x,
+        Stmt::Assign {
+            target: Expr::Var(t),
+            ..
+        } => other |= t == x,
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            other |= pattern.bound_names().iter().any(|b| b == x)
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| {
+        other |= match e {
+            Expr::IfLet { pattern, .. } => pattern.bound_names().iter().any(|b| b == x),
+            Expr::Match { arms, .. } => arms
+                .iter()
+                .any(|a| a.pattern.bound_names().iter().any(|b| b == x)),
+            Expr::Lambda { params, .. } => params.iter().any(|p| p == x),
+            _ => false,
+        };
+    });
+    if other || loops.len() != 1 {
+        return None;
+    }
+    match loops[0] {
+        Expr::Var(xs) => Some(xs.as_str()),
+        _ => None,
     }
 }
 
@@ -2294,23 +3033,25 @@ pub(super) fn assigned_shapes(
         }
     });
     // What each name is bound from (a `let`, a pattern, a loop variable, an assignment).
-    fn binds<'a>(stmts: &'a [Stmt], out: &mut Vec<(Vec<String>, &'a Expr, Via)>) {
+    fn binds<'a>(stmts: &'a [Stmt], out: &mut Vec<(Vec<String>, &'a Expr, Via, bool)>) {
         for s in stmts {
             match s {
-                Stmt::Let { name, init, .. } => out.push((vec![name.clone()], init, Via::Whole)),
+                Stmt::Let { name, init, .. } => {
+                    out.push((vec![name.clone()], init, Via::Whole, true))
+                }
                 Stmt::LetPattern { pattern, init, .. } => {
-                    out.push((pattern.bound_names(), init, Via::Part))
+                    out.push((pattern.bound_names(), init, Via::Part, false))
                 }
                 Stmt::Assign { target, value } => {
                     if let Expr::Var(n) = target {
-                        out.push((vec![n.clone()], value, Via::Whole));
+                        out.push((vec![n.clone()], value, Via::Whole, false));
                     }
                 }
                 Stmt::For {
                     var, source, body, ..
                 } => {
                     if let crate::frontend::ForSource::Collection { expr } = source {
-                        out.push((vec![var.clone()], expr, Via::Part));
+                        out.push((vec![var.clone()], expr, Via::Part, false));
                     }
                     binds(body, out);
                 }
@@ -2320,7 +3061,7 @@ pub(super) fn assigned_shapes(
                     body,
                     ..
                 } => {
-                    out.push((pattern.bound_names(), expr, Via::Part));
+                    out.push((pattern.bound_names(), expr, Via::Part, false));
                     binds(body, out);
                 }
                 Stmt::If { then, else_, .. } => {
@@ -2435,26 +3176,67 @@ pub(super) fn assigned_shapes(
         Expr::Block { stmts, .. } => binds(stmts, &mut bound),
         Expr::IfLet {
             pattern, scrutinee, ..
-        } => bound.push((pattern.bound_names(), scrutinee, Via::Part)),
+        } => bound.push((pattern.bound_names(), scrutinee, Via::Part, false)),
         Expr::Match {
             scrutinee, arms, ..
         } => {
             for a in arms {
-                bound.push((a.pattern.bound_names(), scrutinee, Via::Part));
+                bound.push((a.pattern.bound_names(), scrutinee, Via::Part, false));
             }
         }
         _ => {}
     });
-    for (names, value, via) in &bound {
+    for (names, value, via, by_let) in &bound {
         let mut roots = Vec::new();
         // A pattern or a loop variable reads a part of what it is bound from.
         type_roots(value, ctx, *via, &mut roots);
+        // A `let` reading its own name reads ANOTHER binding of it, whose type the checker did not
+        // give this one when the value is that binding as it is (`let x: T = x`) or a join's
+        // branch (`let x = if c { T { .. } } else { x }`, `… else { x.step() }`): those edges stay
+        // (`stale_type_in`) — unless the value binds the name again itself (`match o { Some(x) =>
+        // x, .. }`), where it reads that binder. The only value computed from it
+        // (`let x = x.step()`) was typed from that binding. An assignment reading itself
+        // (`x = x.step(y)`) is judged by `keeps_type`.
+        let joined = *by_let && {
+            let mut count = 0usize;
+            each_leaf(value, &mut |_| count += 1);
+            count != 1
+        };
         for n in names {
-            // Reading itself (`x = x.step(y)`) is judged by `keeps_type`.
-            let rs: Vec<(String, Via)> = roots.iter().filter(|(r, _)| r != n).cloned().collect();
+            let rs: Vec<(String, Via)> = roots
+                .iter()
+                .filter(|(r, v)| {
+                    r != n
+                        || (*by_let && (*v == Via::Whole || joined) && !binds_in(value, n.as_str()))
+                })
+                .cloned()
+                .collect();
             if !rs.is_empty() {
                 retype.bound.entry(n.clone()).or_default().extend(rs);
             }
+        }
+    }
+    // A name bound from another as a whole (`let x = y`, a branch of one, `x = y`) holds its value,
+    // with the parts written into it (`stale_part`, `parts_stale`). Values are copied, so a write
+    // made after the binding does not reach it: counting it anyway only adds.
+    loop {
+        let mut grown = false;
+        for (n, roots) in &retype.bound {
+            for (root, via) in roots {
+                if *via != Via::Whole || root == n {
+                    continue;
+                }
+                let Some(ws) = retype.written.get(root).cloned() else {
+                    continue;
+                };
+                let mine = retype.written.entry(n.clone()).or_default();
+                for w in ws {
+                    grown |= mine.insert(w);
+                }
+            }
+        }
+        if !grown {
+            break;
         }
     }
     // Whose parts may change: written, assigned, or bound from one of these.
@@ -2478,14 +3260,20 @@ pub(super) fn assigned_shapes(
     (not_list, not_map, retype)
 }
 
+/// A write `expr_writes` finds: the variable, what it may hold, whether it is still known to be a
+/// list and a map, and what it may now be as a function (`Captures`), when a function is written.
+pub(super) type ExprWrite = (String, Option<WholeSrc>, bool, bool, Option<Captures>);
+
 /// The writes evaluating `expr` makes to the caller's variables (an in-place `push` in an argument,
 /// an assignment inside a value block or a `match` arm): each written variable, what it may hold at
-/// any point of the evaluation, and whether it is still known to be a list, and a map.
+/// any point of the evaluation, whether it is still known to be a list, and a map, and — when it
+/// may hold a function or closure (`g = id1` in an arm) — every function it may be after (what it
+/// stood for before included), sure only when it can be nothing else.
 pub(super) fn expr_writes(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
-) -> Vec<(String, Option<WholeSrc>, bool, bool)> {
+) -> Vec<ExprWrite> {
     if !has_writes(expr) {
         return Vec::new();
     }
@@ -2498,7 +3286,17 @@ pub(super) fn expr_writes(
         .filter(|(n, _)| scope.contains_key(*n))
         .map(|(n, l)| {
             let k = local_kind(l);
-            (n.clone(), local_src(l), k.list, k.map)
+            let fns = fn_parts(l);
+            let captures = (!fns.is_empty()).then(|| {
+                let names = scope
+                    .get(n)
+                    .and_then(|b| b.whole_captures.as_ref())
+                    .map(|c| c.0.clone())
+                    .unwrap_or_default();
+                let sure = !has_src(l);
+                Captures(names, Some(Rc::new(Bound { fns, sure })))
+            });
+            (n.clone(), local_src(l), k.list, k.map, captures)
         })
         .collect()
 }
@@ -2869,20 +3667,25 @@ pub(super) fn closure_captures(
     ctx: &SemanticContext,
 ) -> Captures {
     let env = Env::new(ctx, scope);
-    Captures(Rc::new(
-        free_names(lambda)
-            .into_iter()
-            .filter(|n| scope.contains_key(n))
-            .filter_map(|n| scope_local(&n, &env).map(|l| (n, l)))
-            .collect(),
-    ))
+    Captures(
+        Rc::new(
+            free_names(lambda)
+                .into_iter()
+                .filter(|n| scope.contains_key(n))
+                .filter_map(|n| scope_local(&n, &env).map(|l| (n, l)))
+                .collect(),
+        ),
+        None,
+    )
 }
 
 /// What the closure an expression chooses closes over (a lambda in an `if`, `match` or block, one a
 /// helper returns, a closure a branch or a forwarding helper hands back: the one the ordinary lane
 /// binds). A lambda in it is made while it runs, over what the names it reads hold now; a closure it
 /// names closes over what it closed over when it was made. Kept on the binding, as for a lambda.
-pub(super) fn chosen_captures(
+/// A name bound inside the expression (a block's `let`, a pattern's binder) is not among these: the
+/// closures `value_captures` interprets are made where it is bound.
+fn chosen_captures(
     e: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
@@ -2907,7 +3710,313 @@ pub(super) fn chosen_captures(
             }
         }
     });
-    Captures(Rc::new(caps))
+    Captures(Rc::new(caps), None)
+}
+
+/// What a name of the caller's scope bound from `value` (by a `let` or an assignment; a lambda or a
+/// name has captures of its own) closes over and may be as a function: the captures of the closure
+/// the ordinary lane binds (`closure`: `chosen_captures`), and what the lane's own interpretation of
+/// the value finds (`Bound`). That interpretation runs the value as a `let` in a body is run: every
+/// closure a branch, arm or block may yield, made where the names it reads are bound (a block's
+/// `let`, a pattern's binder, a name of the scope as it stands now), every function a block's `let`
+/// names, and every function the argument a forwarder returns may be — not only the one the ordinary
+/// lane binds. `None` when there is nothing to add.
+pub(super) fn value_captures(
+    value: &Expr,
+    closure: bool,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<Captures> {
+    let env = Env::new(ctx, scope);
+    let written = written_names([value]);
+    let sure = leaves_seen(value, &BTreeMap::new(), &written, &env);
+    // The value, and the arguments the forwarders it calls hand back.
+    let mut exprs = vec![value];
+    forwarded(value, &env, 0, &mut exprs);
+    exprs.retain(|e| may_pass_fn(e) && mentions_fn(e, &env));
+    let mut fns: Vec<Local> = Vec::new();
+    if !exprs.is_empty() {
+        let at = value_at(value, &env);
+        for e in exprs {
+            let x = walk(e, &env, &at, &None);
+            add_fns(&mut fns, fn_parts(&walked_local(e, &x, &env)));
+        }
+    }
+    if !closure && fns.is_empty() && sure {
+        return None;
+    }
+    let names = if closure {
+        chosen_captures(value, scope, ctx).0
+    } else {
+        Rc::new(Locals::new())
+    };
+    Some(Captures(names, Some(Rc::new(Bound { fns, sure }))))
+}
+
+/// The caller's position for interpreting `e` as a value bound there: every name it may write, and
+/// every name of the scope a lambda in it reads, bound to what it holds now (so a closure made there
+/// closes over what its names hold when the binding is made, not at a later call).
+fn value_at(e: &Expr, env: &Env) -> At {
+    let mut names = written_names([e]);
+    visit::each_expr(e, &mut |x| {
+        if let Expr::Lambda { .. } = x {
+            names.extend(free_names(x));
+        }
+    });
+    let bound: Vec<(String, Local)> = names
+        .into_iter()
+        .filter_map(|n| scope_local(&n, env).map(|l| (n, l)))
+        .collect();
+    top().with(bound)
+}
+
+/// The arguments a call to a forwarder (a function or method returning one of its parameters,
+/// `fn pick(a, b) { return a; }`) hands back, through nested forwarders.
+fn forwarded<'e>(e: &'e Expr, env: &Env, depth: usize, out: &mut Vec<&'e Expr>) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    let ctx = env.ctx;
+    let arg: Option<&'e Expr> = match e {
+        Expr::Call { callee, args } => {
+            // Through a name bound to the forwarder (`let g = pick; g(..)`).
+            let f = env
+                .scope
+                .get(callee)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(callee.as_str());
+            ctx.fn_returns_param
+                .get(f)
+                .filter(|(ps, _)| ps.len() == args.len())
+                .and_then(|(_, i)| args.get(*i))
+        }
+        Expr::CallExpr { callee, args } => match callee.as_ref() {
+            // A method's formal 0 is its receiver.
+            Expr::FieldAccess { base, field, .. } => ctx
+                .method_returns_param
+                .get(field)
+                .filter(|(ps, _)| ps.len() == args.len() + 1)
+                .and_then(|(_, i)| match *i {
+                    0 => Some(base.as_ref()),
+                    i => args.get(i - 1),
+                }),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(a) = arg {
+        out.push(a);
+        forwarded(a, env, depth + 1, out);
+    }
+}
+
+/// The function and closure parts of a binding.
+fn fn_parts(l: &Local) -> Vec<Local> {
+    match l {
+        Local::Src(..) => Vec::new(),
+        Local::Any(ls) => {
+            let mut out = Vec::new();
+            for x in ls {
+                add_fns(&mut out, fn_parts(x));
+            }
+            out
+        }
+        other => vec![other.clone()],
+    }
+}
+
+/// Whether a binding has a value half.
+fn has_src(l: &Local) -> bool {
+    match l {
+        Local::Src(..) => true,
+        Local::Any(ls) => ls.iter().any(has_src),
+        Local::Closure(_) | Local::Named(_) | Local::Opaque(_) => false,
+    }
+}
+
+/// Whether `e` writes a lambda or names a function (a user function, a builtin, a name of the
+/// caller's scope bound to one): only then may the lane's interpretation of it find a function.
+fn mentions_fn(e: &Expr, env: &Env) -> bool {
+    let mut hit = false;
+    visit::each_expr(e, &mut |x| match x {
+        Expr::Lambda { .. } => hit = true,
+        Expr::Var(n) => {
+            hit |= env.is_user_fn(n)
+                || crate::backends::run::is_builtin_name(n)
+                || env.scope.get(n).is_some_and(names_fn)
+        }
+        _ => {}
+    });
+    hit
+}
+
+/// Whether a name of the caller's scope may stand for a function or closure the lane can follow.
+fn names_fn(b: &ScopeBinding) -> bool {
+    b.closure_lambda.is_some()
+        || b.fn_alias.is_some()
+        || matches!(&b.fn_identities, FnIdentitySet::Known(ns) if !ns.is_empty())
+        || b.field_closures
+            .keys()
+            .any(|k| k.starts_with(ALT_CLOSURE_PREFIX))
+        || b.whole_captures
+            .as_ref()
+            .and_then(|c| c.1.as_deref())
+            .is_some_and(|x| !x.fns.is_empty())
+}
+
+/// Whether the lane's interpretation of the value a name was bound from is all the name may be as a
+/// function (`Bound::sure`; a name bound otherwise: yes).
+fn bound_sure(b: &ScopeBinding) -> bool {
+    b.whole_captures
+        .as_ref()
+        .and_then(|c| c.1.as_deref())
+        .is_none_or(|x| x.sure)
+}
+
+/// Whether a name of the caller's scope stands only for functions the lane follows, with no value
+/// half (the cases of `resolve_local` that drop it).
+fn fn_only(b: &ScopeBinding) -> bool {
+    b.whole_struct.is_none()
+        && (matches!(b.closure_lambda.as_deref(), Some(Expr::Lambda { .. }))
+            || (bound_sure(b)
+                && (matches!(&b.fn_identities, FnIdentitySet::Known(ns) if ns.len() == 1)
+                    || b.fn_alias.is_some())))
+}
+
+/// Whether every value `e` may take is a function the lane's interpretation of it follows, or no
+/// function at all (`Bound::sure`): a lambda; a user function or builtin; a name of the scope that
+/// stands only for such functions (`fn_only`); a name `e` binds, by `let` or as a whole binder, to
+/// such a value (never one it writes: `written`); a branch, arm or block of these; a literal, an
+/// operator, a list, map, struct or variant. A call (but `identity`), an element, a field, `?` or a
+/// pattern's part may hand back a function the interpretation does not follow.
+fn leaves_seen(
+    e: &Expr,
+    bound: &BTreeMap<String, bool>,
+    written: &BTreeSet<String>,
+    env: &Env,
+) -> bool {
+    match e {
+        Expr::Lambda { .. } => true,
+        Expr::Var(n) => {
+            !written.contains(n)
+                && match bound.get(n) {
+                    Some(s) => *s,
+                    None => env.scope.get(n).is_none_or(fn_only),
+                }
+        }
+        Expr::If { then, else_, .. } => {
+            leaves_seen(then, bound, written, env) && leaves_seen(else_, bound, written, env)
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            let whole =
+                whole_binder(pattern).is_some() && leaves_seen(scrutinee, bound, written, env);
+            leaves_seen(then, &with_binders(bound, pattern, whole), written, env)
+                && leaves_seen(else_, bound, written, env)
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            let whole = leaves_seen(scrutinee, bound, written, env);
+            arms.iter().all(|a| {
+                let w = whole_binder(&a.pattern).is_some() && whole;
+                leaves_seen(&a.body, &with_binders(bound, &a.pattern, w), written, env)
+            })
+        }
+        Expr::Block { stmts, tail } => stmts_seen(stmts, tail.as_deref(), bound, written, env),
+        // The builtin hands its argument back (unless a function or a local takes the name).
+        Expr::Call { callee, args }
+            if callee == "identity"
+                && args.len() == 1
+                && !env.is_user_fn(callee)
+                && !env.scope.contains_key(callee.as_str())
+                && !bound.contains_key(callee.as_str()) =>
+        {
+            leaves_seen(&args[0], bound, written, env)
+        }
+        Expr::Cast { expr: x, .. }
+        | Expr::Tainted { inner: x, .. }
+        | Expr::Declassify { inner: x, .. } => leaves_seen(x, bound, written, env),
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_) => true,
+        Expr::Call { .. }
+        | Expr::CallExpr { .. }
+        | Expr::Index { .. }
+        | Expr::FieldAccess { .. }
+        | Expr::Try(_)
+        | Expr::Other(_) => false,
+    }
+}
+
+/// `leaves_seen` for a block's value: its tail, or — as the runtime reads a block — its last
+/// statement (an `if` with an `else` through its branches), where the block's `let`s are bound.
+fn stmts_seen(
+    stmts: &[Stmt],
+    tail: Option<&Expr>,
+    bound: &BTreeMap<String, bool>,
+    written: &BTreeSet<String>,
+    env: &Env,
+) -> bool {
+    let mut inner = bound.clone();
+    for s in stmts {
+        match s {
+            Stmt::Let { name, init, .. } => {
+                let v = leaves_seen(init, &inner, written, env);
+                inner.insert(name.clone(), v);
+            }
+            Stmt::LetPattern { pattern, init, .. } => {
+                let v = whole_binder(pattern).is_some() && leaves_seen(init, &inner, written, env);
+                inner = with_binders(&inner, pattern, v);
+            }
+            _ => {}
+        }
+    }
+    match (tail, stmts.last()) {
+        (Some(t), _) => leaves_seen(t, &inner, written, env),
+        (None, Some(Stmt::ExprStmt(x))) => leaves_seen(x, &inner, written, env),
+        (
+            None,
+            Some(Stmt::If {
+                then,
+                else_: Some(els),
+                ..
+            }),
+        ) => {
+            stmts_seen(then, None, &inner, written, env)
+                && stmts_seen(els, None, &inner, written, env)
+        }
+        _ => true,
+    }
+}
+
+/// `bound` with every name `p` binds seen as `whole` says.
+fn with_binders(
+    bound: &BTreeMap<String, bool>,
+    p: &crate::frontend::Pattern,
+    whole: bool,
+) -> BTreeMap<String, bool> {
+    let mut out = bound.clone();
+    for n in p.bound_names() {
+        out.insert(n, whole);
+    }
+    out
 }
 
 /// The functions and (`impl`-prefixed) methods that may build a struct with a `secret` field —
@@ -2981,7 +4090,8 @@ pub(super) fn compute_released(ctx: &SemanticContext) -> BTreeSet<String> {
         .collect();
     let held = held_fields(ctx);
     let mut out = BTreeSet::new();
-    let mut scan = |body: &[Stmt]| {
+    for (params, body, num) in whole_bodies(ctx) {
+        let names = body_names(params, &num, body, ctx);
         visit::each_expr_in_stmts(body, &mut |e| {
             if let Expr::Declassify {
                 inner,
@@ -2992,18 +4102,79 @@ pub(super) fn compute_released(ctx: &SemanticContext) -> BTreeSet<String> {
                 if !declassify_wellformed(policy, reason) {
                     return;
                 }
-                released_by(inner, ctx, &held, &secret, &mut out);
+                released_by(inner, ctx, &held, &names, &secret, &mut out);
             }
         });
-    };
-    for (_, body) in ctx.whole_fns.values() {
-        scan(body);
     }
-    for impls in ctx.whole_methods.values() {
-        for (_, (_, body)) in impls {
-            scan(body);
+    out
+}
+
+/// A function or method body: its formals, its statements, and the formals it declares with a
+/// number type (`numeric_formals`).
+type BodyOf<'a> = (&'a [String], &'a [Stmt], BTreeSet<String>);
+
+/// Every function and method body (`BodyOf`).
+fn whole_bodies(ctx: &SemanticContext) -> Vec<BodyOf<'_>> {
+    let num = |t: &str, f: &str| {
+        ctx.whole_num_formals
+            .get(&(t.to_string(), f.to_string()))
+            .cloned()
+            .flatten()
+            .unwrap_or_default()
+    };
+    ctx.whole_fns
+        .iter()
+        .map(|(f, (ps, b))| (ps.as_slice(), b.as_slice(), num("", f)))
+        .chain(ctx.whole_methods.iter().flat_map(|(m, impls)| {
+            impls
+                .iter()
+                .map(move |(t, (ps, b))| (ps.as_slice(), b.as_slice(), num(t, m)))
+        }))
+        .collect()
+}
+
+/// `numeric_formals`.
+pub(super) type NumFormals = BTreeMap<(String, String), Option<BTreeSet<String>>>;
+
+/// The formals each function and method declares with a number type, by (impl type, or `""` for a
+/// free function; name): the runtime checks such an argument when the function is entered
+/// (`anubis_require_int`, `anubis_coerce_uint_param`, `anubis_coerce_float_param` stop the program
+/// on anything but a number), so the formal holds a number until the body binds it again. `None`:
+/// two functions share the key (which one a body is, is not known).
+pub(super) fn numeric_formals(items: &[crate::frontend::Item]) -> NumFormals {
+    fn walk(items: &[crate::frontend::Item], owner: &str, out: &mut NumFormals) {
+        use crate::frontend::Item;
+        use crate::middle::ty;
+        for item in items {
+            match item {
+                Item::Fn { name, params, .. } => {
+                    let nums: BTreeSet<String> = params
+                        .iter()
+                        .filter(|(_, t)| {
+                            ty::unsigned_mask_width(t).is_some()
+                                || ty::is_integer(t)
+                                || ty::is_float(t)
+                        })
+                        .map(|(p, _)| p.clone())
+                        .collect();
+                    let key = (owner.to_string(), name.clone());
+                    let twice = out.contains_key(&key);
+                    out.insert(key, (!twice).then_some(nums));
+                }
+                Item::Module { items, .. } => walk(items, owner, out),
+                Item::Impl {
+                    type_name, methods, ..
+                } => walk(
+                    methods,
+                    type_name.split('<').next().unwrap_or("").trim(),
+                    out,
+                ),
+                _ => {}
+            }
         }
     }
+    let mut out = BTreeMap::new();
+    walk(items, "", &mut out);
     out
 }
 
@@ -3013,6 +4184,7 @@ fn released_by(
     e: &Expr,
     ctx: &SemanticContext,
     held: &HeldFields,
+    names: &BodyNames,
     secret: &BTreeSet<String>,
     out: &mut BTreeSet<String>,
 ) {
@@ -3023,10 +4195,10 @@ fn released_by(
                 out.insert(t.to_string());
             }
             for (_, v) in fields {
-                released_by(v, ctx, held, secret, out);
+                released_by(v, ctx, held, names, secret, out);
             }
         }
-        other if may_hold_struct(other, ctx, held) => out.extend(secret.iter().cloned()),
+        other if may_hold_struct(other, ctx, held, names) => out.extend(secret.iter().cloned()),
         _ => {}
     }
 }
@@ -3052,22 +4224,26 @@ impl HeldFields {
 }
 
 /// Every write that stores a value under a name (`None`: one the lane cannot read), anywhere in the
-/// program, and the least set of names such a value may be stored under (`HeldFields`).
+/// program, and the least set of names such a value may be stored under (`HeldFields`). A write's
+/// value is read with the names of the body it is in (`BodyNames`).
 fn held_fields(ctx: &SemanticContext) -> HeldFields {
     let mut held = HeldFields::default();
-    let mut sites: Vec<(Option<&str>, &Expr)> = Vec::new();
-    let bodies = ctx.whole_fns.values().map(|(_, b)| b).chain(
-        ctx.whole_methods
-            .values()
-            .flat_map(|impls| impls.iter().map(|(_, (_, b))| b)),
-    );
-    for body in bodies {
+    let mut sites: Vec<(Option<&str>, &Expr, usize)> = Vec::new();
+    let mut names: Vec<BodyNames> = Vec::new();
+    // What a value may hold before any field is known to hold nothing.
+    let any = HeldFields {
+        all: true,
+        names: BTreeSet::new(),
+    };
+    for (params, body, num) in whole_bodies(ctx) {
+        let here = names.len();
+        let bn = body_names(params, &num, body, ctx);
         let mut assigns = Vec::new();
         stmts_assigns(body, &mut assigns);
         visit::each_expr_in_stmts(body, &mut |e| match e {
             Expr::Block { stmts, .. } => stmts_assigns(stmts, &mut assigns),
             Expr::StructLiteral { fields, .. } => {
-                sites.extend(fields.iter().map(|(f, v)| (Some(f.as_str()), &**v)))
+                sites.extend(fields.iter().map(|(f, v)| (Some(f.as_str()), &**v, here)))
             }
             // A tuple variant's payload is read by no name.
             Expr::EnumConstruct {
@@ -3078,33 +4254,42 @@ fn held_fields(ctx: &SemanticContext) -> HeldFields {
                 field_names
                     .iter()
                     .zip(fields)
-                    .map(|(f, v)| (Some(f.as_str()), v)),
+                    .map(|(f, v)| (Some(f.as_str()), v, here)),
             ),
             Expr::MapLiteral { entries, .. } => {
                 sites.extend(entries.iter().map(|(k, v)| match k {
-                    Expr::StrLiteral(k) => (Some(k.as_str()), v),
-                    _ => (None, v),
+                    Expr::StrLiteral(k) => (Some(k.as_str()), v, here),
+                    _ => (None, v, here),
                 }))
             }
-            // Stores what a callback returns under every key of a map.
-            Expr::Var(f) | Expr::Call { callee: f, .. } if f == "map_values" => held.all = true,
+            // Stores what a callback returns under every key of a map: nothing that may hold a
+            // struct when the builtin runs a callback written there that returns none.
+            Expr::Call { callee, args } if callee == "map_values" => {
+                let scalar_callback = !ctx.whole_fns.contains_key(callee)
+                    && !bn.locals.contains(callee)
+                    && matches!(args.get(1), Some(Expr::Lambda { body: lb, .. })
+                        if !may_hold_struct(lb, ctx, &any, &bn));
+                held.all |= !scalar_callback;
+            }
+            Expr::Var(f) if f == "map_values" => held.all = true,
             _ => {}
         });
         for (target, value) in assigns {
             match target {
-                Expr::FieldAccess { field, .. } => sites.push((Some(field.as_str()), value)),
+                Expr::FieldAccess { field, .. } => sites.push((Some(field.as_str()), value, here)),
                 Expr::Index { index, .. } => match index.as_ref() {
-                    Expr::StrLiteral(k) => sites.push((Some(k.as_str()), value)),
-                    _ => sites.push((None, value)),
+                    Expr::StrLiteral(k) => sites.push((Some(k.as_str()), value, here)),
+                    _ => sites.push((None, value, here)),
                 },
                 _ => {}
             }
         }
+        names.push(bn);
     }
     // The least fixpoint: a value read from a field may hold what that field may.
     loop {
         let mut changed = false;
-        for (name, value) in &sites {
+        for (name, value, at) in &sites {
             if held.all {
                 return held;
             }
@@ -3112,7 +4297,7 @@ fn held_fields(ctx: &SemanticContext) -> HeldFields {
                 Some(f) => !held.names.contains(*f),
                 None => true,
             };
-            if fresh && may_hold_struct(value, ctx, &held) {
+            if fresh && may_hold_struct(value, ctx, &held, &names[*at]) {
                 match name {
                     Some(f) => {
                         held.names.insert(f.to_string());
@@ -3157,29 +4342,115 @@ fn numeric_type(t: &str) -> bool {
     )
 }
 
+/// What a body binds, as `may_hold_struct` reads its names: the ones never holding a struct or
+/// anything that may hold one (`scalar_names`), and every name it binds (a call of one runs what
+/// it holds, not the builtin of that name: the runtime resolves a user function, then a local,
+/// then a builtin).
+struct BodyNames {
+    scalars: BTreeSet<String>,
+    locals: BTreeSet<String>,
+}
+
+fn body_names(
+    params: &[String],
+    num: &BTreeSet<String>,
+    body: &[Stmt],
+    ctx: &SemanticContext,
+) -> BodyNames {
+    let b = bindings(body);
+    let locals: BTreeSet<String> = params
+        .iter()
+        .chain(&b.lets)
+        .chain(&b.other)
+        .cloned()
+        .collect();
+    let scalars = scalar_names(params, num, &b, &locals, ctx);
+    BodyNames { scalars, locals }
+}
+
+/// The names of a body that never hold a struct or anything that may hold one (the greatest such
+/// set): a formal declared with a number type (`numeric_formals`) or a `let`, never bound another
+/// way (a pattern, a loop variable, a lambda parameter, a formal of another type), every `let` of
+/// which, assignment to which, and write or in-place store into which is such a value given the
+/// others (`may_hold_struct`, with any field read as holding anything).
+fn scalar_names(
+    params: &[String],
+    num: &BTreeSet<String>,
+    b: &Bindings<'_>,
+    locals: &BTreeSet<String>,
+    ctx: &SemanticContext,
+) -> BTreeSet<String> {
+    let any = HeldFields {
+        all: true,
+        names: BTreeSet::new(),
+    };
+    let mut out: BTreeSet<String> = b
+        .lets
+        .iter()
+        .chain(num)
+        .filter(|n| !b.other.contains(*n) && (num.contains(*n) || !params.contains(*n)))
+        .cloned()
+        .collect();
+    loop {
+        let names = BodyNames {
+            scalars: out.clone(),
+            locals: locals.clone(),
+        };
+        let before = out.len();
+        out.retain(|n| {
+            let values = b.values.get(n).into_iter().flatten().copied();
+            let parts = b.parts.get(n).into_iter().flatten().map(|(_, v)| *v);
+            values
+                .chain(parts)
+                .all(|v| !may_hold_struct(v, ctx, &any, &names))
+        });
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
 /// Whether a value may be (or hold) a struct: anything but a number's or a scalar builtin's shape,
-/// or a field no write may store such a value in (`held`).
-fn may_hold_struct(e: &Expr, ctx: &SemanticContext, held: &HeldFields) -> bool {
+/// a field no write may store such a value in (`held`), or a name of the body that never holds one
+/// (`names.scalars`) or a part of one.
+fn may_hold_struct(e: &Expr, ctx: &SemanticContext, held: &HeldFields, names: &BodyNames) -> bool {
+    let scalar = |x: &Expr| matches!(x, Expr::Var(n) if names.scalars.contains(n));
     match e {
         Expr::Literal(_) | Expr::StrLiteral(_) | Expr::Unary { .. } => false,
+        Expr::Var(_) => !scalar(e),
+        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } if scalar(base.as_ref()) => false,
         // The runtime converts only to a numeric type; any other cast leaves the value as it is.
-        Expr::Cast { expr, ty } => !numeric_type(ty) && may_hold_struct(expr, ctx, held),
+        Expr::Cast { expr, ty } => !numeric_type(ty) && may_hold_struct(expr, ctx, held, names),
         // `+` concatenates lists.
         Expr::Binary { op, lhs, rhs } => {
-            op == "+" && (may_hold_struct(lhs, ctx, held) || may_hold_struct(rhs, ctx, held))
+            op == "+"
+                && (may_hold_struct(lhs, ctx, held, names)
+                    || may_hold_struct(rhs, ctx, held, names))
         }
         // A field or map entry by that name: whatever some write may store under it (the runtime
         // lets a struct through a field declared numeric, and the checker does not enforce declared
         // types).
         Expr::FieldAccess { field, .. } => held.may_hold(field),
-        // A runtime builtin returning a scalar, not taken by a user function of that name.
-        Expr::Call { callee, .. } => {
-            ctx.whole_fns.contains_key(callee)
-                || !crate::backends::run::is_builtin_name(callee)
-                || !matches!(
-                    callee.as_str(),
-                    "str" | "len" | "int" | "float" | "abs" | "sha256"
-                )
+        // A literal holds what its elements, or its entries' values, do (a map's keys are strings).
+        Expr::ArrayLiteral { elements } => elements
+            .iter()
+            .any(|x| may_hold_struct(x, ctx, held, names)),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .any(|(_, v)| may_hold_struct(v, ctx, held, names)),
+        // A runtime builtin returning a scalar, not taken by a user function or a local of that
+        // name; `get` of a name that never holds a struct, returning an entry of it or the default.
+        Expr::Call { callee, args } => {
+            let builtin = !ctx.whole_fns.contains_key(callee)
+                && !names.locals.contains(callee)
+                && crate::backends::run::is_builtin_name(callee);
+            match callee.as_str() {
+                "str" | "len" | "int" | "float" | "abs" | "sha256" if builtin => false,
+                "get" if builtin && args.first().is_some_and(scalar) => args
+                    .get(2)
+                    .is_some_and(|d| may_hold_struct(d, ctx, held, names)),
+                _ => true,
+            }
         }
         _ => true,
     }
@@ -3209,6 +4480,13 @@ fn resolve_local(n: &str, env: &Env, at: &At) -> Option<Local> {
         return None;
     }
     let b = env.scope.get(n)?;
+    // What the lane's own interpretation of the value bound here found it may be as a function
+    // (`value_captures`, `expr_writes`). A function the ordinary lane names (`fn_alias`, a `Known`
+    // set of one) is taken without the name's value half only when that interpretation is sure it
+    // is all the name may be: a block's alias, a call, an element or `reduce` may hand back one the
+    // ordinary lane does not name, and a value half computes from what the call is given.
+    let bound = b.whole_captures.as_ref().and_then(|c| c.1.as_deref());
+    let fn_sure = bound.is_none_or(|x| x.sure);
     let resolved = match (b.closure_lambda.as_deref(), &b.fn_identities, &b.fn_alias) {
         (Some(lam @ Expr::Lambda { .. }), _, _) => {
             let caps: Locals = b
@@ -3223,10 +4501,12 @@ fn resolve_local(n: &str, env: &Env, at: &At) -> Option<Local> {
                 None => f,
             }
         }
-        (_, FnIdentitySet::Known(ns), _) if ns.len() == 1 && b.whole_struct.is_none() => {
+        (_, FnIdentitySet::Known(ns), _)
+            if ns.len() == 1 && b.whole_struct.is_none() && fn_sure =>
+        {
             Local::Named(ns.iter().next().cloned().unwrap_or_default())
         }
-        (_, _, Some(f)) if b.whole_struct.is_none() => Local::Named(f.clone()),
+        (_, _, Some(f)) if b.whole_struct.is_none() && fn_sure => Local::Named(f.clone()),
         _ => {
             // The struct type it surely holds: the declared or inferred one, or one the checker
             // lost (`lost_type`).
@@ -3248,7 +4528,7 @@ fn resolve_local(n: &str, env: &Env, at: &At) -> Option<Local> {
                         .as_deref()
                         .map(|t| t.split('<').next().unwrap_or("").trim())
                         .filter(|t| env.ctx.struct_fields.contains_key(*t))
-                        .filter(|t| !stale_type(n, t, env))
+                        .filter(|t| !own_stale(n, t, env))
                         .map(Rc::from)
                         .or_else(|| sure.as_deref().map(Rc::from)),
                     sure: sure.is_some(),
@@ -3271,6 +4551,37 @@ fn resolve_local(n: &str, env: &Env, at: &At) -> Option<Local> {
         let l = Local::Named(f.clone());
         if !all.contains(&l) {
             all.push(l);
+        }
+    }
+    // Every other closure the ordinary lane binds for a choice between lambdas
+    // (`ALT_CLOSURE_PREFIX`: `closure_lambda` is only the first), unless the lane's interpretation
+    // followed every value the name may take.
+    if bound.is_none_or(|x| !x.sure) {
+        let alts: Vec<&Expr> = b
+            .field_closures
+            .iter()
+            .filter(|(k, _)| k.starts_with(ALT_CLOSURE_PREFIX))
+            .map(|(_, l)| l.as_ref())
+            .filter(|l| matches!(l, Expr::Lambda { .. }))
+            .collect();
+        if !alts.is_empty() {
+            let caps: Locals = b
+                .whole_captures
+                .as_ref()
+                .map(|c| (*c.0).clone())
+                .unwrap_or_default();
+            for lam in alts {
+                let f = env.closure(lam, &caps, true);
+                if !all.contains(&f) {
+                    all.push(f);
+                }
+            }
+        }
+    }
+    // And every function and closure that interpretation found.
+    for l in bound.map(|x| x.fns.as_slice()).unwrap_or_default() {
+        if !all.contains(l) {
+            all.push(l.clone());
         }
     }
     Some(if all.len() == 1 {
@@ -3554,16 +4865,14 @@ fn src(e: &Expr, env: &Env, at: &At) -> Option<WholeSrc> {
             else_,
             ..
         } => {
-            let s = rec(scrutinee);
-            let whole = value_local(scrutinee, &s, env, at);
+            let (s, whole) = scrutinee_at(scrutinee, env, at);
             let inner = binders_at(env, at, pattern, &s, &whole);
             join_all([tested(pattern, &s, ctx), src(then, env, &inner), rec(else_)])
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            let s = rec(scrutinee);
-            let whole = value_local(scrutinee, &s, env, at);
+            let (s, whole) = scrutinee_at(scrutinee, env, at);
             let mut out = None;
             for a in arms {
                 let inner = binders_at(env, at, &a.pattern, &s, &whole);
@@ -3965,17 +5274,65 @@ fn passed_fns(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
     passed_fns_in(e, env, at, true, out)
 }
 
-/// [`passed_fns`]; a value block is also run (`blocks`) for the value its run reads.
+/// [`passed_fns`]; a value block, and an `if let` or `match` arm, is also run (`blocks`) for the
+/// value its run reads.
+///
+/// Each is run from the position `src` and the walk run it from — a value block where it stands,
+/// an arm where its pattern's binders are bound — so a block runs once however often it is asked
+/// for. A value block nested in a block's tail or in an arm is also run once from HERE, where the
+/// names those blocks and patterns bind are not bound, when one of them stands for a function here
+/// (a binder that took a function apart is only a value where it is bound, and the outer name may
+/// be that function: see `walked_fns`). Such a run (`Env::phantom`) starts such runs of its own
+/// only up to [`MAX_PHANTOM`] deep: a run for every combination of bound and unbound names doubles
+/// at every level of a nested value.
 fn passed_fns_in(e: &Expr, env: &Env, at: &At, blocks: bool, out: &mut Vec<Local>) {
+    fns_in(e, env, at, if blocks { Pass::Run } else { Pass::Read }, out);
+    let depth = env.phantom.get();
+    if blocks && depth < MAX_PHANTOM {
+        env.phantom.set(depth + 1);
+        fns_in(e, env, at, Pass::Unbound(false), out);
+        env.phantom.set(depth);
+    }
+}
+
+/// How deep runs with names unbound nest ([`passed_fns_in`]). One level was not enough: a
+/// function reached only through two separated bands of unbound names (a binder, a plain `let`,
+/// then another binder of the same function name, inside a wrapper) was followed by the lane
+/// before round 37's bound and lost with a single level (round-37 cross-check, w1). Each level
+/// multiplies the runs by the nesting depth at most, so two stay polynomial.
+const MAX_PHANTOM: u8 = 2;
+
+/// How [`fns_in`] takes the parts of an expression: read here; read here, with each value block
+/// and arm also run where it runs; or run from here with the names enclosing it unbound, once one
+/// of those names stands for a function here (`true`).
+#[derive(Clone, Copy)]
+enum Pass {
+    Read,
+    Run,
+    Unbound(bool),
+}
+
+/// [`passed_fns_in`], one [`Pass`].
+fn fns_in(e: &Expr, env: &Env, at: &At, pass: Pass, out: &mut Vec<Local>) {
+    let reads = !matches!(pass, Pass::Unbound(_));
+    // A part inside a value block or an arm, where `names` are bound.
+    let under = |names: Vec<String>| match pass {
+        Pass::Unbound(hot) => Pass::Unbound(hot || names.iter().any(|n| fn_here(n, env, at))),
+        Pass::Read | Pass::Run => Pass::Read,
+    };
     match e {
-        Expr::Lambda { .. } => out.push(env.closure(e, &at.locals, at.use_scope)),
-        Expr::Var(n) => match resolve_local(n, env, at) {
+        Expr::Lambda { .. } if reads => out.push(env.closure(e, &at.locals, at.use_scope)),
+        Expr::Var(n) if reads => match resolve_local(n, env, at) {
             Some(l @ (Local::Closure(_) | Local::Named(_) | Local::Opaque(_))) => out.push(l),
             Some(Local::Any(ls)) => {
                 out.extend(ls.into_iter().filter(|l| !matches!(l, Local::Src(..))))
             }
             Some(_) => {}
-            None if env.is_user_fn(n) => out.push(Local::Named(n.clone())),
+            // A user function or builtin passed as a value (`apply(identity, [print])`), as
+            // `arg_local` binds it.
+            None if env.is_user_fn(n) || crate::backends::run::is_builtin_name(n) => {
+                out.push(Local::Named(n.clone()))
+            }
             None => {}
         },
         // `identity(f)`, `max(f)` / `min(f)` of one value, a `get` default.
@@ -3985,58 +5342,187 @@ fn passed_fns_in(e: &Expr, env: &Env, at: &At, blocks: bool, out: &mut Vec<Local
                 && resolve_local(callee, env, at).is_none() =>
         {
             for a in args {
-                passed_fns_in(a, env, at, blocks, out);
+                fns_in(a, env, at, pass, out);
             }
         }
         // `call(g, a..)` / `apply(g, [a..])` return what `g` returns, which may be an argument it
-        // was given (`identity`, a user function or closure returning its parameter).
+        // was given (`identity`, a user function or closure returning its parameter) — and `g` may
+        // itself be `call` / `apply`, handing on what it was given in a list (`apply(apply,
+        // [identity, [f]])`, `call(apply, identity, [f])`): a list literal's elements, at any depth.
         Expr::Call { callee, args }
             if matches!(callee.as_str(), "call" | "apply")
                 && !env.is_user_fn(callee)
                 && resolve_local(callee, env, at).is_none() =>
         {
             for a in args.iter().skip(1) {
-                match a {
-                    Expr::ArrayLiteral { elements } if callee == "apply" => {
-                        for x in elements {
-                            passed_fns_in(x, env, at, blocks, out);
-                        }
-                    }
-                    _ => passed_fns_in(a, env, at, blocks, out),
+                spread_fns_in(a, env, at, pass, out);
+            }
+        }
+        // `reduce(xs, f, seed)` returns its accumulator: the seed, or what the fold returned from it.
+        // The runtime folds with the FIRST closure argument (`anubis_reduce`), so a closure seed is
+        // the last argument, when the middle one is a closure too (`reduce(xs, f, g)` folds with `f`
+        // and seeds with `g`; `reduce(xs, 0, f)` folds with `f`).
+        Expr::Call { callee, args }
+            if callee == "reduce"
+                && !env.is_user_fn(callee)
+                && resolve_local(callee, env, at).is_none() =>
+        {
+            if let [_, fold, seed] = args.as_slice() {
+                let mut folds = Vec::new();
+                fns_in(fold, env, at, pass, &mut folds);
+                if !folds.is_empty() || !reads {
+                    fns_in(seed, env, at, pass, out);
                 }
             }
         }
         Expr::EnumConstruct { fields, .. } => {
             for f in fields {
-                passed_fns_in(f, env, at, blocks, out);
+                fns_in(f, env, at, pass, out);
             }
         }
         Expr::Try(inner) | Expr::Declassify { inner, .. } | Expr::Cast { expr: inner, .. } => {
-            passed_fns_in(inner, env, at, blocks, out)
+            fns_in(inner, env, at, pass, out)
         }
-        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
-            passed_fns_in(then, env, at, blocks, out);
-            passed_fns_in(else_, env, at, blocks, out);
+        Expr::If { then, else_, .. } => {
+            fns_in(then, env, at, pass, out);
+            fns_in(else_, env, at, pass, out);
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            // Its branches read here (see `walked_fns`) ...
+            fns_in(then, env, at, under(pattern.bound_names()), out);
+            fns_in(else_, env, at, pass, out);
+            // ... and `then` as its run reads it, where the pattern's binders are bound.
+            if matches!(pass, Pass::Run) && may_pass_fn(then) {
+                let (s, whole) = scrutinee_at(scrutinee, env, at);
+                let inner = binders_at(env, at, pattern, &s, &whole);
+                fns_in(then, env, &inner, Pass::Run, out);
+            }
         }
         Expr::Block { stmts, tail } => {
             // Its tail read here (see `walked_fns`) ...
             if let Some(t) = tail {
-                passed_fns_in(t, env, at, blocks, out);
+                fns_in(t, env, at, under(let_names(stmts)), out);
             }
             // ... and its value as its run reads it: the tail or — as the runtime reads a block
             // (`split_tail_expr`) — the last statement, where the block's own `let`s are bound
-            // (the run `src` makes of it).
-            if blocks && may_pass_fn(e) {
+            // (the run `src` makes of it). A value block nested in its tail is run by that run.
+            let run = match pass {
+                Pass::Read => false,
+                Pass::Run => true,
+                Pass::Unbound(hot) => hot,
+            };
+            if run && may_pass_fn(e) {
                 out.extend(interp(stmts, tail.as_deref(), env, at, &None, Run::BLOCK_VALUE).fns);
             }
         }
-        Expr::Match { arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            // Its arms read here (see `walked_fns`) ...
             for a in arms {
-                passed_fns_in(&a.body, env, at, blocks, out);
+                fns_in(&a.body, env, at, under(a.pattern.bound_names()), out);
+            }
+            // ... and as their runs read them, where each arm's binders are bound.
+            if matches!(pass, Pass::Run) && arms.iter().any(|a| may_pass_fn(&a.body)) {
+                let (s, whole) = scrutinee_at(scrutinee, env, at);
+                for a in arms {
+                    let inner = binders_at(env, at, &a.pattern, &s, &whole);
+                    fns_in(&a.body, env, &inner, Pass::Run, out);
+                }
             }
         }
         _ => {}
     }
+}
+
+/// Whether reading the name `n` here yields a function value (as `fns_in` reads a name).
+fn fn_here(n: &str, env: &Env, at: &At) -> bool {
+    match resolve_local(n, env, at) {
+        Some(Local::Src(..)) => false,
+        Some(Local::Any(ls)) => ls.iter().any(|l| !matches!(l, Local::Src(..))),
+        Some(_) => true,
+        None => env.is_user_fn(n) || crate::backends::run::is_builtin_name(n),
+    }
+}
+
+/// [`fns_in`] of a `call` / `apply` operand: a list literal's elements, at any depth.
+fn spread_fns_in(e: &Expr, env: &Env, at: &At, pass: Pass, out: &mut Vec<Local>) {
+    match e {
+        Expr::ArrayLiteral { elements } => {
+            for x in elements {
+                spread_fns_in(x, env, at, pass, out);
+            }
+        }
+        _ => fns_in(e, env, at, pass, out),
+    }
+}
+
+/// The names a statement list's `let`s bind.
+fn let_names(stmts: &[Stmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    for s in stmts {
+        match s {
+            Stmt::Let { name, .. } => names.push(name.clone()),
+            Stmt::LetPattern { pattern, .. } => names.extend(pattern.bound_names()),
+            _ => {}
+        }
+    }
+    names
+}
+
+/// What a `match` / `if let` scrutinee evaluated at `at` holds, and what it is as a binding (a
+/// function value it may be included). Remembered by its node and position: `src` and
+/// `passed_fns` of the `match` both read it, and each also reads it of a scrutinee nested inside,
+/// so evaluating it again would double the work per nesting level. A result read from a call in
+/// progress is kept for its epoch only, with the calls it read (as a closure application is).
+fn scrutinee_at(scrutinee: &Expr, env: &Env, at: &At) -> (Option<WholeSrc>, Local) {
+    let node = scrutinee as *const Expr as usize;
+    let names = Rc::as_ptr(&at.locals) as usize;
+    let key: ScrutineeKey = (
+        node,
+        names,
+        at.use_scope,
+        at.depth,
+        env.epoch.get(),
+        env.phantom.get(),
+    );
+    let hit = env
+        .scrutinees
+        .borrow()
+        .get(&key)
+        .map(|(_, deps, limited, s, whole)| (deps.clone(), *limited, s.clone(), whole.clone()));
+    if let Some((deps, limited, s, whole)) = hit {
+        env.reads.borrow_mut().extend(deps);
+        if limited {
+            env.fell_back();
+        }
+        return (s, whole);
+    }
+    let reads_start = env.reads.borrow().len();
+    let fallbacks_start = env.fallbacks.get();
+    let s = src(scrutinee, env, at);
+    let whole = value_local(scrutinee, &s, env, at);
+    let deps = env.deps_since(reads_start, None);
+    let limited = env.fallbacks.get() != fallbacks_start;
+    let key: ScrutineeKey = (
+        node,
+        names,
+        at.use_scope,
+        at.depth,
+        env.epoch.get(),
+        env.phantom.get(),
+    );
+    env.scrutinees.borrow_mut().insert(
+        key,
+        (at.locals.clone(), deps, limited, s.clone(), whole.clone()),
+    );
+    (s, whole)
 }
 
 /// A name's binding for `let name = init` (evaluated at `at`): a closure stays callable (closing over
@@ -4067,6 +5553,7 @@ fn interp(
         at.use_scope,
         at.depth,
         run.bits(),
+        env.phantom.get(),
     );
     let hit = env.blocks.borrow().get(&key).map(|(_, r)| r.clone());
     let r = match hit {
@@ -4087,8 +5574,16 @@ fn interp(
                 cont: f.cont,
             };
             let mut blocks = env.blocks.borrow_mut();
-            if blocks.len() < MAX_BLOCKS {
-                blocks.insert(key, (at.locals.clone(), r.clone()));
+            let mut order = env.block_order.borrow_mut();
+            if blocks.len() >= MAX_BLOCKS {
+                if let Some(old) = order.pop_front() {
+                    blocks.remove(&old);
+                }
+            }
+            if blocks.len() < MAX_BLOCKS
+                && blocks.insert(key, (at.locals.clone(), r.clone())).is_none()
+            {
+                order.push_back(key);
             }
             r
         }
@@ -4460,9 +5955,9 @@ fn run_loop_from(
     }
     // Not settled — or not run at all (the step budget may be spent before the first iteration):
     // every name may hold, computed, anything any name can reach and anything an iteration may
-    // bring in from outside the names, and a function kept in one is no longer followed. That bound
-    // does not depend on how many iterations ran, so one more run from there covers every later
-    // one.
+    // bring in from outside the names, and any function any name holds ([`topped`]); a closure kept
+    // in one is no longer followed. That bound does not depend on how many iterations ran, so one
+    // more run from there covers every later one.
     env.fell_back();
     let mut seen = BTreeSet::new();
     let (mut all, unbound) = intro(&cur);
@@ -4476,8 +5971,16 @@ fn run_loop_from(
     let all = computed(all);
     let mut top_names = (*cur.locals).clone();
     top_names.extend(unbound);
+    // A name holding only a value may come to hold a function when some name, or what a `break`
+    // left, holds one (every iteration ran, so every function the loop's text puts in a name is
+    // among them), or when the step budget is spent (the loop may not have run at all).
+    let fns = env.steps.get() > MAX_STEPS
+        || top_names
+            .values()
+            .chain(acc.brk.iter().flat_map(|b| b.values()))
+            .any(holds_fn);
     for v in top_names.values_mut() {
-        *v = topped(v, &all);
+        *v = topped(v, &all, fns);
     }
     let cur = cur.with_locals(top_names);
     env.note_head(&cur);
@@ -4494,7 +5997,7 @@ fn run_loop_from(
     // topped too; the names after the run are the head of the next iteration.
     for (n, v) in after.iter_mut() {
         if !cur.locals.contains_key(n) {
-            *v = topped(v, &all);
+            *v = topped(v, &all, fns);
         }
     }
     let cur = cur.with_locals(after);
@@ -4502,7 +6005,7 @@ fn run_loop_from(
     acc.brk = acc.brk.map(|b| {
         let mut b = join_locals(&b, &cur.locals);
         for v in b.values_mut() {
-            *v = topped(v, &all);
+            *v = topped(v, &all, fns);
         }
         b
     });
@@ -4513,18 +6016,41 @@ fn run_loop_from(
 /// writes that are not among them with what they hold there ([`loop_intro`]).
 type Intro = (Option<WholeSrc>, Vec<(String, Local)>);
 
-/// A binding past an unsettled loop: what it holds joined with `all`, its shape no longer known, and
-/// a function in it opaque — keeping both halves of a value-or-function.
-fn topped(l: &Local, all: &Option<WholeSrc>) -> Local {
+/// A binding past an unsettled loop. An iteration the lane did not run may move into it what any
+/// name holds — a value into a name that held only a function, a function (when `fns`: some name
+/// may hold one) into one that held only a value — so it keeps both halves whatever it holds now: a
+/// value holding what it holds joined with `all`, its shape no longer known; and a function opaque
+/// over `all` (and over what an opaque function in it could reach), beside every user function or
+/// builtin it names (a function moved along a chain of names may be any function any name held). A
+/// closure in it is no longer followed: `all` covers what it can reach.
+fn topped(l: &Local, all: &Option<WholeSrc>, fns: bool) -> Local {
+    let value = Local::Src(join(local_src(l), all.clone()), Kind::NONE);
+    if !fns && !holds_fn(l) {
+        return value;
+    }
+    let parts = match l {
+        Local::Any(ls) => ls.as_slice(),
+        other => std::slice::from_ref(other),
+    };
+    let mut out = vec![value];
+    let mut opaque = all.clone();
+    for x in parts {
+        match x {
+            Local::Named(_) if !out.contains(x) => out.push(x.clone()),
+            Local::Opaque(r) => opaque = join(opaque, r.clone()),
+            _ => {}
+        }
+    }
+    out.push(Local::Opaque(opaque));
+    Local::Any(out)
+}
+
+/// Whether a binding may be a function.
+fn holds_fn(l: &Local) -> bool {
     match l {
-        Local::Src(s, _) => Local::Src(join(s.clone(), all.clone()), Kind::NONE),
-        // A function moved along a chain of names may be any function any name held.
-        Local::Named(_) => Local::Any(vec![l.clone(), Local::Opaque(all.clone())]),
-        Local::Closure(_) | Local::Opaque(_) => Local::Opaque(all.clone()),
-        Local::Any(_) => Local::Any(vec![
-            Local::Src(join(local_src(l), all.clone()), Kind::NONE),
-            Local::Opaque(all.clone()),
-        ]),
+        Local::Src(..) => false,
+        Local::Any(ls) => ls.iter().any(holds_fn),
+        Local::Closure(_) | Local::Named(_) | Local::Opaque(_) => true,
     }
 }
 
@@ -4898,7 +6424,7 @@ fn receiver(base: &Expr, recv: &Local, env: &Env, at: &At) -> Recv {
             // Of the declared type (declared types are not enforced: TY-UNENFORCED), unless it
             // may be stale, or of the types with a `secret` field its value names.
             let stale = place_root(base).is_some_and(|r| match first_segment(base) {
-                None => stale_type(r, &t, env),
+                None => own_stale(r, &t, env),
                 Some(seg) => {
                     let own = env
                         .scope
@@ -4948,14 +6474,15 @@ fn arg_local(a: &Expr, env: &Env, at: &At) -> Local {
 fn may_pass_fn(e: &Expr) -> bool {
     match e {
         Expr::Lambda { .. } | Expr::Var(_) => true,
+        // `reduce`'s seed, when the fold before it is a function too (see `fns_in`).
+        Expr::Call { callee, args } if callee == "reduce" => {
+            matches!(args.as_slice(), [_, f, seed] if may_pass_fn(f) && may_pass_fn(seed))
+        }
         Expr::Call { callee, args } => {
             matches!(
                 callee.as_str(),
                 "identity" | "max" | "min" | "get" | "call" | "apply"
-            ) && args.iter().any(|a| match a {
-                Expr::ArrayLiteral { elements } => elements.iter().any(may_pass_fn),
-                _ => may_pass_fn(a),
-            })
+            ) && args.iter().any(spread_may_pass_fn)
         }
         Expr::EnumConstruct { fields, .. } => fields.iter().any(may_pass_fn),
         Expr::Try(inner) | Expr::Declassify { inner, .. } | Expr::Cast { expr: inner, .. } => {
@@ -4969,6 +6496,14 @@ fn may_pass_fn(e: &Expr) -> bool {
         Expr::Block { stmts, tail: None } => stmts.last().is_some_and(stmt_may_pass_fn),
         Expr::Match { arms, .. } => arms.iter().any(|a| may_pass_fn(&a.body)),
         _ => false,
+    }
+}
+
+/// [`may_pass_fn`] of an operand, a list literal's elements at any depth (see `spread_fns_in`).
+fn spread_may_pass_fn(e: &Expr) -> bool {
+    match e {
+        Expr::ArrayLiteral { elements } => elements.iter().any(spread_may_pass_fn),
+        _ => may_pass_fn(e),
     }
 }
 
@@ -5050,7 +6585,7 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
             if c.use_scope {
                 for n in written_names([body.as_ref()]) {
                     if let std::collections::btree_map::Entry::Vacant(slot) = locals.entry(n) {
-                        if let Some(l) = scope_local(slot.key(), env) {
+                        if let Some(l) = env.scoped_local(slot.key()) {
                             slot.insert(l);
                         }
                     }
@@ -5061,10 +6596,13 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
                 use_scope: c.use_scope,
                 depth: at.depth + 1,
             };
+            let was = env.phantom.replace(0);
             let w = walk(body, env, &inner, &None);
+            let ret = join(src(body, env, &w.view()), w.ret);
+            env.phantom.set(was);
             let fx = FnFx {
                 // What the body evaluates to, and what a `return` inside it returns.
-                ret: join(src(body, env, &w.view()), w.ret).map(WholeSrc::capped),
+                ret: ret.map(WholeSrc::capped),
                 egress: w.egress,
             };
             let applied = Applied {
@@ -5637,7 +7175,9 @@ fn specialize(
             (calls[depth].binds.clone(), calls[depth].grew)
         };
         let mark = env.reads.borrow().len();
+        let was = env.phantom.replace(0);
         let r = compute(&now);
+        env.phantom.set(was);
         let assumed = env.active.borrow().get(&key).cloned().unwrap_or_default();
         let reread = env.reads.borrow()[mark..].iter().any(|k| k == &key);
         let grew = env.calls.borrow()[depth].grew != grew_before;

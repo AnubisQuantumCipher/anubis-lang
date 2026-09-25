@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let n = 5;
+    let v = max(if n > 11 { let a11 = n - 11; identity(if n > 10 { let a10 = n - 10; Ok(match n { 9 => { let a9 = n - 9; Some(if n > 8 { let a8 = n - 8; max(if n > 7 { let a7 = n - 7; identity(match n { 6 => { let a6 = n - 6; Ok(if n > 5 { let a5 = n - 5; Some(if n > 4 { let a4 = n - 4; max(match n { 3 => { let a3 = n - 3; identity(if n > 2 { let a2 = n - 2; Ok(if n > 1 { let a1 = n - 1; Some(match n { 0 => { let a0 = n - 0; p }, _ => p }) } else { p }) } else { p }) }, _ => p }, p) } else { p }) } else { p }) }, _ => p }) } else { p }, p) } else { p }) }, _ => p }) } else { p }) } else { p }, p);
+    println(n);
+}

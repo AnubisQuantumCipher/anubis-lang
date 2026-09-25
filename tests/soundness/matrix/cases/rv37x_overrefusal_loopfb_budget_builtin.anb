@@ -1,0 +1,50 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn marker(z) { return 0; }
+fn heavy(c) {
+  let t = 0;
+  let a1 = 0; let a2 = 0; let a3 = 0; let a4 = 0; let a5 = 0; let a6 = 0; let a7 = 0; let a8 = 0; let a9 = 0; let a10 = 0; let a11 = 0; let a12 = 0; let a13 = 0; let a14 = 0; let a15 = 0; let a16 = 0; let a17 = 0; let a18 = 0; let a19 = 0; let a20 = 0; let a21 = 0; let a22 = 0;
+  let i = 0;
+  while i < 2 {
+    i = i + 1;
+    a1 = a2; a2 = a3; a3 = a4; a4 = a5; a5 = a6; a6 = a7; a7 = a8; a8 = a9; a9 = a10; a10 = a11; a11 = a12; a12 = a13; a13 = a14; a14 = a15; a15 = a16; a16 = a17; a17 = a18; a18 = a19; a19 = a20; a20 = a21; a21 = a22; a22 = c;
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+    if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; } if t == 1 { t = 0; } else { t = 1; }
+  }
+  return 0;
+}
+fn f(q) {
+  let h1 = heavy(|z| z + 1);
+  let h2 = heavy(|z| z + 2);
+  let h3 = heavy(|z| z + 3);
+  let h4 = heavy(|z| z + 4);
+  let h5 = heavy(|z| z + 5);
+  let h6 = heavy(|z| z + 6);
+  let h7 = heavy(|z| z + 7);
+  let h8 = heavy(|z| z + 8);
+  let h9 = heavy(|z| z + 9);
+  let h10 = heavy(|z| z + 10);
+  let h11 = heavy(|z| z + 11);
+  let h12 = heavy(|z| z + 12);
+  let h13 = heavy(|z| z + 13);
+  let n = 0;
+  let i = 0;
+  while i < 2 {
+    n = n + q.pub_n;
+    i = i + 1;
+  }
+  let s = str(n);
+  return 0;
+}
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  f(p);
+  print("done");
+}

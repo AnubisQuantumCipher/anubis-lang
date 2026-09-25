@@ -1,0 +1,22 @@
+struct Account { k: secret<i64>, owner: str }
+struct Invoice { id: i64, total: i64, account: Account }
+struct Tag { label: str }
+impl Invoice {
+    fn summary(self) -> str {
+        return "invoice ${self.id}: ${self.total}";
+    }
+}
+impl Tag {
+    fn summary(self) -> str {
+        return "tag ${self}";
+    }
+}
+fn main() {
+    let acct = Account { k: 42, owner: "ann" };
+    let invs = [Invoice { id: 1, total: 10, account: acct }, Invoice { id: 2, total: 20, account: acct }];
+    let t = Tag { label: "urgent" };
+    println(t.summary());
+    let first: Invoice = invs[0];
+    let inv: Invoice = if first.total > 5 { invs[1] } else { first };
+    println(inv.summary());
+}

@@ -1,0 +1,26 @@
+struct Employee { k: secret<i64>, name: str, dept: str }
+struct Dept { name: str, staff: list<Employee> }
+impl Employee {
+    fn same(self, other: Employee) -> bool {
+        return self == other;
+    }
+}
+impl Dept {
+    fn same(self, other: Dept) -> bool {
+        return self.name == other.name;
+    }
+}
+fn build(n: str, xs: list<Employee>) -> Dept {
+    let d = Dept { name: n, staff: xs };
+    return d;
+}
+fn main() {
+    let ann = Employee { k: 42, name: "ann", dept: "eng" };
+    let bob = Employee { k: 7, name: "bob", dept: "eng" };
+    let eng = build("eng", [ann, bob]);
+    let ops = build("ops", []);
+    println("eng is ops: ${eng.same(ops)}");
+    let bonus = map_values({ "eng": 2, "ops": 1 }, |v| v * 10);
+    println("eng bonus ${bonus["eng"]}");
+    let kk = declassify(ann.k, "audit", "audited");
+}
