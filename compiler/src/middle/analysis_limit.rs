@@ -22,7 +22,13 @@
 //!
 //! Reaching one is sticky for the request: every later closure body or walker entry is cut short,
 //! the walkers return a fail-closed answer, and `check` turns the request into an
-//! `ANUBIS_ANALYSIS_LIMIT` refusal, so a partial analysis never passes as a check.
+//! `ANUBIS_ANALYSIS_LIMIT` refusal, so a partial analysis never passes as a check. The refusal is
+//! reported alone: the other errors of such a request come from the fail-closed answers (a secret
+//! "past the analysis limit" in a program that has none), so they are not findings.
+//!
+//! Time is not bounded. An analysis stopped by none of these can still take long (a chain of 8000
+//! functions each calling the previous one runs past two minutes): it uses CPU, not the memory or
+//! stack the rest of the machine depends on.
 //!
 //! The request-level refusal, its recovery between requests and the regression fixtures come from
 //! the crash-diagnosis sessions of 2026-09-24 (`source_recursion.rs`); their guard counted every
@@ -44,7 +50,9 @@ pub(super) const DIAGNOSTIC: &str = "ANUBIS_ANALYSIS_LIMIT: the checker ran out 
      its memory budget, or nested closure bodies more than 4096 deep, while analyzing this program \
      (for example a closure that calls itself through a reassigned name, directly or through \
      another closure, or expressions nested too deeply inside a chain of calls); it cannot bound \
-     what the program returns or does, so the program is refused";
+     what the program returns or does, so the program is refused. This is a limit of the checker, \
+     not a finding about the program: simplify the program, or give the check more memory \
+     (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if the machine has it to spare";
 
 thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -156,10 +164,7 @@ pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
     if !EXHAUSTED.get() {
         return result;
     }
-    match result {
-        Ok(_) => Err(DIAGNOSTIC.into()),
-        Err(other) => Err(format!("{DIAGNOSTIC}; {other}")),
-    }
+    Err(DIAGNOSTIC.into())
 }
 
 #[cfg(test)]
@@ -271,15 +276,17 @@ mod tests {
         assert!(err.starts_with("ANUBIS_ANALYSIS_LIMIT"), "{err}");
     }
 
+    /// Past the limit the other errors come from fail-closed answers (review of the checker limits:
+    /// a program with no secret was refused with a secret "past the analysis limit" beside the
+    /// limit), so the refusal is the limit alone. It is still a refusal.
     #[test]
-    fn other_errors_are_kept() {
+    fn the_limit_is_reported_alone() {
         let err = check::<()>(|| {
             recurse();
             Err("ANUBIS_SECRET_EXFILTRATION: x".into())
         })
         .unwrap_err();
-        assert!(err.starts_with("ANUBIS_ANALYSIS_LIMIT"), "{err}");
-        assert!(err.ends_with("; ANUBIS_SECRET_EXFILTRATION: x"), "{err}");
+        assert_eq!(err, DIAGNOSTIC);
     }
 
     #[test]

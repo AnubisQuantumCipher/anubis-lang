@@ -13,13 +13,21 @@
 //! - past the hard budget (an analysis the guard does not reach kept allocating), the process
 //!   prints that diagnostic and exits with status 1 at once.
 //!
-//! The soft budget is a sixth of the memory available to the process (physical memory, or the
-//! smallest cgroup `memory.max` above it, when lower), at most 4 GiB; the hard one is a third, at
-//! most 8 GiB (the process's resident memory runs about a third above what it has allocated).
-//! The budgets bound the checker's analyses (a check request); parsing before it, and the solver,
-//! evidence and code generation after it, are not counted against them.
-//! `ANUBIS_ANALYSIS_MEMORY_MIB` sets the soft budget (the hard one is twice it). Outside a check
-//! request nothing is limited. A program that embeds the compiler without installing the
+//! The budgets come from the memory this process can use when the request begins: the smaller of
+//! what the system has available (`MemAvailable`: free memory plus what the kernel can reclaim)
+//! and the smallest cgroup v2 `memory.max` above the process. The soft budget is half of it, the
+//! hard one two thirds (the process's resident memory runs about a third above what it has
+//! allocated, so at the hard budget it still fits). An earlier version took a sixth of the limit,
+//! at most 4 GiB: review showed it refused valid programs that fit in the machine several times
+//! over (a 600-branch `else if`, a 2000-piece string, closure stress programs), so a check's
+//! verdict depended on the machine far more than it had to.
+//!
+//! The verdict of a program near its budget still depends on the memory the machine has free.
+//! `ANUBIS_ANALYSIS_MEMORY_MIB` fixes the soft budget (the hard one is twice it), for a
+//! reproducible verdict. The budgets bound the checker's analyses (a check request); parsing before
+//! it, and the solver, evidence and code generation after it, are not counted against them, and
+//! checks run side by side each take their budget from the memory free when they begin. Outside a
+//! check request nothing is limited. A program that embeds the compiler without installing the
 //! allocator has no memory budget, only the stack and depth limits.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
@@ -33,8 +41,9 @@ static HARD: AtomicUsize = AtomicUsize::new(0);
 static OVER: AtomicBool = AtomicBool::new(false);
 
 const MIB: usize = 1 << 20;
-const SOFT_MAX: usize = 4096 * MIB;
-const HARD_MAX: usize = 8192 * MIB;
+/// The budgets when the platform reports no memory figure at all.
+const SOFT_DEFAULT: usize = 4096 * MIB;
+const HARD_DEFAULT: usize = 8192 * MIB;
 const EXIT_MESSAGE: &[u8] = b"\nANUBIS_ANALYSIS_LIMIT: the checker's analysis of this program exceeded its \
 memory budget (ANUBIS_ANALYSIS_MEMORY_MIB); the check did not complete, so the program is refused\n";
 
@@ -137,10 +146,43 @@ fn budgets() -> (usize, usize) {
         let soft = mib.saturating_mul(MIB);
         return (soft, soft.saturating_mul(2));
     }
-    match physical_memory() {
-        Some(total) => ((total / 6).min(SOFT_MAX), (total / 3).min(HARD_MAX)),
-        None => (SOFT_MAX, HARD_MAX),
+    match usable_memory() {
+        Some(free) => (free / 2, free / 3 * 2),
+        None => (SOFT_DEFAULT, HARD_DEFAULT),
     }
+}
+
+/// The memory this process can use now: what the system has available, and at most the smallest
+/// cgroup `memory.max` above the process.
+fn usable_memory() -> Option<usize> {
+    let system = available_memory().or_else(physical_memory);
+    match (system, cgroup_limit()) {
+        (Some(s), Some(c)) => Some(s.min(c)),
+        (s, c) => s.or(c),
+    }
+}
+
+/// `MemAvailable` from `/proc/meminfo`, in bytes.
+#[cfg(target_os = "linux")]
+fn available_memory() -> Option<usize> {
+    mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn available_memory() -> Option<usize> {
+    None
+}
+
+fn mem_available(meminfo: &str) -> Option<usize> {
+    let kib = meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))?
+        .trim()
+        .strip_suffix("kB")?
+        .trim()
+        .parse::<usize>()
+        .ok()?;
+    Some(kib.saturating_mul(1024))
 }
 
 #[cfg(unix)]
@@ -152,11 +194,7 @@ fn physical_memory() -> Option<usize> {
             libc::sysconf(libc::_SC_PAGESIZE),
         )
     };
-    let physical = (pages > 0 && page > 0).then(|| (pages as usize).saturating_mul(page as usize));
-    match (physical, cgroup_limit()) {
-        (Some(p), Some(c)) => Some(p.min(c)),
-        (p, c) => p.or(c),
-    }
+    (pages > 0 && page > 0).then(|| (pages as usize).saturating_mul(page as usize))
 }
 
 /// The smallest cgroup v2 `memory.max` on the path from this process's cgroup to the root (a
@@ -189,4 +227,18 @@ fn cgroup_limit() -> Option<usize> {
 #[cfg(not(unix))]
 fn physical_memory() -> Option<usize> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mem_available_reads_the_meminfo_line() {
+        let meminfo = "MemTotal:       32000000 kB\nMemFree:         1000000 kB\n\
+                       MemAvailable:   16000000 kB\nBuffers:          100000 kB\n";
+        assert_eq!(mem_available(meminfo), Some(16_000_000 * 1024));
+        assert_eq!(mem_available("MemTotal: 5 kB\n"), None);
+        assert_eq!(mem_available("MemAvailable: lots\n"), None);
+    }
 }

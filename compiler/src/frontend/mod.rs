@@ -4751,6 +4751,14 @@ pub fn line_col(source: &str, byte_offset: usize) -> (usize, usize) {
 /// followed by the offending source line and a caret underline sized to the span. The
 /// diagnostic `message` is preserved verbatim so `ANUBIS_*` codes and `ERROR_CONTAINS`
 /// substrings still match on the rendered text.
+/// Characters of a source line shown on each side of the column a diagnostic points at. A longer
+/// line is cut to this window (`…` marks the cut), so the rendering stays small whatever the line.
+const RENDER_WINDOW: usize = 80;
+/// Parse diagnostics rendered in full; the rest are counted. Error recovery can report one error
+/// per token of a malformed file, and each rendering repeats its line: a 6 KB file of nested
+/// blocks produced 5210 errors and 49.6 MB of text, and 3000 levels needed a 1.3 GB allocation.
+const MAX_RENDERED_PARSE_ERRORS: usize = 20;
+
 pub fn render_parse_diagnostic(source: &str, diag: &ParseDiagnostic, path: Option<&str>) -> String {
     let (line, col) = line_col(source, diag.span.start);
     let file = path.unwrap_or("<anubis>");
@@ -4762,31 +4770,49 @@ pub fn render_parse_diagnostic(source: &str, diag: &ParseDiagnostic, path: Optio
         .map(|s| s.chars().take_while(|&c| c != '\n').count())
         .unwrap_or(1)
         .max(1);
+    // The window of the line around the column (1-based `col` counts characters).
+    let chars: Vec<char> = src_line.chars().collect();
+    let at = col.saturating_sub(1).min(chars.len());
+    let from = at.saturating_sub(RENDER_WINDOW);
+    let to = (at + RENDER_WINDOW).min(chars.len());
+    let lead = if from > 0 { "…" } else { "" };
+    let tail = if to < chars.len() { "…" } else { "" };
+    let shown: String = chars[from..to].iter().collect();
     let gutter = line.to_string();
     let pad = " ".repeat(gutter.len());
-    let caret_pad = " ".repeat(col.saturating_sub(1));
-    let carets = "^".repeat(underline_len);
+    let caret_pad = " ".repeat(at - from + lead.chars().count());
+    let carets = "^".repeat(underline_len.min(to.saturating_sub(at).max(1)));
     format!(
-        "{file}:{line}:{col}: error: {msg}\n {pad} |\n {gutter} | {src_line}\n {pad} | {caret_pad}{carets}",
+        "{file}:{line}:{col}: error: {msg}\n {pad} |\n {gutter} | {lead}{shown}{tail}\n {pad} | {caret_pad}{carets}",
         msg = diag.message
     )
 }
 
-/// Render every diagnostic from a parse, rustc-style, or `None` when the source parses cleanly.
+/// Render the diagnostics from a parse, rustc-style, or `None` when the source parses cleanly: the
+/// first `MAX_RENDERED_PARSE_ERRORS` in full, then how many more there are.
 /// This is the user-facing counterpart to `parse_source`'s `"; "`-joined error string.
 pub fn render_parse_errors(source: &str, path: Option<&str>) -> Option<String> {
     let output = parse_source_detailed(source);
     if output.diagnostics.is_empty() {
         return None;
     }
-    Some(
-        output
-            .diagnostics
-            .iter()
-            .map(|d| render_parse_diagnostic(source, d, path))
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    )
+    let mut rendered: Vec<String> = output
+        .diagnostics
+        .iter()
+        .take(MAX_RENDERED_PARSE_ERRORS)
+        .map(|d| render_parse_diagnostic(source, d, path))
+        .collect();
+    let more = output
+        .diagnostics
+        .len()
+        .saturating_sub(MAX_RENDERED_PARSE_ERRORS);
+    if more > 0 {
+        rendered.push(format!(
+            "… and {more} more parse error{}",
+            if more == 1 { "" } else { "s" }
+        ));
+    }
+    Some(rendered.join("\n\n"))
 }
 
 #[cfg(test)]
@@ -4820,6 +4846,45 @@ mod diagnostic_render_tests {
         assert!(rendered.contains("let x = ;"));
         // caret sits under column 13 (12 spaces of padding then a single caret)
         assert!(rendered.contains("|             ^"));
+    }
+
+    /// A long line is shown as a window around the column, with the caret still under it.
+    #[test]
+    fn render_parse_diagnostic_windows_a_long_line() {
+        let src = format!("fn main() {{ let x = {}; }}\n", "1 + ".repeat(1000) + ")");
+        let at = src.rfind(')').unwrap();
+        let diag = ParseDiagnostic {
+            message: "unexpected token".into(),
+            span: Span {
+                start: at,
+                end: at + 1,
+            },
+        };
+        let rendered = render_parse_diagnostic(&src, &diag, None);
+        assert!(rendered.len() < 1000, "{}", rendered.len());
+        let lines: Vec<&str> = rendered.lines().collect();
+        let text = lines[2].split(" | ").nth(1).unwrap();
+        let caret = lines[3].split(" | ").nth(1).unwrap();
+        let col = caret.chars().position(|c| c == '^').unwrap();
+        assert_eq!(text.chars().nth(col), Some(')'), "{rendered}");
+    }
+
+    /// A cascade of errors renders the first ones and counts the rest.
+    #[test]
+    fn render_parse_errors_counts_past_the_first_twenty() {
+        let src = format!("fn main() {{ {} }}\n", "let = ; ".repeat(200));
+        let all = parse_source_detailed(&src).diagnostics.len();
+        assert!(all > MAX_RENDERED_PARSE_ERRORS);
+        let rendered = render_parse_errors(&src, Some("t.anb")).unwrap();
+        assert_eq!(
+            rendered.matches("error:").count(),
+            MAX_RENDERED_PARSE_ERRORS
+        );
+        let more = all - MAX_RENDERED_PARSE_ERRORS;
+        assert!(
+            rendered.ends_with(&format!("… and {more} more parse errors")),
+            "{rendered}"
+        );
     }
 
     #[test]

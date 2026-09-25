@@ -2374,8 +2374,9 @@ fn seal_vz_execution_receipt(
     Ok(receipt.receipt_hash)
 }
 
-/// Every allocation is counted, so a check stays within its memory budget: past it the check is
-/// refused, and it can never exhaust the machine (`anubis_compiler::resource`).
+/// Every allocation is counted, so a check's analyses stay within a memory budget taken from what
+/// the machine has free: past it the check is refused before the machine runs out
+/// (`anubis_compiler::resource`; parsing, the solver and code generation are not counted).
 #[global_allocator]
 static ALLOC: anubis_compiler::resource::CountingAlloc = anubis_compiler::resource::CountingAlloc;
 

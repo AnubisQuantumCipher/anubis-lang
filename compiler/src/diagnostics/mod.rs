@@ -352,14 +352,22 @@ fn leading_code(message: &str) -> String {
 /// a program that never reached the solver, and an empty finding list is the
 /// one thing a verdict format must never say about a failure.
 pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
+    let code = leading_code(message);
+    // The checker ran out of stack or memory: nothing is known to be wrong with the program, so an
+    // agent must not "repair" it; it can simplify it or raise the budget.
+    let (defect_locus, agent_action) = if code == "ANUBIS_ANALYSIS_LIMIT" {
+        (DefectLocus::Capability, AgentAction::RestateOrRaiseBudget)
+    } else {
+        (DefectLocus::Program, AgentAction::RepairProgram)
+    };
     Diagnostic {
         type_tag: "anubis.diagnostic".into(),
         schema: SCHEMA.into(),
-        code: leading_code(message),
+        code,
         family: Family::Frontend,
         status: Status::Refused,
-        defect_locus: DefectLocus::Program,
-        agent_action: AgentAction::RepairProgram,
+        defect_locus,
+        agent_action,
         severity: "error".into(),
         build_blocking: true,
         message: message.to_string(),
@@ -803,6 +811,13 @@ mod tests {
         assert_eq!(d.status, Status::Undecided);
         assert_eq!(d.defect_locus, DefectLocus::Capability);
         assert_eq!(d.agent_action, AgentAction::RestateOrRaiseBudget);
+        // The analysis limit is a budget too, never a repair of the program.
+        let limit = diagnostic_of_refusal("ANUBIS_ANALYSIS_LIMIT: the checker ran out of stack");
+        assert_eq!(limit.code, "ANUBIS_ANALYSIS_LIMIT");
+        assert_eq!(limit.defect_locus, DefectLocus::Capability);
+        assert_eq!(limit.agent_action, AgentAction::RestateOrRaiseBudget);
+        let other = diagnostic_of_refusal("ANUBIS_SECRET_EXFILTRATION: secret `k` flows to print");
+        assert_eq!(other.defect_locus, DefectLocus::Program);
         assert!(d.counterexample.is_none());
         // The whole point: an agent must not treat this like a disproof and
         // weaken the contract to make it pass.

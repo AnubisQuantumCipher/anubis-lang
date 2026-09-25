@@ -71,6 +71,10 @@ fn a_check_past_its_memory_budget_is_refused() {
     assert_eq!(out.status.code(), Some(1), "{text}");
     assert!(text.contains("ANUBIS_ANALYSIS_LIMIT"), "{text}");
     assert!(!text.contains("check passed"), "{text}");
+    // Reported alone: the fail-closed answers behind it are not findings (this program has no
+    // secret; the refusal used to list one "past the analysis limit").
+    assert!(!text.contains("past the analysis limit"), "{text}");
+    assert!(!text.contains("ANUBIS_SECRET_EXFILTRATION"), "{text}");
     assert!(took < Duration::from_secs(60), "took {took:?}");
 }
 
@@ -96,4 +100,30 @@ fn an_overlong_chain_is_a_diagnostic() {
     let text = text(&out);
     assert_eq!(out.status.code(), Some(1), "{text}");
     assert!(text.contains("expression chain is too long"), "{text}");
+}
+
+/// A malformed file whose errors cascade is reported in bounded space: 3000 nested blocks used to
+/// render every error with its whole line, needing a 1.3 GB allocation.
+#[test]
+fn a_cascade_of_parse_errors_is_bounded() {
+    let mut body = String::from("s");
+    for _ in 0..3000 {
+        body = format!("{{ let t = {body}; t }}");
+    }
+    let src = format!("fn main() {{\n    let g = |s| {body};\n    print(g(0));\n}}");
+    let (out, took) = check("cascade", &src, "64");
+    let text = text(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        &text[..text.len().min(2000)]
+    );
+    assert!(
+        text.contains("more parse errors"),
+        "{}",
+        &text[..text.len().min(2000)]
+    );
+    assert!(text.len() < 2_000_000, "{} bytes of output", text.len());
+    assert!(took < Duration::from_secs(60), "took {took:?}");
 }

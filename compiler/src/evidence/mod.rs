@@ -426,7 +426,19 @@ fn build_evidence_bundle_tree_inner(
         },
     });
 
-    if let Ok(ast) = parse_res {
+    // A check refused at the analysis limit ran out of stack or memory; running the same analysis
+    // again for the bundle would only repeat that (and double the time to the refusal).
+    let limit_refusal = rejection.is_some_and(|r| r.contains("ANUBIS_ANALYSIS_LIMIT"));
+    if limit_refusal {
+        checks.push(Check {
+            name: "typecheck".into(),
+            status: "FAIL".into(),
+            detail: "not run again: the command's check reached the analysis limit \
+                     (command_rejection)"
+                .into(),
+        });
+    }
+    if let (Ok(ast), false) = (parse_res, limit_refusal) {
         let tc_mode = match mode {
             "research" => crate::frontend::Mode::Research,
             "exploit" => crate::frontend::Mode::Exploit,
