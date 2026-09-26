@@ -1612,6 +1612,12 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — whole-struct lane: review round 39, first landing step (bands, `d8a714f9`).**
+    - The round-38 regression R39B-F1a/F1b (a rebound `call`/`apply` lost the function it forwards) is
+      closed, with R39B-F2, O1, P1 and P2; 108 cases added, each with a runtime witness. No existing
+      case changes. Four ordinary-lane-dependent leaks are registered open. Matrix at d8a714f9: 1942
+      cases, 1798 PASS, 38 silent accepts, 98 wrong-class, 8 INVALID.
+
     **UPDATE 2026-09-25 — ordinary lane: review of `1696925b`, second landing step (alias, `d61c33d8`).**
     - The alias cluster (16 findings + a latent one): function values written in branches, loops,
       value blocks and places, held in containers, forwarded by builtins or aliased to higher-order

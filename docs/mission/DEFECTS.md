@@ -509,3 +509,20 @@ the owner:
 |---|---|
 | IFC-PC-EGRESS | not a policy question any more: egress executed under a secret-decided condition is refused in Safe mode (a print under `if (k >> j) & 1 == 1` printed every bit of a secret on e7b56507); the row stays **open** until the fix lands in every lane |
 | L-SHADOW-1 | lexical shadowing is the intended rule, reached through a diagnostic in the current edition and an edition change with a migration; open |
+
+### Follow-up: d8a714f9 (whole-struct lane, review round 39, landing step 1: bands)
+
+The review of f878d41c + 2f0b2805 (round 39) confirmed 33 findings: 19 leaks, 10 over-refusals and
+4 costs, including a REGRESSION of round 38. Four fix designs and a cross-check; this commit lands
+bands, which holds the regression. Matrix at d8a714f9 (pin `anubis-ord3x3`): 1942 cases, 1798 PASS,
+38 silent accepts (all `open_*`), 98 wrong-class, 8 INVALID.
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| WHOLE-R39-BANDS-REG | S1 | REGRESSION of round 38: `stick` kept a builtin name's implicit function only for egress sinks, so a `call`/`apply` rebound through a value block or pattern binder after container extraction lost the function it forwards (R39B-F1a/F1b; ordret2a rejects, ord3b accepts) | `rv39_bands_r39b_f1a`, `rv39_bands_r39b_f1b` | **fixed** d8a714f9 |
+| WHOLE-R39-LAMBDA-STICK | S1 | a coincident lambda parameter (`\|show\| show`) lost the function a container held (R39B-F2) | `rv39_bands_r39b_f2`, `rv39_bands_t_rej_f2_lamparam_*` | **fixed** d8a714f9 |
+| OR-WHOLE-R39-APPLY-POSITIONS | S4 | a nested literal `apply` confused operand positions and refused a valid program (R39B-O1) | `rv39_bands_r39b_o1`, `rv39_bands_r39b_o1b_k3_4levels` | **fixed** d8a714f9 |
+| PERF-WHOLE-R39-BUILTIN-VALUES | S3 | needless callback analysis and repeated nested builtin application (R39B-P1, R39B-P2 7.57 s) | `rv39_bands_r39b_p1`, `rv39_bands_r39b_p2`, `rv39_bands_r39b_p1b_py_wide40`, `rv39_bands_t2_acc_p1_*` | **fixed** d8a714f9 (memoized) |
+| OR-WHOLE-R39-HELD-POSITIONS | S4 | a non-literal list given to `apply` contributes the functions it holds at every position | `rv39_bands_t3_ovr_held_positions` (wrong-class) | documented |
+| FV-OPEN-6-R39 | S1 | a main-scope builtin alias, a user-function formal, an ordinary list argument and a secret-field symmetric variant still leak (they depend on the ordinary lane's higher-order alias and formal handling) | `open_rv39_bands_t3_open_d2_main_call_let`, `…open_f2_formal_show`, `…open_nonlit_plain_arg`, `…sym_f2_pk` | **open** |
+| WHOLE-R39-REST | S1 | round 39's boundary, fnret and loose clusters (and the cross-check's two unsound refinements, corrected by fix3) | review of f878d41c + 2f0b2805 | the next units |
