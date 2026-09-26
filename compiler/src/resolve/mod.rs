@@ -17,6 +17,11 @@ use crate::stdlib;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+// Staged captured-byte comparison path. It has no production caller or
+// admission authority until the checker and lowerer consume its graph.
+#[allow(dead_code)]
+mod captured;
+
 /// Mounted package dependency roots: first path segment → package `src_root`.
 #[derive(Debug, Clone, Default)]
 pub struct DepMounts {
