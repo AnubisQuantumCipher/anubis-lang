@@ -1,8 +1,12 @@
 # Verified source graph: package and evidence design
 
-Status: reviewed design input, not an implemented assurance claim. The current
-package and evidence status remains in [CLAIMS](../CLAIMS.md), and the execution
-order remains in the [completion blueprint](../COMPLETION_BLUEPRINT.md).
+Status: reviewed design input, not an implemented assurance claim. Commit
+`72e1390b` adds a caller-supplied, path-sensitive graph identity primitive and
+focused tests; it does not read the filesystem, prove that graph edges match
+parsed imports, or bind checking and lowering to the graph. Package admission
+therefore retains its current fail-closed limits. The current package and
+evidence status remains in [CLAIMS](../CLAIMS.md), and the execution order
+remains in the [completion blueprint](../COMPLETION_BLUEPRINT.md).
 
 ## Problem and required relationship
 
