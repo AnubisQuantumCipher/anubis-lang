@@ -74,8 +74,9 @@ records dependency-correct review refs without rewriting published history.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The isolated local integration branch `codex/register-round2-20260926` has
-reviewed code through `339a960a1da0acd7aa65e23f7469a4ae77f77007` and
-fixture registrations through `15bb53a55ce369128853f5012b38b6c210f0ff14`.
+reviewed compiler code through `339a960a1da0acd7aa65e23f7469a4ae77f77007`,
+captured-bridge receipt/log correction through `1ca7e5b93cf7db62ddc9392d0240c57ff1d3d728`,
+and fixture registrations through `e6b4fb7e86286c6314595284c0e014ca6bd49813`.
 The [guard-transfer receipt](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md)
 binds the preceding `88a2903c` code, selected Safe checks, a clean-head
 binary and a complete provisional same-source matrix comparison. Its reached
@@ -152,9 +153,18 @@ is registered in fixture-only commit `15bb53a5`. The pinned baseline
 over-refuses its public-guard twin and refuses the secret-guard source through
 a generic direct root finding plus IFC2. Independent static review held v4
 because the new field-shape shortcut could lose that direct finding without
-creating a true implicit-flow obligation. A v5 scratch transfer is frozen for
-independent review; review it before lead-only build and
-same-source selected checks. The matrix
+creating a true implicit-flow obligation. The further
+[D9 control-flow twins](evidence/D9_PC_PRECISION_TWINS_2026-09-26/README.md)
+are frozen in `e6b4fb7e`. Their source-matched Safe baseline has protocol-valid
+JSON summaries for every check and typed security diagnostics for refusals:
+loop-local, WhileLet-binder and protected-shadow
+valid programs are over-refused; uncalled closure, secret-bound local loop
+and literal-dead controls pass; all invalid twins refuse. The reachable
+`Row.n` twins still lack a writer-located PC diagnostic, so their generic
+egress refusal cannot close that producer. Independent review held v5 before
+application for binder, shadow, deferred-closure and reachability defects.
+A revised scratch transfer must pass independent review before a lead-only
+build and same-source selected checks. The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
 the new fixed-path loader: production diagnostics still lack complete stable
 source locators. Preserve the old `history.tsv` and add compact event history

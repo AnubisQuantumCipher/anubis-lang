@@ -63,6 +63,17 @@ but no direct implicit-flow diagnostic. Independent static review held the
 unintegrated v4 scratch patch because its clean-field early return could drop
 that direct producer finding. This is a producer-coverage and precision gate,
 not an observed aggregate Safe false accept.
+The further [control-flow precision registration](evidence/D9_PC_PRECISION_TWINS_2026-09-26/README.md)
+freezes For and WhileLet binders, protected shadowing, deferred closures,
+secret loop bounds, and unreachable-arm twins before repair. On the
+SHA-identified Safe baseline, the loop-local, pattern-binder, and protected
+shadow ACCEPT controls are already over-refused by `ANUBIS_IMPLICIT_FLOW`;
+the uncalled-closure, secret-bound local loop, and literal-dead controls pass.
+Every paired REJECT source receives typed security refusal, but the two
+reachable `Row.n` refusals come from generic whole-Row egress and IFC2, not a
+writer-located PC finding. Independent static review held the v5 scratch
+patch for binder, shadow, deferred-body, and reachability errors. No D9
+implementation patch or broader soundness result follows from registration.
 
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate
