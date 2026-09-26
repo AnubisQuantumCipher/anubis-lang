@@ -76,7 +76,7 @@ records dependency-correct review refs without rewriting published history.
 The isolated local integration branch `codex/register-round2-20260926` has
 reviewed compiler code through `aa9c33b76a9c69607a53627e61e01e0db5abcab6`,
 captured-bridge receipt/log correction through `cca4941582bb081d403b89afb941907b1fe7bb04`,
-fixture registrations through `e6b4fb7e86286c6314595284c0e014ca6bd49813`,
+fixture registrations through `49baf0bdfeb054bee41be3dd4492be0fbb13eb8d`,
 and the reviewed captured-build design at
 `f7ea19097320a23fac3120359e2f226a034ee905`. The current branch has no
 integrated D9 v6 or production captured-build CLI consumer code.
@@ -202,6 +202,23 @@ build and same-source selected checks. The matrix
 the new fixed-path loader: production diagnostics still lack complete stable
 source locators. Preserve the old `history.tsv` and add compact event history
 only after that gate is reviewed. `docs/CLAIMS.md` is the defect authority.
+
+The newer [capture and early-exit controls](evidence/D9_CAPTURE_EXIT_CONTROLS_2026-09-26/README.md)
+are source-frozen at `49baf0bd`. A SHA-identified Safe CLI accepts both valid
+twins and refuses both invalid twins through existing IFC v2. This is a
+scoped baseline, not closure of the direct D9 binding/continuation producer.
+Independent static reviews held both unintegrated AST binding-inventory
+drafts: [v1](mission/review/D9_V7_BINDING_INVENTORY_V1_HOLD_2026-09-26.md)
+could skip enclosed expressions for an empty Or pattern; [v2](mission/review/D9_V7_BINDING_INVENTORY_V2_HOLD_2026-09-26.md)
+fixed that traversal but its function-local observation may disappear from a
+release build. Neither patch was applied or lead-built. The next executable
+step is a reviewed, narrow production consumer of stable binding identities
+in the direct D9 producer, with explicit unresolved/multiple-candidate
+handling and same-source negative/valid controls. Then integrate a bounded
+code slice, run lead-owned focused checks, lint, format, and actual-diff
+review. In parallel, the private captured-project path
+still needs typed producer/tool outcomes and source-to-obligation checks
+before any public CLI consumer or evidence admission.
 
 No current full workspace, disposable-guest, independent clean-room,
 protected-branch, product-release, or full trust-chain result is claimed.

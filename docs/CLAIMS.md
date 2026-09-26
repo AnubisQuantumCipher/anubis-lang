@@ -15,16 +15,26 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — captured Safe mode classification banked, CLI trust
+**UPDATE 2026-09-26 — private captured solver guards banked; public producer
+still open.** The [solver-stream](evidence/CAPTURED_SOLVER_STREAM_2026-09-26/README.md)
+and [row-inventory](evidence/CAPTURED_SOLVER_INVENTORY_2026-09-26/README.md)
+receipts bind commits `ee4f13bb` and `aa9c33b7`. Malformed private streams
+now return typed integrity errors; missing, copied, extra, or reordered rows
+relative to the final typed inventory fail the captured bridge. This does
+not detect a source obligation omitted before inventory construction or
+authenticate its SMT formula. Distinct typed producer/tool outcomes and a
+public consumer remain open.
+
+**Earlier update 2026-09-26 — captured Safe mode classification banked, CLI trust
 boundary open.** Code commit `365da05d` and its
 [source-bound receipt](evidence/CAPTURED_SAFE_CHECK_RESULT_2026-09-26/README.md)
 retain each captured module's pre-desugaring mode intent, including unused
 and overridden trait defaults, and classify nested/contract-expression mode
 elevators before Safe-default checking. Focused tests, compiler Clippy, and
 format pass; independent static review approved this private compiler-side
-unit. No public CLI artifact or evidence admission follows. Malformed solver
-streams still use a synthetic wire `FAIL` and need a distinct typed tool-error
-outcome before a public adapter can report `disproved`. The stacked
+unit. No public CLI artifact or evidence admission follows. At that code pin,
+malformed solver streams used a synthetic wire `FAIL`; the later private
+solver-stream guard above supersedes this behavior. The stacked
 `@exploit(authorization: ...) @safe` spelling fails to parse and remains a
 language-surface limitation; its syntax error is not a security refusal.
 
@@ -93,6 +103,20 @@ name-only binder shadowing, early-exit control loss and ordinary valid-program
 refusals in an unintegrated candidate. No v6 binary or checker verdict was
 produced; a typed undecided diagnostic mapping alone does not close the
 producer gap.
+The [capture and early-exit control registration](evidence/D9_CAPTURE_EXIT_CONTROLS_2026-09-26/README.md)
+adds definition-time callable-shadow and definite-return/continuation pairs.
+The source-matched Safe checker accepts both valid twins and refuses both
+invalid twins with typed IFC v2 `ANUBIS_IMPLICIT_FLOW`. This freezes safety
+and precision expectations; it does not demonstrate a direct D9 transfer
+fix, a native runtime witness, or a complete matrix result. Independent
+static reviews held both unintegrated source-bound binding-inventory drafts:
+[v1](mission/review/D9_V7_BINDING_INVENTORY_V1_HOLD_2026-09-26.md) could
+skip expressions in an empty Or pattern and had an unread sidecar;
+[v2](mission/review/D9_V7_BINDING_INVENTORY_V2_HOLD_2026-09-26.md) fixed the
+traversal gap but retained no production observation in release builds.
+Neither was built or graded by the lead. A consumer that uses binding IDs in
+the direct producer still needs design review, lead-run gates, and actual-diff
+review.
 
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate

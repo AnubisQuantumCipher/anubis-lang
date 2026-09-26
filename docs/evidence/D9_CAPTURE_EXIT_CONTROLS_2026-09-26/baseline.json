@@ -1,0 +1,125 @@
+{
+  "binary_sha256": "e66747889003038301a0b97b9f6f2ef59693f440ee8870e6ec223a0b02ba1296",
+  "build_log_sha256": "3ace8978eb6c391b3f6d7c8a7a6818853e125fec1f0cabc7555ab83f1a8307ca",
+  "cargo_lock_sha256": "0064eaf059d9f4072af0b0b744d2a1833d88c552b6f137d3e91b7d41f93530fe",
+  "cases": [
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "defect_locus": "program",
+          "family": "frontend",
+          "message": "ANUBIS_IMPLICIT_FLOW: [ifc2] in `<closure>`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_capture_early_g_invalid",
+      "intent": "REJECT",
+      "source_sha256": "b0009c68a4f38cfdb0ceb2e0e0ce49b3eb2ccf2859d49d244cb009a2c85a4fec",
+      "stderr_sha256": "7feadbbba24d8e8424d66367199aba6f263bdf88a6ad38d0e668c55111ef3ef4",
+      "stdout_sha256": "542de868874b5966ebddd3877f9286adda8da4a4a846b024fed2857dc3e1ecbb",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_capture_early_g_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "3fc999a97db7e4344642381e663b1c48e4d8a41b16eccf0b566a7d6fbfa0f970",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "defect_locus": "program",
+          "family": "frontend",
+          "message": "ANUBIS_IMPLICIT_FLOW: [ifc2] in `emit`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_secret_early_return_invalid",
+      "intent": "REJECT",
+      "source_sha256": "c55d4366f8ad16ad3e16094263e9feb4bd1c8290fc3d6b65ff6c6b0e0af3c485",
+      "stderr_sha256": "96e06e3a0562751f24fed99fb59697c04cd08f94a07486c0c4a17c0b41c17475",
+      "stdout_sha256": "1000f961409d1033dfb84ff7925467acd926510923b61c96101c73b8f2ab3c76",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_secret_guard_assert_continue_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "50f487c593ed497c3ad1eab86b75be15983c5129bfcda85d321cbb4dbeff7979",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "8f7beb5e90f60bbbfdc71057a06ee09e9634c7be677fab6cc644bbc290f9150c",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "coverage": {
+          "certified": 1,
+          "discharged": 1,
+          "not_discharged": 0,
+          "trusted_to_solver": 0,
+          "uncertified": [],
+          "witnesses_retained": false
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    }
+  ],
+  "code_commit": "700b81f4cc42e8efaab7a7f39aae4bf509188263",
+  "code_tree": "dea1bef099b0423929c4c5e09b0c741c08833aae",
+  "command": "<sha256-identified-anubis> check <source> --message-format=json",
+  "limits": [
+    "Only selected source checks, no full matrix",
+    "The two invalid cases are refused by IFC2; direct D9 writer-level or continuation producer is not established",
+    "No native runtime witness or public verified seal"
+  ],
+  "schema": "anubis.d9-binding-control-baseline/1",
+  "scope": "Safe check only in lead-owned capped user scope; no program execution"
+}
