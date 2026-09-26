@@ -2470,3 +2470,7 @@ d9q_pc_match_unreachable_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A se
 d9q_pc_match_reachable_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A reachable match arm writes public Row.n under secret control and its value is printed.
 d9q_pc_if_unreachable_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A nested if false prevents a public Row.n write under secret control; only a constant is printed.
 d9q_pc_if_reachable_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A nested reachable public Row.n write under secret control affects the later printed field.
+d9q_capture_early_g_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A closure created before a later same-name shadow captures the printing callee; its secret-guarded call is forbidden. IFC2 baseline; direct D9 producer pending.
+d9q_capture_early_g_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A closure keeps its definition-time pure callee after a later same-name printing shadow; its secret-guarded call remains valid.
+d9q_secret_early_return_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret-controlled early return makes the later public println conditional on the secret; the return value itself stays secret. IFC2 baseline; direct continuation producer pending.
+d9q_secret_guard_assert_continue_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A proved non-aborting assertion under a secret guard leaves the later constant println unconditional; the return value remains secret.

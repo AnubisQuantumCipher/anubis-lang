@@ -1,0 +1,7 @@
+fn emit(s: secret<i64>) {
+    let g = || { 0 };
+    let f = || { g(); };
+    let g = || { println(1); };
+    if s > 0 { f(); }
+}
+fn main() { emit(42); }
