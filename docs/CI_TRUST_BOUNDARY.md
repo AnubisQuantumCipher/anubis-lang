@@ -11,11 +11,32 @@ gate, including the pinned Lean formal gate, must pass. `G9_poc_kit` is exactly 
 is limited to its non-executing host-isolation witness. The only successful hosted verdict is
 `HOSTED_PASS`.
 
-The workflow publishes only `gate_report.json`, `gate_log.txt`, `profile_environment.txt`,
+The successful hosted artifact contains only `gate_report.json`, `gate_log.txt`, `profile_environment.txt`,
 `attestation_identity.txt`, and a checksum manifest. The identity record binds the artifact to the
 workflow run, exact commit/tree, and observed Rust, Z3, elan, and Lean tool versions. Raw gate
 trees, generated source, test-key material, binaries, and offensive engagement output are not
 uploaded by hosted CI.
+
+### Failed hosted executions
+
+Failed jobs may publish a separate `hosted-gate-diagnostics` artifact. Its
+`DIAGNOSTIC_ONLY.json` marker declares unvalidated observations and no release
+authority. Copies of the existing minimized inputs use `unvalidated-` filename
+prefixes; they cannot supply the successful artifact layout expected by release
+packaging. The existing `HOSTED_PASS` validator still governs successful evidence.
+
+The diagnostic marker records G3's immediately captured Cargo exit status and
+the full raw test-log digest when available. It extracts bounded ASCII test
+identifiers, Rust error codes and explicitly reported signal categories. These
+are syntactic observations, not authenticated failures. Extraction stops at
+captured test output, continues hashing, and records missing or truncated detail
+explicitly. Arbitrary panic/assertion text and raw test logs remain excluded.
+An exit number alone does not establish a signal or a particular test failure.
+
+The [local implementation receipt](evidence/HOSTED_FAILURE_DIAGNOSTICS_2026-09-26/README.md)
+records controlled tests and independent review. It is not a hosted execution
+witness or a diagnosis of a prior failed test. Diagnostic packaging success
+cannot turn a failed job into a passing hosted result.
 
 ## Sealed lanes are out of CI
 
