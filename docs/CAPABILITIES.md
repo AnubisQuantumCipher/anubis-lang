@@ -72,7 +72,8 @@ bash scripts/run_formal_gate.sh                                 # Lean theorem c
 > outside the admitted fragment defer to Z3; `solver/src/fragment.rs` defines the admission rule.
 > Variable×variable multiply is **not** deferred: its Lean model has a machine-checked theorem
 > (`mulVar_correct` in `formal/Anubis/BitBlast.lean`), and the fragment gate admits the production
-> operation (`MulVar` in `PROVEN_OP_TAGS`). Rust-to-model correspondence remains open.
+> operation through `Term::Mul` in `solver/src/fragment.rs::term_ok`. Rust-to-model correspondence
+> remains open.
 
 Deeper: [`docs/SOLVER_PIPELINE_MAP.md`](SOLVER_PIPELINE_MAP.md) · [`solver/README.md`](../solver/README.md)
 
@@ -102,7 +103,7 @@ Deeper: [`docs/language/INFORMATION_FLOW.md`](language/INFORMATION_FLOW.md) — 
 | | Status | |
 |---|---|---|
 | **Program-bound RISC Zero proving** | ✅ | `anubis prove --backend risc0` lowers `main()` to a real zkVM guest; `proof_assert` is an in-circuit constraint (a false one yields *no valid receipt*) |
-| **Parameterized proofs + named journals** | ✅ | `--input-json`/`--input-file`; `proof_commit_u32`/`_bool` name public outputs. ImageID binds the *program*; the journal commits public outputs. `input_sha256` separately records canonical input bytes but alone does not prove a receipt used a particular private input |
+| **Parameterized proofs + named journals** | ✅ | `--input-json`/`--input-file`; `proof_commit_u32`/`_bool` name public outputs. ImageID identifies the guest image; linking source to that image still trusts the compiler and build. The journal commits public outputs. `input_sha256` separately records canonical input bytes but alone does not prove a receipt used a particular private input |
 | **Private witnesses** | ✅ | inputs read via `proof_input_*` stay off the journal — prove `lo <= x <= hi` without revealing `x` |
 | **Standalone receipt verification** | ✅ | `anubis verify-receipt --receipt … --image-id …` cold-verifies against ImageID |
 | **Metal-hybrid rv32im lane** | 🟡 | vendored `risc0-circuit-rv32im` + CPU fallback; works on Tier-2 Apple Silicon, `ANUBIS_REQUIRE_METAL=1` fails closed elsewhere (no speed claim is made) |

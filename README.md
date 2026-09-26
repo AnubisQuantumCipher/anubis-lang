@@ -140,7 +140,7 @@ not production-assurance certificates.
 
 ## Where it actually stands
 
-Pre-1.0, under active development, and **honest about being unfinished**. Two things to understand
+Pre-1.0, under active development, and **honest about being unfinished**. Three things to understand
 before you read any number here:
 
 **1. A green gate is a scoped result.** Known soundness and precision defects remain in

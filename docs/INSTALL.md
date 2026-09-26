@@ -7,8 +7,10 @@ Linux lane passed on an earlier head of [draft PR #44](https://github.com/Anubis
 but full Linux platform and release gates remain open, and that result does not attest the latest
 PR head. Install the pinned Rust toolchain from
 `rust-toolchain.toml`; install Z3 for cross-checking and obligations outside the native solver's
-supported fragment. `doctor` probes Z3 and optional RISC0/Metal dependencies; its `target` and
-`ready` fields do not establish Linux support.
+supported fragment. On macOS, install Xcode or [Apple's Command Line Tools for Xcode](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools)
+(`xcode-select --install`) for the native build toolchain; specialized Apple/VZ and Metal lanes
+have separate prerequisites. `doctor` probes Z3 and optional RISC0/Metal dependencies; its
+`target` and `ready` fields do not establish Linux support.
 
 ```bash
 cd /path/to/anubis-lang
