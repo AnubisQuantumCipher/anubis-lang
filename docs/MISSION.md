@@ -66,7 +66,8 @@ matrix is the reference for open defects.
 
 ## Current checkpoint and next executable step (2026-09-26)
 
-The isolated local integration branch is at `c6955cd45fd92c16a56e129697b012c2b40ff051`.
+The latest reviewed code commit on the isolated local integration branch is
+`1280e21edfb5f89d68d3f088020083bffff4d086`; this docs-only checkpoint follows it.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
@@ -78,26 +79,26 @@ captured graph. The valid transitive package fixture therefore still fails at
 `ANUBIS_DEP_PROOF_UNVERIFIED`; this is an open precision/product gate.
 
 The [scoped arm-binder receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
-records the preceding `70b200c7` result and its then-open enum precision
-control. The [enum-payload receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md)
-records the current source-bound local CLI: the frozen valid positional and
-named dead arms now PASS, and their reachable violated twins are DISPROVED.
-The selected `r2arm_*` Safe cases at that frozen receipt show only the
-expected classified flips. The later
-[value-position registration](evidence/ARM_ENUM_EXPR_REGISTRATION_2026-09-26.md)
-adds valid constructed-enum dead arms that the same pinned checker incorrectly
-DISPROVES; they remain open precision defects, paired with reachable invalid
-twins. The code after the source reader is otherwise unchanged.
+records the preceding `70b200c7` result. The
+[statement enum-payload receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md)
+and [value-position enum receipt](evidence/ARM_ENUM_EXPR_PRECISION_2026-09-26.md)
+show the frozen valid dead arms accepted and reachable violated twins
+disproved in their respective positions. The latter selected comparison
+has only the expected classified flips on the same registered Safe sources.
+The separately [registered guard-write pair](evidence/MATCH_GUARD_WRITE_REGISTRATION_2026-09-26.md)
+is still undecided in both valid and invalid fallthrough forms, and its
+direct violated twin is disproved. The valid refusal is a precision gate;
+no silent accept was reproduced for that pair.
 The full matrix runner remains `INCOMPLETE` by design. The local unfiltered
 compiler-library attempt on the preceding head was interrupted after a
 Research execution test was identified in this Linux guest; it is not a
 required suite witness. No disposable Tart, hosted, full workspace,
 independent rebuild or release gate is claimed for this head.
 
-Next, repair the frozen value-position enum match precision cases without
-losing reachable invalid or scrutinee obligations. In parallel, connect
-captured bytes to resolver/checker input with parsed-import correspondence
-and one immutable program input, then to versioned package
+Next, restore the required valid guard-write fallthrough while retaining the
+invalid control and correct pre/post-write facts. Independently validate the
+reviewed private captured-project resolver, then connect captured bytes to
+checker/lowering input with one immutable program input, and only then to versioned package
 and evidence closure claims before restoring transitive verified admission.
 The honest FAIL-bundle verifier also needs source-derived sidecar and security
 context checks while preserving historical PCA verification; revised draft

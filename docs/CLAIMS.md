@@ -15,14 +15,17 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — value-position enum match precision remains open.**
-Fixture-only commit `c6955cd45fd92c16a56e129697b012c2b40ff051`
-adds [frozen valid and invalid expression-match controls](evidence/ARM_ENUM_EXPR_REGISTRATION_2026-09-26.md).
-The immutable pre-fix checkers DISPROVE both the reachable violations and the
-valid dead arms; the latter are incorrect counterexamples, not progress on
-soundness. The earlier `r2arm_*` selected receipt predates these new cases
-and must not be read as a current complete subset result. The value-position
-repair and a new source-bound comparison are the next soundness dependency.
+**UPDATE 2026-09-26 — scoped value-position enum match precision repaired.**
+The [source-bound selected-case receipt](evidence/ARM_ENUM_EXPR_PRECISION_2026-09-26.md)
+for local code commit `1280e21e` shows the two frozen constructed-enum dead
+arms now PASS, while both reachable violated twins remain DISPROVED. The
+same selected `r2arm_*` source set has only those expected typed flips.
+This does not close match analysis or the full matrix. A newly
+[registered failed-guard write pair](evidence/MATCH_GUARD_WRITE_REGISTRATION_2026-09-26.md)
+leaves a required valid fallthrough UNDECIDED; the violated fallthrough is
+also UNDECIDED while its direct twin is DISPROVED. No silent accept was
+reproduced for that guard-write shape. The full matrix runner remains
+`INCOMPLETE`, and no hosted or release result belongs to this local head.
 
 **Earlier update 2026-09-26 — private captured-byte reader, no admission claim.**
 Local code commit `4ba7455f1fbb2f696685a0ad202c43ebf51e04dc`
