@@ -11809,6 +11809,9 @@ fn discharge_calls_in_expr(
         Expr::Match {
             scrutinee, arms, ..
         } => {
+            // The scrutinee runs even when no arm can run. De-model any embedded write
+            // before checking a call in it or using a later pattern fact over its value.
+            let scrutinee_writes = havoc_match_position_expr_writes(ctx, assumptions, scrutinee);
             discharge_calls_in_expr(ctx, assumptions, scope, scrutinee);
             // Arms are ordered: arm k runs only if NO earlier arm matched. So each arm additionally assumes
             // the NEGATION of what every preceding arm's non-match guarantees — this is what makes the
@@ -11825,13 +11828,28 @@ fn discharge_calls_in_expr(
             // refutable pattern's non-match (unmodeled) yield no single fact — they contribute nothing (sound:
             // fewer premises).
             let mut prior_negated: Vec<Expr> = Vec::new();
+            let mut terminal_arm_seen = false;
             for arm in arms {
+                // The runtime tests arms in order. An exact constructed enum payload miss
+                // cannot evaluate either this guard or this body; a preceding unguarded
+                // definite match makes every following arm equally unreachable. The
+                // narrow exact matcher returns false for unknown payloads, leaving their
+                // contract obligations intact.
+                if terminal_arm_seen || match_position_literal_misses(scrutinee, &arm.pattern) {
+                    continue;
+                }
+                let exact_guard = arm.guard.as_ref().and_then(match_guard_exact_bool);
                 let snap = assumptions.len();
                 let snap_g = ctx.active_branch_guards.len();
                 for f in &prior_negated {
                     push_branch_path_condition(ctx, assumptions, f, true);
                 }
-                let this_fact = match_arm_pattern_fact(scrutinee, &arm.pattern);
+                // A write while evaluating the scrutinee means its source expression no
+                // longer denotes the saved match value. Do not use it as a path premise.
+                let this_fact = scrutinee_writes
+                    .is_empty()
+                    .then(|| match_arm_pattern_fact(scrutinee, &arm.pattern))
+                    .flatten();
                 if let Some(fact) = &this_fact {
                     push_branch_path_condition(ctx, assumptions, fact, false);
                 }
@@ -11949,7 +11967,11 @@ fn discharge_calls_in_expr(
                     discharge_calls_in_expr(ctx, assumptions, scope, guard);
                     push_branch_path_condition(ctx, assumptions, guard, false);
                 }
-                discharge_calls_in_expr(ctx, assumptions, scope, eff_body);
+                // A known-false guard is evaluated, including its calls, but its body is
+                // not. This also applies to boolean combinations such as `g() && false`.
+                if exact_guard != Some(false) {
+                    discharge_calls_in_expr(ctx, assumptions, scope, eff_body);
+                }
                 assumptions.truncate(snap);
                 ctx.active_branch_guards.truncate(snap_g);
                 for fresh in &fresh_syms {
@@ -11977,6 +11999,13 @@ fn discharge_calls_in_expr(
                     (Some(guard), true) => prior_negated.push(guard.clone()),
                     // A binding-guarded, or guarded-literal, or refutable arm: no sound single fact.
                     (Some(_), false) => {}
+                }
+                if exact_guard != Some(false)
+                    && (arm.guard.is_none() || exact_guard == Some(true))
+                    && (match_position_irrefutable(&arm.pattern)
+                        || match_position_definitely_matches(scrutinee, &arm.pattern))
+                {
+                    terminal_arm_seen = true;
                 }
             }
         }
