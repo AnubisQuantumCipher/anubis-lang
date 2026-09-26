@@ -66,12 +66,14 @@ matrix is the reference for open defects.
 
 ## Current checkpoint and next executable step (2026-09-26)
 
-The isolated local integration branch is at `f15e1b83627379133ce5c94194b156a5d006aeea`.
+The isolated local integration branch is at `4ba7455f1fbb2f696685a0ad202c43ebf51e04dc`.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
-caller-supplied [source-graph identity primitive](mission/VERIFIED_SOURCE_GRAPH_DESIGN_2026-09-26.md):
-the resolver, checker, lowering and verifier are not yet bound to a complete
+caller-supplied [source-graph identity primitive](mission/VERIFIED_SOURCE_GRAPH_DESIGN_2026-09-26.md).
+The new [bounded byte reader](evidence/SOURCE_GRAPH_READER_2026-09-26.md)
+captures a private tree on Linux under an explicit trusted-procfs assumption,
+but the resolver, checker, lowering and verifier are not yet bound to that
 captured graph. The valid transitive package fixture therefore still fails at
 `ANUBIS_DEP_PROOF_UNVERIFIED`; this is an open precision/product gate.
 
@@ -87,12 +89,12 @@ Research execution test was identified in this Linux guest; it is not a
 required suite witness. No disposable Tart, hosted, full workspace,
 independent rebuild or release gate is claimed for this head.
 
-Next, integrate the independently reviewed bounded source-graph byte reader
-as a private, non-authoritative primitive, test its race and refusal controls,
-then connect captured bytes to resolver/checker input and versioned package
+Next, connect captured bytes to resolver/checker input with parsed-import
+correspondence and one immutable program input, then to versioned package
 and evidence closure claims before restoring transitive verified admission.
 The honest FAIL-bundle verifier also needs source-derived sidecar and security
-context checks; revised draft patches remain unintegrated. Continue the distinct
+context checks while preserving historical PCA verification; revised draft
+patches remain unintegrated. Continue the distinct
 [min/max precision controls](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md)
 and broader value-position match controls without treating refusal of valid
 code as completion. The canonical defect

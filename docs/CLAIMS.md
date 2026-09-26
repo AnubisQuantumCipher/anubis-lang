@@ -15,7 +15,19 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — constructed-enum dead-arm precision.**
+**UPDATE 2026-09-26 — private captured-byte reader, no admission claim.**
+Local code commit `4ba7455f1fbb2f696685a0ad202c43ebf51e04dc`
+has a [scoped reader receipt](evidence/SOURCE_GRAPH_READER_2026-09-26.md).
+It captures bounded source bytes from held inodes on this Linux host and
+passes focused Safe tests, but no resolver, checker, package gate or evidence
+consumer uses it yet. A genuine current-process procfs in a trusted mount
+namespace is an external assumption; Apple acquisition remains unsupported
+by this new module. Verified multi-module and transitive admission still
+refuse valid workloads. The honest FAIL-bundle verifier remains under
+independent review; its revised draft is not integrated. No full matrix,
+workspace, guest, hosted or release result is asserted for this head.
+
+**Earlier update 2026-09-26 — constructed-enum dead-arm precision.**
 Local code commit `f15e1b83627379133ce5c94194b156a5d006aeea`
 has a [source-bound selected-case receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md):
 the frozen valid positional and named dead-payload arms now PASS, while
