@@ -1,0 +1,24 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn stats(xs, p) {
+    let count = len(xs);
+    let first = xs[0];
+    let max = xs[1];
+    let m = { "n": p.pub_n };
+    let keys = entries(m);
+    let last = xs[2];
+    print(count);
+    print(first);
+    print(max);
+    print(len(keys));
+    print(last);
+    let total = reduce(xs, |max, x| if x > max { x } else { max }, 0);
+    let ys = map(xs, |count| count + p.pub_n);
+    each(ys, |first| print(first));
+    print(total);
+    return count;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let n = stats([1, 2, 3], p);
+    print(n);
+}

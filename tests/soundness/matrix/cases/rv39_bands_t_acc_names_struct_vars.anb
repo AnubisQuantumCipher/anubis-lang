@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pick(ps) {
+    let first = ps[0];
+    let last = ps[len(ps) - 1];
+    let max = if first.pub_n > last.pub_n { first } else { last };
+    print(max.pub_n);
+    let found = find(ps, |first| first.pub_n > 1);
+    let count = len(filter(ps, |q| q.pub_n > 1));
+    print(count);
+    return max.pub_n;
+}
+fn main() {
+    let a = S { k: 42, pub_n: 3 };
+    let b = S { k: 7, pub_n: 1 };
+    print(pick([a, b]));
+}

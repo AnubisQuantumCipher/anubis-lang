@@ -994,6 +994,11 @@ type CalledAt = (Rc<Locals>, Vec<String>, bool, FnFx);
 /// again when asked for), so the memory a query holds stays bounded.
 const MAX_CALLS_AT: usize = 4096;
 
+/// Applications of a builtin passed as a value remembered per query and builtin ([`apply_fx`]): the
+/// most recent ones. A chain of such applications asks again for one it made just before; scanning
+/// more would cost more than it saves.
+const MAX_NAMED_APPLIES: usize = 1024;
+
 /// The function values of a call evaluated at a position ([`fns_at`]): the names (kept alive), the
 /// calls in progress it read, whether a limit shaped it, and the functions.
 type FnsAt = (Rc<Locals>, Vec<String>, bool, Vec<Local>);
@@ -1041,6 +1046,8 @@ struct Env<'a> {
     fns_at: RefCell<BTreeMap<ScrutineeKey, FnsAt>>,
     /// Closure applications made, by the closure's number.
     applies: RefCell<BTreeMap<usize, Vec<Applied>>>,
+    /// Builtins applied as values ([`apply_fx`]), by name, remembered as closure applications are.
+    named_applies: RefCell<BTreeMap<String, Vec<Applied>>>,
     /// Every lambda a closure was made of, by its node's address (so no address is reused while the
     /// query runs); closures numbered by identity and captures; lambdas' free names.
     lams: RefCell<BTreeMap<usize, Rc<Expr>>>,
@@ -1080,6 +1087,7 @@ impl<'a> Env<'a> {
             calls_at: RefCell::default(),
             fns_at: RefCell::default(),
             applies: RefCell::default(),
+            named_applies: RefCell::default(),
             lams: RefCell::default(),
             interned: RefCell::default(),
             next_closure: Cell::new(0),
@@ -6053,14 +6061,15 @@ fn passed_fns(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
     fns_in(e, env, at, out)
 }
 
-/// A name bound again — by a `let`, a plain assignment, a pattern's binder or a loop variable — to
-/// `new`. When the name stood for a function (`before`) and `new` may be a function the lane does
-/// not follow — it has a value half, and the bound expression is not `exact` ([`exact_value`]): an
-/// element, a field, a call's result, `?`, a pattern's part — the name may still be that function:
-/// the lane follows no function taken out of a container (FV-OPEN-6), and a program taking one out
-/// under the name it had is caught this way however many blocks, arms and assignments rebind it
-/// (round 38: L1, L2, L3, L11). A binding the lane follows exactly (a lambda, an alias of a
-/// function, a choice between functions) replaces what the name stood for (O2).
+/// A name bound again — by a `let`, a plain assignment, a pattern's binder, a loop variable or a
+/// lambda's parameter — to `new`. When the name stood for a function (`before`) and `new` may be a
+/// function the lane does not follow — it has a value half, and the bound expression is not `exact`
+/// ([`exact_value`]): an element, a field, a call's result, `?`, a pattern's part, an argument —
+/// the name may still be that function: the lane follows no function taken out of a container
+/// (FV-OPEN-6), and a program taking one out under the name it had is caught this way however many
+/// blocks, arms and assignments rebind it (round 38: L1, L2, L3, L11). A binding the lane follows
+/// exactly (a lambda, an alias of a function, a choice between functions) replaces what the name
+/// stood for (O2).
 ///
 /// This is the rule the runs with names unbound before round 38 approximated: a nested block also
 /// run with the names enclosing it unbound — at most two separated bands deep (`MAX_PHANTOM`), at a
@@ -6076,11 +6085,16 @@ fn stick(n: &str, new: Local, exact: impl FnOnce() -> bool, env: &Env, before: &
         None if before.use_scope && env.scope.get(n).is_some_and(names_fn) => {
             resolve_local(n, env, before).map_or_else(Vec::new, |l| fn_parts(&l))
         }
-        // A user function (or an egress builtin) of that name, read as a value where no binding
-        // shadows it: the name stood for that function (round-38 cross-check 2.1: `let show =
-        // w[0]; show` in a block, with `show` a user function, is the function taken out of `w`).
+        // A user function or builtin of that name, read as a value where no binding shadows it:
+        // the name stood for that function (round-38 cross-check 2.1: `let show = w[0]; show` in a
+        // block, with `show` a user function, is the function taken out of `w`). Every builtin, as
+        // `arg_local` and `fns_in` read an unbound name: `call`, `apply` or `map` taken out of a
+        // list under its own name runs a callback as surely as an egress builtin releases (round
+        // 39: R39B-F1a, F1b; before round 38 the phantom reads caught them).
         None if !(before.use_scope && env.scope.contains_key(n))
-            && (env.is_user_fn(n) || super::is_egress_sink(n)) =>
+            && (env.is_user_fn(n)
+                || crate::backends::run::is_builtin_name(n)
+                || super::is_egress_sink(n)) =>
         {
             vec![Local::Named(n.to_string())]
         }
@@ -6323,22 +6337,24 @@ fn fns_in_uncached(e: &Expr, env: &Env, at: &At, out: &mut Vec<Local>) {
         // And what `g` returns of its own: a function or closure its body returns or is
         // (`call(|| pr)`, `apply(|x| |y| x, [p])`, a `return` of one inside it), run with the
         // arguments it is given.
+        //
+        // Read at the call the runtime makes in the end ([`spread_of`]): `g` may hand back one of
+        // the operands that call is given, or a list literal's element among them.
         Expr::Call { callee, args }
             if matches!(callee.as_str(), "call" | "apply")
                 && !env.is_user_fn(callee)
                 && resolve_local(callee, env, at).is_none() =>
         {
-            for a in args.iter().skip(1) {
-                spread_fns_in(a, env, at, out);
+            match spread_of(callee, args, env, at) {
+                Some(Spread::Args(_, ops)) => {
+                    for a in ops {
+                        spread_fns_in(a, env, at, out);
+                    }
+                }
+                Some(Spread::List(_, Some(xs))) => spread_fns_in(xs, env, at, out),
+                Some(Spread::List(_, None)) | None => {}
             }
-            if let Some(g) = args.first() {
-                let binds = if callee == "call" {
-                    spread_locals(&args[1..], env, at)
-                } else {
-                    apply_binds(args, env, at)
-                };
-                add_fns(out, apply_fx(&arg_local(g, env, at), binds, env, at).fns);
-            }
+            add_fns(out, spread_fx(callee, args, env, at).fns);
         }
         // `reduce(xs, f, seed)` returns its accumulator: the seed, or what the fold returned from it.
         // The runtime folds with the FIRST closure argument (`anubis_reduce`), so a closure seed is
@@ -6438,6 +6454,74 @@ fn spread_local(a: &Expr, env: &Env, at: &At) -> Local {
     };
     add_fns(&mut all, fns);
     Local::Any(all)
+}
+
+/// The call a `call` / `apply` of the builtin makes in the end ([`spread_of`]).
+enum Spread<'e> {
+    /// `g(a..)`: the callback, and the operands it is given, position by position.
+    Args(&'e Expr, Vec<&'e Expr>),
+    /// `apply(g, xs)` with `xs` no list literal (or missing): what it spreads is not known by
+    /// position.
+    List(&'e Expr, Option<&'e Expr>),
+}
+
+/// The call the runtime makes in the end for `callee(args)`, `callee` the builtin `call` or
+/// `apply`. A callback that is itself `call` or `apply` named as a value (no local or user function
+/// of that name) hands its operands on: `call(call, g, a..)` is `call(g, a..)`, `call(apply, g,
+/// xs)` and `apply(apply, [g, xs])` are `apply(g, xs)`, `apply(call, [g, a..])` is `call(g, a..)`;
+/// and `apply` spreads a list literal's elements, one to each position. Followed through such
+/// literals, the operands of the last call are known exactly, each at its position, and each level
+/// is read once. The runtime's `call` value takes 1 to 6 arguments and its `apply` value exactly 2;
+/// any other count stops the program before the call is made, so following it anyway only assumes
+/// more than the runtime does.
+///
+/// Round 39 (R39B-P2, O1): the lane bound each level's list as one value, handed its function
+/// elements to every one of `SPREAD` positions of the next, and read each level three times —
+/// seconds for three levels, and a limit's worst case past it (`apply(apply, [apply, [call, [show,
+/// p]]])` refused, though it runs `show(p)` reading only a public field).
+fn spread_of<'e>(callee: &str, args: &'e [Expr], env: &Env, at: &At) -> Option<Spread<'e>> {
+    let mut apply = callee == "apply";
+    let mut ops: Vec<&'e Expr> = args.iter().collect();
+    loop {
+        let (&g, rest) = ops.split_first()?;
+        let rest: Vec<&'e Expr> = if apply {
+            match rest.first() {
+                Some(Expr::ArrayLiteral { elements }) => elements.iter().collect(),
+                other => return Some(Spread::List(g, other.copied())),
+            }
+        } else {
+            rest.to_vec()
+        };
+        match g {
+            Expr::Var(n)
+                if matches!(n.as_str(), "call" | "apply")
+                    && !env.is_user_fn(n)
+                    && resolve_local(n, env, at).is_none() =>
+            {
+                apply = n == "apply";
+                ops = rest;
+            }
+            _ => return Some(Spread::Args(g, rest)),
+        }
+    }
+}
+
+/// What `callee(args)` does, `callee` the builtin `call` or `apply`: the callback of the call it
+/// makes in the end ([`spread_of`]) applied to its operands — a list literal among them with its
+/// function elements, which the callback may spread again ([`spread_local`]) — or, spreading a
+/// list the lane cannot see into, bound as [`apply_binds`] binds it.
+fn spread_fx(callee: &str, args: &[Expr], env: &Env, at: &At) -> FnFx {
+    match spread_of(callee, args, env, at) {
+        Some(Spread::Args(g, ops)) => {
+            let binds = ops.iter().map(|x| spread_local(x, env, at)).collect();
+            apply_fx(&arg_local(g, env, at), binds, env, at)
+        }
+        Some(Spread::List(g, xs)) => {
+            let binds = apply_binds(g, xs, env, at);
+            apply_fx(&arg_local(g, env, at), binds, env, at)
+        }
+        None => FnFx::default(),
+    }
 }
 
 /// What a `match` / `if let` scrutinee evaluated at `at` holds, and what it is as a binding (a
@@ -7615,11 +7699,6 @@ fn args_locals(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
     args.iter().map(|a| arg_local(a, env, at)).collect()
 }
 
-/// [`spread_local`] of each argument `call` hands its callback.
-fn spread_locals(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
-    args.iter().map(|a| spread_local(a, env, at)).collect()
-}
-
 /// How many parameters what a name stands for takes (0 when unknown).
 fn arity(l: &Local, env: &Env) -> usize {
     match l {
@@ -7662,16 +7741,25 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
             }
             let reads_start = env.reads.borrow().len();
             let fallbacks_start = env.fallbacks.get();
+            // Where the lambda was written: what its free names held (a name it binds is none of
+            // them) and, written in the caller's scope, that scope.
+            let written_at = At {
+                locals: c.captured.clone(),
+                use_scope: c.use_scope,
+                depth: at.depth,
+            };
             let mut locals = (*c.captured).clone();
             for (i, p) in params.iter().enumerate() {
-                // The runtime pads a missing argument with `0`.
-                locals.insert(
-                    p.clone(),
-                    binds
-                        .get(i)
-                        .cloned()
-                        .unwrap_or(Local::Src(None, Kind::NONE)),
-                );
+                // The runtime pads a missing argument with `0`. An argument the lane does not
+                // follow exactly (with a value half: an element, a field, a call's result) may be
+                // the function the parameter's name stood for, taken out of a container (`|show|
+                // show` given `w[0]`): kept, as a `let` of that name keeps it ([`stick`]; round 39:
+                // R39B-F2).
+                let l = match binds.get(i) {
+                    Some(b) => stick(p, b.clone(), || false, env, &written_at),
+                    None => Local::Src(None, Kind::NONE),
+                };
+                locals.insert(p.clone(), l);
             }
             // A name the body of a closure written in the caller's scope (`use_scope`) writes, that
             // the closure neither captured nor binds, stands for what the scope binds it to: bound
@@ -7718,8 +7806,28 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
             fx
         }
         Local::Named(f) if env.is_user_fn(f) => call_fn(f, binds, env),
-        // A builtin passed as a value, applied to `binds`: as if called with them.
+        // A builtin passed as a value, applied to `binds`: as if called with them. Remembered as a
+        // closure application is: what it returns, where it releases and the function values it
+        // hands back are read apart, and each read applies what it was given again — a builtin
+        // handed on as a value through builtins (`call`, `apply`) was applied three times per level
+        // (round 39: R39B-P2).
         Local::Named(f) => {
+            let hit = env.named_applies.borrow().get(f.as_str()).and_then(|v| {
+                v.iter()
+                    .rev()
+                    .find(|a| {
+                        a.epoch == env.epoch.get()
+                            && a.limited_at.is_none_or(|d| d == at.depth)
+                            && a.binds == binds
+                    })
+                    .map(|a| (a.fx.clone(), a.deps.clone()))
+            });
+            if let Some((fx, deps)) = hit {
+                env.reads.borrow_mut().extend(deps);
+                return fx;
+            }
+            let reads_start = env.reads.borrow().len();
+            let fallbacks_start = env.fallbacks.get();
             let names: Vec<String> = (0..binds.len()).map(|i| format!("\u{0}w{i}")).collect();
             let inner = At {
                 locals: Rc::new(names.iter().cloned().zip(binds.iter().cloned()).collect()),
@@ -7741,9 +7849,24 @@ fn apply_fx(l: &Local, binds: Vec<Local>, env: &Env, at: &At) -> FnFx {
                 callee: f.clone(),
                 args,
             };
-            // (Not remembered: the call is no node of the program, and its address is reused.)
+            // (Not remembered by its node: the call is no node of the program, and its address is
+            // reused.)
             fns_in_uncached(&call, env, &inner, &mut fns);
-            FnFx { ret, egress, fns }
+            let fx = FnFx { ret, egress, fns };
+            let applied = Applied {
+                binds,
+                epoch: env.epoch.get(),
+                deps: env.deps_since(reads_start, None),
+                limited_at: (env.fallbacks.get() != fallbacks_start).then_some(at.depth),
+                fx: fx.clone(),
+            };
+            let mut memo = env.named_applies.borrow_mut();
+            let v = memo.entry(f.clone()).or_default();
+            if v.len() >= MAX_NAMED_APPLIES {
+                v.remove(0);
+            }
+            v.push(applied);
+            fx
         }
         Local::Any(ls) => {
             let mut out = FnFx::default();
@@ -8575,8 +8698,7 @@ fn builtin_src(f: &str, args: &[Expr], env: &Env, at: &At) -> Option<WholeSrc> {
         }
         "times" => join(computed(a0), holds(cb(1, one(None)))),
         "reduce" => join(shp0, reduce_src(args, env, at)),
-        "call" => cb(0, spread_locals(args.get(1..).unwrap_or(&[]), env, at)),
-        "apply" => cb(0, apply_binds(args, env, at)),
+        "call" | "apply" => spread_fx(f, args, env, at).ret,
         // A function value holds nothing until it is called.
         "compose" => None,
         // Everything else computes from every argument, and from what any callback returns.
@@ -8608,8 +8730,8 @@ fn is_callback(x: &Expr, env: &Env, at: &At) -> bool {
 
 /// `apply(f, xs)` spreads a list into `f`'s parameters (each gets what that position holds); anything
 /// else is passed whole, as the one argument.
-fn apply_binds(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
-    match args.get(1) {
+fn apply_binds(f: &Expr, xs: Option<&Expr>, env: &Env, at: &At) -> Vec<Local> {
+    match xs {
         Some(Expr::ArrayLiteral { elements }) => {
             elements.iter().map(|x| spread_local(x, env, at)).collect()
         }
@@ -8633,10 +8755,7 @@ fn apply_binds(args: &[Expr], env: &Env, at: &At) -> Vec<Local> {
             if matches!(s, Some(WholeSrc::Value(_))) {
                 return vec![with(Local::Src(s, Kind::NONE))];
             }
-            let n = args
-                .first()
-                .map_or(0, |f| arity(&arg_local(f, env, at), env))
-                .max(SPREAD);
+            let n = arity(&arg_local(f, env, at), env).max(SPREAD);
             let mut binds: Vec<Local> = (0..n)
                 .map(|i| {
                     with(Local::Src(
@@ -8800,8 +8919,17 @@ fn builtin_egress(f: &str, args: &[Expr], env: &Env, at: &At) -> Option<WholeSrc
             ];
             join(run(1, binds.clone()), run(2, binds))
         }
-        "call" => run(0, spread_locals(args.get(1..).unwrap_or(&[]), env, at)),
-        "apply" => run(0, apply_binds(args, env, at)),
+        "call" | "apply" => spread_fx(f, args, env, at).egress,
+        // Builtins that return, reorder, compare or measure what they are given and call no
+        // function among it (the runtime's `anubis_identity`, `anubis_first`, `anubis_sort`, ...;
+        // `builtin_src` gives them no callback either): a function value passed through one is not
+        // run there. Round 39 (R39B-P1): `call(identity, [x, show])` nested, each level ran every
+        // function of the levels below it with what the level held (seconds at depth 30, the
+        // memory limit at 40).
+        "identity" | "secret_source" | "len" | "is_empty" | "keys" | "values" | "type"
+        | "has_key" | "first" | "last" | "reverse" | "sort" | "unique" | "max" | "min" | "get"
+        | "flatten" | "concat" | "merge" | "take" | "drop" | "chunk" | "window" | "slice"
+        | "zip" | "enumerate" | "entries" => None,
         _ => {
             let lambdas: Vec<usize> = args
                 .iter()

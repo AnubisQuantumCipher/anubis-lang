@@ -1833,3 +1833,111 @@ open_ord3_alias_defer_capture_by_value	IFC-ORDINARY-RETURN-R3	slice	REJECT	carri
 open_ord3_alias_defer_shadowed_formal	IFC-ORDINARY-RETURN-R3	slice	REJECT	carrier	Deferred alias: callback formal is applied before reassignment, but its applied-parameter summary drops the formal — runtime k=42 prints 42; k=123456 prints 123456
 ord3_alias_defer_push_index_overrefusal	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	Documented alias over-refusal: exact index zero selects the inert initial closure after an unused printing closure is pushed — runtime k=42 prints <empty>; k=123456 prints <empty>
 ord3_alias_defer_local_shadows_fn	IFC-ORDINARY-RETURN-R3	slice	ACCEPT	carrier	Documented pre-existing over-refusal: eta callback over a local shadowing a printing user function — runtime k=42 prints <empty>; k=123456 prints <empty>
+rv39_bands_r39b_f1a	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: R39B-F1a — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_r39b_f1b	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: R39B-F1b — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_r39b_f2	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: R39B-F2 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_r39b_p1	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: R39B-P1 — runtime k=42 prints 4; k=123456 prints 4
+rv39_bands_r39b_p2	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: R39B-P2 — runtime k=42 prints 0; k=123456 prints 0
+rv39_bands_r39b_o1	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: R39B-O1 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_r39b_p1b_py_wide40	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: R39B-P1b_py_wide40 — runtime k=42 prints 4; k=123456 prints 4
+rv39_bands_r39b_o1b_k3_4levels	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: R39B-O1b_k3_4levels — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_pw_wide40_len_of_fn_list	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: pw_wide40_len_of_fn_list — runtime k=42 prints 5; k=123456 prints 5
+rv39_bands_t_acc_f1_assign_band_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_assign_band_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1_block_apply	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_block_apply — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1_block_filter	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_block_filter — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1_block_map	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_block_map — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1_callpos_for	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_callpos_for — runtime k=42 prints 3 \n 3; k=123456 prints 3 \n 3
+rv39_bands_t_acc_f1_for_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_for_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1_iflet_part_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_iflet_part_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1_let_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_let_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1_match_part_apply	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1_match_part_apply — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1a_block_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1a_block_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f1b_match_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f1b_match_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f2_lamparam_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f2_lamparam_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f2_lamparam_print	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f2_lamparam_print — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f2_lamparam_second	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f2_lamparam_second — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_f2_lamparam_show	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_f2_lamparam_show — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_names_builtin_vars	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_names_builtin_vars — runtime k=42 prints 3 \n 1 \n 2 \n 1 \n 3 \n 4 \n 5 \n 6 \n 3 \n 3; k=123456 prints 3 \n 1 \n 2 \n 1 \n 3 \n 4 \n 5 \n 6 \n 3 \n 3
+rv39_bands_t_acc_names_struct_vars	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_names_struct_vars — runtime k=42 prints 3 \n 1 \n 3; k=123456 prints 3 \n 1 \n 3
+rv39_bands_t_acc_red_apply2	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_apply2 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_apply6	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_apply6 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_apply_call_apply	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_apply_call_apply — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_call_apply	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_call_apply — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_call_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_call_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_call_call_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_call_call_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_closure_final	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_closure_final — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_identity_list	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_identity_list — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_mixed	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_mixed — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_nonlit_apply	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_nonlit_apply — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_nonlit_call	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_nonlit_call — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_print	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_print — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_ret_fn	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_ret_fn — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_ret_fn2	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_ret_fn2 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_ret_fn3	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_ret_fn3 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_second_pos	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_second_pos — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_acc_red_userfn_list	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t/acc_red_userfn_list — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t_rej_f1_assign_band_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_assign_band_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_block_apply	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_block_apply — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_block_filter	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_block_filter — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_block_map	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_block_map — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_callpos_for	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_callpos_for — runtime k=42 prints S { k: 42, pub_n: 3 } \n S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 } \n S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_for_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_for_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_iflet_part_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_iflet_part_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_let_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_let_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1_match_part_apply	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1_match_part_apply — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1a_block_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1a_block_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f1b_match_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f1b_match_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f2_lamparam_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f2_lamparam_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f2_lamparam_print	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f2_lamparam_print — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f2_lamparam_second	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f2_lamparam_second — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_f2_lamparam_show	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_f2_lamparam_show — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_names_struct_vars	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_names_struct_vars — runtime k=42 prints S { k: 42, pub_n: 3 } \n 0; k=123456 prints S { k: 123456, pub_n: 3 } \n 0
+rv39_bands_t_rej_red_apply2	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_apply2 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_apply3	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_apply3 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_apply4	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_apply4 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_apply6	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_apply6 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_apply_call_apply	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_apply_call_apply — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_call_apply	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_call_apply — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_call_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_call_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_call_call_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_call_call_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_closure_final	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_closure_final — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_identity_list	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_identity_list — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_mixed	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_mixed — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_nonlit_apply	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_nonlit_apply — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_nonlit_call	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_nonlit_call — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_print	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_print — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_ret_fn	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_ret_fn — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_ret_fn2	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_ret_fn2 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_ret_fn3	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_ret_fn3 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_second_pos	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_second_pos — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t_rej_red_userfn_list	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t/rej_red_userfn_list — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t2_acc_deep_apply120	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_deep_apply120 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t2_acc_deep_apply50	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_deep_apply50 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t2_acc_nonlit_deep2	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_nonlit_deep2 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t2_acc_nonlit_deep	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_nonlit_deep — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t2_acc_nonlit_twice	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_nonlit_twice — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t2_acc_p1_first30	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_p1_first30 — runtime k=42 prints 1; k=123456 prints 1
+rv39_bands_t2_acc_p1_identity60	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_p1_identity60 — runtime k=42 prints 4; k=123456 prints 4
+rv39_bands_t2_acc_p1_reverse30	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_p1_reverse30 — runtime k=42 prints 1; k=123456 prints 1
+rv39_bands_t2_acc_p1_str30	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_p1_str30 — runtime k=42 prints 1; k=123456 prints 1
+rv39_bands_t2_acc_p1_unique30	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_p1_unique30 — runtime k=42 prints 1; k=123456 prints 1
+rv39_bands_t2_acc_wide_call5	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t2/acc_wide_call5 — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_t2_rej_deep_apply120	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t2/rej_deep_apply120 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t2_rej_deep_apply50	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t2/rej_deep_apply50 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t2_rej_nonlit_deep2	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t2/rej_nonlit_deep2 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t2_rej_nonlit_deep	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t2/rej_nonlit_deep — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t2_rej_p1_identity30_leak	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t2/rej_p1_identity30_leak — runtime k=42 prints [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[S { k: 42, pub_n: 3 }, <closure>, <closure>, <closure>], <closure>, <closure>, <closure>], <closure>, <closure>, <closure>], <clos; k=123456 prints [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[S { k: 123456, pub_n: 3 }, <closure>, <closure>, <closure>], <closure>, <closure>, <closure>], <closure>, <closure>, <closure>], <
+rv39_bands_t2_rej_wide_call5	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t2/rej_wide_call5 — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+open_rv39_bands_t3_open_d2_main_call_let	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t3/open_d2_main_call_let — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+open_rv39_bands_t3_open_f2_formal_show	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t3/open_f2_formal_show — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+open_rv39_bands_t3_open_nonlit_plain_arg	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t3/open_nonlit_plain_arg — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_t3_ovr_held_positions	WHOLE-R39-BANDS	slice	ACCEPT	carrier	round-39 bands review/design: t3/ovr_held_positions; documented residual over-refusal: non-literal apply spreads held functions to every position — runtime k=42 prints <empty>; k=123456 prints <empty>
+open_rv39_bands_t3_sym_f1a_pk	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t3/sym_f1a_pk; symmetric ordinary-lane secret-field variant — runtime k=42 prints 42; k=123456 prints 123456
+open_rv39_bands_t3_sym_f1b_pk	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t3/sym_f1b_pk; symmetric ordinary-lane secret-field variant — runtime k=42 prints 42; k=123456 prints 123456
+open_rv39_bands_t3_sym_f2_pk	WHOLE-R39-BANDS	slice	REJECT	carrier	round-39 bands review/design: t3/sym_f2_pk; symmetric ordinary-lane secret-field variant — runtime k=42 prints 42; k=123456 prints 123456
+rv39_bands_own_local_call_shadow_reject	WHOLE-R39-BANDS	slice	REJECT	carrier	independent bands integration probe: local_call_shadow — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_own_local_call_shadow_accept	WHOLE-R39-BANDS	slice	ACCEPT	carrier	independent bands integration probe: local_call_shadow — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_own_user_apply_shadow_reject	WHOLE-R39-BANDS	slice	REJECT	carrier	independent bands integration probe: user_apply_shadow — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_own_user_apply_shadow_accept	WHOLE-R39-BANDS	slice	ACCEPT	carrier	independent bands integration probe: user_apply_shadow — runtime k=42 prints 3; k=123456 prints 3
+rv39_bands_own_named_memo_rebinding_reject	WHOLE-R39-BANDS	slice	REJECT	carrier	independent bands integration probe: named_memo_rebinding — runtime k=42 prints S { k: 42, pub_n: 3 }; k=123456 prints S { k: 123456, pub_n: 3 }
+rv39_bands_own_named_memo_rebinding_accept	WHOLE-R39-BANDS	slice	ACCEPT	carrier	independent bands integration probe: named_memo_rebinding — runtime k=42 prints 3; k=123456 prints 3
