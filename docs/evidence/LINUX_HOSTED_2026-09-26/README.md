@@ -42,3 +42,21 @@ lane*. It is not a full workspace test, full soundness matrix, Omarchy
 installation, disposable-guest replay, VM/Metal seal, or release witness.
 The initial failed run and its primary timeout and memory-event observations
 remain part of the record.
+
+## Later inspected PR head `195e3359`
+
+The existing [push run 36229894681](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36229894681)
+and matching [PR run 36229896062](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36229896062)
+completed successfully on both native Linux jobs at
+`195e33592202337e32be6ca538c45b83a75dd636`. A read-only download and
+inspection of the push artifacts produced a
+[checked summary](latest-checked-summary-195e3359.json). For each architecture
+it records schema `anubis.linux-native-ordinary.v2`, verdict
+`LINUX_NATIVE_ORDINARY_PASS`, source identity before and after, unchanged
+memory events, matching hashes for every receipt-named command log, no
+command failure or timeout, and successful owned-unit removal. The downloaded
+receipts did not include the frozen executable bytes, so this independent
+inspection did not rehash those binaries; the in-run validator checked their
+identities. This is another witness for the same bounded ordinary lane, not a
+platform, soundness, Omarchy-installation or release completion result. A
+reviewable split must obtain hosted evidence at its own final source head.

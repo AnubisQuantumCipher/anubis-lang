@@ -76,7 +76,10 @@ records dependency-correct review refs without rewriting published history.
 The isolated local integration branch `codex/register-round2-20260926` has
 reviewed compiler code through `339a960a1da0acd7aa65e23f7469a4ae77f77007`,
 captured-bridge receipt/log correction through `1ca7e5b93cf7db62ddc9392d0240c57ff1d3d728`,
-and fixture registrations through `e6b4fb7e86286c6314595284c0e014ca6bd49813`.
+fixture registrations through `e6b4fb7e86286c6314595284c0e014ca6bd49813`,
+and the reviewed captured-build design at
+`f7ea19097320a23fac3120359e2f226a034ee905`. The current branch has no
+integrated D9 v6 or production captured-build consumer code.
 The [guard-transfer receipt](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md)
 binds the preceding `88a2903c` code, selected Safe checks, a clean-head
 binary and a complete provisional same-source matrix comparison. Its reached
@@ -86,6 +89,12 @@ candidate run; their cause is unresolved. One OOM-designated form requires
 the mandatory disposable guest for follow-up.
 The historical full matrix remains `INCOMPLETE`, with other silent accepts,
 valid refusals and unbound diagnostic classes.
+The hosted [ordinary Linux lane](evidence/LINUX_HOSTED_2026-09-26/README.md)
+has since passed on both architectures at the inspected PR #44 head
+`195e33592202337e32be6ca538c45b83a75dd636`. This bounded result does
+not replace a full workspace, soundness, installation, guest or release gate;
+the earlier failed receipts remain historical evidence. A future split needs
+new source-matched hosted witnesses.
 
 The [min/max receipt](evidence/IFC2_MINMAX_CALLBACK_2026-09-26/README.md)
 binds `6b85cf22`, its clean-head binary, selected Safe verdicts and finite
@@ -169,18 +178,26 @@ and literal-dead controls pass; all invalid twins refuse. The reachable
 `Row.n` twins still lack a writer-located PC diagnostic, so their generic
 egress refusal cannot close that producer. Independent review held v5 before
 application for binder, shadow, deferred-closure and reachability defects.
-A revised scratch transfer must pass independent review before a lead-only
+The subsequent [v6 independent static review](mission/review/D9_V6_HOLD_2026-09-26.md)
+also held the unintegrated candidate: its callable set is incomplete, lambda
+captures and active binders lack stable identity, early exits lose control
+dependence, and ordinary local work can be overrefused. Its compile-time field
+type mismatch and typed diagnostics mapping are recorded separately. No v6
+binary or Anubis verdict exists. A revised transfer must pass independent
+design and actual-diff review before a lead-only
 build and same-source selected checks. The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
 the new fixed-path loader: production diagnostics still lack complete stable
 source locators. Preserve the old `history.tsv` and add compact event history
 only after that gate is reviewed. `docs/CLAIMS.md` is the defect authority.
 
-No current full workspace, hosted, disposable-guest, independent clean-room,
+No current full workspace, disposable-guest, independent clean-room,
 protected-branch, product-release, or full trust-chain result is claimed.
-The separate main-based front-page correction is a reviewed, gated local
-docs-only stack through `90ebeaa34a38bf6286298700a71fafec76038864`;
-it has not been pushed or opened as a PR. It and the
-[PR #44 review stack](mission/PR44_LOCAL_SPLIT_2026-09-26.md) remain local;
-protected integration needs human review
-and its applicable authorization.
+A separate main-based front-page correction is now open as
+[PR #45](https://github.com/AnubisQuantumCipher/anubis-lang/pull/45). The
+earlier reviewed local docs-only alternative through
+`90ebeaa34a38bf6286298700a71fafec76038864` remains unpushed; do not open
+a duplicate. Draft [PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44)
+and the [local review stack](mission/PR44_LOCAL_SPLIT_2026-09-26.md) still need
+reviewable integration units and human review. Protected integration retains
+its applicable authorization boundary.
