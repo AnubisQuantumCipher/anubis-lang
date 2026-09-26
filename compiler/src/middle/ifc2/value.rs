@@ -1527,8 +1527,10 @@ fn chain_value(g: &V, h: &V) -> V {
         out.user.extend(f.user.iter().cloned());
         out.builtins.extend(f.builtins.iter().cloned());
         out.any |= f.any;
-        let mut only_clos = FnSet::default();
-        only_clos.clos = f.clos.clone();
+        let only_clos = FnSet {
+            clos: f.clos.clone(),
+            ..FnSet::default()
+        };
         out = join_fns(&out, &only_clos);
         for (a, b) in &f.composed {
             stack.push((**a).clone());

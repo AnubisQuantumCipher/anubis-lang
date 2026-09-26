@@ -84,6 +84,10 @@ enum Callee {
 
 type CallKey = (Callee, Vec<V>, Lab);
 
+/// A call being solved: its key, whether its result is provisional, and the in-progress
+/// approximations it read (key, value then).
+type Solving = (CallKey, bool, Vec<(CallKey, V)>);
+
 /// The state along a path.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct St {
@@ -317,7 +321,7 @@ pub(crate) struct Interp<'a> {
     /// Calls being solved, innermost last, each marked when its analysis read the in-progress
     /// approximation of a call below it on this stack (its result is then provisional and is not
     /// kept: a later call analyzes it again).
-    solving: Vec<(CallKey, bool, Vec<(CallKey, V)>)>,
+    solving: Vec<Solving>,
     /// Provisional results: what each read of in-progress approximations (key, value then); one is
     /// reused while every approximation it read still has that value.
     memo_prov: HashMap<CallKey, (V, Vec<(CallKey, V)>)>,
@@ -510,7 +514,7 @@ impl<'a> Interp<'a> {
         if self.steps > STEP_BUDGET && self.exhausted.is_none() {
             self.exhausted = Some("its step budget was spent");
         }
-        if self.steps % 64 == 0 {
+        if self.steps.is_multiple_of(64) {
             self.drain_pending();
             if value::work() > WORK_BUDGET && self.exhausted.is_none() {
                 self.exhausted = Some("its work budget was spent");
@@ -1283,7 +1287,7 @@ impl<'a> Interp<'a> {
                 };
                 self.exec_loop(
                     s as *const Stmt as usize,
-                    LoopKind::For(var, elem, clab.control()),
+                    LoopKind::For(var, Box::new(elem), clab.control()),
                     body,
                     p,
                 );
@@ -1400,7 +1404,7 @@ impl<'a> Interp<'a> {
                 let (r, mut segs) = self.place(base, p)?;
                 let i = self.eval(index, p);
                 let key = literal_key(index);
-                segs.push(Seg::Index(i, key));
+                segs.push(Seg::Index(Box::new(i), key));
                 Some((r, segs))
             }
             _ => None,
@@ -2579,14 +2583,14 @@ enum IfArm<'a> {
 enum LoopKind<'a> {
     While(&'a Expr),
     Loop,
-    For(&'a String, V, Lab),
+    For(&'a String, Box<V>, Lab),
     WhileLet(&'a Pattern, &'a Expr),
 }
 
 enum Seg {
     Field(String),
     /// The index's value and, when it is a literal, its key.
-    Index(V, Option<LitKey>),
+    Index(Box<V>, Option<LitKey>),
 }
 
 fn fn_def<'a>(
