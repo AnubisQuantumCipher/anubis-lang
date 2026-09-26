@@ -1,0 +1,5 @@
+program-evidence.v3 skipped: no native artifact
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires@f:(bvsgt (bvsub (_ bv0 64) (_ bv1 64)) (_ bv0 64))
+    (a candidate counterexample depends on over-approximated value or branch reachability — not a disproof)
+    detail: undecided: the solver found a candidate counterexample in a branch whose complete condition the checker could not encode; the branch may not execute, so this is not a checked disproof

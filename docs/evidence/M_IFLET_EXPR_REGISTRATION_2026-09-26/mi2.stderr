@@ -1,0 +1,7 @@
+program-evidence.v3 skipped: no native artifact
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:y > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:y > 0 in main
+    precondition `y > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
