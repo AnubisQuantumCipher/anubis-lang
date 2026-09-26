@@ -10723,6 +10723,93 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn round2_source_bound_branch_reachability_and_duplicate_requires() {
+        // These exact matrix sources protect both sides of call-site analysis. In particular,
+        // aggregate refusal is insufficient for the duplicate-name controls: the direct call's
+        // counterexample must survive an unrelated conditional call with the same display name.
+        let disproved = [
+            (
+                "partial conjunction, reached violation",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_partial_guard_live_invalid.anb"
+                ),
+            ),
+            (
+                "direct call before conditional namesake",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_duplicate_direct_before_invalid.anb"
+                ),
+            ),
+            (
+                "direct call after conditional namesake",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_duplicate_direct_after_invalid.anb"
+                ),
+            ),
+            (
+                "reachable expression-match callable write",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_expr_match_live_guard_alias_invalid.anb"
+                ),
+            ),
+        ];
+        for (label, source) in disproved {
+            let ir = typecheck(
+                parse_source(source).expect("tracked negative control must parse"),
+                frontend::Mode::Safe,
+            )
+            .expect("tracked negative control must typecheck");
+            let checks = SymbolicEngine::check_obligations(&ir);
+            assert!(
+                checks.iter().any(|check| {
+                    check.name.starts_with("requires@f:")
+                        && middle::counterexample_was_replayed(check)
+                }),
+                "{label}: no independently replayed requires@f counterexample: {checks:?}"
+            );
+        }
+
+        let accepted = [
+            (
+                "partially encoded but unreachable conjunction",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_partial_guard_pred_false_valid.anb"
+                ),
+            ),
+            (
+                "reached satisfied conjunction",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_partial_guard_live_valid.anb"
+                ),
+            ),
+            (
+                "duplicate satisfied calls",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_duplicate_both_valid.anb"
+                ),
+            ),
+            (
+                "untaken expression-match callable write",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_expr_match_untaken_guard_alias_valid.anb"
+                ),
+            ),
+        ];
+        for (label, source) in accepted {
+            let ir = typecheck(
+                parse_source(source).expect("tracked positive control must parse"),
+                frontend::Mode::Safe,
+            )
+            .expect("tracked positive control must typecheck");
+            let checks = SymbolicEngine::check_obligations(&ir);
+            assert!(
+                checks.iter().all(|check| check.status == "PASS"),
+                "{label}: valid program must pass for its encoded paths: {checks:?}"
+            );
+        }
+    }
+
+    #[test]
     fn match_arm_body_calls_discharge_under_the_pattern_condition() {
         // The last call-site residual's tractable subset: a contracted call in a `match` ARM body/guard is
         // discharged under a SOUND path condition derived from the arm — a literal pattern over the
