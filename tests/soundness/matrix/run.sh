@@ -12,12 +12,13 @@
 # independently of checker output: an entry keyed by "ID/form" contains the
 # source SHA-256 and exact typed diagnostics, each with an obligation fingerprint
 # or source span. Every non-ACCEPT form needs one. The supplied digests remain
-# provisional until a reviewed canonical manifest is checked in: this version
-# cannot report PASS or complete matrix coverage. Locally matching forms are
-# marked MATCH-provisional. Current --record
+# provisional unless the fixed in-repo canonical/manifest.v1.json validates.
+# Even with that manifest, this runner cannot report aggregate PASS: verified
+# source-to-binary binding, stable producer locators, and review of the complete
+# registry remain separate gates. Current --record
 # syntax remains recognized, but recording is disabled until source-bound build
 # provenance and concurrent-safe history publication exist. Its receipt says so.
-# Exit: INCOMPLETE=2 for every run in this provisional version.
+# Exit: INCOMPLETE=2 until the remaining authority gates are implemented.
 set -euo pipefail
 MATRIX_HERE=$(cd "$(dirname "$0")" && pwd)
 export MATRIX_HERE
@@ -41,6 +42,13 @@ import time
 HERE = Path(os.environ["MATRIX_HERE"])
 REGISTRY = HERE / "registry.tsv"
 RUNNER = HERE / "run.sh"
+RENAMES = HERE / "renames.tsv"
+RECATEGORIZATIONS = HERE / "recategorizations.tsv"
+CANONICAL_MANIFEST = HERE / "canonical" / "manifest.v1.json"
+CANONICAL_SCHEMA = "anubis-soundness-matrix-canonical/1"
+DIAGNOSTIC_SCHEMA = "anubis-diagnostics/1"
+PROPERTIES = {"contract", "confidentiality", "integrity", "effect",
+              "capability", "parser", "resource"}
 REGISTRY_HEADER = "id\tfamily\tcategory\tintent\tforms\tnotes"
 RESULT_HEADER = ("id\tform\tcategory\tintent\tobserved\tresult\texit_code"
                  "\tsource_sha256\tstdout\tstdout_sha256\tstderr\tstderr_sha256"
@@ -50,11 +58,18 @@ SECURITY_PREFIXES = (
     "ANUBIS_SECRET_EXFILTRATION", "ANUBIS_TAINTED_SINK", "ANUBIS_INTERPROC_",
     "ANUBIS_EFFECT_", "ANUBIS_CAPABILITY_", "ANUBIS_IMPLICIT_FLOW",
 )
+SECURITY_EXACT_CODES = {"ANUBIS_SECRET_TO_PUBLIC"}
 REFUSAL_CODES = {
     "ANUBIS_FLOAT_CONTRACT_UNMODELED", "ANUBIS_LOOP_INVARIANT_UNVERIFIABLE",
     "ANUBIS_DIVISOR_MAYBE_ZERO",
 }
 REJECTION_CLASSES = {"DISPROVED", "SEC_REJECT", "WRAP", "REJECTED"}
+INTENT_OUTCOMES = {
+    "ACCEPT": {"ACCEPT"}, "REJECT": REJECTION_CLASSES,
+    "UNRES": {"UNDECIDED"},
+    "REJ|UNRES": REJECTION_CLASSES | {"UNDECIDED", "UNPROVEN", "REFUSED", "MIXED"},
+    "MALFORMED": {"PARSE"}, "LIMIT": {"PARSE_LIMIT", "ANALYSIS_LIMIT"},
+}
 EXPECTATION_FIELDS = ("code", "family", "status", "defect_locus", "agent_action")
 MAX_LOG_BYTES = 8388608
 READ_CHUNK = 65536
@@ -147,6 +162,45 @@ def load_registry():
     return specs
 
 
+def validate_diagnostic_tuple(item, key, spec):
+    if (not isinstance(item, dict) or
+            set(item) != (set(EXPECTATION_FIELDS) | {"locator"}) or
+            any(not isinstance(item[field], str) for field in EXPECTATION_FIELDS) or
+            not re.fullmatch(r"ANUBIS_[A-Z0-9_]+", item["code"]) or
+            item["family"] not in ("contract", "wrap_safety", "solver_trust",
+                                   "frontend", "environment") or
+            item["status"] not in ("disproved", "undecided", "replay_mismatch",
+                                   "refused") or
+            item["defect_locus"] not in ("program", "compiler", "environment",
+                                         "capability") or
+            item["agent_action"] not in ("repair_program", "restate_or_raise_budget",
+                                         "investigate_compiler", "fix_environment") or
+            diagnostic_class(item) in ("TOOL_PROTOCOL", "TOOL_REFUSAL") or
+            diagnostic_class(item).startswith(("TOOL_", "INVALID:"))):
+        raise ValueError(f"{key}: invalid typed diagnostic tuple")
+    locator = item["locator"]
+    if not isinstance(locator, dict):
+        raise ValueError(f"{key}: missing obligation locator")
+    if locator.get("kind") == "obligation":
+        if (set(locator) != {"kind", "name", "smt_sha256"} or
+                not isinstance(locator["name"], str) or
+                not locator["name"] or
+                not isinstance(locator["smt_sha256"], str) or
+                not re.fullmatch(r"[0-9a-f]{64}", locator["smt_sha256"])):
+            raise ValueError(f"{key}: invalid obligation fingerprint")
+    elif locator.get("kind") == "span":
+        if (set(locator) != {"kind", "file", "span_start", "span_end"} or
+                locator["file"] != spec["source"] or
+                not unsigned_integer(locator["span_start"]) or
+                not unsigned_integer(locator["span_end"]) or
+                locator["span_end"] < locator["span_start"] or
+                locator["span_end"] > (HERE / locator["file"]).stat().st_size):
+            raise ValueError(f"{key}: invalid source span")
+    else:
+        raise ValueError(f"{key}: unsupported obligation locator")
+    return item
+
+
 def load_expectations(path, expected_sha, registry_sha, specs):
     if not path.is_file():
         raise ValueError("expected-classes file is missing")
@@ -179,36 +233,85 @@ def load_expectations(path, expected_sha, registry_sha, specs):
         required = expectation["diagnostics"]
         if not isinstance(required, list) or not required:
             raise ValueError(f"expected-classes {key}: expected nonempty diagnostic tuple list")
-        tuples = []
-        for item in required:
-            if (not isinstance(item, dict) or
-                    set(item) != (set(EXPECTATION_FIELDS) | {"locator"}) or
-                    any(not isinstance(item[field], str) for field in EXPECTATION_FIELDS) or
-                    not re.fullmatch(r"ANUBIS_[A-Z0-9_]+", item["code"])):
-                raise ValueError(f"expected-classes {key}: invalid diagnostic tuple")
-            locator = item["locator"]
-            if not isinstance(locator, dict):
-                raise ValueError(f"expected-classes {key}: missing obligation locator")
-            if locator.get("kind") == "obligation":
-                if (set(locator) != {"kind", "name", "smt_sha256"} or
-                        not isinstance(locator["name"], str) or
-                        not locator["name"] or
-                        not isinstance(locator["smt_sha256"], str) or
-                        not re.fullmatch(r"[0-9a-f]{64}", locator["smt_sha256"])):
-                    raise ValueError(f"expected-classes {key}: invalid obligation fingerprint")
-            elif locator.get("kind") == "span":
-                if (set(locator) != {"kind", "file", "span_start", "span_end"} or
-                        locator["file"] != expected_specs[key]["source"] or
-                        not unsigned_integer(locator["span_start"]) or
-                        not unsigned_integer(locator["span_end"]) or
-                        locator["span_end"] < locator["span_start"] or
-                        locator["span_end"] > (HERE / locator["file"]).stat().st_size):
-                    raise ValueError(f"expected-classes {key}: invalid source span")
-            else:
-                raise ValueError(f"expected-classes {key}: unsupported obligation locator")
-            tuples.append(item)
-        expectations[key] = tuples
+        expectations[key] = [validate_diagnostic_tuple(item, f"expected-classes {key}",
+                                                        expected_specs[key])
+                             for item in required]
     return expectations
+
+
+def load_canonical_manifest(registry_sha, runner_sha, specs):
+    """Load only the fixed in-repo authority; caller flags cannot nominate it."""
+    if CANONICAL_MANIFEST.parent.is_symlink() or CANONICAL_MANIFEST.is_symlink():
+        raise ValueError("canonical manifest path is linked")
+    if not CANONICAL_MANIFEST.is_file():
+        return None
+    with CANONICAL_MANIFEST.open("rb") as stream:
+        manifest_bytes = stream.read(MAX_LOG_BYTES + 1)
+    if len(manifest_bytes) > MAX_LOG_BYTES:
+        raise ValueError("canonical manifest exceeds bounded input size")
+    manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    try:
+        document = json.loads(manifest_bytes.decode("utf-8"),
+                              object_pairs_hook=unique_object,
+                              parse_constant=reject_json_constant)
+    except (UnicodeError, ValueError) as error:
+        raise ValueError(f"canonical manifest JSON is invalid: {error}") from error
+    required = {"schema", "diagnostic_schema", "registry_sha256", "renames_sha256",
+                "recategorizations_sha256", "runner_sha256", "forms"}
+    if (not isinstance(document, dict) or set(document) != required or
+            document["schema"] != CANONICAL_SCHEMA or
+            document["diagnostic_schema"] != DIAGNOSTIC_SCHEMA or
+            not isinstance(document["forms"], dict)):
+        raise ValueError("canonical manifest schema is invalid")
+    validated_digests = {}
+    for field, path, observed in (
+            ("registry_sha256", REGISTRY, registry_sha),
+            ("renames_sha256", RENAMES, None),
+            ("recategorizations_sha256", RECATEGORIZATIONS, None),
+            ("runner_sha256", RUNNER, runner_sha)):
+        expected_sha = document[field]
+        actual_sha = (observed if observed is not None else
+                      sha256_file(path) if path.is_file() and not path.is_symlink() else None)
+        if (not isinstance(expected_sha, str) or
+                not re.fullmatch(r"[0-9a-f]{64}", expected_sha) or
+                not path.is_file() or path.is_symlink() or
+                expected_sha != actual_sha):
+            raise ValueError(f"canonical manifest {field} binding is invalid")
+        validated_digests[field] = actual_sha
+    expected_specs = {f"{spec['id']}/{spec['form']}": spec for spec in specs}
+    if set(document["forms"]) != set(expected_specs):
+        missing = sorted(set(expected_specs) - set(document["forms"]))
+        extra = sorted(set(document["forms"]) - set(expected_specs))
+        raise ValueError(f"canonical manifest form coverage mismatch: missing={missing}, extra={extra}")
+    expectations, outcomes, properties = {}, {}, {}
+    for key, form in document["forms"].items():
+        spec = expected_specs[key]
+        if (not isinstance(form, dict) or
+                set(form) != {"source", "source_sha256", "intent", "category",
+                              "property", "required_outcome", "diagnostics"} or
+                any(form[field] != spec[field] for field in
+                    ("source", "source_sha256", "intent", "category")) or
+                not isinstance(form["property"], str) or
+                form["property"] not in PROPERTIES or
+                not isinstance(form["required_outcome"], str) or
+                form["required_outcome"] not in INTENT_OUTCOMES[spec["intent"]] or
+                not isinstance(form["diagnostics"], list)):
+            raise ValueError(f"canonical manifest {key}: source, semantics, or outcome is invalid")
+        diagnostics = form["diagnostics"]
+        if (spec["intent"] == "ACCEPT" and diagnostics or
+                spec["intent"] != "ACCEPT" and not diagnostics):
+            raise ValueError(f"canonical manifest {key}: diagnostic coverage is invalid")
+        tuples = [validate_diagnostic_tuple(item, f"canonical manifest {key}", spec)
+                  for item in diagnostics]
+        if (tuples and aggregate_diagnostic_classes(
+                [diagnostic_class(item) for item in tuples]) != form["required_outcome"]):
+            raise ValueError(f"canonical manifest {key}: typed tuple/outcome mismatch")
+        expectations[key] = tuples
+        outcomes[key] = form["required_outcome"]
+        properties[key] = form["property"]
+    return (expectations, outcomes, properties, manifest_sha,
+            validated_digests["renames_sha256"],
+            validated_digests["recategorizations_sha256"])
 
 
 def stop_owned_group(process):
@@ -348,7 +451,7 @@ def diagnostic_class(diagnostic):
     if code == "ANUBIS_ASSERTION_UNPROVEN":
         return "UNPROVEN" if (family == "contract" and status == "refused" and
                               locus in ("program", "capability")) else "TOOL_PROTOCOL"
-    if code.startswith(SECURITY_PREFIXES):
+    if code in SECURITY_EXACT_CODES or code.startswith(SECURITY_PREFIXES):
         return "SEC_REJECT" if (family, status, locus, action) == (
             "frontend", "refused", "program", "repair_program") else "TOOL_PROTOCOL"
     if code in ("ANUBIS_PARSE_DEPTH_LIMIT", "ANUBIS_PARSE_CHAIN_LIMIT",
@@ -369,6 +472,25 @@ def diagnostic_class(diagnostic):
     if family == "frontend" and status == "refused":
         return f"INVALID:{code}"
     return "TOOL_PROTOCOL"
+
+
+def aggregate_diagnostic_classes(classes):
+    if "TOOL_PROTOCOL" in classes:
+        return "TOOL_PROTOCOL"
+    if any(item.startswith("TOOL_") for item in classes):
+        return "TOOL_REFUSAL"
+    if any(item.startswith("INVALID:") for item in classes):
+        return "INVALID:diagnostic"
+    distinct = set(classes)
+    if distinct <= {"PARSE", "PARSE_LIMIT"}:
+        return "PARSE_LIMIT" if "PARSE_LIMIT" in distinct else "PARSE"
+    if "PARSE" in distinct or "PARSE_LIMIT" in distinct:
+        return "INVALID:mixed-parse"
+    if len(distinct) == 1:
+        return classes[0]
+    if distinct <= REJECTION_CLASSES:
+        return "REJECTED"
+    return "MIXED"
 
 
 def parse_jsonl(stdout_log, return_code, issue):
@@ -456,22 +578,7 @@ def parse_jsonl(stdout_log, return_code, issue):
                 raise ValueError("pass has undischarged obligations")
         if return_code == 0:
             return "ACCEPT", [], summary
-        if "TOOL_PROTOCOL" in classes:
-            return "TOOL_PROTOCOL", diagnostics, summary
-        if any(c.startswith("TOOL_") for c in classes):
-            return "TOOL_REFUSAL", diagnostics, summary
-        if any(c.startswith("INVALID:") for c in classes):
-            return "INVALID:diagnostic", diagnostics, summary
-        distinct = set(classes)
-        if distinct <= {"PARSE", "PARSE_LIMIT"}:
-            return "PARSE_LIMIT" if "PARSE_LIMIT" in distinct else "PARSE", diagnostics, summary
-        if "PARSE" in distinct or "PARSE_LIMIT" in distinct:
-            return "INVALID:mixed-parse", diagnostics, summary
-        if len(distinct) == 1:
-            return classes[0], diagnostics, summary
-        if distinct <= REJECTION_CLASSES:
-            return "REJECTED", diagnostics, summary
-        return "MIXED", diagnostics, summary
+        return aggregate_diagnostic_classes(classes), diagnostics, summary
     except (UnicodeError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         return "TOOL_PROTOCOL", [], None
 
@@ -611,7 +718,11 @@ def main():
     errors, entries, specs = [], [], []
     registry_sha = binary_sha_before = binary_sha_after = None
     classes_sha_before = classes_sha_after = None
-    expectations = {}
+    expectations, canonical_outcomes, canonical_properties = {}, {}, {}
+    canonical_state = ("present-unvalidated" if CANONICAL_MANIFEST.exists() else "absent")
+    canonical_sha_before = canonical_sha_after = None
+    rename_sha_before = rename_sha_after = None
+    recategorization_sha_before = recategorization_sha_after = None
     version_stdout_sha = version_stderr_sha = version_transcript_sha = None
     runner_sha = sha256_file(RUNNER)
     binary = Path(args.binary).expanduser().resolve()
@@ -631,6 +742,16 @@ def main():
             expectations = load_expectations(classes_path,
                                              args.expected_classes_sha256.lower(),
                                              registry_sha, specs)
+        try:
+            canonical = load_canonical_manifest(registry_sha, runner_sha, specs)
+        except ValueError:
+            canonical_state = "invalid"
+            raise
+        if canonical is not None:
+            (expectations, canonical_outcomes, canonical_properties,
+             canonical_sha_before, rename_sha_before,
+             recategorization_sha_before) = canonical
+            canonical_state = "valid"
         version_stdout = out / "binary-version.stdout.log"
         version_stderr = out / "binary-version.stderr.log"
         version_rc, version_issue = run_owned(binary, ["--version"], version_stdout,
@@ -647,14 +768,23 @@ def main():
         with (out / "results.tsv").open("w", encoding="utf-8", newline="") as results:
             results.write(RESULT_HEADER + "\n")
             for spec in specs:
+                source = HERE / spec["source"]
+                if source.is_symlink() or sha256_file(source) != spec["source_sha256"]:
+                    raise ValueError(f"source digest changed before check: {spec['source']}")
                 stdout_relative = f"logs/{spec['id']}.{spec['form']}.stdout.jsonl"
                 stderr_relative = f"logs/{spec['id']}.{spec['form']}.stderr.log"
                 stdout_log, stderr_log = out / stdout_relative, out / stderr_relative
                 command = ["check", spec["source"], "--message-format=json"]
                 rc, issue = run_owned(binary, command, stdout_log, stderr_log, args.timeout)
+                if source.is_symlink() or sha256_file(source) != spec["source_sha256"]:
+                    raise ValueError(f"source digest changed during check: {spec['source']}")
                 observed, diagnostics, summary = parse_jsonl(stdout_log, rc, issue)
-                expected_diagnostics = expectations.get(f"{spec['id']}/{spec['form']}")
+                key = f"{spec['id']}/{spec['form']}"
+                expected_diagnostics = expectations.get(key)
                 result = grade(spec["intent"], observed, expected_diagnostics, diagnostics)
+                if canonical_state == "valid" and result == "MATCH-provisional":
+                    result = ("MATCH-canonical" if observed == canonical_outcomes[key] else
+                              "FAIL-wrong-class")
                 stdout_sha, stderr_sha = sha256_file(stdout_log), sha256_file(stderr_log)
                 transcript_sha = sha256_json({
                     "command": command, "binary_sha256": binary_sha_before,
@@ -663,6 +793,8 @@ def main():
                     "stderr_sha256": stderr_sha,
                 })
                 entry = {**spec, "observed": observed, "result": result,
+                         "property": canonical_properties.get(key),
+                         "required_outcome": canonical_outcomes.get(key),
                          "exit_code": rc, "stdout": stdout_relative,
                          "stdout_sha256": stdout_sha, "stderr": stderr_relative,
                          "stderr_sha256": stderr_sha,
@@ -697,12 +829,28 @@ def main():
         if runner_sha != sha256_file(RUNNER):
             errors.append("runner digest changed during run")
         for spec in specs:
-            if sha256_file(HERE / spec["source"]) != spec["source_sha256"]:
+            source = HERE / spec["source"]
+            if source.is_symlink() or sha256_file(source) != spec["source_sha256"]:
                 errors.append(f"source digest changed: {spec['source']}")
         if classes_path is not None:
             classes_sha_after = sha256_file(classes_path) if classes_path.is_file() else None
             if classes_sha_before != classes_sha_after:
                 errors.append("expected-classes digest changed during run")
+        if canonical_state == "valid":
+            canonical_sha_after = (sha256_file(CANONICAL_MANIFEST)
+                                   if CANONICAL_MANIFEST.is_file() and
+                                   not CANONICAL_MANIFEST.is_symlink() and
+                                   not CANONICAL_MANIFEST.parent.is_symlink() else None)
+            if canonical_sha_before != canonical_sha_after:
+                errors.append("canonical manifest digest changed during run")
+            rename_sha_after = (sha256_file(RENAMES) if RENAMES.is_file() and
+                                not RENAMES.is_symlink() else None)
+            recategorization_sha_after = (
+                sha256_file(RECATEGORIZATIONS) if RECATEGORIZATIONS.is_file() and
+                not RECATEGORIZATIONS.is_symlink() else None)
+            if (rename_sha_after != rename_sha_before or
+                    recategorization_sha_after != recategorization_sha_before):
+                errors.append("canonical provenance digest changed during run")
         if (stat.S_IMODE(out.stat().st_mode) != 0o700 or
                 stat.S_IMODE((out / "logs").stat().st_mode) != 0o700):
             errors.append("output directory privacy mode changed during run")
@@ -734,6 +882,8 @@ def main():
     failed = any(e["result"].startswith("FAIL") for e in entries)
     row_grade_status = ("incomplete" if errors or incomplete else
                         "has_failures" if failed else "provisional_all_matched")
+    if canonical_state == "valid" and row_grade_status == "provisional_all_matched":
+        row_grade_status = "canonical_rows_matched_unbound"
     registry_bound = (args.expected_registry_sha256 is not None and
                       registry_sha == args.expected_registry_sha256.lower())
     classes_bound = (args.expected_classes_sha256 is not None and
@@ -741,19 +891,24 @@ def main():
                      classes_sha_after == classes_sha_before)
     missing_classes = [f"{s['id']}/{s['form']}" for s in specs if s["intent"] != "ACCEPT"
                        and f"{s['id']}/{s['form']}" not in expectations]
-    if not registry_bound and args.expected_registry_sha256 is None:
+    if canonical_state != "valid" and not registry_bound and args.expected_registry_sha256 is None:
         errors.append("full-registry coverage is unbound: supply --expected-registry-sha256")
-    if not classes_bound and args.expected_classes is None:
+    if canonical_state != "valid" and not classes_bound and args.expected_classes is None:
         errors.append("non-ACCEPT diagnostics are unbound: supply digest-bound --expected-classes")
     if missing_classes:
         errors.append("frozen non-ACCEPT expectations do not cover every registered form")
     if args.record is not None:
         errors.append("--record withheld: source commit has no verified build manifest or CAS history writer")
-    errors.append("reviewed canonical matrix manifest is not integrated; aggregate completion unavailable")
-    scope = ("provisional-operator-supplied" if registry_bound and classes_bound and
-             not missing_classes else
-             "class-unbound" if not classes_bound or missing_classes else
-             "registry-unbound")
+    if canonical_state == "valid":
+        errors.append("verified source-to-binary build identity and complete production locator coverage are unavailable; aggregate completion withheld")
+        scope = "canonical-source-inventory"
+    else:
+        errors.append("reviewed canonical matrix manifest is absent or invalid; aggregate completion unavailable")
+        scope = ("canonical-invalid" if canonical_state == "invalid" else
+                 "provisional-operator-supplied" if registry_bound and classes_bound and
+                 not missing_classes else
+                 "class-unbound" if not classes_bound or missing_classes else
+                 "registry-unbound")
     status = "INCOMPLETE"
     counts = dict(sorted(collections.Counter(
         e["result"] for e in entries if e["form"] == "carrier").items()))
@@ -761,13 +916,26 @@ def main():
     receipt = {
         "schema": "anubis-soundness-matrix-run/1", "phase": "final", "status": status,
         "row_grade_status": row_grade_status, "coverage_scope": scope,
-        "canonical_manifest_integrated": False,
-        "coverage_authority": "operator-supplied-digests",
+        "canonical_manifest_integrated": canonical_state == "valid",
+        "canonical_manifest_state": canonical_state,
+        "canonical_manifest_sha256_before": canonical_sha_before,
+        "canonical_manifest_sha256_after": canonical_sha_after,
+        "renames_sha256_before": rename_sha_before,
+        "renames_sha256_after": rename_sha_after,
+        "recategorizations_sha256_before": recategorization_sha_before,
+        "recategorizations_sha256_after": recategorization_sha_after,
+        "coverage_authority": ("fixed-in-repo-manifest" if canonical_state == "valid"
+                               else "operator-supplied-digests" if registry_bound or classes_bound
+                               else "unbound"),
+        "operator_expected_classes_applied": (canonical_state != "valid" and
+                                              classes_path is not None),
         "non_claims": [
             "Operator-supplied digests do not independently establish the canonical registry.",
             "Rows graded against provisional expectations do not complete the full matrix.",
             "Obligation names and SMT digests are fingerprints, not stable independent IDs.",
             "A source-commit label is not bound to the measured compiler binary.",
+            "A canonical source inventory does not establish complete obligation production or release assurance.",
+            "Manifest property labels are reviewed assertions; this runner does not derive semantic properties from source.",
         ],
         "binary_sha256_before": binary_sha_before,
         "binary_sha256_after": binary_sha_after,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake-checker tests for provisional matrix grading; never runs Anubis."""
+"""Fake-checker tests for provisional and canonical inventory grading; never runs Anubis."""
 
 import hashlib
 import json
@@ -25,6 +25,9 @@ import sys
 import time
 
 if sys.argv[1:] == ["--version"]:
+    if os.environ.get("FAKE_MUTATE_MANIFEST_ON_VERSION") == "1":
+        with open(os.environ["FAKE_MANIFEST"], "a", encoding="utf-8") as stream:
+            stream.write("\n")
     print("fake-checker 1")
     sys.exit(0)
 if (len(sys.argv) != 4 or sys.argv[1] != "check" or
@@ -36,6 +39,9 @@ if mode.get("sleep"):
     time.sleep(mode["sleep"])
 if mode.get("mutate"):
     with open(sys.argv[0], "a", encoding="utf-8") as stream:
+        stream.write("\n# changed during matrix run\n")
+if mode.get("mutate_source"):
+    with open(sys.argv[2], "a", encoding="utf-8") as stream:
         stream.write("\n# changed during matrix run\n")
 if mode.get("background_marker"):
     subprocess.Popen(
@@ -57,6 +63,9 @@ else:
                                        "restate_or_raise_budget"),
         "ANUBIS_ASSERTION_UNPROVEN": ("contract", "refused", "program", "repair_program"),
         "ANUBIS_SECRET_EXFILTRATION": ("frontend", "refused", "program", "repair_program"),
+        "ANUBIS_SECRET_TO_PUBLIC": ("frontend", "refused", "program", "repair_program"),
+        "ANUBIS_INTERPROC_EXFILTRATION": ("frontend", "refused", "program",
+                                            "repair_program"),
         "ANUBIS_PARSE_ERROR": ("frontend", "refused", "program", "repair_program"),
         "ANUBIS_PARSE_DEPTH_LIMIT": ("frontend", "refused", "program", "repair_program"),
         "ANUBIS_ANALYSIS_LIMIT": ("frontend", "refused", "capability",
@@ -113,6 +122,10 @@ def expected_tuple(code, source):
                                         "repair_program"),
         "ANUBIS_SECRET_EXFILTRATION": ("frontend", "refused", "program",
                                        "repair_program"),
+        "ANUBIS_SECRET_TO_PUBLIC": ("frontend", "refused", "program",
+                                    "repair_program"),
+        "ANUBIS_INTERPROC_EXFILTRATION": ("frontend", "refused", "program",
+                                           "repair_program"),
         "ANUBIS_ASSERTION_UNDECIDED": ("contract", "undecided", "capability",
                                        "restate_or_raise_budget"),
         "ANUBIS_ASSERTION_UNPROVEN": ("contract", "refused", "program",
@@ -147,6 +160,9 @@ class MatrixRunnerTests(unittest.TestCase):
         shutil.copy2(SOURCE_RUNNER, self.matrix / "run.sh")
         (self.matrix / "run.sh").chmod(0o755)
         (self.matrix / "registry.tsv").write_text(REGISTRY_HEADER, encoding="utf-8")
+        (self.matrix / "renames.tsv").write_text("old\tnew\n", encoding="utf-8")
+        (self.matrix / "recategorizations.tsv").write_text(
+            "case\trationale\n", encoding="utf-8")
         (self.matrix / "history.tsv").write_text(HISTORY_HEADER, encoding="utf-8")
         self.binary = self.root / "fake-checker"
         self.binary.write_text(FAKE_CHECKER, encoding="utf-8")
@@ -188,8 +204,56 @@ class MatrixRunnerTests(unittest.TestCase):
     def registry_digest(self):
         return hashlib.sha256((self.matrix / "registry.tsv").read_bytes()).hexdigest()
 
+    def canonical_document(self):
+        """Build a small authored fake-fixture authority, never the live matrix oracle."""
+        digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+        outcome_for_code = {
+            "ANUBIS_ASSERTION_DISPROVED": "DISPROVED",
+            "ANUBIS_ASSERTION_UNDECIDED": "UNDECIDED",
+            "ANUBIS_ASSERTION_UNPROVEN": "UNPROVEN",
+            "ANUBIS_SECRET_EXFILTRATION": "SEC_REJECT",
+            "ANUBIS_SECRET_TO_PUBLIC": "SEC_REJECT",
+            "ANUBIS_INTERPROC_EXFILTRATION": "SEC_REJECT",
+            "ANUBIS_PARSE_ERROR": "PARSE",
+            "ANUBIS_PARSE_DEPTH_LIMIT": "PARSE_LIMIT",
+            "ANUBIS_ANALYSIS_LIMIT": "ANALYSIS_LIMIT",
+        }
+        forms = {}
+        for line in (self.matrix / "registry.tsv").read_text(encoding="utf-8").splitlines()[1:]:
+            case_id, _family, category, intent, names, _notes = line.split("\t")
+            for form in names.split(","):
+                suffix = ".direct.anb" if form == "direct" else ".anb"
+                source = f"cases/{case_id}{suffix}"
+                key = f"{case_id}/{form}"
+                diagnostics = self.expectations.get(key, {}).get("diagnostics", [])
+                forms[key] = {
+                    "source": source,
+                    "source_sha256": digest(self.matrix / source),
+                    "intent": intent, "category": category,
+                    "property": ("parser" if intent == "MALFORMED" else
+                                 "resource" if intent == "LIMIT" else "contract"),
+                    "required_outcome": (outcome_for_code[diagnostics[0]["code"]]
+                                         if diagnostics else "ACCEPT"),
+                    "diagnostics": diagnostics,
+                }
+        return {
+            "schema": "anubis-soundness-matrix-canonical/1",
+            "diagnostic_schema": "anubis-diagnostics/1",
+            "registry_sha256": self.registry_digest(),
+            "renames_sha256": digest(self.matrix / "renames.tsv"),
+            "recategorizations_sha256": digest(self.matrix / "recategorizations.tsv"),
+            "runner_sha256": digest(self.matrix / "run.sh"),
+            "forms": forms,
+        }
+
+    def write_canonical(self, document):
+        canonical = self.matrix / "canonical"
+        canonical.mkdir(exist_ok=True)
+        (canonical / "manifest.v1.json").write_text(
+            json.dumps(document, sort_keys=True), encoding="utf-8")
+
     def invoke(self, *, record=False, timeout="2", expected="current",
-               expected_classes="current"):
+               expected_classes="current", mutate_manifest_on_version=False):
         out = self.root / "output"
         command = [str(self.matrix / "run.sh"), str(self.binary), "--out", str(out),
                    "--timeout", timeout]
@@ -212,6 +276,9 @@ class MatrixRunnerTests(unittest.TestCase):
         environment = dict(os.environ)
         environment["FAKE_MODES"] = json.dumps(self.modes)
         environment["FAKE_OUT"] = str(out)
+        environment["FAKE_MUTATE_MANIFEST_ON_VERSION"] = (
+            "1" if mutate_manifest_on_version else "0")
+        environment["FAKE_MANIFEST"] = str(self.matrix / "canonical" / "manifest.v1.json")
         completed = subprocess.run(command, cwd=self.root, env=environment,
                                    text=True, capture_output=True, timeout=20)
         receipt = json.loads((out / "receipt.json").read_text(encoding="utf-8"))
@@ -539,6 +606,233 @@ class MatrixRunnerTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "INCOMPLETE")
         self.assertNotEqual(receipt["coverage_scope"], "provisional-operator-supplied")
         self.assertEqual(receipt["completed_forms"], 0)
+
+    def test_fixed_canonical_inventory_matches_but_cannot_complete_assurance(self):
+        self.add_case("bad", "REJECT", refused("ANUBIS_ASSERTION_DISPROVED"))
+        self.add_case("good", "ACCEPT", passed())
+        self.write_canonical(self.canonical_document())
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["status"], "INCOMPLETE")
+        self.assertEqual(receipt["canonical_manifest_state"], "valid")
+        self.assertTrue(receipt["canonical_manifest_integrated"])
+        self.assertEqual(receipt["coverage_scope"], "canonical-source-inventory")
+        self.assertEqual(receipt["row_grade_status"], "canonical_rows_matched_unbound")
+        self.assertEqual([entry["result"] for entry in receipt["entries"]],
+                         ["MATCH-canonical", "MATCH-canonical"])
+        self.assertFalse(receipt["source_commit_bound"])
+        self.assertFalse(receipt["history_appended"])
+        self.assertEqual(receipt["entries"][0]["property"], "contract")
+        self.assertEqual(receipt["entries"][0]["required_outcome"], "DISPROVED")
+        self.assertTrue(any("property labels are reviewed assertions" in claim
+                            for claim in receipt["non_claims"]))
+        self.assertTrue(any("source-to-binary" in error for error in receipt["errors"]))
+
+    def test_operator_tuple_cannot_replace_fixed_canonical_tuple(self):
+        self.add_case("bad", "REJECT", refused("ANUBIS_ASSERTION_DISPROVED"))
+        self.write_canonical(self.canonical_document())
+        operator = json.loads(json.dumps(self.expectations))
+        operator["bad/carrier"]["diagnostics"] = [expected_tuple(
+            "ANUBIS_SECRET_EXFILTRATION", "cases/bad.anb")]
+        completed, receipt, _out = self.invoke(expected_classes=operator)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["entries"][0]["result"], "MATCH-canonical")
+        self.assertEqual(receipt["coverage_authority"], "fixed-in-repo-manifest")
+        self.assertFalse(receipt["operator_expected_classes_applied"])
+
+    def test_secret_to_public_is_a_typed_security_refusal(self):
+        self.add_case("secret", "REJECT", refused("ANUBIS_SECRET_TO_PUBLIC"),
+                      expected_carrier="ANUBIS_SECRET_TO_PUBLIC")
+        self.write_canonical(self.canonical_document())
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["entries"][0]["observed"], "SEC_REJECT")
+        self.assertEqual(receipt["entries"][0]["result"], "MATCH-canonical")
+        self.assertEqual(receipt["status"], "INCOMPLETE")
+
+    def test_secret_to_public_mixed_with_interproc_is_a_typed_refusal(self):
+        self.add_case("mixed_secret", "REJECT", {"rc": 1, "codes": [
+            "ANUBIS_SECRET_TO_PUBLIC", "ANUBIS_INTERPROC_EXFILTRATION"]},
+            expected_carrier="ANUBIS_SECRET_TO_PUBLIC")
+        self.expectations["mixed_secret/carrier"]["diagnostics"].append(
+            expected_tuple("ANUBIS_INTERPROC_EXFILTRATION", "cases/mixed_secret.anb"))
+        self.write_canonical(self.canonical_document())
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["entries"][0]["observed"], "SEC_REJECT")
+        self.assertEqual(receipt["entries"][0]["result"], "MATCH-canonical")
+        self.assertEqual([item["code"] for item in receipt["entries"][0]["diagnostics"]],
+                         ["ANUBIS_SECRET_TO_PUBLIC", "ANUBIS_INTERPROC_EXFILTRATION"])
+
+    def test_secret_to_public_malformed_typed_tuple_is_rejected(self):
+        self.add_case("secret", "REJECT", refused("ANUBIS_SECRET_TO_PUBLIC"),
+                      expected_carrier="ANUBIS_SECRET_TO_PUBLIC")
+        document = self.canonical_document()
+        document["forms"]["secret/carrier"]["diagnostics"][0]["family"] = "environment"
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertEqual(receipt["canonical_manifest_state"], "invalid")
+        self.assertTrue(any("invalid typed diagnostic tuple" in error
+                            for error in receipt["errors"]))
+
+    def test_secret_to_public_malformed_producer_tuple_is_tool_protocol(self):
+        self.add_case("secret", "REJECT", refused(
+            "ANUBIS_SECRET_TO_PUBLIC", diagnostic_override={"family": "environment"}),
+            expected_carrier="ANUBIS_SECRET_TO_PUBLIC")
+        self.write_canonical(self.canonical_document())
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["entries"][0]["observed"], "TOOL_PROTOCOL")
+        self.assertEqual(receipt["entries"][0]["result"], "INCOMPLETE-tool")
+        self.assertEqual(receipt["status"], "INCOMPLETE")
+
+    def test_canonical_hash_before_uses_parsed_bytes_even_if_version_mutates_file(self):
+        self.add_case("good", "ACCEPT", passed())
+        self.write_canonical(self.canonical_document())
+        manifest = self.matrix / "canonical" / "manifest.v1.json"
+        parsed_bytes_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None,
+                                                mutate_manifest_on_version=True)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["canonical_manifest_sha256_before"], parsed_bytes_sha)
+        self.assertNotEqual(receipt["canonical_manifest_sha256_after"], parsed_bytes_sha)
+        self.assertTrue(any("canonical manifest digest changed during run" in error
+                            for error in receipt["errors"]))
+        self.assertEqual(receipt["status"], "INCOMPLETE")
+
+    def test_canonical_manifest_missing_form_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        document = self.canonical_document()
+        document["forms"].pop("good/carrier")
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertEqual(receipt["canonical_manifest_state"], "invalid")
+        self.assertTrue(any("form coverage mismatch" in error for error in receipt["errors"]))
+
+    def test_canonical_manifest_extra_form_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        document = self.canonical_document()
+        document["forms"]["invented/carrier"] = dict(document["forms"]["good/carrier"])
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("extra=['invented/carrier']" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_accept_source_change_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        self.write_canonical(self.canonical_document())
+        with (self.matrix / "cases" / "good.anb").open("a", encoding="utf-8") as stream:
+            stream.write("// benign source edit also changes the authority\n")
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("source, semantics, or outcome" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_intent_mismatch_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        document = self.canonical_document()
+        document["forms"]["good/carrier"]["intent"] = "REJECT"
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("source, semantics, or outcome" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_category_mismatch_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        document = self.canonical_document()
+        document["forms"]["good/carrier"]["category"] = "quietly-recategorized"
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("source, semantics, or outcome" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_nonaccept_without_locator_is_preflight_incomplete(self):
+        self.add_case("bad", "REJECT", refused("ANUBIS_ASSERTION_DISPROVED"))
+        document = self.canonical_document()
+        document["forms"]["bad/carrier"]["diagnostics"][0].pop("locator")
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("invalid typed diagnostic tuple" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_nonaccept_without_tuple_is_preflight_incomplete(self):
+        self.add_case("bad", "REJECT", refused("ANUBIS_ASSERTION_DISPROVED"))
+        document = self.canonical_document()
+        document["forms"]["bad/carrier"]["diagnostics"] = []
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("diagnostic coverage is invalid" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_missing_producer_locator_keeps_row_incomplete(self):
+        self.add_case("bad", "REJECT", refused(
+            "ANUBIS_SECRET_EXFILTRATION", diagnostic_override={"location": None}),
+            expected_carrier="ANUBIS_SECRET_EXFILTRATION")
+        self.write_canonical(self.canonical_document())
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["canonical_manifest_state"], "valid")
+        self.assertEqual(receipt["entries"][0]["observed"], "SEC_REJECT")
+        self.assertEqual(receipt["entries"][0]["result"],
+                         "INCOMPLETE-obligation-unbound")
+        self.assertEqual(receipt["status"], "INCOMPLETE")
+
+    def test_canonical_stale_rename_digest_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        self.write_canonical(self.canonical_document())
+        with (self.matrix / "renames.tsv").open("a", encoding="utf-8") as stream:
+            stream.write("prior\tcurrent\n")
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("renames_sha256 binding is invalid" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_stale_recategorization_digest_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        self.write_canonical(self.canonical_document())
+        with (self.matrix / "recategorizations.tsv").open("a", encoding="utf-8") as stream:
+            stream.write("good\tchanged\n")
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("recategorizations_sha256 binding is invalid" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_stale_runner_digest_is_preflight_incomplete(self):
+        self.add_case("good", "ACCEPT", passed())
+        document = self.canonical_document()
+        document["runner_sha256"] = "0" * 64
+        self.write_canonical(document)
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("runner_sha256 binding is invalid" in error
+                            for error in receipt["errors"]))
+
+    def test_canonical_source_modified_by_checker_is_incomplete(self):
+        self.add_case("good", "ACCEPT", {"rc": 0, "mutate_source": True})
+        self.write_canonical(self.canonical_document())
+        completed, receipt, _out = self.invoke(expected=None, expected_classes=None)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(receipt["completed_forms"], 0)
+        self.assertTrue(any("source digest changed during check" in error
+                            for error in receipt["errors"]))
 
 
 if __name__ == "__main__":
