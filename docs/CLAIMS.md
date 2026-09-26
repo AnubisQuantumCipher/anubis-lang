@@ -35,7 +35,11 @@ This does not close match analysis or the full matrix. A newly
 [registered failed-guard write pair](evidence/MATCH_GUARD_WRITE_REGISTRATION_2026-09-26.md)
 leaves a required valid fallthrough UNDECIDED; the violated fallthrough is
 also UNDECIDED while its direct twin is DISPROVED. No silent accept was
-reproduced for that guard-write shape. The full matrix runner remains
+reproduced for that guard-write shape. Three
+[additional frozen controls](evidence/MATCH_GUARD_WRITE_ADDITIONAL_CONTROLS_2026-09-26.md)
+cover stale nonmatch facts, binder shadowing, and an executed guard call;
+their pinned baseline is classified without treating UNDECIDED as disproof.
+The full matrix runner remains
 `INCOMPLETE`, and no hosted or release result belongs to this local head.
 
 **UPDATE 2026-09-26 — private captured-project resolver staged.**

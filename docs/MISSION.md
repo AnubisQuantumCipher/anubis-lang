@@ -66,8 +66,10 @@ matrix is the reference for open defects.
 
 ## Current checkpoint and next executable step (2026-09-26)
 
-The latest reviewed code commit on the isolated local integration branch is
-`e7187a314db5385e2d34fd74dd3b773878112195`; this docs-only checkpoint follows it.
+The latest reviewed implementation code commit on the isolated local integration
+branch is `e7187a314db5385e2d34fd74dd3b773878112195`. Fixture-only commit
+`60b8d4e429d2f96f54a001e851077c51b1f1c912` follows it; this docs-only
+checkpoint records its pinned baseline.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
@@ -96,6 +98,9 @@ The separately [registered guard-write pair](evidence/MATCH_GUARD_WRITE_REGISTRA
 is still undecided in both valid and invalid fallthrough forms, and its
 direct violated twin is disproved. The valid refusal is a precision gate;
 no silent accept was reproduced for that pair.
+[Additional frozen controls](evidence/MATCH_GUARD_WRITE_ADDITIONAL_CONTROLS_2026-09-26.md)
+cover stale facts after a write, binder shadowing, and a contracted call in
+the guard. They preserve the pre-repair typed baseline and runtime paths.
 The full matrix runner remains `INCOMPLETE` by design. The local unfiltered
 compiler-library attempt on the preceding head was interrupted after a
 Research execution test was identified in this Linux guest; it is not a
