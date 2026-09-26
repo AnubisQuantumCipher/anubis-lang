@@ -2389,3 +2389,5 @@ r2arm_outer_fact_after_match_guard_call	M-CALL-POSITION	slice	ACCEPT	carrier	out
 r2arm_outer_fact_after_iflet_scrutinee_call	M-CALL-POSITION	slice	ACCEPT	carrier	outer let x=1 remains valid after pure f(1) in if-let scrutinee; Some arm calls g(x), whose requires(x>0) is satisfied.
 r2arm_contract_guard_after_literal_match	M-CALL-POSITION	slice	ACCEPT	carrier	constant match scrutinee selects first literal arm; later guard calling f(-1) is unreachable.
 r2arm_later_guard_after_untaken_body_write	M-CALL-POSITION	slice	ACCEPT	carrier	first literal arm is not taken and cannot write outer x=1; later guard f(x) must retain its satisfied precondition.
+r2arm_guard_assign_rhs_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	contracted f(-1) runs in match guard assignment RHS; direct call twin must disprove; assignment guard must not silently accept.
+r2arm_guard_assign_rhs_valid	M-CALL-POSITION	slice	ACCEPT	carrier	contracted f(1) runs in match guard assignment RHS with satisfied requires; repair must retain useful valid guard assignment.
