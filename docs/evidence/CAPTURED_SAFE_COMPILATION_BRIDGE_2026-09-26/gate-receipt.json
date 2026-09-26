@@ -17,7 +17,7 @@
       "name": "captured-tests",
       "raw_log_sha256": "d9d01bce42cef2da41bca4f684b5fb3a4f5ec9b99bbd906fba690c8124522f9c",
       "stored_log": "captured-tests-source-bound.log",
-      "stored_log_sha256": "b24f7787b16067d989ce38c18f6fa64cd1fd61e206e64694c28af3f98dcdeed4"
+      "stored_log_sha256": "5daf81cdadcb9917bc8d0dd2f73ecf023d768b76c44a210fa518825bf825fbe9"
     },
     {
       "command": [
@@ -53,7 +53,7 @@
     }
   ],
   "host": "Arch Linux ARM aarch64 QEMU guest",
-  "log_sanitization": "One machine-local cargo target prefix replaced with <local-cargo-target> in the stored test log; raw SHA-256 preserved.",
+  "log_sanitization": "One machine-local cargo target prefix was replaced with <local-cargo-target> and terminal blank log lines were normalized in stored logs; raw SHA-256 values are preserved.",
   "memory_scope": "systemd user scope MemoryMax=8G for cargo gates; fmt direct",
   "raw_local_manifest_sha256": "d71a736d93a50e5a6d99950ddb551cd4aa0e54139ebff95cf6ff569cc3c4c72a",
   "schema": "anubis-local-source-bound-gates/1",

@@ -23,7 +23,7 @@ limits, and refusal before any Research/Exploit checking or lowering. That
 last control only parses and classifies; it does not execute those programs.
 
 The [machine-readable gate receipt](gate-receipt.json) (SHA-256
-`31f9c9cbb3341efe589fb106872f112c93ae3db8075fde566b2201d93fcbb8d1`)
+`01d3cd64a773ef14c2b426fbc1358be71d9cc81bbf95b0c966bb008fbbc4991e`)
 records the exact code/tree identity, commands, exit codes, and raw/stored log
 hashes. On that source, the captured-resolver library tests passed with `17`
 passed and `0` failed; compiler-library Clippy with `-D warnings` and workspace
@@ -31,8 +31,9 @@ format check both exited `0`. Cargo commands ran in a memory-capped user
 scope. The [test](captured-tests-source-bound.log),
 [Clippy](clippy-source-bound.log), and [format](fmt-source-bound.log) logs are
 retained here. One machine-local cargo target prefix in the test log was
-replaced by `<local-cargo-target>` for public storage; the receipt preserves
-both the raw-log and stored-log hashes. The local raw manifest SHA-256 is
+replaced by `<local-cargo-target>` for public storage, and terminal blank log
+lines were normalized; the receipt preserves both the raw-log and stored-log
+hashes. The local raw manifest SHA-256 is
 `d71a736d93a50e5a6d99950ddb551cd4aa0e54139ebff95cf6ff569cc3c4c72a`.
 
 The [independent final-diff review](INDEPENDENT_REVIEW.md) (SHA-256
