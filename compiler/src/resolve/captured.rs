@@ -170,6 +170,14 @@ pub(crate) enum CapturedResolveError {
     EnumAliasCollision { importer: ModuleKey, alias: String },
     #[error("captured import path cannot be represented portably: `{requested}`")]
     InvalidPortablePath { requested: String },
+    #[error("trait {name} collides between {first:?} and {second:?}")]
+    TraitNameCollision {
+        name: String,
+        first: ModuleKey,
+        second: ModuleKey,
+    },
+    #[error("captured module combine failed: {message}")]
+    Combine { message: String },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -521,6 +529,7 @@ fn project_path(value: &str, requested: &str) -> Result<PortablePath, CapturedRe
 #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
 mod tests {
     use super::*;
+    use crate::frontend::{Expr, Stmt};
     use crate::package::source_graph_reader::CaptureLimits;
     use std::fs;
 
@@ -537,6 +546,92 @@ mod tests {
 
     fn entry() -> PortablePath {
         PortablePath::parse("main.anb").unwrap()
+    }
+
+    #[test]
+    fn captured_combine_uses_saved_module_bytes_and_existing_call_rewrite() {
+        let (temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import util;\nimport util;\nfn main() { print(util::value()); }",
+            ),
+            ("util.anb", b"pub fn value() { return 1; }"),
+        ]);
+        let legacy = super::super::combine_from_entry(&temp.path().join("main.anb")).unwrap();
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        fs::write(
+            temp.path().join("util.anb"),
+            b"pub fn replacement() { return 2; }",
+        )
+        .unwrap();
+
+        let combined = super::super::combine_captured_project(&graph).unwrap();
+        assert_eq!(format!("{:?}", combined.items), format!("{legacy:?}"));
+        assert!(combined
+            .items
+            .iter()
+            .any(|item| { matches!(item, Item::Fn { name, .. } if name == "util__value") }));
+        assert!(!combined
+            .items
+            .iter()
+            .any(|item| { matches!(item, Item::Fn { name, .. } if name == "util__replacement") }));
+        let main_rewritten = combined.items.iter().any(|item| match item {
+            Item::Fn { name, body, .. } if name == "main" => matches!(
+                body.first(),
+                Some(Stmt::ExprStmt(Expr::Call { callee, args }))
+                    if callee == "print"
+                        && matches!(
+                            args.first(),
+                            Some(Expr::Call { callee, .. }) if callee == "util__value"
+                        )
+            ),
+            _ => false,
+        });
+        assert!(main_rewritten);
+        let mut imports = graph.modules.last().unwrap().imports.iter();
+        assert_eq!(imports.next().unwrap().requested, "util");
+        assert_eq!(imports.next().unwrap().requested, "util");
+        assert!(imports.next().is_none());
+    }
+
+    #[test]
+    fn captured_combine_keeps_imported_trait_sidecar() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import api;\nfn main() { return 0; }"),
+            (
+                "api.anb",
+                b"struct Circle { r: u32 }\ntrait Shape { fn area(self); }\nimpl Shape for Circle { fn area(self) { return 1; } }\npub fn value() { return 1; }",
+            ),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let combined = super::super::combine_captured_project(&graph).unwrap();
+        assert!(combined.trait_env.traits.contains_key("Shape"));
+        assert!(combined
+            .trait_env
+            .impls
+            .iter()
+            .any(|imp| { imp.trait_name == "Shape" && imp.type_name == "Circle" }));
+    }
+
+    #[test]
+    fn captured_combine_refuses_ambiguous_trait_sidecars() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import api;\ntrait Shape { fn area(self); }\nfn main() { return 0; }",
+            ),
+            ("api.anb", b"trait Shape { fn area(self); }"),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let error = super::super::combine_captured_project(&graph).unwrap_err();
+        assert!(matches!(
+            error,
+            CapturedResolveError::TraitNameCollision {
+                name,
+                first: ModuleKey::Project(_),
+                second: ModuleKey::Project(_),
+            } if name == "Shape"
+        ));
     }
 
     #[test]
