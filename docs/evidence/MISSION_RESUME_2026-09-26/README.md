@@ -86,3 +86,8 @@ also been refreshed by the other session. Independent CI/evidence commits are
 to be applied on that fresh head in a clean publication worktree; the failing
 compiler candidate remains based on the recorded earlier source. No remote
 changes are overwritten. See `prepublication-pr.json` for that observation.
+
+Publication integration: local code `6f038dcb` was replayed unchanged as `b7562cb00fc36d4b99d611e93f83f9e4ae4d4c3a`
+on the newer remote clippy head. The clean publication tree excludes the
+unintegrated min/max compiler, test and registry changes. Its harness controls
+and docs-drift gate passed again; see `publication.json` and its named logs.
