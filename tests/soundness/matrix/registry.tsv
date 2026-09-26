@@ -2393,3 +2393,8 @@ r2arm_guard_assign_rhs_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	contr
 r2arm_guard_assign_rhs_valid	M-CALL-POSITION	slice	ACCEPT	carrier	contracted f(1) runs in match guard assignment RHS with satisfied requires; repair must retain useful valid guard assignment.
 r2arm_guard_assign_rhs_dead_branch	M-CALL-POSITION	slice	ACCEPT	carrier	guard assignment RHS f(-1) lies in a false if-expression branch and does not execute.
 r2arm_guard_assign_rhs_guarded	M-CALL-POSITION	slice	ACCEPT	carrier	guard assignment RHS calls f(x) only when x>0 and must use that path fact.
+r2arm_guard_return_before_call_valid	M-CALL-POSITION	slice	ACCEPT	carrier	guard block returns from main before a later f(-1); that contracted call is unreachable.
+r2arm_untaken_literal_guard_alias_valid	M-CALL-POSITION	slice	ACCEPT	carrier	literal 0 arm is not selected by scrutinee 1, so its guard cannot reassign callable h from safe to f before a later h(-1).
+r2arm_guard_unmodelable_if_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	nonmodelable pred() is true, so nested statement-if body calls f(-1) inside a match guard; direct twin disproves.
+r2arm_guard_unmodelable_if_valid	M-CALL-POSITION	slice	ACCEPT	carrier	nonmodelable pred() is true and nested match-guard statement-if body calls f(1), satisfying requires.
+r2arm_guard_unmodelable_if_dead	M-CALL-POSITION	slice	ACCEPT	carrier	nonmodelable pred() returns false, so nested match-guard statement-if body f(-1) does not execute.

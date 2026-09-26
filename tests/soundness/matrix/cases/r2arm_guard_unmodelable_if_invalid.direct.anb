@@ -1,0 +1,2 @@
+fn f(x: i64) requires(x > 0) { }
+fn main() { f(-1); }

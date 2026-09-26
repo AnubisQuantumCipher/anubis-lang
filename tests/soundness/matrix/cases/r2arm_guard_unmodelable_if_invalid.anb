@@ -1,0 +1,3 @@
+fn pred() -> bool { return true; }
+fn f(x: i64) requires(x > 0) { }
+fn main() { match 1 { _ if (if true { if pred() { f(-1); } true } else { false }) => { } _ => { } } }
