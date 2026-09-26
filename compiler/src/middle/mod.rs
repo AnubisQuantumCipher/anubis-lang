@@ -7171,7 +7171,7 @@ fn check_calls_expr_nc(
 /// This scan exists to make AUTHORIZATION see what the elevator sees. It deliberately does not try
 /// to enforce the block's contents — it answers one question: does this function elevate mode from
 /// its own source?
-fn body_has_mode_elevator(body: &[Stmt]) -> bool {
+pub(crate) fn body_has_mode_elevator(body: &[Stmt]) -> bool {
     // FIELD-TOTAL over Pattern. Pattern carries no Expr today, but consuming every named field here
     // means adding one (or adding any other field) is an E0027 compile error until this boundary
     // decides how to walk it.
