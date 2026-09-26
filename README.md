@@ -7,14 +7,14 @@
 [![CI](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/AnubisQuantumCipher/anubis-lang?include_prereleases&sort=semver&label=release)](https://github.com/AnubisQuantumCipher/anubis-lang/releases/latest)
 ![Built with Rust](https://img.shields.io/badge/built_with-Rust-000000?logo=rust&logoColor=white)
-![Native SMT solver](https://img.shields.io/badge/native_SMT_solver-0_external_deps-1f6feb)
+![Native SMT solver](https://img.shields.io/badge/native_SMT_solver-bounded_fragment-1f6feb)
 ![Apple Silicon](https://img.shields.io/badge/target-Apple_Silicon-black?logo=apple)
 ![License](https://img.shields.io/badge/license-BUSL--1.1-blue)
 ![Status](https://img.shields.io/badge/status-pre--1.0_·_evidence--native-orange)
 
-*A green `anubis check` means every obligation Anubis models was discharged — and every class it
-could not model produced a **visible residual** rather than a silent pass. Deferred is not proved.
-The live residual is always [`docs/CLAIMS.md`](docs/CLAIMS.md).*
+*A green `anubis check` reports the obligations the current checker discharged. Known false
+accepts and deferred classes are listed in [`docs/CLAIMS.md`](docs/CLAIMS.md). A passing verdict
+does not establish whole-program soundness.*
 
 </div>
 
@@ -26,29 +26,31 @@ Software's most consequential claims — *"this is correct," "this is secure," "
 "this ran in isolation"* — are almost always **asserted**. Rarely **proven**. Never **handed to you
 as an artifact you can re-check yourself.**
 
-**Anubis is a systems language that turns those claims into evidence.** Every statement it makes
-about a program comes out as something checkable and tamper-evident: a machine-checked proof, a
-concrete counterexample, a zero-knowledge receipt, a signed evidence bundle, or a hardware-isolation
-manifest **derived from the proof itself**.
+**Anubis is a systems language for checking claims and recording evidence.** Its checker,
+counterexamples, proof receipts, signed bundles, and isolation plans cover different, documented
+parts of the language. A passing check is bounded by the modeled obligations and the
+[known open issues](docs/CLAIMS.md); it is not a proof of whole-program correctness.
 
 It is deliberately **dual-use**, because the two people who most need un-fakeable truth stand on
 opposite sides of the same program: the **builder** proving a system is correct and confined, and the
 **researcher** proving one is broken with an accountable proof-of-concept. Both trade in truth that
 survives adversarial scrutiny.
 
-Anubis earns the right to make those proofs by **trusting as little as it can** — down to its own SMT
-solver (a native, Lean-verified core that decides the integer lane by default, with Z3 as a
-fail-closed cross-check) and its own compiler (self-hosted toward a byte-identical fixpoint).
+Anubis aims to reduce its trusted base. It has a native SMT solver and Lean models, with a
+production-linked check for the SecurityLabel component. Z3 is still required for some solver
+paths, and the full Rust-to-proof connection remains unfinished. A bounded VM self-hosting fixpoint
+has historical evidence; full current self-hosting remains unfinished. See
+[capability boundaries](docs/CAPABILITIES.md).
 
 ```mermaid
 flowchart TD
     SRC["your .anb program<br/>contracts · secrets · declared effects"]
     SRC --> CHK["anubis check<br/>types · taint · effects/capabilities · SMT contracts"]
     CHK -->|disproved| CE(["concrete counterexample<br/>the exact failing value"])
-    CHK -->|proved| OK(["green check"])
-    OK --> B["build<br/>native binary, same verification"]
+    CHK -->|selected obligations discharged| OK(["green check"])
+    OK --> B["build<br/>native binary, same checker"]
     OK --> P["prove<br/>zero-knowledge receipt"]
-    OK --> C["vz confine<br/>isolation from the proven effect set"]
+    OK --> C["vz confine<br/>manifest from effect analysis"]
     OK --> E["evidence bundle<br/>signed, tamper-evident, re-derived on verify"]
 ```
 
@@ -107,6 +109,11 @@ cargo build --release -p anubis        # binary at ./target/release/anubis; the 
 Full install notes: [`docs/INSTALL.md`](docs/INSTALL.md) · then the
 [tutorial](docs/language/TUTORIAL.md).
 
+The reference release target is Apple Silicon/macOS. Install the repository's pinned toolchain
+and Z3 as described in the install notes. Linux builds are under development in
+[draft PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44); they are not a
+supported release target yet.
+
 ---
 
 ## What it can do
@@ -116,10 +123,10 @@ what is currently **open** — is in **[`docs/CAPABILITIES.md`](docs/CAPABILITIE
 
 | | Group | In one line |
 |---|---|---|
-| 🛡️ | **Verify** | `requires`/`ensures`/`assert` discharged by SMT, with real counterexamples — on a native, Lean-verified solver with **zero external dependencies** |
-| 🔒 | **Secure by construction** | `secret<T>` and `tainted<T>` make a leak a compile error; linear use-once capabilities; the lethal-trifecta check |
+| 🛡️ | **Verify** | SMT checks for modeled `requires`/`ensures`/`assert` obligations, with counterexamples when available; native and Z3 paths have different trust boundaries |
+| 🔒 | **Information flow** | `secret<T>` and `tainted<T>` checks, linear use-once capabilities, and a published inventory of known gaps |
 | 🧾 | **Prove** | `anubis prove --backend risc0` — a real zkVM receipt, with private witnesses that stay off the journal |
-| 🧱 | **Confine** | `anubis vz confine` derives a hypervisor isolation manifest **from the program's proven effect set** |
+| 🧱 | **Confine** | `anubis vz confine` emits an isolation manifest from the checker's effect analysis; completeness remains an open boundary |
 | ⚔️ | **Research** | an engagement-scoped offensive toolchain for authorized work, every action hash-chained into a receipt |
 | 📦 | **Evidence & packages** | tamper-evident bundles, Ed25519 signing, and dependencies whose effect/taint/contract summaries are re-derived at your call sites |
 | 🧰 | **Run & self-host** | Turing-complete executable core, **213 builtins**, LSP/fmt/REPL/tree-sitter, and a stage0→stage3 self-host spine |
@@ -133,26 +140,30 @@ high-threat password manager.
 
 ## Where it actually stands
 
-Pre-1.0, under active development, and **honest about being unfinished**. Two things to understand
+Pre-1.0, under active development, and **honest about being unfinished**. Boundaries to understand
 before you read any number here:
 
-**1. Green means no *known* defects — not no defects.** A full green gate is an empty *published
-residual inventory*. Absence of a red row is not evidence of absence. The project says this about
+**1. Known defects remain.** A green gate reports its configured checks; absence of a red row is
+not evidence that every program is sound. The project says this about
 itself, in [`docs/CLAIMS.md`](docs/CLAIMS.md), and means it.
 
-**2. Numbers are re-derived by command, never typed by hand.** These are measured from the tree on
-every gate run — security **337/337**, language **259/259**, stdlib fail-closed **104/104**,
-native-authoritative over **937 files**, **213 builtins**, and 199 Lean 4 theorems across 16 modules
-with no `sorry`/`admit`/`axiom`:
+**2. Published counts need their receipts.** The main release-seal record reports
+security **337/337**, language **259/259**, stdlib fail-closed **104/104**,
+and native-authoritative over **937 files**.
+[CLAIMS](docs/CLAIMS.md) names the historical seal behind those pass results.
+This tree inventories **213 builtins** and 199 Lean 4 theorems across 16 modules.
+Documentation stamps are hand-edited.
+The drift gate checks the covered quantities against the tree; it does not rerun historical pass
+results. Read each result with its source and binary identity:
 
 ```bash
-bash scripts/run_docs_drift_gate.sh    # re-derives every live number in these docs
+bash scripts/run_docs_drift_gate.sh    # checks the covered live stamps against the tree
 bash scripts/audit_unified.sh          # the full gate set
 bash scripts/run_formal_gate.sh        # the Lean theorem check
 ```
 
 **3. Hosted CI is a bounded witness, not the sealed Apple/VZ result.** The
-`hosted-gate-witness` job installs the pinned Lean toolchain and evaluates the named 29-gate roster.
+`hosted-gate-witness` job installs the pinned Lean toolchain and evaluates the named 31-gate roster.
 Every host-verifiable gate must pass; `G9_poc_kit` remains exactly `EXTERNAL`, and G14 is limited to
 its non-executing host-isolation witness. A green badge therefore means `HOSTED_PASS`, not a Tart/VZ
 seal or require-Metal proof. Those lanes are deliberately out of CI until a dedicated hardened
@@ -160,13 +171,21 @@ runner exists; see [`docs/CI_TRUST_BOUNDARY.md`](docs/CI_TRUST_BOUNDARY.md). Che
 and commit rather than inferring scope from the badge:
 
 ```bash
-gh run list --workflow anubis-ci --status completed --limit 1 --json conclusion,displayTitle
+gh run list --workflow anubis-ci --branch main --status completed --limit 1 --json conclusion,displayTitle
 bash scripts/audit_unified.sh --profile hosted --out out/hosted  # the hosted contract locally
 ```
 
 The phase-by-phase arc lives in [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md); the
 authoritative open-issue list — the one that wins over every other document, including this one — is
 [`docs/CLAIMS.md`](docs/CLAIMS.md).
+
+**Development status (2026-09-26).** Work after this main-branch release is in
+[draft PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44). That large stack
+includes IFC v2, a soundness matrix, and a native Linux CI lane; it has not been merged or split
+into reviewable slices. Its last recorded matrix result had no silent accepts **among registered
+cases**, while additional witnessed leaks still await registration. The Linux lane has not yet
+produced a successful hosted witness. The Anubis 1.0 product and full production-linked trust
+chain, including self-hosting, remain unfinished.
 
 ---
 
@@ -207,7 +226,6 @@ current claim.
 
 <div align="center">
 
-**The math is the authority. The proofs are mechanized. The system fails closed where it can, and
-publishes where it cannot.**
+**Check each claim against its evidence and its open boundaries.**
 
 </div>
