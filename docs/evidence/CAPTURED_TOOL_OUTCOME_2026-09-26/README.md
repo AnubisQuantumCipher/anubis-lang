@@ -60,6 +60,9 @@ and local evidence path prefixes with `<checkout>`, `<cargo-target>` and
 `<local-evidence>`, and trims extra terminal blank lines to one final newline;
 the receipt records both raw and retained SHA-256 values. Raw logs and full selected-output JSON remain
 preserved locally. No private machine path or raw model text is published here.
+The [independent staged-documentation review](INDEPENDENT_STAGED_DOCS_REVIEW.md)
+checks the exact preceding receipt diff and its retained evidence; this link
+was added afterward without changing the reviewed machine receipt or logs.
 
 This unit does not close `A-EVID-1` counterexample replay: array values are
 not pinned, string-only models are not replayed as values, and omitted scalar
