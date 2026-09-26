@@ -1,0 +1,340 @@
+{
+  "command_shape": [
+    "<pinned-anubis>",
+    "check",
+    "<source_repo_path>",
+    "--message-format=json",
+    "--out",
+    "<local-output>"
+  ],
+  "compiler_binary_sha256": "06ab383684f3e953c613748938719fade05f573176457cb8133071a4e580df51",
+  "compiler_source_commit": "6b85cf2207e5b3126a18e2df1190a4efa49a2ecc",
+  "limits": [
+    "Selected single-file Safe checks only; matrix canonical manifest and full grade remain INCOMPLETE.",
+    "ACCEPT-intent refusal is a precision defect; rejected negatives alone are not proof of soundness.",
+    "No guest, hosted, full workspace, or independent clean-room witness is claimed."
+  ],
+  "registry_sha256": "45f4b71cd9ca298c83e2ef0113be82b04988ac06b7a6dbe3f5d54e275c497d29",
+  "rows": [
+    {
+      "exit_code": 1,
+      "id": "d9q_public_field_projection_unannotated_valid",
+      "intent": "ACCEPT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_public_field_projection_unannotated_valid.anb",
+      "source_sha256": "24899bbe10a1d3cbc4302d14167447407a4de12b17dbb6ffb7175c5f4496bc67",
+      "stderr_sha256": "993c921c3cdea3f990c01b5fa3ced8141db7ece0b87df2442727c31949045281",
+      "stdout_sha256": "1ce74d1d1a2268d747a2d6888ec323fd8e0baad300d85c2dd67b24d5729e294f",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_public_field_projection_annotated_valid",
+      "intent": "ACCEPT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_public_field_projection_annotated_valid.anb",
+      "source_sha256": "900f982de19d9be42128fae2eb59be32ce69613c1176c1ece90845b5b85049b5",
+      "stderr_sha256": "993c921c3cdea3f990c01b5fa3ced8141db7ece0b87df2442727c31949045281",
+      "stdout_sha256": "1ce74d1d1a2268d747a2d6888ec323fd8e0baad300d85c2dd67b24d5729e294f",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_secret_field_projection_invalid",
+      "intent": "REJECT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_secret_field_projection_invalid.anb",
+      "source_sha256": "c4a89e73ab82aff144cf65dfc3777b8e2e75ec5b194c4d16987a0341892d1138",
+      "stderr_sha256": "a6a2320f67c2e24e97b2cf6b8f83cee7a92b754ee046120bdefca51a57367974",
+      "stdout_sha256": "14486fdaf73e4c9d944882ad8b0757eda230d9547211fe77fd47a43aa7bea356",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_whole_struct_egress_invalid",
+      "intent": "REJECT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_whole_struct_egress_invalid.anb",
+      "source_sha256": "c9344a4626bfa3e3dadba85d2508b1446961844ce97cb2ff5f34d51100ed8bd4",
+      "stderr_sha256": "de2e194bb04994810c28ef3d918fd59deade67ea7484dd49e0aafe9ecb309077",
+      "stdout_sha256": "68ab9629619c6e829b40d16d4a3c33b9377a2f8586914af54ca397d4a4424139",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_secret_wrapper_public_projection_invalid",
+      "intent": "REJECT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_secret_wrapper_public_projection_invalid.anb",
+      "source_sha256": "5f22c4bdc679600fea454264732df6058f963b36ca89096227b38028b6c98830",
+      "stderr_sha256": "ffaa4dae906eaee2ae7ba42c0db0773edc26dba76ffb34ae498d872adfc6ccd8",
+      "stdout_sha256": "fb1e2f1710a20918e1adae83bc50cead3e81664e326ce3b6c37a302082416a70",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 0,
+      "id": "d9q_clean_struct_public_projection_valid",
+      "intent": "ACCEPT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_clean_struct_public_projection_valid.anb",
+      "source_sha256": "8f58204e0c67471d2d4ace120994116f653310d45120a62f0d5c20f343710775",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary_verdict": "pass",
+      "timeout": false,
+      "typed_diagnostics": []
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_direct_public_field_projection_valid",
+      "intent": "ACCEPT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_direct_public_field_projection_valid.anb",
+      "source_sha256": "4cc9c8882c7c8fc503780bedd4e4f8a6e4a910e61eece682928f1d7e6c154b7e",
+      "stderr_sha256": "ad555194ee96e24914bdee8d1277efd68ebabd09eb5c8b5fafd05b35b014db3e",
+      "stdout_sha256": "9537d15c64bbe4ef55578371083abd6913ede9bf48a65f228463ddc629f201cb",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_alias_public_field_projection_valid",
+      "intent": "ACCEPT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_alias_public_field_projection_valid.anb",
+      "source_sha256": "79f9b1e96e6ac074a356214e4c4d4237ab394c35703889762d138307221d0a74",
+      "stderr_sha256": "46fd34a222283f782a99c4991c85090bc4ecc69d8ed69926c40c7dfa130581df",
+      "stdout_sha256": "632a16fb5c4608ffca2d436ca95a955c96b6c38ccd47702dc3a603b2529e77ba",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_forward_public_field_projection_valid",
+      "intent": "ACCEPT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_forward_public_field_projection_valid.anb",
+      "source_sha256": "2f13bfecc017d2d5a0241d218790046224857e98348e7d59e45a33799f17a49b",
+      "stderr_sha256": "9116d46dc7d4986bb5a0b99a31c3b1288fc8910e20b180ae10e8daee2b6f6fd6",
+      "stdout_sha256": "1a7630895d04195938f04df4ac18ae7f08a99c1c67625a944f5623c2167d1918",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_public_field_secret_init_invalid",
+      "intent": "REJECT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_public_field_secret_init_invalid.anb",
+      "source_sha256": "2ee00043d7ae41e40ce499a1f475be1d2d924825d71d816269460bebdb8822c5",
+      "stderr_sha256": "64d74a750d8b11fe41d92a10506c173f69d657e26261eae6255c93d74994eaff",
+      "stdout_sha256": "4b2610a80905a1648f87fb0860b44abdaac963d5f6b2fcdee9feabb09706606d",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_public_field_secret_write_invalid",
+      "intent": "REJECT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_public_field_secret_write_invalid.anb",
+      "source_sha256": "522f262667c3426ee414875ead48cd2e4b209b8857722d6800b56dee06acffcf",
+      "stderr_sha256": "ffaa4dae906eaee2ae7ba42c0db0773edc26dba76ffb34ae498d872adfc6ccd8",
+      "stdout_sha256": "fb1e2f1710a20918e1adae83bc50cead3e81664e326ce3b6c37a302082416a70",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    },
+    {
+      "exit_code": 1,
+      "id": "d9q_computed_whole_struct_comparison_invalid",
+      "intent": "REJECT",
+      "source_repo_path": "tests/soundness/matrix/cases/d9q_computed_whole_struct_comparison_invalid.anb",
+      "source_sha256": "3dc29b857423b7648e883945463ce31a6e86529b27f3de6a4519536f0dd5e93d",
+      "stderr_sha256": "af48381f9a349c36955dc3f4f2eb46d1cd636fc99868c83cf04601f7cad16bfd",
+      "stdout_sha256": "558a6dcc76f0c8c546959a3935daae77530920c62fbd99227c63a2b7bd1551c4",
+      "summary_verdict": "fail",
+      "timeout": false,
+      "typed_diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "defect_locus": "program",
+          "family": "frontend",
+          "status": "refused"
+        }
+      ]
+    }
+  ],
+  "schema": "anubis-local-d9q-registration-baseline/1",
+  "source_commit": "d49f32b167136b1dac19022519e874cab7fe6990",
+  "source_tree": "a2bb56420cfb3898b3dbe361bca8f89d1aaf606f"
+}

@@ -92,19 +92,28 @@ controls remain refused by D9's public-formal inference; this is an open
 precision defect. The min/max result is selected-source evidence, not an
 updated full-matrix total or a verified-property seal.
 
-The first next implementation dependency is to carry the actual qualifier of
-a direct call's unannotated struct argument through D9 without dropping
-secret fields or refusing the registered valid `Row` controls. Freeze the
-baseline outcome on the `6b85cf22` pin, pair secret-egress negatives with the
-valid twins, implement a typed summary, and request independent design/final
-diff review before a source-bound lead build. In parallel, connect the
+Fixture-only commit `d49f32b1` and its
+[source-bound D9 registration](evidence/D9_QUALIFIER_PRECISION_REGISTRATION_2026-09-26/README.md)
+freeze public-field projection, alias, forwarding, whole-value, wrapper,
+secret-write and computed egress controls. The immutable `6b85cf22` binary
+refuses five ACCEPT-intent controls; the clean-Row valid control passes and
+all six REJECT controls refuse with typed security diagnostics. Independent
+design review approved the oracles and held a call-boundary-only workaround:
+the direct source walker and interprocedural summary also collapse protected
+fields into root secrecy.
+
+The next implementation dependency is a typed distinction between protected
+struct fields and whole-value secrecy, carried through direct reads, calls,
+aliases, returns, joins and writes. Preserve the negative controls and compare
+all frozen forms on the same source-bound pins before claiming restored
+precision. In parallel, connect the
 [captured source graph](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md)
 to checker/lowering and package admission; the valid transitive package still
 fails at `ANUBIS_DEP_PROOF_UNVERIFIED`. The honest FAIL-bundle verifier v10
-scratch patch is on HOLD after independent review found a rebase that deletes
-the guard fix, an overstated multi-leaf source scope, and a malformed legacy
-downgrade test. A narrow v11 patch must retain the current code and receive
-fresh review before lead testing. The matrix
+scratch patch remains withheld after a destructive rebase and source-scope
+overclaim. Independent review held v11 because it mislabeled a no-obligation
+check as a solver run and put a Research check in the host test target. A
+narrow v12 scratch patch must receive fresh review before lead testing. The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open: typed
 expectations alone cannot bind diagnostics lacking source locators. Preserve
 the old `history.tsv` and add compact event history only after that gate is

@@ -15,6 +15,16 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — struct qualifier precision frozen before repair.**
+Fixture commit `d49f32b1` and its [registration receipt](evidence/D9_QUALIFIER_PRECISION_REGISTRATION_2026-09-26/README.md)
+show that the pinned Safe checker refuses public `Row.n` reads when a distinct
+field `Row.k` is declared secret. The valid direct, annotated/unannotated,
+alias and forwarding controls are over-refused; the clean valid control
+passes. The paired secret-field, whole-value, wrapper, secret-write, and
+computed-comparison egress controls are refused. This crosses the direct
+source walker, interprocedural egress summary and call boundary; a
+call-boundary-only exception is on HOLD. The full matrix was not rerun.
+
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate
 [guard-transfer](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md) and
