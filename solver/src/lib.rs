@@ -138,6 +138,61 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Effective native proof parameters. A PCA check replays the declared product-default
+/// parameters, not whichever environment variables happen to be set in the verifier process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeProofParameters {
+    pub gate_ceiling: u64,
+    pub clause_ceiling: usize,
+    pub conflicts: u64,
+    pub cert_work: u64,
+    pub time_budget_ms: u64,
+}
+
+impl NativeProofParameters {
+    pub fn product_default() -> Self {
+        Self {
+            gate_ceiling: MAX_BLAST_GATES,
+            clause_ceiling: MAX_CNF_CLAUSES,
+            conflicts: DEFAULT_BUDGET,
+            cert_work: MAX_CERT_WORK,
+            time_budget_ms: DEFAULT_TIME_BUDGET_MS,
+        }
+    }
+}
+
+thread_local! {
+    static PCA_DEFAULT_NATIVE_LIMITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run a source-derived PCA analysis under reproducible product limits. This is request-local;
+/// no process-global environment is edited, including when other checks run concurrently.
+pub fn with_pca_default_native_limits<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PCA_DEFAULT_NATIVE_LIMITS.with(|cell| cell.set(self.0));
+        }
+    }
+    let previous = PCA_DEFAULT_NATIVE_LIMITS.with(|cell| cell.replace(true));
+    let _restore = Restore(previous);
+    f()
+}
+
+/// Capture the effective parameters used by an ordinary producer request.
+pub fn current_native_proof_parameters() -> NativeProofParameters {
+    let limits = NativeLimits::from_env();
+    NativeProofParameters {
+        gate_ceiling: limits.gate_ceiling,
+        clause_ceiling: limits.clause_ceiling,
+        conflicts: limits.conflicts,
+        cert_work: limits.cert_work,
+        time_budget_ms: limits.time_budget.map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        }),
+    }
+}
+
 /// The bounds one native decision runs under.
 #[derive(Debug, Clone)]
 struct NativeLimits {
@@ -153,6 +208,16 @@ impl NativeLimits {
     /// Product defaults, with env overrides applied. Deterministic unless an
     /// operator explicitly sets `ANUBIS_NATIVE_TIME_BUDGET_MS`.
     fn from_env() -> NativeLimits {
+        if PCA_DEFAULT_NATIVE_LIMITS.with(std::cell::Cell::get) {
+            let defaults = NativeProofParameters::product_default();
+            return NativeLimits {
+                gate_ceiling: defaults.gate_ceiling,
+                clause_ceiling: defaults.clause_ceiling,
+                conflicts: defaults.conflicts,
+                cert_work: defaults.cert_work,
+                time_budget: None,
+            };
+        }
         let ms = env_u64("ANUBIS_NATIVE_TIME_BUDGET_MS", DEFAULT_TIME_BUDGET_MS);
         NativeLimits {
             time_budget: (ms > 0).then(|| Duration::from_millis(ms)),
@@ -238,11 +303,18 @@ const SOLVER_STACK_BYTES: usize = 256 << 20;
 /// Run `f` on a scoped thread with `SOLVER_STACK_BYTES` of stack. `None` if the thread could not be
 /// created or `f` panicked — the caller treats that as a decline (defer to z3), never as a verdict.
 pub(crate) fn on_solver_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> {
+    let pca_defaults = PCA_DEFAULT_NATIVE_LIMITS.with(std::cell::Cell::get);
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("anubis-solver".into())
             .stack_size(SOLVER_STACK_BYTES)
-            .spawn_scoped(scope, f)
+            .spawn_scoped(scope, move || {
+                if pca_defaults {
+                    with_pca_default_native_limits(f)
+                } else {
+                    f()
+                }
+            })
             .ok()?
             .join()
             .ok()

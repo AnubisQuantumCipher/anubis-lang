@@ -14,13 +14,17 @@
 //! Does **not** claim Ed25519 for HMAC receipts/caps, and does not claim
 //! production-PKI attestation. Fail-closed: any FAIL makes overall `ok=false`.
 
-use anubis_compiler::evidence::{pca_signature_status, verify_pca};
+use anubis_compiler::evidence::{
+    pca_signature_status, verify_pca_scope, ClaimBlock, PcaScope, SolverExecution,
+    TypecheckRefusalKind,
+};
 use anubis_compiler::package::confinement::{self, ConfinementManifest, CONFINEMENT_FILENAME};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const EVIDENCE_VERIFY_SCHEMA: &str = "anubis-evidence-verify-v1";
+// v2 adds typed PCA scope and separates producer-reported provenance from checked claims.
+pub const EVIDENCE_VERIFY_SCHEMA: &str = "anubis-evidence-verify-v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -30,6 +34,13 @@ pub enum CheckStatus {
     Skip,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RecordedVerdict {
+    Pass,
+    Fail,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CheckResult {
     pub id: String,
@@ -37,6 +48,22 @@ pub struct CheckResult {
     /// Honest trust label for what this check actually proves.
     pub classification: String,
     pub detail: String,
+    /// Machine-readable PCA scope; absent for unrelated checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_scope: Option<PcaScope>,
+    /// Host/compiler provenance fields are captured by the producer, not independently attested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_provenance: Option<String>,
+    /// Unverified producer claim, shown only to explain a failed PCA check. Never authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_reported_claim_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solver_execution: Option<SolverExecution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typecheck_refusal_kind: Option<TypecheckRefusalKind>,
+    /// `status=PASS` says the evidence checked out; this says what the program claim concluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_verdict: Option<RecordedVerdict>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +110,12 @@ impl EvidenceVerifyReport {
             status,
             classification: classification.into(),
             detail: detail.into(),
+            claim_scope: None,
+            environment_provenance: None,
+            producer_reported_claim_kind: None,
+            solver_execution: None,
+            typecheck_refusal_kind: None,
+            recorded_verdict: None,
         });
     }
 }
@@ -466,7 +499,7 @@ fn verify_published_proofs(dir: &Path, id_prefix: &str, report: &mut EvidenceVer
                      counterexample_no_refutation tag is compatibility metadata, not a counterexample, \
                      earned proof, or solver discharge."
                 } else {
-                    "Zero proof obligations: validated PCA v3 no-obligations sentinel; \
+                    "Zero proof obligations: validated PCA v3/v4 no-obligations sentinel; \
                      no refutation, earned proof, or solver discharge."
                 },
             ),
@@ -590,24 +623,73 @@ struct ReplayPcaSummary {
     solver_all_discharged: bool,
 }
 
-fn pca_claim_disclosure(dir: &Path) -> Result<String> {
+struct PcaDisclosure {
+    text: String,
+    recorded_verdict: RecordedVerdict,
+    solver_execution: Option<SolverExecution>,
+    typecheck_refusal_kind: Option<TypecheckRefusalKind>,
+}
+
+fn pca_claim_disclosure(dir: &Path, scope: PcaScope) -> Result<PcaDisclosure> {
     #[derive(Deserialize)]
     struct Disclosure {
         pca_version: u32,
         verdict: String,
+        #[serde(default)]
+        solver_execution: Option<SolverExecution>,
+        #[serde(default)]
+        typecheck_refusal_kind: Option<TypecheckRefusalKind>,
     }
     let manifest = replay_manifest(dir)?;
     let claim: Disclosure =
         serde_json::from_slice(&sealed_replay_bytes(dir, "pca.json", &manifest)?)?;
-    let semantics = if claim.pca_version == 2 {
-        "compatibility count semantics; historical origin is not established"
-    } else {
-        "current count semantics"
+    let recorded_verdict = match claim.verdict.as_str() {
+        "PASS" => RecordedVerdict::Pass,
+        "FAIL" => RecordedVerdict::Fail,
+        other => return Err(anyhow!("unsupported recorded verdict `{other}`")),
     };
-    Ok(format!(
-        "declared PCA version={} ({semantics}); recorded verdict={}",
-        claim.pca_version, claim.verdict
-    ))
+    let semantics = match scope {
+        PcaScope::SourceCheckV1 => "v4 source check and check sidecars re-derived",
+        PcaScope::PackagePublishV1 => {
+            "v4 source check re-derived; package summary pending mounted-package comparison"
+        }
+        PcaScope::SourceOnly => {
+            "source claim re-derived; build/platform sidecars producer-reported"
+        }
+        PcaScope::LegacySourceOnly => {
+            "legacy source claim only; check sidecars and historical origin not established"
+        }
+    };
+    let solver_execution = match claim.solver_execution {
+        Some(SolverExecution::NotRun) => "not_run",
+        Some(SolverExecution::Ran) => "ran",
+        None => "not_recorded_by_legacy_schema",
+    };
+    Ok(PcaDisclosure {
+        text: format!(
+            "declared PCA version={} ({semantics}); recorded verdict={}; solver execution={solver_execution}",
+            claim.pca_version, claim.verdict
+        ),
+        recorded_verdict,
+        solver_execution: claim.solver_execution,
+        typecheck_refusal_kind: claim.typecheck_refusal_kind,
+    })
+}
+
+fn reported_unsupported_claim_kind(dir: &Path) -> Option<String> {
+    // This disclosure is explicitly unverified: even a hash-matched claim may have had its
+    // unsigned hash manifest regenerated. It can explain a FAIL row, never turn it into PASS.
+    let manifest = replay_manifest(dir).ok()?;
+    let bytes = sealed_replay_bytes(dir, "pca.json", &manifest).ok()?;
+    let claim: ClaimBlock = serde_json::from_slice(&bytes).ok()?;
+    match claim.claim_kind.as_deref()? {
+        "invalid_input_unverified_v1"
+        | "typecheck_refusal_unverified_v1"
+        | "analysis_limit_undecided_v1"
+        | "source_mode_unverified_v1"
+        | "source_snapshot_unverified_v1" => claim.claim_kind,
+        _ => None,
+    }
 }
 
 enum SolverReplayVerification {
@@ -860,12 +942,12 @@ where
             .iter()
             .filter(|check| check.detail != middle::NO_OBLIGATIONS_DETAIL)
     };
-    // PCA v2 counted the reporting sentinel; v3 counts real obligations only.
+    // PCA v2 counted the reporting sentinel; v3 and v4 count real obligations only.
     // Preserve the declared version's exact convention, never accept either
     // count opportunistically. The sentinel was validated above in both cases.
     let expected_count = match pca.pca_version {
         2 => checks.len(),
-        3 => real_checks().count(),
+        3 | 4 => real_checks().count(),
         version => {
             return Err(anyhow!(
                 "unsupported PCA version for solver replay: {version}"
@@ -923,7 +1005,7 @@ where
         let proof_kind_matches = if synthetic {
             match pca.pca_version {
                 2 => proof.proof == "counterexample_no_refutation",
-                3 => proof.proof == "not_applicable_no_obligations",
+                3 | 4 => proof.proof == "not_applicable_no_obligations",
                 _ => false,
             }
         } else if let Some(expected) = unreplayed_proof_kind(&check.detail) {
@@ -1251,15 +1333,35 @@ fn verify_evidence_bundle(
         return;
     }
 
-    let pca_result = verify_pca(dir);
+    let pca_result = verify_pca_scope(dir);
+    let mut verified_no_solver_security_refusal = false;
     match &pca_result {
-        Ok(true) => match pca_claim_disclosure(dir) {
-            Ok(disclosure) => report.push(
-                &format!("{id_prefix}.pca"),
-                CheckStatus::Pass,
-                "LAB_REAL",
-                format!("PCA re-derived and matched recorded claim; manifest hashes match the bundle; {disclosure}. Verification confirms the recorded claim, including a recorded FAIL; signature status is separate."),
-            ),
+        Ok(Some(scope)) => match pca_claim_disclosure(dir, *scope) {
+            Ok(disclosure) => {
+                verified_no_solver_security_refusal = *scope == PcaScope::SourceCheckV1
+                    && disclosure.solver_execution == Some(SolverExecution::NotRun)
+                    && disclosure.typecheck_refusal_kind
+                        == Some(TypecheckRefusalKind::SecurityPolicyFinding);
+                let classification = match scope {
+                    PcaScope::SourceCheckV1 => "LAB_REAL_SOURCE_CHECK",
+                    PcaScope::PackagePublishV1 => "PACKAGE_SOURCE_CHECK_PENDING_IDENTITY",
+                    PcaScope::SourceOnly => "SOURCE_ONLY",
+                    PcaScope::LegacySourceOnly => "LEGACY_SOURCE_ONLY",
+                };
+                report.push(
+                    &format!("{id_prefix}.pca"),
+                    CheckStatus::Pass,
+                    classification,
+                    format!("PCA re-derived and matched recorded claim; manifest hashes match the bundle; {}. Verification confirms the recorded claim, including a recorded FAIL; signature status is separate.", disclosure.text),
+                );
+                if let Some(row) = report.checks.last_mut() {
+                    row.claim_scope = Some(*scope);
+                    row.environment_provenance = Some("producer_reported_unverified".into());
+                    row.solver_execution = disclosure.solver_execution;
+                    row.typecheck_refusal_kind = disclosure.typecheck_refusal_kind;
+                    row.recorded_verdict = Some(disclosure.recorded_verdict);
+                }
+            }
             Err(error) => report.push(
                 &format!("{id_prefix}.pca"),
                 CheckStatus::Fail,
@@ -1267,12 +1369,22 @@ fn verify_evidence_bundle(
                 format!("PCA metadata disclosure failed: {error}"),
             ),
         },
-        Ok(false) => report.push(
-            &format!("{id_prefix}.pca"),
-            CheckStatus::Fail,
-            "LAB_REAL",
-            "PCA re-derive or hash validation failed (tamper or dishonest claim)",
-        ),
+        Ok(None) => {
+            let reported_kind = reported_unsupported_claim_kind(dir);
+            report.push(
+                &format!("{id_prefix}.pca"),
+                CheckStatus::Fail,
+                if reported_kind.is_some() {
+                    "PCA_UNVERIFIED_REPORTED_UNSUPPORTED"
+                } else {
+                    "PCA_UNVERIFIED"
+                },
+                "PCA claim not independently verified (unsupported input/refusal lane, tamper, or dishonest claim)",
+            );
+            if let Some(row) = report.checks.last_mut() {
+                row.producer_reported_claim_kind = reported_kind;
+            }
+        }
         Err(e) => report.push(
             &format!("{id_prefix}.pca"),
             CheckStatus::Fail,
@@ -1281,7 +1393,7 @@ fn verify_evidence_bundle(
         ),
     }
 
-    if matches!(pca_result, Ok(true)) {
+    if matches!(pca_result, Ok(Some(_))) {
         match crate::pca_claims_zk(dir) {
             Ok(true) => match crate::verify_zk_claim_if_present(dir) {
                 Ok(()) => report.push(
@@ -1361,8 +1473,26 @@ fn verify_evidence_bundle(
         ),
     }
 
-    verify_published_proofs(dir, &id_prefix, report);
-    verify_solver_replay(dir, &id_prefix, report);
+    if verified_no_solver_security_refusal {
+        // The source-derived typecheck finding is the negative evidence. No solver ran, so
+        // absence of a proof/replay sidecar is expected and cannot be a proof verification FAIL
+        // or PASS. Other source-check FAILs still take the ordinary strict proof path.
+        report.push(
+            &format!("{id_prefix}.proofs"),
+            CheckStatus::Skip,
+            "NOT_RUN",
+            "source-derived security typecheck refused before the solver; no proof was run",
+        );
+        report.push(
+            &format!("{id_prefix}.solver_replay"),
+            CheckStatus::Skip,
+            "NOT_RUN",
+            "source-derived security typecheck refused before the solver; no model was replayed",
+        );
+    } else {
+        verify_published_proofs(dir, &id_prefix, report);
+        verify_solver_replay(dir, &id_prefix, report);
+    }
 
     // Confinement re-derive when sealed alongside source.
     let conf_path = dir.join(CONFINEMENT_FILENAME);
@@ -2096,6 +2226,48 @@ mod solver_replay_tests {
         (root, bundle.dir)
     }
 
+    #[test]
+    fn json_verifier_exposes_typed_check_scope_and_unattested_machine_provenance() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; assert(x == 1); }",
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        let report = verify_path(&bundle.dir, &EvidenceVerifyOpts::default()).unwrap();
+        let pca = report
+            .checks
+            .iter()
+            .find(|check| check.id.ends_with(".pca"))
+            .unwrap();
+        assert_eq!(pca.status, CheckStatus::Pass);
+        assert_eq!(pca.classification, "LAB_REAL_SOURCE_CHECK");
+        assert_eq!(pca.claim_scope, Some(PcaScope::SourceCheckV1));
+        assert_eq!(
+            pca.environment_provenance.as_deref(),
+            Some("producer_reported_unverified")
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["schema"], "anubis-evidence-verify-v2");
+        let row = json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"].as_str().is_some_and(|id| id.ends_with(".pca")))
+            .unwrap();
+        assert_eq!(row["claim_scope"], "source_check_v1");
+        assert_eq!(row["recorded_verdict"], "PASS");
+        assert_eq!(
+            row["environment_provenance"],
+            "producer_reported_unverified"
+        );
+    }
+
     fn read(dir: &Path, relative: &str) -> Value {
         serde_json::from_slice(&std::fs::read(dir.join(relative)).unwrap()).unwrap()
     }
@@ -2351,7 +2523,7 @@ mod solver_replay_tests {
                 assert_eq!(checks.as_array().unwrap().len(), 1);
                 assert_eq!(checks[0]["name"], "solver:no-obligations");
                 assert_eq!(checks[0]["detail"], middle::NO_OBLIGATIONS_DETAIL);
-                assert_eq!(read(&dir, "pca.json")["pca_version"], 3);
+                assert_eq!(read(&dir, "pca.json")["pca_version"], 4);
                 assert_eq!(read(&dir, "pca.json")["solver_obligations"], 0);
                 assert_eq!(
                     read(&dir, "analysis/proofs.json")["obligations"][0]["proof"],
@@ -2378,7 +2550,9 @@ mod solver_replay_tests {
                 .find(|check| check.id.ends_with(".pca"))
                 .unwrap();
             assert_eq!(pca.status, CheckStatus::Pass);
-            assert!(pca.detail.contains("declared PCA version=3"));
+            assert!(pca.detail.contains("declared PCA version=4"));
+            assert_eq!(pca.claim_scope, Some(PcaScope::SourceOnly));
+            assert_eq!(pca.classification, "SOURCE_ONLY");
             assert!(pca.detail.contains("recorded verdict=PASS"));
             assert!(pca.detail.contains("manifest hashes match the bundle"));
             assert!(full.checks.iter().any(|check| {
@@ -2409,7 +2583,7 @@ mod solver_replay_tests {
 
         let (_root, dir) = bundle("fn main() { let x = 1; }");
         let generated = read(&dir, "pca.json");
-        assert_eq!(generated["pca_version"], 3);
+        assert_eq!(generated["pca_version"], 4);
         assert_eq!(generated["solver_obligations"], 0);
         assert!(report(&dir).ok);
         let generated_proofs = read(&dir, "analysis/proofs.json");

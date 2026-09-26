@@ -5218,6 +5218,51 @@ struct SemanticContext {
     mono_call_sites: Vec<MonoCallSiteRecord>,
 }
 
+/// Semantic policy that changes whether an assertion receives a proof obligation or may
+/// rely on z3 alone. PCA source re-derivation uses the explicit product default, not ambient
+/// verifier environment variables.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CheckPolicy {
+    pub wrap_safety: bool,
+    pub native_authoritative: bool,
+    pub require_native_proofs: bool,
+}
+
+impl CheckPolicy {
+    pub(crate) fn product_default() -> Self {
+        Self {
+            wrap_safety: true,
+            native_authoritative: true,
+            require_native_proofs: false,
+        }
+    }
+}
+
+thread_local! {
+    static PCA_DEFAULT_CHECK_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn with_pca_default_check_policy<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PCA_DEFAULT_CHECK_POLICY.with(|cell| cell.set(self.0));
+        }
+    }
+    let previous = PCA_DEFAULT_CHECK_POLICY.with(|cell| cell.replace(true));
+    let _restore = Restore(previous);
+    f()
+}
+
+pub(crate) fn current_check_policy() -> CheckPolicy {
+    CheckPolicy {
+        wrap_safety: wrap_safety_enabled(),
+        native_authoritative: native_authoritative(),
+        require_native_proofs: require_native_proofs(),
+    }
+}
+
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
     typecheck_ex(ast, mode, false)
 }
@@ -5312,7 +5357,8 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Ty
         verified,
         // Shadow-mode is opt-in and read once here. Default off ⇒ the enforcing `diagnostics`
         // path (and therefore every gate verdict) is unchanged until a check is promoted.
-        shadow: std::env::var("ANUBIS_SHADOW_TYPES").as_deref() == Ok("1"),
+        shadow: !PCA_DEFAULT_CHECK_POLICY.with(std::cell::Cell::get)
+            && std::env::var("ANUBIS_SHADOW_TYPES").as_deref() == Ok("1"),
         ..SemanticContext::default()
     };
     {
@@ -8832,6 +8878,9 @@ fn analyze_function(
 /// Default ON. Set `ANUBIS_WRAP_SAFETY=0|false|off|no` to restore wrap-only semantics with no
 /// automatic overflow VCs (contracts still discharge under wrapping i64).
 fn wrap_safety_enabled() -> bool {
+    if PCA_DEFAULT_CHECK_POLICY.with(std::cell::Cell::get) {
+        return true;
+    }
     match std::env::var("ANUBIS_WRAP_SAFETY") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
@@ -21470,6 +21519,9 @@ fn parse_z3_model(model: &str) -> BTreeMap<String, String> {
 /// **Opt out** (restore z3-only authority): `ANUBIS_NATIVE_AUTHORITATIVE=0|false|off|no`.
 /// Explicit `=1|true|on|yes` also forces on (useful in docs/scripts).
 fn native_authoritative() -> bool {
+    if PCA_DEFAULT_CHECK_POLICY.with(std::cell::Cell::get) {
+        return true;
+    }
     match std::env::var("ANUBIS_NATIVE_AUTHORITATIVE") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
@@ -21657,6 +21709,9 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
 /// `ANUBIS_REQUIRE_NATIVE_PROOFS=1` (or `true`/`on`/`yes`) refuses to trust z3 on obligations the
 /// native solver declined — REG-002 mitigation. Anything else keeps default behaviour (trust z3).
 fn require_native_proofs() -> bool {
+    if PCA_DEFAULT_CHECK_POLICY.with(std::cell::Cell::get) {
+        return false;
+    }
     match std::env::var("ANUBIS_REQUIRE_NATIVE_PROOFS") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
@@ -21729,7 +21784,9 @@ fn record_z3_only_decision(smt: &str, verdict: Option<&str>) {
 /// outcome (AGREE / DISAGREE / DEFER / NATIVE_ONLY). A DISAGREE is printed loudly and counted; the
 /// gate requires zero. Sound-by-construction: this never influences the returned verdict.
 fn native_shadow_compare(smt: &str, z3_ans: Option<&str>) {
-    if std::env::var("ANUBIS_NATIVE_SHADOW").as_deref() != Ok("1") {
+    if PCA_DEFAULT_CHECK_POLICY.with(std::cell::Cell::get)
+        || std::env::var("ANUBIS_NATIVE_SHADOW").as_deref() != Ok("1")
+    {
         return;
     }
     let native = anubis_solver::native_check_sat(smt);

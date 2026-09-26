@@ -40,7 +40,7 @@ pub struct EvidenceManifest {
     pub security: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Check {
     pub name: String,
     pub status: String,
@@ -48,6 +48,7 @@ pub struct Check {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentCapture {
     pub os: String,
     pub arch: String,
@@ -55,6 +56,9 @@ pub struct EnvironmentCapture {
     pub cargo: String,
     pub z3: String,
     pub anubis: String,
+    /// These host-local strings are recorded provenance, not an attested platform witness.
+    #[serde(default)]
+    pub machine_fields_status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -587,6 +591,17 @@ fn build_evidence_bundle_tree_inner(
         )?;
     }
     std::fs::create_dir_all(dir.join("analysis")).map_err(|e| e.to_string())?;
+    if lane == Some(format!("{mode}-check").as_str())
+        || (mode == "safe" && lane == Some(PACKAGE_PUBLISH_LANE))
+    {
+        // The command's semantic policy and native proof budgets are part of the check lane.
+        // A verifier replays only the reproducible product defaults; nondefault or wall-clock
+        // runs are recorded but cannot be upgraded to a source-derived PCA claim.
+        write_json(
+            &dir.join("analysis/check-config.json"),
+            &current_check_config(),
+        )?;
+    }
 
     let mut checks = vec![];
     let mut hir_json = serde_json::json!({"functions": []});
@@ -598,6 +613,14 @@ fn build_evidence_bundle_tree_inner(
     let mut mono_json = serde_json::json!([]);
 
     let parse_res = crate::frontend::parse_source(&source);
+    // Multi-leaf bundles seal the analyzed snapshot and the entry bytes, but there is no
+    // independently checked import-to-snapshot translation yet. They cannot claim that this
+    // analysis establishes the command's original multi-file program.
+    let unresolved_source_snapshot = files.len() > 1;
+    let unresolved_mode_elevator = parse_res
+        .as_ref()
+        .ok()
+        .is_some_and(|ast| items_have_unresolved_mode_elevator(&ast.items));
     checks.push(match &parse_res {
         Ok(_) => Check {
             name: "parse".into(),
@@ -1033,6 +1056,27 @@ fn build_evidence_bundle_tree_inner(
         claim.rejection = Some(rejection.to_string());
         claim.verdict = "FAIL".into();
     }
+    claim.evidence_lane = lane.map(str::to_string);
+    claim.claim_kind = Some(
+        if unresolved_source_snapshot {
+            "source_snapshot_unverified_v1"
+        } else if unresolved_mode_elevator {
+            "source_mode_unverified_v1"
+        } else if lane == Some(format!("{mode}-check").as_str()) {
+            "source_check_v1"
+        } else if mode == "safe" && lane == Some(PACKAGE_PUBLISH_LANE) {
+            "package_publish_v1"
+        } else if lane.is_some_and(|lane| lane.ends_with("-invalid-input-check")) {
+            "invalid_input_unverified_v1"
+        } else if lane.is_some_and(|lane| lane.ends_with("-analysis-limit-check")) {
+            "analysis_limit_undecided_v1"
+        } else if lane.is_some_and(|lane| lane.ends_with("-typecheck-refusal-check")) {
+            "typecheck_refusal_unverified_v1"
+        } else {
+            "source_only_v1"
+        }
+        .into(),
+    );
     write_json(&dir.join("pca.json"), &claim)?;
     // anubis.program-evidence.v3: assembled from the sealed bundle files and covered by the
     // manifest below. Best-effort — a program that does not fully discharge simply omits it and
@@ -1140,7 +1184,6 @@ fn validate_bundle_recorded_files(dir: &Path, require_pass: bool) -> Result<bool
     };
     let manifest: EvidenceManifest =
         serde_json::from_str(&manifest_text).map_err(|e| e.to_string())?;
-
     let mut hashed_bytes = 0;
     let source_ok = source_closure_matches(dir, &manifest.source_hash, &mut hashed_bytes)?;
     let build_log_ok = manifest.build_log_hash.is_empty()
@@ -1243,7 +1286,14 @@ pub struct ClaimBlock {
     pub pca_version: u32,
     pub source_sha256: String,
     pub mode: String,
-    /// Assurance tier actually reached. v2/v3: `"checked"` — parse + typecheck + the bounded solver
+    /// v4 binds the claim to the recorded producer lane. Historic claims omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_lane: Option<String>,
+    /// v4 names the extent of independent re-derivation. A source-only claim cannot
+    /// authorize check sidecars or a bounty-ready report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_kind: Option<String>,
+    /// Assurance tier actually reached. v2/v3/v4: `"checked"` — parse + typecheck + the bounded solver
     /// obligation pass ran. This deliberately makes no separate total-flow/taint-clean claim.
     pub tier: String,
     /// Present only for a fail-closed command rejection. A rejected PCA is evidence of refusal,
@@ -1256,10 +1306,18 @@ pub struct ClaimBlock {
     pub typecheck_ok: bool,
     pub solver_obligations: usize,
     pub solver_all_discharged: bool,
-    /// The SMT solver in the trusted computing base that discharged the obligations. Stated explicitly
-    /// (operator directive 2026-07-20: TCB transparency — a bundle that says only `solver_all_discharged:
-    /// true` hides WHO proved it). Constant `"z3"` here (deterministic, so `verify` re-derivation still
-    /// byte-matches); the exact z3 VERSION is recorded in the manifest's non-deterministic `z3` field.
+    /// v4 distinguishes an unrun solver from one that discharged an empty obligation set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solver_execution: Option<SolverExecution>,
+    /// v4 source-derived typecheck refusal class. A security finding is a reproduced static
+    /// policy finding, never a solver counterexample or proof of executable source behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typecheck_refusal_kind: Option<TypecheckRefusalKind>,
+    /// Per-obligation backend provenance is not collected yet. Current v4 claims say
+    /// `unobserved`, rather than claiming that z3 decided an obligation that may have used the
+    /// native authoritative fragment. Historic v2/v3 claims retain their legacy `z3` value for
+    /// byte-compatible source-only verification; it must not be treated as observed backend
+    /// authority. `solver_execution` separately states whether any obligation pass ran.
     #[serde(default = "default_solver_backend")]
     pub solver_backend: String,
     /// Whether a zero-knowledge receipt is bound to this claim. `false` when the bundle carries no
@@ -1283,11 +1341,50 @@ pub struct ClaimBlock {
     pub tool: String,
 }
 
-/// The SMT solver in the TCB (constant — Anubis discharges via z3; the native solver lane cross-checks
-/// but z3 remains authoritative unless `ANUBIS_NATIVE_AUTHORITATIVE=1`). Deterministic so the PCA
-/// re-derivation byte-matches.
+/// Legacy deserialization value for source-only PCA v2/v3 claims. It was a producer policy
+/// label, not a per-obligation observation of whether native or z3 decided a query.
 fn default_solver_backend() -> String {
     "z3".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolverExecution {
+    /// No real solver obligation was submitted, either because analysis stopped earlier or
+    /// because the well-formed no-obligations sentinel represents an empty inventory.
+    NotRun,
+    /// At least one real obligation was submitted to the solver path. This does not identify
+    /// which backend decided it; see `solver_backend`.
+    Ran,
+}
+
+/// A PASS with no obligations needs no solver query; a PASS with real obligations must have
+/// submitted them. Exact source re-derivation separately checks the obligation inventory and
+/// sentinel shape, so this consistency rule does not grant authority to a producer's count.
+pub fn solver_execution_matches_obligations(claim: &ClaimBlock) -> bool {
+    match (claim.solver_execution, claim.solver_obligations) {
+        (Some(SolverExecution::NotRun), 0) => true,
+        (Some(SolverExecution::Ran), count) if count > 0 => true,
+        _ => false,
+    }
+}
+
+/// An unencoded precondition is a real unresolved obligation but never enters either solver.
+/// This aggregate records whether any row entered the solver path, including a mixed stream;
+/// exact row/source re-derivation separately establishes why each other row exists.
+fn solver_path_was_invoked(checks: &[crate::middle::SolverCheck]) -> bool {
+    checks.iter().any(|check| {
+        !crate::middle::reserves_no_obligations_identity(check)
+            && check.detail != crate::middle::UNRESOLVED_PRECONDITION_DETAIL
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypecheckRefusalKind {
+    SecurityPolicyFinding,
+    InvalidOrUnsupported,
+    UndecidedLimit,
 }
 
 /// Re-derive the claim block from source. Deterministic and side-effect free — the single source of
@@ -1296,13 +1393,48 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     derive_claim(source, mode, true).claim
 }
 
-const PCA_VERSION_CURRENT: u32 = 3;
+const PCA_VERSION_CURRENT: u32 = 4;
+pub const PACKAGE_PUBLISH_LANE: &str = "safe-package-publish";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PcaScope {
+    /// A v4 plain check with its core rows, policy, analysis, and presentation re-derived.
+    SourceCheckV1,
+    /// Source/check sidecars were re-derived, but package summary identity is pending
+    /// comparison with the mounted package and cannot authorize a dependency alone.
+    PackagePublishV1,
+    /// A v4 build/proof claim whose source verdict, not its platform sidecars, was re-derived.
+    SourceOnly,
+    /// A v2 or v3 source claim retained for compatibility, without check-sidecar authority.
+    LegacySourceOnly,
+}
 
 /// The claim block, and the analysis limit its analysis stopped at, if any (then its verdict is not
 /// a fact about the program). `analyze: false` records the parse only.
 /// A claim block derived from a source, and how its analysis ended.
 struct Derived {
     claim: ClaimBlock,
+    source_mode: Option<crate::frontend::Mode>,
+    unresolved_mode_elevator: bool,
+    /// Exact semantic rows independently re-derived from the sealed source. A rejected command's
+    /// FAIL marker must not coexist with forged PASS/FAIL parse, typecheck, or solver rows.
+    check_rows: Vec<Check>,
+    /// The independently reproduced analysis outputs. Bundled views of these results must not
+    /// tell a stronger story than the source-derived PCA merely because their hashes were renewed.
+    solver_checks: Vec<crate::middle::SolverCheck>,
+    hir_json: Option<serde_json::Value>,
+    mir_json: Option<serde_json::Value>,
+    taint_json: Option<serde_json::Value>,
+    mono_json: Option<serde_json::Value>,
+    /// Every solver query has an SMT leaf. Only an ordinary accepted obligation may additionally
+    /// have a CNF/refutation leaf; the no-obligations marker is not a program proof.
+    proof_file_rows: Vec<bool>,
+    /// A refusal independently reproduced from the sealed source by the same check lane.
+    /// A command-level rejection cannot be authenticated by copying its own manifest text.
+    check_refusal: Option<String>,
+    /// Captured from the same typed typecheck request that produced `check_refusal`.
+    replayable_security_refusal: bool,
     /// The analysis limit the analysis stopped at, if any.
     limit: Option<crate::middle::AnalysisLimit>,
     /// Stopped at a limit: the refusal it stopped with.
@@ -1312,6 +1444,74 @@ struct Derived {
     /// Whether, stopped at a limit, it still reported findings made before it: those hold on any
     /// machine, so the program does not type-check whatever memory a re-derivation had.
     kept_finding: bool,
+}
+
+/// The parsed function mode can understate nested `@research`/`@exploit` blocks and an earlier
+/// higher-mode attribute overwritten by a later lower-mode attribute. Until the frontend records
+/// a source-wide intrinsic maximum, such programs may run through ordinary checking but cannot
+/// receive a source-derived PCA mode claim.
+pub fn items_have_unresolved_mode_elevator(items: &[crate::frontend::Item]) -> bool {
+    use crate::frontend::{Item, Mode};
+    fn rank(mode: Mode) -> u8 {
+        match mode {
+            Mode::Safe => 0,
+            Mode::Research => 1,
+            Mode::Exploit => 2,
+        }
+    }
+    items.iter().any(|item| match item {
+        Item::Fn {
+            mode,
+            attributes,
+            body,
+            ..
+        } => {
+            crate::middle::body_has_mode_elevator(body)
+                || attributes.iter().any(|attr| {
+                    let declared = match attr.name.as_str() {
+                        "research" => Some(Mode::Research),
+                        "exploit" => Some(Mode::Exploit),
+                        _ => None,
+                    };
+                    declared.is_some_and(|candidate| rank(candidate) > rank(*mode))
+                })
+        }
+        Item::Module { items, .. } => items_have_unresolved_mode_elevator(items),
+        Item::Impl { methods, .. } | Item::Trait { methods, .. } => {
+            items_have_unresolved_mode_elevator(methods)
+        }
+        Item::Import { .. } | Item::Struct { .. } | Item::Enum { .. } => false,
+    })
+}
+
+/// A narrow, source-replayable information-flow finding. Every diagnostic must describe a
+/// concrete policy flow; mixed unknown names/types, proof-search failures, IFC2 budget limits,
+/// and resource limits remain invalid or undecided. This classification does not claim a runtime
+/// witness or a solver counterexample.
+pub fn replayable_security_refusal(failure: &crate::middle::TypecheckFailure) -> bool {
+    failure.limit.is_none()
+        && !failure.diagnostics.is_empty()
+        && failure.diagnostics.iter().all(|finding| {
+            matches!(
+                finding.code.as_deref(),
+                Some(
+                    "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"
+                        | "ANUBIS_INTERPROC_SINK"
+                        | "ANUBIS_SECRET_EXFILTRATION"
+                        | "ANUBIS_INTERPROC_EXFILTRATION"
+                        | "ANUBIS_SECRET_TO_PUBLIC"
+                        | "ANUBIS_IMPLICIT_FLOW"
+                )
+            )
+        })
+}
+
+pub fn source_analysis_limit_refusal(failure: &crate::middle::TypecheckFailure) -> bool {
+    failure.limit.is_some()
+        || failure
+            .diagnostics
+            .iter()
+            .any(|finding| finding.code.as_deref() == Some("ANUBIS_IFC2_LIMIT"))
 }
 
 /// Summarize the exact emitted checks for PCA. The no-obligations PASS sentinel is an
@@ -1340,38 +1540,176 @@ fn derive_claim_for_version(source: &str, mode: &str, analyze: bool, pca_version
     };
     let parse_res = crate::frontend::parse_source(source);
     let parse_ok = parse_res.is_ok();
+    // Keep the frontend's intrinsic-mode result intact. A successfully parsed program with no
+    // functions has `None`; the CLI treats that as Safe at command admission, and the verifier
+    // applies the same default below while still checking parse success separately.
+    let source_mode = parse_res
+        .as_ref()
+        .ok()
+        .and_then(|ast| crate::frontend::program_mode(&ast.items));
+    let unresolved_mode_elevator = parse_res
+        .as_ref()
+        .ok()
+        .is_some_and(|ast| items_have_unresolved_mode_elevator(&ast.items));
+    let mut check_rows = vec![match &parse_res {
+        Ok(_) => Check {
+            name: "parse".into(),
+            status: "PASS".into(),
+            detail: "ok".into(),
+        },
+        Err(reason) => Check {
+            name: "parse".into(),
+            status: "FAIL".into(),
+            detail: reason.clone(),
+        },
+    }];
     let mut typecheck_ok = false;
     let mut limit = None;
     let mut limit_text = None;
     let mut by_reserve = false;
     let mut kept_finding = false;
     let mut solver_obligations = 0usize;
-    let mut solver_all_discharged = true;
+    // v4 distinguishes an unrun solver from vacuous discharge. Historical v2/v3 receipts
+    // retain their serialized value for source-only compatibility.
+    let mut solver_all_discharged = pca_version != PCA_VERSION_CURRENT;
+    let mut solver_executed = false;
+    let mut typecheck_refusal_kind = None;
+    let mut replayable_security_refusal_found = false;
+    let mut check_refusal = None;
+    let mut proof_file_rows = Vec::new();
+    let mut derived_solver_checks = Vec::new();
+    let mut hir_json = Some(serde_json::json!({"functions": []}));
+    let mut mir_json = Some(serde_json::json!([]));
+    let mut taint_json = Some(serde_json::json!([]));
+    let mut mono_json = Some(serde_json::json!([]));
     if let (Ok(ast), true) = (parse_res, analyze) {
-        let typed = crate::middle::typecheck(ast, tc_mode);
+        let typed = if pca_version == PCA_VERSION_CURRENT {
+            match crate::middle::typecheck_ex_detailed(ast, tc_mode, false) {
+                Ok(ir) => Ok(ir),
+                Err(failure) => {
+                    replayable_security_refusal_found = replayable_security_refusal(&failure);
+                    typecheck_refusal_kind = Some(if source_analysis_limit_refusal(&failure) {
+                        TypecheckRefusalKind::UndecidedLimit
+                    } else if replayable_security_refusal_found {
+                        TypecheckRefusalKind::SecurityPolicyFinding
+                    } else {
+                        TypecheckRefusalKind::InvalidOrUnsupported
+                    });
+                    Err(failure.message)
+                }
+            }
+        } else {
+            crate::middle::typecheck(ast, tc_mode)
+        };
         limit = crate::middle::last_analysis_limit();
         kept_finding = crate::middle::last_analysis_kept_findings();
         by_reserve = crate::middle::last_analysis_by_reserve();
         if let (Err(e), Some(_)) = (&typed, limit) {
             limit_text = Some(e.clone());
         }
-        if let Ok(ir) = typed {
-            typecheck_ok = true;
-            let tainted = crate::middle::TaintPass::apply(ir);
-            // The earlier schema translated `typecheck` returning Ok into `taint_clean: true`.
-            // That was a stronger guarantee than this lane derived: item 21 in `docs/CLAIMS.md`
-            // contains accepted programs with runtime secret/taint witnesses. PCA v2 therefore
-            // records only the bounded typecheck result above and carries no independent taint field.
-            let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
-            // Use the same typed discharge rule as check/build/run and the evidence manifest.
-            // A no-obligations sentinel admits development checking without adding proof coverage;
-            // UNKNOWN or an unrecognized status can never produce a PASS claim.
-            (solver_obligations, solver_all_discharged) = solver_claim_summary(&solver_checks);
-            // PCA v2 counted the synthetic check as an obligation. Retain that historical
-            // count only while re-deriving a v2 bundle; new v3 claims count real obligations.
-            // Both versions now require typed PASS for every real emitted check.
-            if pca_version == 2 {
-                solver_obligations = solver_checks.len();
+        match typed {
+            Ok(ir) => {
+                typecheck_ok = true;
+                let tainted = crate::middle::TaintPass::apply(ir);
+                hir_json = serde_json::to_value(&tainted.hir).ok();
+                mir_json = serde_json::to_value(&tainted.mir).ok();
+                taint_json = serde_json::to_value(&tainted.taint_traces).ok();
+                mono_json = serde_json::to_value(&tainted.mono_specializations).ok();
+                // The earlier schema translated `typecheck` returning Ok into `taint_clean: true`.
+                // That was a stronger guarantee than this lane derived: item 21 in `docs/CLAIMS.md`
+                // contains accepted programs with runtime secret/taint witnesses. PCA v2 therefore
+                // records only the bounded typecheck result above and carries no independent taint field.
+                let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
+                let no_obligations = crate::middle::is_no_obligations_sentinel(&solver_checks);
+                // Calling the inventory method is not a solver run: its synthetic PASS sentinel
+                // means no query was sent. The independently re-derived stream still establishes
+                // that the empty inventory is complete under this compiler's analysis.
+                solver_executed = solver_path_was_invoked(&solver_checks);
+                proof_file_rows = solver_checks
+                    .iter()
+                    .map(|check| {
+                        !no_obligations
+                            && !crate::middle::reserves_no_obligations_identity(check)
+                            && check.status == "PASS"
+                    })
+                    .collect();
+                check_rows.push(Check {
+                    name: "typecheck".into(),
+                    status: "PASS".into(),
+                    detail: format!(
+                        "mode={} symbols={} functions={} mono={}",
+                        mode,
+                        tainted.symbols.len(),
+                        tainted.hir.functions.len(),
+                        tainted.mono_specializations.len()
+                    ),
+                });
+                check_rows.push(Check {
+                    name: "monomorphization".into(),
+                    status: "PASS".into(),
+                    detail: format!(
+                        "static_specializations={} (codegen remains AnubisValue-erased)",
+                        tainted.mono_specializations.len()
+                    ),
+                });
+                if !tainted.taint_labels.is_empty() || !tainted.taint_traces.is_empty() {
+                    check_rows.push(Check {
+                        name: "taint".into(),
+                        status: "PASS".into(),
+                        detail: format!(
+                            "labels={} traces={}",
+                            tainted.taint_labels.len(),
+                            tainted.taint_traces.len()
+                        ),
+                    });
+                }
+                check_rows.push(Check {
+                    name: "symbolic".into(),
+                    status: if tainted.constraints.is_empty() {
+                        "FAIL"
+                    } else {
+                        "PASS"
+                    }
+                    .into(),
+                    detail: format!("constraints={}", tainted.constraints.len()),
+                });
+                check_rows.push(Check {
+                    name: "solver".into(),
+                    status: if crate::middle::solver_checks_discharged(&solver_checks) {
+                        "PASS"
+                    } else {
+                        "FAIL"
+                    }
+                    .into(),
+                    detail: solver_checks
+                        .iter()
+                        .map(|check| format!("{}={}", check.name, check.status))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                });
+                let refusals = crate::middle::solver_stream_refusals(&solver_checks);
+                if !refusals.is_empty() {
+                    check_refusal = Some(crate::middle::format_check_failures(&refusals));
+                }
+                // Use the same typed discharge rule as check/build/run and the evidence manifest.
+                // A no-obligations sentinel admits development checking without adding proof coverage;
+                // UNKNOWN or an unrecognized status can never produce a PASS claim.
+                (solver_obligations, solver_all_discharged) = solver_claim_summary(&solver_checks);
+                // PCA v2 counted the synthetic check as an obligation. Retain that historical
+                // count only while re-deriving a v2 bundle; v3/v4 count real obligations.
+                // Both versions now require typed PASS for every real emitted check.
+                if pca_version == 2 {
+                    solver_obligations = solver_checks.len();
+                }
+                derived_solver_checks = solver_checks;
+            }
+            Err(reason) => {
+                check_rows.push(Check {
+                    name: "typecheck".into(),
+                    status: "FAIL".into(),
+                    detail: reason.clone(),
+                });
+                check_refusal = Some(reason);
             }
         }
     }
@@ -1385,13 +1723,27 @@ fn derive_claim_for_version(source: &str, mode: &str, analyze: bool, pca_version
             pca_version,
             source_sha256,
             mode: mode.to_string(),
+            evidence_lane: None,
+            claim_kind: (pca_version == PCA_VERSION_CURRENT).then(|| "source_only_v1".into()),
             tier: "checked".into(),
             rejection: None,
             parse_ok,
             typecheck_ok,
             solver_obligations,
             solver_all_discharged,
-            solver_backend: default_solver_backend(),
+            solver_execution: (pca_version == PCA_VERSION_CURRENT).then_some(if solver_executed {
+                SolverExecution::Ran
+            } else {
+                SolverExecution::NotRun
+            }),
+            typecheck_refusal_kind: (pca_version == PCA_VERSION_CURRENT)
+                .then_some(typecheck_refusal_kind)
+                .flatten(),
+            solver_backend: if pca_version == PCA_VERSION_CURRENT {
+                "unobserved".into()
+            } else {
+                default_solver_backend()
+            },
             zk_present: false,
             zk_image_id: None,
             zk_receipt_sha256: None,
@@ -1399,6 +1751,17 @@ fn derive_claim_for_version(source: &str, mode: &str, analyze: bool, pca_version
             verdict: verdict.into(),
             tool: tool_identity(),
         },
+        source_mode,
+        unresolved_mode_elevator,
+        check_rows,
+        solver_checks: derived_solver_checks,
+        hir_json,
+        mir_json,
+        taint_json,
+        mono_json,
+        proof_file_rows,
+        check_refusal,
+        replayable_security_refusal: replayable_security_refusal_found,
         limit,
         limit_text,
         by_reserve,
@@ -1528,6 +1891,15 @@ fn derive_claim_bound_for_version(
     d
 }
 
+#[cfg(test)]
+pub(crate) fn derive_version_three_claim_for_test(
+    dir: &Path,
+    source: &str,
+    mode: &str,
+) -> ClaimBlock {
+    derive_claim_bound_for_version(dir, source, mode, 3).claim
+}
+
 /// Verify a Proof-Carrying Artifact: first the hash / tamper validation, then — the PCA hardening —
 /// RE-DERIVE the claim block from the bundle's own source and confirm it matches the recorded
 /// `pca.json` exactly. A bundle whose recorded verdict does not match what the source actually
@@ -1588,34 +1960,550 @@ fn finish_pca_rederivation(
     Ok(matches)
 }
 
+/// A source check (accepted or rejected) is analysis, not execution. Its hash manifest may
+/// cover extra files after an attacker rehashes it, so allow only producer-emitted files.
+/// This excludes an unattested native artifact, RISC0 receipt/journal/guest, execution report,
+/// or `program-evidence.json` claiming a completed program while the command was refused.
+fn source_check_tree_matches(dir: &Path, derived: &Derived) -> Result<bool, String> {
+    use std::collections::BTreeSet;
+
+    let mut files: BTreeSet<String> = [
+        "MANIFEST.sha256",
+        "pca.sig",
+        "source.anubis",
+        "build.log",
+        "hir.json",
+        "mir.json",
+        "taint-traces.json",
+        "solver.json",
+        "mono_specializations.json",
+        "environment.json",
+        "checks.sarif",
+        "bounty-report.md",
+        "validate.sh",
+        "source-tree.json",
+        "analysis/check-config.json",
+        "evidence.json",
+        "manifest.json",
+        "pca.json",
+        "summaries.json",
+        "declassify_audit.json",
+        "confinement_manifest.json",
+        "entitlement_profile.json",
+        "program.entitlements",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let mut directories: BTreeSet<String> = ["analysis"].into_iter().map(str::to_string).collect();
+    if derived.claim.typecheck_ok {
+        directories.insert("analysis/proofs".into());
+        files.insert("analysis/proofs.json".into());
+        files.insert("analysis/solver.smt2".into());
+        files.insert("analysis/solver_replay.json".into());
+        for (index, accepts_refutation) in derived.proof_file_rows.iter().enumerate() {
+            let stem = format!("analysis/proofs/obligation_{index:04}");
+            files.insert(format!("{stem}.smt2"));
+            if *accepts_refutation {
+                files.insert(format!("{stem}.cnf"));
+                files.insert(format!("{stem}.drat"));
+            }
+        }
+    }
+    let source_listing = dir.join("source-merkle-leaves.json");
+    if source_listing.exists() {
+        let Some(bytes) = read_regular_evidence_bytes(&source_listing, MAX_EVIDENCE_JSON_BYTES)?
+        else {
+            return Ok(false);
+        };
+        let Ok(listing) = serde_json::from_slice::<SealedSourceLeaves>(&bytes) else {
+            return Ok(false);
+        };
+        files.insert("source-merkle-leaves.json".into());
+        directories.insert("source-leaves".into());
+        for leaf in listing.leaves {
+            files.insert(leaf.sealed_path);
+        }
+    }
+
+    fn walk(
+        current: &Path,
+        prefix: &str,
+        files: &BTreeSet<String>,
+        directories: &BTreeSet<String>,
+        visited: &mut usize,
+    ) -> Result<bool, String> {
+        for entry in std::fs::read_dir(current).map_err(|e| e.to_string())? {
+            *visited = visited
+                .checked_add(1)
+                .ok_or("source-check tree entry count overflow")?;
+            if *visited > MAX_EVIDENCE_TREE_ENTRIES {
+                return Err("source-check tree entry budget exceeded".into());
+            }
+            let entry = entry.map_err(|e| e.to_string())?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                return Ok(false);
+            };
+            let relative = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let kind = std::fs::symlink_metadata(entry.path())
+                .map_err(|e| e.to_string())?
+                .file_type();
+            if kind.is_dir() {
+                if !directories.contains(&relative)
+                    || !walk(&entry.path(), &relative, files, directories, visited)?
+                {
+                    return Ok(false);
+                }
+            } else if !kind.is_file() || !files.contains(&relative) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    let mut visited = 0;
+    walk(dir, "", &files, &directories, &mut visited)
+}
+
+fn evidence_bytes_match(dir: &Path, name: &str, expected: &[u8]) -> Result<bool, String> {
+    use std::io::Read;
+
+    let Some((mut file, declared_len)) = open_regular_evidence_file(&dir.join(name))? else {
+        return Ok(false);
+    };
+    if declared_len > MAX_EVIDENCE_HASH_BYTES || declared_len != expected.len() as u64 {
+        return Ok(false);
+    }
+    let mut buf = [0u8; 64 * 1024];
+    let mut offset = 0;
+    while offset < expected.len() {
+        let count = buf.len().min(expected.len() - offset);
+        if file.read_exact(&mut buf[..count]).is_err()
+            || buf[..count] != expected[offset..offset + count]
+        {
+            return Ok(false);
+        }
+        offset += count;
+    }
+    // Detect growth after the opened length was checked, without allocating its contents.
+    let mut extra = [0u8; 1];
+    Ok(file.read(&mut extra).map_err(|e| e.to_string())? == 0)
+}
+
+fn evidence_json_matches<T: Serialize>(
+    dir: &Path,
+    name: &str,
+    expected: &T,
+) -> Result<bool, String> {
+    let bytes = serde_json::to_vec_pretty(expected).map_err(|e| e.to_string())?;
+    evidence_bytes_match(dir, name, &bytes)
+}
+
+/// Package summaries and the declassification audit are authority-bearing source claims. The
+/// check producer writes each only when extraction succeeds; its verifier must make the same
+/// decision and compare the exact canonical bytes, including the absence case.
+fn source_claim_sidecars_match(
+    dir: &Path,
+    source: &str,
+    package_publish: bool,
+) -> Result<bool, String> {
+    let summary_ok = if package_publish {
+        // The publisher replaces the provisional single-source summary with package name,
+        // version, and module merkle. The package identity is NOT established by this PCA:
+        // the resolver must compare this exact canonical record to the mounted package.
+        let path = dir.join(crate::package::summary::SUMMARIES_FILENAME);
+        match read_regular_evidence_text(&path, MAX_EVIDENCE_JSON_BYTES)? {
+            Some(text) => {
+                match serde_json::from_str::<crate::package::summary::PackageSummaries>(&text) {
+                    Ok(summary) if summary.schema == crate::package::summary::SUMMARIES_SCHEMA => {
+                        evidence_json_matches(
+                            dir,
+                            crate::package::summary::SUMMARIES_FILENAME,
+                            &summary,
+                        )?
+                    }
+                    _ => false,
+                }
+            }
+            None => false,
+        }
+    } else {
+        let summaries =
+            crate::package::summary::extract_from_source_text("package", "0.0.0", source);
+        match summaries {
+            Ok(expected) => {
+                evidence_json_matches(dir, crate::package::summary::SUMMARIES_FILENAME, &expected)?
+            }
+            Err(_) => !dir
+                .join(crate::package::summary::SUMMARIES_FILENAME)
+                .exists(),
+        }
+    };
+    let audit = crate::package::summary::extract_declassify_audit("package", "0.0.0", source);
+    let audit_ok = match audit {
+        Ok(expected) => evidence_json_matches(
+            dir,
+            crate::package::summary::DECLASSIFY_AUDIT_FILENAME,
+            &expected,
+        )?,
+        Err(_) => !dir
+            .join(crate::package::summary::DECLASSIFY_AUDIT_FILENAME)
+            .exists(),
+    };
+    Ok(summary_ok && audit_ok)
+}
+
+/// New source-derived check bundles must contain the producer's exact policy projections. A
+/// serde round-trip is insufficient: ignored fields or duplicate JSON keys can hide extra grants.
+fn source_policy_sidecars_match(dir: &Path, source: &str) -> Result<bool, String> {
+    let confinement = crate::package::confinement::derive_confinement("package", "0.0.0", source);
+    let confinement_ok = match confinement {
+        Ok(expected) => evidence_json_matches(
+            dir,
+            crate::package::confinement::CONFINEMENT_FILENAME,
+            &expected,
+        )?,
+        Err(_) => !dir
+            .join(crate::package::confinement::CONFINEMENT_FILENAME)
+            .exists(),
+    };
+    let entitlement =
+        crate::package::entitlements::derive_entitlement_profile("package", "0.0.0", source);
+    let entitlement_ok = match entitlement {
+        Ok(expected) => {
+            evidence_json_matches(
+                dir,
+                crate::package::entitlements::ENTITLEMENT_PROFILE_FILENAME,
+                &expected,
+            )? && evidence_bytes_match(
+                dir,
+                crate::package::entitlements::ENTITLEMENT_PLIST_FILENAME,
+                crate::package::entitlements::entitlement_plist_xml(&expected).as_bytes(),
+            )?
+        }
+        Err(_) => {
+            !dir.join(crate::package::entitlements::ENTITLEMENT_PROFILE_FILENAME)
+                .exists()
+                && !dir
+                    .join(crate::package::entitlements::ENTITLEMENT_PLIST_FILENAME)
+                    .exists()
+        }
+    };
+    Ok(confinement_ok && entitlement_ok)
+}
+
+/// Source-derived analysis views, including the proof inventory's exact typed statuses and
+/// certificate leaves. A renewed hash list cannot turn a failed obligation into a proof row.
+fn analysis_sidecars_match(dir: &Path, derived: &Derived) -> Result<bool, String> {
+    for (name, value) in [
+        ("hir.json", &derived.hir_json),
+        ("mir.json", &derived.mir_json),
+        ("taint-traces.json", &derived.taint_json),
+        ("mono_specializations.json", &derived.mono_json),
+    ] {
+        let Some(value) = value else {
+            return Ok(false);
+        };
+        if !evidence_json_matches(dir, name, value)? {
+            return Ok(false);
+        }
+    }
+    // The producer first converts SolverCheck structs into serde_json::Value, whose map keys
+    // serialize in canonical order. Reproduce that step before comparing bytes.
+    let Ok(solver_json) = serde_json::to_value(&derived.solver_checks) else {
+        return Ok(false);
+    };
+    if !evidence_json_matches(dir, "solver.json", &solver_json)? {
+        return Ok(false);
+    }
+    if !derived.claim.typecheck_ok {
+        return Ok(!dir.join("analysis/proofs.json").exists()
+            && !dir.join("analysis/solver.smt2").exists()
+            && !dir.join("analysis/solver_replay.json").exists());
+    }
+
+    let Some(first) = derived.solver_checks.first() else {
+        return Ok(false);
+    };
+    if !evidence_bytes_match(dir, "analysis/solver.smt2", first.smt.as_bytes())? {
+        return Ok(false);
+    }
+    let replay = solver_replay_record(&derived.solver_checks, crate::middle::replay_counterexample);
+    if !evidence_json_matches(dir, "analysis/solver_replay.json", &replay)? {
+        return Ok(false);
+    }
+
+    let no_obligations = crate::middle::is_no_obligations_sentinel(&derived.solver_checks);
+    let mut index = Vec::new();
+    for (i, check) in derived.solver_checks.iter().enumerate() {
+        let stem = format!("obligation_{i:04}");
+        let smt_path = format!("analysis/proofs/{stem}.smt2");
+        let cnf_path = format!("analysis/proofs/{stem}.cnf");
+        let drat_path = format!("analysis/proofs/{stem}.drat");
+        if !evidence_bytes_match(dir, &smt_path, check.smt.as_bytes())? {
+            return Ok(false);
+        }
+        let simple_proof =
+            if no_obligations || crate::middle::reserves_no_obligations_identity(check) {
+                Some(if no_obligations {
+                    "not_applicable_no_obligations"
+                } else {
+                    "invalid_synthetic_no_obligations"
+                })
+            } else if let Some((proof, _)) = undecided_provenance(&check.detail) {
+                Some(proof)
+            } else if check.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL {
+                Some("unresolved_not_encoded")
+            } else {
+                None
+            };
+        if let Some(proof) = simple_proof {
+            if dir.join(&cnf_path).exists() || dir.join(&drat_path).exists() {
+                return Ok(false);
+            }
+            index.push(serde_json::json!({
+                "obligation": check.name,
+                "status": check.status,
+                "proof": proof,
+                "smt": smt_path,
+            }));
+            continue;
+        }
+        match anubis_solver::native_prove_with_artifacts(&check.smt) {
+            Some((anubis_solver::NativeVerdict::Unsat, Some(artifacts)))
+                if check.status == "PASS" =>
+            {
+                if !evidence_bytes_match(dir, &cnf_path, artifacts.cnf_dimacs.as_bytes())?
+                    || !evidence_bytes_match(dir, &drat_path, artifacts.proof_drat.as_bytes())?
+                {
+                    return Ok(false);
+                }
+                index.push(serde_json::json!({
+                    "obligation": check.name,
+                    "status": check.status,
+                    "proof": "rup_refutation",
+                    "smt": smt_path,
+                    "cnf_dimacs": cnf_path,
+                    "proof_drat": drat_path,
+                    "num_vars": artifacts.num_vars,
+                    "num_clauses": artifacts.num_clauses,
+                    "steps": artifacts.steps,
+                    "checker": artifacts.checker,
+                    "checker_version": artifacts.checker_version,
+                    "replay": format!("drat-trim analysis/proofs/{stem}.cnf analysis/proofs/{stem}.drat"),
+                }));
+            }
+            other => {
+                if dir.join(&cnf_path).exists() || dir.join(&drat_path).exists() {
+                    return Ok(false);
+                }
+                let proof = match other {
+                    Some((anubis_solver::NativeVerdict::Sat(_), _)) => {
+                        "counterexample_no_refutation"
+                    }
+                    Some((anubis_solver::NativeVerdict::Unsat, _)) if check.status != "PASS" => {
+                        "refutation_not_accepted_by_check"
+                    }
+                    Some(_) => "unsat_without_published_certificate",
+                    None => "declined_by_native_solver_deferred",
+                };
+                index.push(serde_json::json!({
+                    "obligation": check.name,
+                    "status": check.status,
+                    "proof": proof,
+                    "smt": smt_path,
+                }));
+            }
+        }
+    }
+    evidence_json_matches(
+        dir,
+        "analysis/proofs.json",
+        &serde_json::json!({
+            "note": "Re-checkable proof objects. DIMACS CNF + DRAT refutation per \
+                     proven obligation; verify with drat-trim or any DRAT checker. \
+                     No Anubis binary required.",
+            "obligations": index,
+        }),
+    )
+}
+
+fn presentation_sidecars_match(dir: &Path, manifest: &EvidenceManifest) -> Result<bool, String> {
+    Ok(
+        evidence_json_matches(dir, "checks.sarif", &build_sarif(&manifest.checks))?
+            && evidence_bytes_match(
+                dir,
+                "bounty-report.md",
+                build_bounty_report(&manifest.mode, manifest.lane.as_deref(), &manifest.checks)
+                    .as_bytes(),
+            )?
+            && evidence_bytes_match(dir, "validate.sh", VALIDATE_SH.as_bytes())?,
+    )
+}
+
+/// A typed source comparison must not silently discard unknown JSON keys, including nested
+/// grants or sandbox fields. Permit only the documented historical default field when absent.
+fn sealed_json_shape_matches<T: Serialize>(
+    text: &str,
+    sealed: &T,
+    historical_default: Option<&str>,
+) -> bool {
+    let (Ok(raw), Ok(mut typed)) = (
+        serde_json::from_str::<serde_json::Value>(text),
+        serde_json::to_value(sealed),
+    ) else {
+        return false;
+    };
+    if let Some(field) = historical_default {
+        if raw
+            .as_object()
+            .is_some_and(|object| !object.contains_key(field))
+        {
+            if let Some(object) = typed.as_object_mut() {
+                object.remove(field);
+            }
+        }
+    }
+    raw == typed
+}
+
+/// Return the independently established scope, rather than letting callers treat a
+/// historic source verdict as verification of newer check sidecars.
+pub fn verify_pca_scope(dir: &Path) -> Result<Option<PcaScope>, String> {
+    verify_pca_inner(dir)
+}
+
+/// Compatibility predicate. Security and presentation consumers must use the typed scope.
 pub fn verify_pca(dir: &Path) -> Result<bool, String> {
+    Ok(verify_pca_scope(dir)?.is_some())
+}
+
+fn verify_pca_inner(dir: &Path) -> Result<Option<PcaScope>, String> {
     let hashes_ok = validate_bundle_recorded_files(dir, false)?;
     if !hashes_ok {
-        return Ok(false);
+        return Ok(None);
     }
     let pca_path = dir.join("pca.json");
     if !pca_path.exists() {
         // Semantic verification cannot degrade to hash-only success. Callers that intentionally
         // need legacy integrity checking must name and use `validate_bundle` instead of presenting
         // that weaker result as PCA verification.
-        return Ok(false);
+        return Ok(None);
     }
     let Some(pca_text) = read_regular_evidence_text(&pca_path, MAX_EVIDENCE_JSON_BYTES)? else {
-        return Ok(false);
+        return Ok(None);
     };
     let recorded: ClaimBlock = serde_json::from_str(&pca_text).map_err(|e| e.to_string())?;
-    if !matches!(recorded.pca_version, 2 | PCA_VERSION_CURRENT)
+    if !matches!(recorded.pca_version, 2 | 3 | PCA_VERSION_CURRENT)
         || !matches!(recorded.mode.as_str(), "safe" | "research" | "exploit")
     {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(manifest_text) =
         read_regular_evidence_text(&dir.join("evidence.json"), MAX_EVIDENCE_JSON_BYTES)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let manifest: EvidenceManifest =
         serde_json::from_str(&manifest_text).map_err(|e| e.to_string())?;
+    // Current source-check authority requires the source analyzed by PCA to be the source the
+    // command checked. A Merkle root authenticates each leaf's bytes, but does not establish that
+    // `source.anubis` is the correct resolved program for an `entry/...` leaf. Until resolution
+    // emits a checked correspondence witness, current multi-leaf claims have no PCA scope.
+    if recorded.pca_version == PCA_VERSION_CURRENT && dir.join("source-merkle-leaves.json").exists()
+    {
+        return Ok(None);
+    }
+    // Archived PCA v2 receipts and build/proof bundles use different sidecar schemas. The
+    // source-derived check contract applies only to the current plain check lane; other lanes
+    // retain their existing source claim and signature checks without being presented as if
+    // these newer sidecars had been independently re-derived.
+    let plain_check_lane =
+        manifest.lane.as_deref() == Some(format!("{}-check", recorded.mode).as_str());
+    let package_publish_lane =
+        recorded.mode == "safe" && manifest.lane.as_deref() == Some(PACKAGE_PUBLISH_LANE);
+    let scope_fields_match = match recorded.pca_version {
+        2 | 3 => recorded.claim_kind.is_none() && recorded.evidence_lane.is_none(),
+        PCA_VERSION_CURRENT => {
+            recorded.evidence_lane == manifest.lane
+                && recorded.claim_kind.as_deref()
+                    == Some(if plain_check_lane {
+                        "source_check_v1"
+                    } else if package_publish_lane {
+                        "package_publish_v1"
+                    } else if manifest
+                        .lane
+                        .as_deref()
+                        .is_some_and(|lane| lane.ends_with("-invalid-input-check"))
+                    {
+                        "invalid_input_unverified_v1"
+                    } else if manifest
+                        .lane
+                        .as_deref()
+                        .is_some_and(|lane| lane.ends_with("-analysis-limit-check"))
+                    {
+                        "analysis_limit_undecided_v1"
+                    } else if manifest
+                        .lane
+                        .as_deref()
+                        .is_some_and(|lane| lane.ends_with("-typecheck-refusal-check"))
+                    {
+                        "typecheck_refusal_unverified_v1"
+                    } else {
+                        "source_only_v1"
+                    })
+        }
+        _ => false,
+    };
+    let source_derived_check_lane =
+        recorded.pca_version == PCA_VERSION_CURRENT && (plain_check_lane || package_publish_lane);
+    // The producer writes identical bytes to both manifest names. MANIFEST.sha256 binds each
+    // file separately, but an attacker who can regenerate unsigned hashes can otherwise make
+    // the public manifest.json tell a different story from the checked evidence.json.
+    let manifest_mirror_matches = matches!(
+        read_regular_evidence_bytes(&dir.join("manifest.json"), MAX_EVIDENCE_JSON_BYTES)?,
+        Some(bytes) if bytes.as_slice() == manifest_text.as_bytes()
+    );
+    // Reject unrecognized top-level fields as well as a divergent mirror. In particular, a
+    // rehashed free-form `authorization` key must not acquire authority by being ignored here.
+    let manifest_shape_matches = !source_derived_check_lane
+        || serde_json::to_string_pretty(&manifest).is_ok_and(|text| text == manifest_text);
+    // No engagement authorization or scope is derivable from source in this PCA. The producer's
+    // default context is descriptive only; any supplied security block needs a separate verifier.
+    let security_context_matches = !source_derived_check_lane
+        || manifest.security.as_ref()
+            == Some(&serde_json::json!({
+                "mode": recorded.mode.as_str(),
+                "note": "language attributes and effects recorded in checks and logs"
+            }));
+    let presentation_ok =
+        !source_derived_check_lane || presentation_sidecars_match(dir, &manifest)?;
+    // Exact solver/refusal bytes can be replayed only under the recorded solver and
+    // compiler versions. A different installation is an unsupported cold verifier,
+    // never a reason to weaken the sidecar comparison to matching status strings.
+    let strict_toolchain_matches = if source_derived_check_lane {
+        let environment =
+            read_regular_evidence_text(&dir.join("environment.json"), MAX_EVIDENCE_JSON_BYTES)?;
+        environment
+            .and_then(|text| {
+                serde_json::from_str::<EnvironmentCapture>(&text)
+                    .ok()
+                    .map(|captured| (text, captured))
+            })
+            .is_some_and(|(text, captured)| {
+                serde_json::to_string_pretty(&captured).ok().as_deref() == Some(text.as_str())
+                    && captured.z3 == command_output("z3", &["--version"])
+                    && captured.anubis == env!("CARGO_PKG_VERSION")
+                    && recorded.tool == tool_identity()
+                    && captured.machine_fields_status == "producer_reported_unverified"
+            })
+    } else {
+        true
+    };
     // A program-level disproof cannot coexist with an artifact manifest that
     // reports every recorded check and the whole build as PASS. The converse
     // is possible: source analysis may pass while a build or platform check
@@ -1625,7 +2513,7 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     let Some(source) =
         read_regular_evidence_text(&dir.join("source.anubis"), MAX_EVIDENCE_SOURCE_BYTES)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     // Explicit source binding: the claim's recorded hash must be the hash of the bundle's own
     // source. (Also implied by `fresh == recorded`, but asserted directly so the source↔claim tie
@@ -1642,52 +2530,70 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // closed on any drift. A grant that contradicts the proven effect set — e.g. a hand-forged
     // `network:host-only` over a source that provably uses `net.send` — cannot survive the re-derive
     // (which is a pure function of the source), so a forged or source-swapped grant is rejected here.
-    let confine_ok = {
+    let check_config_ok = !source_derived_check_lane
+        || evidence_json_matches(dir, "analysis/check-config.json", &default_check_config())?;
+    let strict_policy_ok = !source_derived_check_lane
+        || with_default_check_analysis(|| source_policy_sidecars_match(dir, &source))?;
+    let source_claim_sidecars_ok = !source_derived_check_lane
+        || source_claim_sidecars_match(dir, &source, package_publish_lane)?;
+    let confine_ok = if source_derived_check_lane {
+        true // strict_policy_ok covers both policy files and their canonical bytes
+    } else {
         let cm_path = dir.join(crate::package::confinement::CONFINEMENT_FILENAME);
         if cm_path.exists() {
-            match read_regular_evidence_text(&cm_path, MAX_EVIDENCE_JSON_BYTES).and_then(|s| {
-                s.ok_or_else(|| "missing confinement manifest".to_string())
-                    .and_then(|text| {
-                        serde_json::from_str::<crate::package::confinement::ConfinementManifest>(
-                            &text,
-                        )
-                        .map_err(|e| e.to_string())
-                    })
-            }) {
-                Ok(sealed) => {
-                    crate::package::confinement::verify_confinement_matches_source(&source, &sealed)
-                        .is_ok()
+            match read_regular_evidence_text(&cm_path, MAX_EVIDENCE_JSON_BYTES) {
+                Ok(Some(text)) => {
+                    match serde_json::from_str::<crate::package::confinement::ConfinementManifest>(
+                        &text,
+                    ) {
+                        Ok(sealed) => {
+                            sealed_json_shape_matches(&text, &sealed, Some("research_effects"))
+                                && crate::package::confinement::verify_confinement_matches_source(
+                                    &source, &sealed,
+                                )
+                                .is_ok()
+                        }
+                        Err(_) => false,
+                    }
                 }
-                Err(_) => false, // a malformed sealed confinement manifest fails closed
+                _ => false, // a malformed sealed confinement manifest fails closed
             }
         } else {
             true // legacy bundle without a confinement manifest
         }
     };
-    // Entitlement profile cross-check: same fail-closed re-derive as confinement. A forged
-    // network.client-enabled profile over a net-free source cannot survive re-derivation.
-    let entitlement_ok = {
+    // The JSON profile is source-derived, and the codesign plist must be its exact canonical
+    // rendering. Otherwise a rehashed plist could grant authority absent from the checked
+    // profile. The producer emits both files together; a lone sidecar is not a valid pair.
+    let entitlement_ok = if source_derived_check_lane {
+        true // strict_policy_ok covers the profile and the exact derived plist
+    } else {
         let ep_path = dir.join(crate::package::entitlements::ENTITLEMENT_PROFILE_FILENAME);
-        if ep_path.exists() {
-            match read_regular_evidence_text(&ep_path, MAX_EVIDENCE_JSON_BYTES).and_then(|s| {
-                s.ok_or_else(|| "missing entitlement profile".to_string())
-                    .and_then(|text| {
-                        serde_json::from_str::<crate::package::entitlements::EntitlementProfile>(
+        let plist_path = dir.join(crate::package::entitlements::ENTITLEMENT_PLIST_FILENAME);
+        match (ep_path.exists(), plist_path.exists()) {
+            (false, false) => true, // legacy bundle without entitlement sidecars
+            (true, true) => match read_regular_evidence_text(&ep_path, MAX_EVIDENCE_JSON_BYTES) {
+                Ok(Some(text)) => {
+                    match serde_json::from_str::<crate::package::entitlements::EntitlementProfile>(
                             &text,
-                        )
-                        .map_err(|e| e.to_string())
-                    })
-            }) {
-                Ok(sealed) => {
-                    crate::package::entitlements::verify_entitlement_profile_matches_source(
-                        &source, &sealed,
-                    )
-                    .is_ok()
+                        ) {
+                            Ok(sealed) => {
+                                sealed_json_shape_matches(&text, &sealed, None)
+                                    && crate::package::entitlements::verify_entitlement_profile_matches_source(
+                                        &source, &sealed,
+                                    )
+                                    .is_ok()
+                                    && matches!(
+                                        read_regular_evidence_bytes(&plist_path, MAX_EVIDENCE_JSON_BYTES),
+                                        Ok(Some(bytes)) if bytes.as_slice() == crate::package::entitlements::entitlement_plist_xml(&sealed).as_bytes()
+                                    )
+                            }
+                            Err(_) => false,
+                        }
                 }
-                Err(_) => false,
-            }
-        } else {
-            true // legacy bundle without an entitlement profile
+                _ => false,
+            },
+            _ => false,
         }
     };
     // A claim no derivation produces is refuted as it stands: a PASS needs the parse, the type
@@ -1698,29 +2604,199 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
         || (recorded.parse_ok
             && recorded.typecheck_ok
             && recorded.solver_all_discharged
+            && (recorded.pca_version != PCA_VERSION_CURRENT
+                || solver_execution_matches_obligations(&recorded))
             && recorded.rejection.is_none());
     // Integrity decides first, before any re-derivation (which can stop at a limit, or end the
     // process at the hard memory budget): a bundle whose files, source binding, signature,
     // confinement or entitlements do not check is invalid, whatever the analysis could re-derive.
     if !(hashes_ok
+        && scope_fields_match
+        && manifest_mirror_matches
+        && manifest_shape_matches
+        && security_context_matches
+        && presentation_ok
+        && strict_toolchain_matches
         && verdicts_consistent
         && modes_consistent
         && source_bound
         && sig_ok
         && confine_ok
         && entitlement_ok
+        && check_config_ok
+        && strict_policy_ok
+        && source_claim_sidecars_ok
         && consistent)
     {
-        return Ok(false);
+        return Ok(None);
     }
     // Re-derive the full claim — including the ZK binding — from the bundle's own artifacts. A
     // tampered receipt, a swapped ImageID, or a claim that lies about carrying a receipt makes the
     // re-derived block differ from the recorded one and fails closed here (the CLI additionally
     // re-verifies the receipt cryptographically against the ImageID).
-    let derived =
-        derive_claim_bound_for_version(dir, &source, &recorded.mode, recorded.pca_version);
-    let matches = claim_semantically_matches(&derived.claim, &recorded);
-    finish_pca_rederivation(matches, &derived, &recorded)
+    let derived = if source_derived_check_lane {
+        with_default_check_analysis(|| {
+            derive_claim_bound_for_version(dir, &source, &recorded.mode, recorded.pca_version)
+        })
+    } else {
+        derive_claim_bound_for_version(dir, &source, &recorded.mode, recorded.pca_version)
+    };
+    let source_mode_matches = (recorded.pca_version != PCA_VERSION_CURRENT
+        || !derived.unresolved_mode_elevator)
+        && match derived.source_mode {
+            Some(crate::frontend::Mode::Safe) => recorded.mode == "safe",
+            Some(crate::frontend::Mode::Research) => recorded.mode == "research",
+            Some(crate::frontend::Mode::Exploit) => recorded.mode == "exploit",
+            // `None` covers a parsed source with no function mode as well as a parse refusal.
+            // Only the former may take the CLI's Safe default; a malformed source must never
+            // acquire current check authority by rehashing an exact FAIL-shaped parse row.
+            None => derived.claim.parse_ok && recorded.mode == "safe",
+        };
+    // The CLI records --verified in a distinct lane. Until PCA derivation itself runs that
+    // stronger typecheck and binds the option into the claim, this verifier cannot confirm it.
+    let unsupported_verified_lane = manifest
+        .lane
+        .as_deref()
+        .is_some_and(|lane| lane.ends_with("-verified-check"));
+    let core_names: std::collections::BTreeSet<&str> = [
+        "parse",
+        "typecheck",
+        "monomorphization",
+        "taint",
+        "symbolic",
+        "solver",
+    ]
+    .into_iter()
+    .collect();
+    let recorded_core: Vec<Check> = manifest
+        .checks
+        .iter()
+        .filter(|row| core_names.contains(row.name.as_str()))
+        .cloned()
+        .collect();
+    let core_rows_match = !source_derived_check_lane || recorded_core == derived.check_rows;
+    // A pure check emits only source-derived rows plus the sealed source/log hashes. Build and
+    // platform lanes have additional producer-reported rows with distinct trust boundaries.
+    let plain_check_rows_match = if source_derived_check_lane && recorded.rejection.is_none() {
+        let mut expected_rows = derived.check_rows.clone();
+        expected_rows.push(Check {
+            name: "source_hash".into(),
+            status: "PASS".into(),
+            detail: manifest.source_hash.clone(),
+        });
+        expected_rows.push(Check {
+            name: "build_log_hash".into(),
+            status: "PASS".into(),
+            detail: manifest.build_log_hash.clone(),
+        });
+        manifest.checks == expected_rows && manifest.artifact_hash.is_none()
+    } else {
+        true
+    };
+    // A rejected check has an additional command-level refusal. Verify that refusal against the
+    // sealed source and the manifest row, then compare every other PCA field as usual. Do not
+    // accept arbitrary rejected build/platform/tool errors merely because their source also has a
+    // failing obligation; those need their own typed and independently reproducible provenance.
+    let mut expected = derived.claim.clone();
+    if recorded.pca_version == PCA_VERSION_CURRENT {
+        expected.evidence_lane = manifest.lane.clone();
+        expected.claim_kind = Some(
+            if plain_check_lane {
+                "source_check_v1"
+            } else if package_publish_lane {
+                "package_publish_v1"
+            } else if manifest
+                .lane
+                .as_deref()
+                .is_some_and(|lane| lane.ends_with("-invalid-input-check"))
+            {
+                "invalid_input_unverified_v1"
+            } else if manifest
+                .lane
+                .as_deref()
+                .is_some_and(|lane| lane.ends_with("-analysis-limit-check"))
+            {
+                "analysis_limit_undecided_v1"
+            } else if manifest
+                .lane
+                .as_deref()
+                .is_some_and(|lane| lane.ends_with("-typecheck-refusal-check"))
+            {
+                "typecheck_refusal_unverified_v1"
+            } else {
+                "source_only_v1"
+            }
+            .into(),
+        );
+    }
+    let rejection_matches = match recorded.rejection.as_deref() {
+        None => {
+            recorded.tier == "checked"
+                // A plain check with no command refusal is an accepted check. A rehashed FAIL
+                // whose command_rejection row and PCA rejection were both stripped cannot
+                // become current check authority, even when its source-derived rows still match.
+                && (!source_derived_check_lane || derived.claim.verdict == "PASS")
+                && !manifest
+                    .checks
+                    .iter()
+                    .any(|c| c.name == "command_rejection")
+        }
+        Some(reason) => {
+            let mut expected_rows = derived.check_rows.clone();
+            expected_rows.push(Check {
+                name: "command_rejection".into(),
+                status: "FAIL".into(),
+                detail: reason.into(),
+            });
+            expected_rows.push(Check {
+                name: "source_hash".into(),
+                status: "PASS".into(),
+                detail: manifest.source_hash.clone(),
+            });
+            expected_rows.push(Check {
+                name: "build_log_hash".into(),
+                status: "PASS".into(),
+                detail: manifest.build_log_hash.clone(),
+            });
+            recorded.tier == "rejected"
+                && source_derived_check_lane
+                && plain_check_lane
+                // A --verified check now has its own lane. Its stronger typecheck is not
+                // represented by the default claim re-derivation and remains unverified here.
+                && manifest.lane.as_deref() == Some(format!("{}-check", recorded.mode).as_str())
+                && manifest.artifact_hash.is_none()
+                && derived.claim.verdict == "FAIL"
+                && derived.claim.parse_ok
+                && (derived.claim.typecheck_ok || derived.replayable_security_refusal)
+                && derived.check_refusal.as_deref() == Some(reason)
+                && manifest.checks == expected_rows
+        }
+    };
+    if rejection_matches && recorded.rejection.is_some() {
+        expected.tier = "rejected".into();
+        expected.rejection = recorded.rejection.clone();
+    }
+    let matches = !unsupported_verified_lane
+        && source_mode_matches
+        && core_rows_match
+        && plain_check_rows_match
+        && rejection_matches
+        && (!source_derived_check_lane || source_check_tree_matches(dir, &derived)?)
+        && (!source_derived_check_lane
+            || with_default_check_analysis(|| analysis_sidecars_match(dir, &derived))?)
+        && claim_semantically_matches(&expected, &recorded);
+    if !finish_pca_rederivation(matches, &derived, &recorded)? {
+        return Ok(None);
+    }
+    Ok(Some(if source_derived_check_lane && package_publish_lane {
+        PcaScope::PackagePublishV1
+    } else if source_derived_check_lane {
+        PcaScope::SourceCheckV1
+    } else if recorded.pca_version == PCA_VERSION_CURRENT {
+        PcaScope::SourceOnly
+    } else {
+        PcaScope::LegacySourceOnly
+    }))
 }
 
 /// The `pca.sig` sidecar: an Ed25519 signature over the PCA, written OUTSIDE `MANIFEST.sha256` (it
@@ -2127,6 +3203,51 @@ fn emit_program_evidence_v3(dir: &Path) -> Result<(), String> {
     std::fs::write(dir.join("program-evidence.json"), text).map_err(|e| e.to_string())
 }
 
+fn check_config_value(
+    policy: crate::middle::CheckPolicy,
+    native: anubis_solver::NativeProofParameters,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema": "anubis-check-config/1",
+        "wrap_safety": policy.wrap_safety,
+        "native_authoritative": policy.native_authoritative,
+        "require_native_proofs": policy.require_native_proofs,
+        "native": {
+            "gate_ceiling": native.gate_ceiling,
+            "clause_ceiling": native.clause_ceiling,
+            "conflicts": native.conflicts,
+            "cert_work": native.cert_work,
+            "time_budget_ms": native.time_budget_ms,
+        }
+    })
+}
+
+fn current_check_config() -> serde_json::Value {
+    check_config_value(
+        crate::middle::current_check_policy(),
+        anubis_solver::current_native_proof_parameters(),
+    )
+}
+
+fn default_check_config() -> serde_json::Value {
+    check_config_value(
+        crate::middle::CheckPolicy::product_default(),
+        anubis_solver::NativeProofParameters::product_default(),
+    )
+}
+
+/// The current check can be independently replayed under a deterministic policy. A command
+/// using a different analysis/proof policy remains a command result, not a PCA-verified result.
+pub fn check_environment_is_default() -> bool {
+    current_check_config() == default_check_config()
+}
+
+fn with_default_check_analysis<T>(f: impl FnOnce() -> T) -> T {
+    crate::middle::with_pca_default_check_policy(|| {
+        anubis_solver::with_pca_default_native_limits(f)
+    })
+}
+
 fn capture_environment() -> EnvironmentCapture {
     EnvironmentCapture {
         os: std::env::consts::OS.into(),
@@ -2135,6 +3256,7 @@ fn capture_environment() -> EnvironmentCapture {
         cargo: command_output("cargo", &["--version"]),
         z3: command_output("z3", &["--version"]),
         anubis: env!("CARGO_PKG_VERSION").into(),
+        machine_fields_status: "producer_reported_unverified".into(),
     }
 }
 
@@ -3045,6 +4167,61 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod source_closure_tests {
     use super::*;
+
+    #[test]
+    fn mismatched_resolved_snapshot_has_integrity_but_no_source_check_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let snapshot = b"fn main() { let x = 1; assert(x == 1); }".to_vec();
+        let entry = b"fn main() { let x = 1; assert(x == 2); }".to_vec();
+        let bundle = build_evidence_bundle_tree(
+            &[
+                ("entry/main.anb".into(), entry),
+                ("source.anubis".into(), snapshot.clone()),
+            ],
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            Some("safe-check"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, true).unwrap());
+        let claim_path = bundle.dir.join("pca.json");
+        let mut claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
+        assert_eq!(claim.verdict, "PASS");
+        assert_eq!(
+            claim.claim_kind.as_deref(),
+            Some("source_snapshot_unverified_v1")
+        );
+        assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None);
+
+        // Even a producer able to refresh all unsigned hashes cannot turn a detached snapshot
+        // into the command's source-check evidence by relabeling the claim.
+        claim.claim_kind = Some("source_check_v1".into());
+        write_json(&claim_path, &claim).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None);
+
+        // Exact leaf agreement alone still lacks a checked import/resolution correspondence.
+        let matching = build_evidence_bundle_tree(
+            &[
+                ("entry/main.anb".into(), snapshot.clone()),
+                ("source.anubis".into(), snapshot),
+            ],
+            "safe",
+            None,
+            vec![],
+            &root.path().join("matching"),
+            Some("safe-check"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(verify_pca_scope(&matching.dir).unwrap(), None);
+    }
 
     fn multi_source_bundle() -> (tempfile::TempDir, PathBuf) {
         let base = tempfile::tempdir().unwrap();
@@ -4119,6 +5296,879 @@ fn main() uses(io.read) {
         assert!(!verify_pca(&bundle.dir).unwrap());
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejected_check_is_valid_only_with_a_source_derived_refusal() {
+        let base = tempfile::tempdir().unwrap();
+        let source = "fn main() { let x = 1; assert(x == 1); assert(x == 2); }";
+        // Reproduce the CLI check lane independently of the evidence producer. A proved
+        // obligation precedes the disproof, so replay/check ordering also matters.
+        let ast = crate::frontend::parse_source(source).unwrap();
+        let typed = crate::middle::typecheck(ast, crate::frontend::Mode::Safe).unwrap();
+        let tainted = crate::middle::TaintPass::apply(typed);
+        let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
+        let refusals = crate::middle::solver_stream_refusals(&solver_checks);
+        assert_eq!(refusals.len(), 1);
+        let reason = crate::middle::format_check_failures(&refusals);
+        let bundle = build_rejected_evidence_bundle(
+            source,
+            "safe",
+            vec!["check rejected".into()],
+            base.path(),
+            Some("safe-check"),
+            &reason,
+        )
+        .unwrap();
+        assert!(!validate_bundle(&bundle.dir).unwrap());
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // Rehashing both recorded copies of a fabricated refusal is insufficient. The verifier
+        // must obtain the same reason from the sealed source, not from the producer's text.
+        let pca_path = bundle.dir.join("pca.json");
+        let evidence_path = bundle.dir.join("evidence.json");
+        let manifest_path = bundle.dir.join("manifest.json");
+        let mut claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(&pca_path).unwrap()).unwrap();
+        let mut manifest: EvidenceManifest =
+            serde_json::from_slice(&std::fs::read(&evidence_path).unwrap()).unwrap();
+        claim.rejection = Some("ANUBIS_ASSERTION_DISPROVED: forged reason".into());
+        manifest
+            .checks
+            .iter_mut()
+            .find(|check| check.name == "command_rejection")
+            .unwrap()
+            .detail = claim.rejection.clone().unwrap();
+        write_json(&pca_path, &claim).unwrap();
+        write_json(&evidence_path, &manifest).unwrap();
+        write_json(&manifest_path, &manifest).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap());
+
+        claim.rejection = Some(reason.clone());
+        write_json(&pca_path, &claim).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(
+            !verify_pca(&bundle.dir).unwrap(),
+            "manifest refusal differs"
+        );
+
+        manifest
+            .checks
+            .iter_mut()
+            .find(|check| check.name == "command_rejection")
+            .unwrap()
+            .detail = reason.clone();
+        manifest.lane = Some("safe-build-rejected".into());
+        write_json(&evidence_path, &manifest).unwrap();
+        write_json(&manifest_path, &manifest).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(
+            !verify_pca(&bundle.dir).unwrap(),
+            "build lane is not a check"
+        );
+
+        manifest.lane = Some("safe-check".into());
+        write_json(&evidence_path, &manifest).unwrap();
+        write_json(&manifest_path, &manifest).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // The v1-facing mirror is a claim, not just another hash-bound file. Rehashing a
+        // PASS-shaped mirror while evidence.json remains the honest FAIL must not verify.
+        let original_mirror = std::fs::read(&manifest_path).unwrap();
+        let mut forged_mirror = manifest.clone();
+        forged_mirror.verdict = "PASS".into();
+        for row in &mut forged_mirror.checks {
+            row.status = "PASS".into();
+        }
+        write_json(&manifest_path, &forged_mirror).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap(), "rehashed PASS mirror");
+        std::fs::write(&manifest_path, original_mirror).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // Likewise a rehashed codesign plist must not gain an entitlement absent from the
+        // source-derived JSON profile. The verifier compares canonical plist bytes.
+        let plist_path = bundle
+            .dir
+            .join(crate::package::entitlements::ENTITLEMENT_PLIST_FILENAME);
+        let original_plist = std::fs::read(&plist_path).unwrap();
+        let forged_plist = String::from_utf8(original_plist.clone()).unwrap().replacen(
+            "</dict>",
+            "\t<key>com.apple.security.network.client</key>\n\t<true/>\n</dict>",
+            1,
+        );
+        assert_ne!(forged_plist.as_bytes(), original_plist.as_slice());
+        std::fs::write(&plist_path, forged_plist).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap(), "rehashed plist grant");
+        std::fs::write(&plist_path, original_plist).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // Each changed analysis/presentation file receives a fresh complete hash manifest.
+        // Source re-derivation, not the hash layer, must reject the contradictory content.
+        for relative in ["solver.json", "analysis/proofs.json", "validate.sh"] {
+            let path = bundle.dir.join(relative);
+            let original = std::fs::read(&path).unwrap();
+            match relative {
+                "solver.json" => {
+                    let mut solver: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                    let failed = solver
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|row| row["status"] == "FAIL")
+                        .unwrap();
+                    failed["status"] = serde_json::json!("PASS");
+                    write_json(&path, &solver).unwrap();
+                }
+                "analysis/proofs.json" => {
+                    let mut proofs: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                    let failed = proofs["obligations"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|row| row["status"] == "FAIL")
+                        .unwrap();
+                    failed["status"] = serde_json::json!("PASS");
+                    failed["proof"] = serde_json::json!("rup_refutation");
+                    write_json(&path, &proofs).unwrap();
+                }
+                "validate.sh" => {
+                    let forged = String::from_utf8(original.clone()).unwrap().replacen(
+                        "#!/usr/bin/env sh",
+                        "#!/bin/true",
+                        1,
+                    );
+                    assert_ne!(forged.as_bytes(), original.as_slice());
+                    std::fs::write(&path, forged).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(!verify_pca(&bundle.dir).unwrap(), "rehashed {relative}");
+            std::fs::write(&path, original).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+
+        // SARIF and the human report have hashes inside both manifest copies. Update those too:
+        // matching all recorded digests still cannot make their forged claims canonical.
+        for (relative, hash_field) in [("checks.sarif", "sarif"), ("bounty-report.md", "report")] {
+            let path = bundle.dir.join(relative);
+            let original = std::fs::read(&path).unwrap();
+            if relative == "checks.sarif" {
+                let mut sarif: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                sarif["runs"][0]["results"].as_array_mut().unwrap().clear();
+                write_json(&path, &sarif).unwrap();
+            } else {
+                std::fs::write(&path, b"# All checks PASS\n").unwrap();
+            }
+            let mut forged_manifest = manifest.clone();
+            let changed_hash = sha256_bytes(&std::fs::read(&path).unwrap());
+            if hash_field == "sarif" {
+                forged_manifest.sarif_hash = changed_hash;
+            } else {
+                forged_manifest.bounty_report_hash = changed_hash;
+            }
+            write_json(&evidence_path, &forged_manifest).unwrap();
+            write_json(&manifest_path, &forged_manifest).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(!verify_pca(&bundle.dir).unwrap(), "rehashed {relative}");
+            std::fs::write(&path, original).unwrap();
+            write_json(&evidence_path, &manifest).unwrap();
+            write_json(&manifest_path, &manifest).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+
+        let mut forged_security = manifest.clone();
+        forged_security.security = Some(serde_json::json!({
+            "mode": "safe", "authorization": "approved", "scope": "all targets"
+        }));
+        write_json(&evidence_path, &forged_security).unwrap();
+        write_json(&manifest_path, &forged_security).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+        assert!(
+            !verify_pca(&bundle.dir).unwrap(),
+            "forged authorization and scope"
+        );
+        write_json(&evidence_path, &manifest).unwrap();
+        write_json(&manifest_path, &manifest).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        for relative in [
+            crate::package::confinement::CONFINEMENT_FILENAME,
+            crate::package::entitlements::ENTITLEMENT_PROFILE_FILENAME,
+        ] {
+            let path = bundle.dir.join(relative);
+            let original = std::fs::read(&path).unwrap();
+            let mut forged: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            if relative == crate::package::confinement::CONFINEMENT_FILENAME {
+                forged["grants"][0]["authorization"] = serde_json::json!("approved");
+            } else {
+                forged["sandbox"]["authorization"] = serde_json::json!("approved");
+            }
+            write_json(&path, &forged).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(
+                !verify_pca(&bundle.dir).unwrap(),
+                "unknown field in {relative}"
+            );
+            std::fs::write(&path, original).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+
+        // Rehashing a different proof policy cannot turn a nondefault (or wall-clock)
+        // check into a PCA-verifiable product-default check.
+        let config_path = bundle.dir.join("analysis/check-config.json");
+        let original_config = std::fs::read(&config_path).unwrap();
+        let mut forged_config: serde_json::Value =
+            serde_json::from_slice(&original_config).unwrap();
+        forged_config["native"]["conflicts"] = serde_json::json!(0);
+        write_json(&config_path, &forged_config).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap(), "rehashed proof policy");
+        std::fs::write(&config_path, &original_config).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        std::fs::remove_file(&config_path).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap(), "missing proof policy");
+        std::fs::write(&config_path, original_config).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // These source-derived records affect package contracts and declassification
+        // authority. Rehashing a forged row or omitting the record must not verify.
+        for relative in [
+            crate::package::summary::SUMMARIES_FILENAME,
+            crate::package::summary::DECLASSIFY_AUDIT_FILENAME,
+        ] {
+            let path = bundle.dir.join(relative);
+            let original = std::fs::read(&path).unwrap();
+            let mut forged: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            if relative == crate::package::summary::SUMMARIES_FILENAME {
+                forged["functions"] = serde_json::json!([{"name": "forged"}]);
+            } else {
+                forged["declassifications"] = serde_json::json!([{
+                    "function": "main",
+                    "policy": "forged",
+                    "reason": "forged",
+                    "well_formed": true
+                }]);
+            }
+            write_json(&path, &forged).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(!verify_pca(&bundle.dir).unwrap(), "rehashed {relative}");
+            std::fs::write(&path, &original).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(verify_pca(&bundle.dir).unwrap());
+
+            std::fs::remove_file(&path).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(!verify_pca(&bundle.dir).unwrap(), "omitted {relative}");
+            std::fs::write(&path, original).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+
+        // A JSON Value parse discards a duplicate key and keeps the last value. An extra
+        // first authority field must not disappear during verification of a new check.
+        for relative in [
+            crate::package::confinement::CONFINEMENT_FILENAME,
+            crate::package::entitlements::ENTITLEMENT_PROFILE_FILENAME,
+        ] {
+            let path = bundle.dir.join(relative);
+            let original = std::fs::read(&path).unwrap();
+            let text = String::from_utf8(original.clone()).unwrap();
+            let forged = text.replacen(r#""schema":"#, "\"schema\": \"forged\",\n  \"schema\":", 1);
+            assert_ne!(forged, text);
+            std::fs::write(&path, forged).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(
+                !verify_pca(&bundle.dir).unwrap(),
+                "duplicate JSON key in {relative}"
+            );
+            std::fs::write(&path, original).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+
+        // Hashes alone do not prevent someone from attaching an executable or execution/proof
+        // sidecars to a rejected check. Every attachment is included in a freshly hashed tree.
+        for attachment in [
+            "artifact",
+            "guest.elf",
+            "risc0_receipt.bin",
+            "backend/risc0/receipt.bin",
+            "program-evidence.json",
+            "run-evidence.json",
+        ] {
+            let path = bundle.dir.join(attachment);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, b"attached after rejection").unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(!verify_pca(&bundle.dir).unwrap(), "attached {attachment}");
+            std::fs::remove_file(&path).unwrap();
+            if attachment.starts_with("backend/") {
+                std::fs::remove_dir_all(bundle.dir.join("backend")).unwrap();
+            }
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+
+        for row_name in ["parse", "typecheck", "solver"] {
+            let mut forged_rows = manifest.clone();
+            let row = forged_rows
+                .checks
+                .iter_mut()
+                .find(|check| check.name == row_name)
+                .unwrap();
+            row.status = if row.status == "PASS" { "FAIL" } else { "PASS" }.into();
+            write_json(&evidence_path, &forged_rows).unwrap();
+            write_json(&manifest_path, &forged_rows).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            assert!(!verify_pca(&bundle.dir).unwrap(), "forged {row_name} row");
+        }
+        write_json(&evidence_path, &manifest).unwrap();
+        write_json(&manifest_path, &manifest).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        let verified_lane = build_rejected_evidence_bundle(
+            source,
+            "safe",
+            vec!["check --verified rejected".into()],
+            base.path(),
+            Some("safe-verified-check"),
+            &reason,
+        )
+        .unwrap();
+        assert!(!verify_pca(&verified_lane.dir).unwrap());
+
+        // A PASS program cannot be turned into an apparently valid rejected claim by a producer
+        // that chooses a FAIL reason and recomputes all unsigned hashes.
+        let forged = build_rejected_evidence_bundle(
+            "fn main() { let x = 1; }",
+            "safe",
+            vec!["check rejected".into()],
+            base.path(),
+            Some("safe-check"),
+            &reason,
+        )
+        .unwrap();
+        assert!(validate_bundle_recorded_files(&forged.dir, false).unwrap());
+        assert!(!verify_pca(&forged.dir).unwrap());
+    }
+
+    #[test]
+    #[ignore = "Research source checks require the repository's disposable Tart/VZ guest lane"]
+    fn research_refusal_cannot_be_relabelled_as_a_safe_check() {
+        let base = tempfile::tempdir().unwrap();
+        let research_source = "@research(authorization: \"test\") fn hidden() {}\n\
+            fn main() { let x = 1; assert(x == 2); }";
+        let relabeled = derive_claim(research_source, "safe", true);
+        assert_eq!(relabeled.source_mode, Some(crate::frontend::Mode::Research));
+        assert_eq!(relabeled.claim.verdict, "FAIL");
+        let research_refusal = relabeled.check_refusal.unwrap();
+        let wrong_mode = build_rejected_evidence_bundle(
+            research_source,
+            "safe",
+            vec!["mode relabeled".into()],
+            base.path(),
+            Some("safe-check"),
+            &research_refusal,
+        )
+        .unwrap();
+        assert!(validate_bundle_recorded_files(&wrong_mode.dir, false).unwrap());
+        assert!(!verify_pca(&wrong_mode.dir).unwrap());
+    }
+
+    #[test]
+    fn current_check_scope_downgrades_to_source_only_after_rehashed_lane_change() {
+        let base = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; assert(x == 1); }",
+            "safe",
+            None,
+            vec![],
+            base.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::SourceCheckV1)
+        );
+        let claim_path = bundle.dir.join("pca.json");
+        let mut claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
+        let mut manifest: EvidenceManifest =
+            serde_json::from_slice(&std::fs::read(bundle.dir.join("evidence.json")).unwrap())
+                .unwrap();
+        manifest.lane = Some("safe-build".into());
+        write_json(&bundle.dir.join("evidence.json"), &manifest).unwrap();
+        write_json(&bundle.dir.join("manifest.json"), &manifest).unwrap();
+        claim.evidence_lane = manifest.lane.clone();
+        claim.claim_kind = Some("source_only_v1".into());
+        write_json(&claim_path, &claim).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::SourceOnly),
+            "a rehashed lane downgrade must lose current check authority"
+        );
+    }
+
+    #[test]
+    fn empty_obligation_inventory_records_no_solver_query_and_refuses_relabeling() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; }",
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        let claim_path = bundle.dir.join("pca.json");
+        let mut claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
+        assert_eq!(claim.verdict, "PASS");
+        assert_eq!(claim.solver_obligations, 0);
+        assert_eq!(claim.solver_execution, Some(SolverExecution::NotRun));
+        assert!(claim.solver_all_discharged);
+        assert!(solver_execution_matches_obligations(&claim));
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::SourceCheckV1)
+        );
+
+        claim.solver_execution = Some(SolverExecution::Ran);
+        write_json(&claim_path, &claim).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(!solver_execution_matches_obligations(&claim));
+        assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None);
+    }
+
+    #[test]
+    fn unencoded_obligation_rows_do_not_claim_a_solver_run() {
+        let unencoded = crate::middle::SolverCheck {
+            name: "requires-unresolved@fixture".into(),
+            status: "FAIL".into(),
+            detail: crate::middle::UNRESOLVED_PRECONDITION_DETAIL.into(),
+            model: None,
+            smt: "; not encoded\n".into(),
+        };
+        assert!(!solver_path_was_invoked(std::slice::from_ref(&unencoded)));
+        let submitted = crate::middle::SolverCheck {
+            name: "assert:fixture".into(),
+            status: "PASS".into(),
+            detail: crate::middle::PROVED_DETAIL_CERTIFIED.into(),
+            model: None,
+            smt: "(check-sat)\n".into(),
+        };
+        assert!(solver_path_was_invoked(&[unencoded, submitted]));
+    }
+
+    #[test]
+    fn parsed_safe_source_without_functions_keeps_current_check_scope() {
+        let source = "struct Marker { value: int }";
+        let ast = crate::frontend::parse_source(source).unwrap();
+        assert_eq!(crate::frontend::program_mode(&ast.items), None);
+        let derived = derive_claim(source, "safe", true);
+        assert!(derived.claim.parse_ok);
+        assert_eq!(derived.source_mode, None);
+        assert_eq!(derived.claim.verdict, "PASS");
+
+        let root = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            source,
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::SourceCheckV1)
+        );
+    }
+
+    #[test]
+    fn canonical_unrejected_failures_never_gain_current_check_scope() {
+        for (name, source) in [
+            ("malformed", "fn main( {"),
+            ("invalid-typecheck", "fn main() { missing(); }"),
+            ("solver-fail", "fn main() { assert(1 == 2); }"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            // Produce the precise attacker-desired shape, including canonical SARIF, report,
+            // source policy, and analysis sidecars. Removing a command_rejection from an
+            // existing bundle without regenerating those files would test presentation drift
+            // rather than the no-rejection PASS requirement.
+            let bundle = with_default_check_analysis(|| {
+                build_evidence_bundle(
+                    source,
+                    "safe",
+                    None,
+                    vec![],
+                    root.path(),
+                    Some("safe-check"),
+                    None,
+                )
+            })
+            .unwrap();
+            let claim_path = bundle.dir.join("pca.json");
+            let evidence_path = bundle.dir.join("evidence.json");
+            let claim: ClaimBlock =
+                serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
+            let manifest: EvidenceManifest =
+                serde_json::from_slice(&std::fs::read(&evidence_path).unwrap()).unwrap();
+            assert_eq!(claim.verdict, "FAIL", "{name}");
+            assert_eq!(manifest.verdict, "FAIL", "{name}");
+            assert_eq!(claim.tier, "checked", "{name}");
+            assert!(claim.rejection.is_none(), "{name}");
+            assert!(!manifest
+                .checks
+                .iter()
+                .any(|row| row.name == "command_rejection"));
+            if name == "malformed" {
+                assert!(!claim.parse_ok);
+            }
+            // Rehash the complete producer-shaped tree as an unsigned adversary could. Its
+            // bytes and every independently rederived sidecar must still agree; only the
+            // missing command refusal on a source-derived FAIL may deny check authority.
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+            let derived = with_default_check_analysis(|| {
+                derive_claim_bound_for_version(&bundle.dir, source, "safe", PCA_VERSION_CURRENT)
+            });
+            let mut expected_rows = derived.check_rows.clone();
+            expected_rows.push(Check {
+                name: "source_hash".into(),
+                status: "PASS".into(),
+                detail: manifest.source_hash.clone(),
+            });
+            expected_rows.push(Check {
+                name: "build_log_hash".into(),
+                status: "PASS".into(),
+                detail: manifest.build_log_hash.clone(),
+            });
+            assert_eq!(manifest.checks, expected_rows, "{name}");
+            assert!(presentation_sidecars_match(&bundle.dir, &manifest).unwrap());
+            assert!(source_check_tree_matches(&bundle.dir, &derived).unwrap());
+            assert!(evidence_json_matches(
+                &bundle.dir,
+                "analysis/check-config.json",
+                &default_check_config()
+            )
+            .unwrap());
+            assert!(with_default_check_analysis(|| source_policy_sidecars_match(
+                &bundle.dir,
+                source
+            ))
+            .unwrap());
+            assert!(
+                with_default_check_analysis(|| analysis_sidecars_match(&bundle.dir, &derived))
+                    .unwrap()
+            );
+            assert!(source_claim_sidecars_match(&bundle.dir, source, false).unwrap());
+            let mut expected_claim = derived.claim.clone();
+            expected_claim.evidence_lane = Some("safe-check".into());
+            expected_claim.claim_kind = Some("source_check_v1".into());
+            assert!(
+                claim_semantically_matches(&expected_claim, &claim),
+                "{name}"
+            );
+            assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn version_three_claim_on_current_layout_is_only_a_migration_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let source = "fn main() { let x = 1; assert(x == 1); }";
+        let bundle = build_evidence_bundle(
+            source,
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            Some("safe-build"),
+            None,
+        )
+        .unwrap();
+        // Construct a v3 semantic claim with version-specific derivation on a current layout.
+        // This exercises the compatibility branch but is not an archived v3 producer bundle:
+        // the repository currently retains an archived v2 fixture, not a source-bound v3 one.
+        // Merely changing a v4 claim's version field leaves v4-only fields and is invalid.
+        let legacy = derive_claim_bound_for_version(&bundle.dir, source, "safe", 3).claim;
+        assert_eq!(legacy.pca_version, 3);
+        assert!(legacy.evidence_lane.is_none());
+        assert!(legacy.claim_kind.is_none());
+        assert!(legacy.solver_execution.is_none());
+        assert_eq!(legacy.solver_backend, "z3");
+        write_json(&bundle.dir.join("pca.json"), &legacy).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::LegacySourceOnly),
+            "a version-specific v3 source claim remains inspectable without current check authority"
+        );
+    }
+
+    #[test]
+    fn security_refusal_classification_excludes_invalid_and_undecided_findings() {
+        let finding = |code: &str| crate::middle::SemanticDiagnostic {
+            code: Some(code.into()),
+            message: code.into(),
+            span: None,
+        };
+        let mut refusal = crate::middle::TypecheckFailure {
+            message: "source flow refused".into(),
+            diagnostics: vec![finding("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY")],
+            limit: None,
+        };
+        assert!(replayable_security_refusal(&refusal));
+        refusal.diagnostics.push(finding("ANUBIS_UNKNOWN_FUNCTION"));
+        assert!(!replayable_security_refusal(&refusal));
+        refusal.diagnostics = vec![finding("ANUBIS_CONTRACT_UNPROVABLE")];
+        assert!(!replayable_security_refusal(&refusal));
+        refusal.diagnostics = vec![finding("ANUBIS_IFC2_LIMIT")];
+        assert!(!replayable_security_refusal(&refusal));
+        assert!(source_analysis_limit_refusal(&refusal));
+        refusal.diagnostics = vec![
+            finding("ANUBIS_SECRET_EXFILTRATION"),
+            finding("ANUBIS_IFC2_LIMIT"),
+        ];
+        assert!(!replayable_security_refusal(&refusal));
+        assert!(source_analysis_limit_refusal(&refusal));
+        refusal.diagnostics = vec![finding("ANUBIS_SECRET_EXFILTRATION")];
+        refusal.limit = Some("ANUBIS_ANALYSIS_LIMIT".into());
+        assert!(!replayable_security_refusal(&refusal));
+        assert!(source_analysis_limit_refusal(&refusal));
+    }
+
+    #[test]
+    fn intrinsic_mode_elevators_never_inherit_a_safe_source_claim() {
+        let ordinary = crate::frontend::parse_source("fn main() { let x = 1; }").unwrap();
+        assert!(!items_have_unresolved_mode_elevator(&ordinary.items));
+
+        let nested = crate::frontend::parse_source(
+            "fn main() { let x = if true { @research { let y = 1; } 1 } else { 0 }; }",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&nested.items),
+            Some(crate::frontend::Mode::Safe)
+        );
+        assert!(items_have_unresolved_mode_elevator(&nested.items));
+
+        let overwritten = crate::frontend::parse_source(
+            "@research(authorization: \"unit-test\") @safe fn main() { let x = 1; }",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&overwritten.items),
+            Some(crate::frontend::Mode::Safe)
+        );
+        assert!(items_have_unresolved_mode_elevator(&overwritten.items));
+
+        let retained = crate::frontend::parse_source(
+            "@safe @research(authorization: \"unit-test\") fn main() { let x = 1; }",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&retained.items),
+            Some(crate::frontend::Mode::Research)
+        );
+        assert!(!items_have_unresolved_mode_elevator(&retained.items));
+    }
+
+    #[test]
+    #[ignore = "Research source checks require the repository's disposable Tart/VZ guest lane"]
+    fn intrinsic_mode_elevator_bundle_cannot_be_relabelled_as_safe() {
+        let root = tempfile::tempdir().unwrap();
+        let source = "@research(authorization: \"unit-test\") @safe fn main() { let x = 1; }";
+        let bundle = build_evidence_bundle(
+            source,
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        let claim_path = bundle.dir.join("pca.json");
+        let mut claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(&claim_path).unwrap()).unwrap();
+        assert_eq!(
+            claim.claim_kind.as_deref(),
+            Some("source_mode_unverified_v1")
+        );
+        assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None);
+        claim.claim_kind = Some("source_check_v1".into());
+        write_json(&claim_path, &claim).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            None,
+            "a rehashed check lane cannot hide the intrinsic source-mode ambiguity"
+        );
+    }
+
+    #[test]
+    fn machine_local_environment_fields_remain_typed_producer_provenance() {
+        let base = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; }",
+            "safe",
+            None,
+            vec![],
+            base.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        let environment_path = bundle.dir.join("environment.json");
+        let manifest_path = bundle.dir.join("evidence.json");
+        let mirror_path = bundle.dir.join("manifest.json");
+        let mut environment: EnvironmentCapture =
+            serde_json::from_slice(&std::fs::read(&environment_path).unwrap()).unwrap();
+        assert_eq!(
+            environment.machine_fields_status,
+            "producer_reported_unverified"
+        );
+        environment.os = "claimed-other-host".into();
+        environment.arch = "claimed-other-architecture".into();
+        write_json(&environment_path, &environment).unwrap();
+        let mut manifest: EvidenceManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.environment_hash = sha256_bytes(&std::fs::read(&environment_path).unwrap());
+        write_json(&manifest_path, &manifest).unwrap();
+        write_json(&mirror_path, &manifest).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::SourceCheckV1),
+            "the machine fields are explicitly producer-reported, not platform attestations"
+        );
+
+        environment.machine_fields_status = "independently_verified".into();
+        write_json(&environment_path, &environment).unwrap();
+        manifest.environment_hash = sha256_bytes(&std::fs::read(&environment_path).unwrap());
+        write_json(&manifest_path, &manifest).unwrap();
+        write_json(&mirror_path, &manifest).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None);
+    }
+
+    #[test]
+    fn source_check_environment_rejects_rehashed_unknown_and_duplicate_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; }",
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::SourceCheckV1)
+        );
+        let environment_path = bundle.dir.join("environment.json");
+        let original = std::fs::read_to_string(&environment_path).unwrap();
+        let manifest_path = bundle.dir.join("evidence.json");
+        let mirror_path = bundle.dir.join("manifest.json");
+        for extra in [
+            "\n  \"authorization\": \"forged\",",
+            "\n  \"os\": \"forged\",",
+        ] {
+            let forged = original.replacen('{', &format!("{{{extra}"), 1);
+            std::fs::write(&environment_path, &forged).unwrap();
+            let mut manifest: EvidenceManifest =
+                serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+            manifest.environment_hash = sha256_bytes(forged.as_bytes());
+            write_json(&manifest_path, &manifest).unwrap();
+            write_json(&mirror_path, &manifest).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn accepted_source_check_rejects_rehashed_unexpected_attachments() {
+        let base = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; assert(x == 1); }",
+            "safe",
+            None,
+            vec![],
+            base.path(),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::SourceCheckV1)
+        );
+        for attachment in [
+            "artifact",
+            "program-evidence.json",
+            "backend/risc0/receipt.bin",
+            "analysis/proofs/extra.smt2",
+        ] {
+            let path = bundle.dir.join(attachment);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"attacker-added authority").unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert_eq!(verify_pca_scope(&bundle.dir).unwrap(), None, "{attachment}");
+            std::fs::remove_file(&path).unwrap();
+            if attachment.starts_with("backend/") {
+                std::fs::remove_dir_all(bundle.dir.join("backend")).unwrap();
+            }
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert_eq!(
+                verify_pca_scope(&bundle.dir).unwrap(),
+                Some(PcaScope::SourceCheckV1)
+            );
+        }
     }
 
     #[test]

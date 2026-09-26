@@ -17,6 +17,8 @@ mod vz_native;
 // The signed Keychain run path (codesign + NE bind) exists only on macOS.
 #[cfg(target_os = "macos")]
 use anubis_compiler::backends::run::compile_sign_and_run_source;
+#[cfg(all(test, not(feature = "prove")))]
+use anubis_compiler::evidence::verify_pca;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
@@ -26,7 +28,7 @@ use anubis_compiler::{
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
         build_rejected_evidence_bundle_tree, generate_keypair, pca_signature_status, sign_pca,
-        validate_bundle, verify_pca, ClaimBlock, EvidenceManifest,
+        validate_bundle, verify_pca_scope, ClaimBlock, EvidenceManifest, PcaScope, SolverExecution,
     },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
@@ -1903,65 +1905,108 @@ fn run_package_cmd(action: PackageCmd) -> Result<()> {
             println!("package verify: OK ({} deps)", ws.deps.len());
         }
         PackageCmd::Publish { root, key } => {
-            let entry = find_package_entry(&root)?;
-            let layout = ProjectLayout::discover(&entry).map_err(|e| anyhow!("{}", e))?;
-            let name = layout.manifest.package.name.clone();
-            let version = layout.manifest.package.version.clone();
-            if name.is_empty() || version.is_empty() {
-                return Err(anyhow!(
-                    "ANUBIS_DEP_UNRESOLVED: [package] name and version required to publish"
-                ));
-            }
-            anubis_compiler::package::proof::ensure_single_module_publishable(&layout.root, &entry)
-                .map_err(|e| anyhow!("{e}"))?;
-            // Typecheck package sources.
-            let items = combine_from_entry_opts(
-                &entry,
-                &ResolveOptions {
-                    write_lock: layout.manifest.dependencies.is_empty(),
-                    allow_unsigned: false,
-                    skip_proof: layout.manifest.dependencies.is_empty(),
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| anyhow!("{}", e))?;
-            typecheck(
-                anubis_compiler::frontend::AST {
-                    items,
-                    ..Default::default()
-                },
-                Mode::Safe,
-            )
-            .map_err(|e| anyhow!("{}", e))?;
-            let src = std::fs::read_to_string(&entry)?;
-            let out = layout.root.join("out");
-            let bundle = build_evidence_bundle(&src, "safe", None, vec![], &out, None, None)
-                .map_err(|e| anyhow!("{}", e))?;
-            // Faithful package summaries (name/version/module merkle) before signing.
-            let sum = anubis_compiler::package::summary::extract_from_package(&layout.root)
-                .map_err(|e| anyhow!("{}", e))?;
-            anubis_compiler::package::summary::write_to_evidence_dir(&bundle.dir, &sum)
-                .map_err(|e| anyhow!("{}", e))?;
-            anubis_compiler::evidence::refresh_manifest_hashes(&bundle.dir)
-                .map_err(|e| anyhow!("{}", e))?;
-            let sk = std::fs::read_to_string(&key)?.trim().to_string();
-            let pk = sign_pca(&bundle.dir, &sk).map_err(|e| anyhow!("{}", e))?;
-            // Seal evidence/ into package root.
-            let sealed = layout.root.join("evidence");
-            let _ = std::fs::remove_dir_all(&sealed);
-            copy_dir_recursive(&bundle.dir, &sealed)?;
-            let dest = registry::publish_to_registry(
-                &registry::default_registry_root(),
-                &name,
-                &version,
-                &layout.root,
-            )
-            .map_err(|e| anyhow!("{}", e))?;
+            let (name, version, dest, pk) =
+                publish_package_to_registry(&root, &key, &registry::default_registry_root())?;
             println!("published {}@{} → {}", name, version, dest.display());
             println!("signer {}", pk);
         }
     }
     Ok(())
+}
+
+/// The CLI publish path with an explicit registry root so its actual seal→mount workflow
+/// can be exercised in an isolated test without changing the operator's registry.
+fn publish_package_to_registry(
+    root: &Path,
+    key: &Path,
+    registry_root: &Path,
+) -> Result<(String, String, PathBuf, String)> {
+    let entry = find_package_entry(root)?;
+    let layout = ProjectLayout::discover(&entry).map_err(|e| anyhow!("{}", e))?;
+    let name = layout.manifest.package.name.clone();
+    let version = layout.manifest.package.version.clone();
+    if name.is_empty() || version.is_empty() {
+        return Err(anyhow!(
+            "ANUBIS_DEP_UNRESOLVED: [package] name and version required to publish"
+        ));
+    }
+    anubis_compiler::package::proof::ensure_single_module_publishable(&layout.root, &entry)
+        .map_err(|e| anyhow!("{e}"))?;
+    let items = combine_from_entry_opts(
+        &entry,
+        &ResolveOptions {
+            write_lock: layout.manifest.dependencies.is_empty(),
+            allow_unsigned: false,
+            skip_proof: layout.manifest.dependencies.is_empty(),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| anyhow!("{}", e))?;
+    typecheck(
+        anubis_compiler::frontend::AST {
+            items,
+            ..Default::default()
+        },
+        Mode::Safe,
+    )
+    .map_err(|e| anyhow!("{}", e))?;
+    let src = std::fs::read_to_string(&entry)?;
+    let out = layout.root.join("out");
+    let bundle = build_evidence_bundle(
+        &src,
+        "safe",
+        None,
+        vec![],
+        &out,
+        Some(anubis_compiler::evidence::PACKAGE_PUBLISH_LANE),
+        None,
+    )
+    .map_err(|e| anyhow!("{}", e))?;
+    // The package identity is checked again against the mounted bytes on resolve.
+    let sum = anubis_compiler::package::summary::extract_from_package(&layout.root)
+        .map_err(|e| anyhow!("{}", e))?;
+    anubis_compiler::package::summary::write_to_evidence_dir(&bundle.dir, &sum)
+        .map_err(|e| anyhow!("{}", e))?;
+    anubis_compiler::evidence::refresh_manifest_hashes(&bundle.dir)
+        .map_err(|e| anyhow!("{}", e))?;
+    if verify_pca_scope(&bundle.dir).map_err(|e| anyhow!("{}", e))?
+        != Some(PcaScope::PackagePublishV1)
+    {
+        return Err(anyhow!(
+            "ANUBIS_DEP_PROOF_UNVERIFIED: package evidence did not verify at package-publish scope"
+        ));
+    }
+    // PCA validity can establish an honest FAIL as well as PASS. A publisher must not sign and
+    // distribute a failed package that the verified resolver is certain to refuse. Require the
+    // same accepted Safe claim now, before touching the signing key or registry.
+    let claim: ClaimBlock = serde_json::from_slice(&std::fs::read(bundle.dir.join("pca.json"))?)?;
+    if claim.verdict != "PASS"
+        || claim.mode != "safe"
+        || claim.tier != "checked"
+        || claim.rejection.is_some()
+        || !claim.parse_ok
+        || !claim.typecheck_ok
+        || !claim.solver_all_discharged
+        || !anubis_compiler::evidence::solver_execution_matches_obligations(&claim)
+        || claim.zk_present
+        || !validate_bundle(&bundle.dir).map_err(|e| anyhow!("{}", e))?
+    {
+        return Err(anyhow!(
+            "ANUBIS_DEP_PROOF_UNVERIFIED: package publish requires an accepted Safe PASS claim with all recorded obligations discharged"
+        ));
+    }
+    let sk = std::fs::read_to_string(key)?.trim().to_string();
+    let pk = sign_pca(&bundle.dir, &sk).map_err(|e| anyhow!("{}", e))?;
+    let sealed = layout.root.join("evidence");
+    if sealed.exists() {
+        return Err(anyhow!(
+            "ANUBIS_DEP_PROOF_UNVERIFIED: package evidence directory already exists"
+        ));
+    }
+    copy_dir_recursive(&bundle.dir, &sealed)?;
+    let dest = registry::publish_to_registry(registry_root, &name, &version, &layout.root)
+        .map_err(|e| anyhow!("{}", e))?;
+    Ok((name, version, dest, pk))
 }
 
 fn run_trust_cmd(action: TrustCmd) -> Result<()> {
@@ -2709,7 +2754,8 @@ fn cli_main() -> Result<()> {
 
                 // Also emit a simple .anubis_build.json summary for --bounty
                 let summary = serde_json::json!({
-                    "bounty_ready": bundle.manifest.verdict == "PASS",
+                    "bounty_ready": false,
+                    "pca_status": "source_only_build_not_checked",
                     "bundle": bundle.dir.to_string_lossy(),
                     "source_hash": bundle.manifest.source_hash,
                     "lane": bundle.manifest.lane,
@@ -3010,11 +3056,26 @@ fn cli_main() -> Result<()> {
                 // Every rejected check produces evidence automatically. It is an explicit FAIL
                 // bundle with no artifact/proof claim; successful checks emit only when requested.
                 let bundle_mode = mode_name(mode);
-                let lane = match mode {
-                    Mode::Safe => "safe-check",
-                    Mode::Research => "research-check",
-                    Mode::Exploit => "exploit-check",
-                };
+                // The stronger --verified typecheck is not represented by the default PCA
+                // re-derivation. Give it a distinct lane so a verifier never interprets it as
+                // an ordinary check rejection merely because both found the same failure.
+                let replayable_security_refusal = semantic_failure
+                    .as_ref()
+                    .is_some_and(anubis_compiler::evidence::replayable_security_refusal);
+                let analysis_limit_refusal = semantic_failure
+                    .as_ref()
+                    .is_some_and(anubis_compiler::evidence::source_analysis_limit_refusal);
+                let unresolved_mode_elevator = ast.as_ref().is_some_and(|parsed| {
+                    anubis_compiler::evidence::items_have_unresolved_mode_elevator(&parsed.items)
+                });
+                let lane = check_evidence_lane(
+                    mode,
+                    verified,
+                    parse_err.is_some(),
+                    semantic_failure.as_ref(),
+                    resolved_program,
+                    unresolved_mode_elevator,
+                );
                 // Imported programs are checked after resolution. Seal both the original entry and
                 // a deterministic source rendering of that resolved AST; evidence must analyze the
                 // same whole program as the command instead of re-checking an unresolved `import`
@@ -3125,8 +3186,41 @@ fn cli_main() -> Result<()> {
                     say!("check passed (no policy violations)");
                 }
 
+                let reproducible_policy = anubis_compiler::evidence::check_environment_is_default();
+                let pca_status = if parse_err.is_some() {
+                    "invalid_input_not_pca_verified"
+                } else if analysis_limit_refusal {
+                    "analysis_limit_undecided"
+                } else if resolved_program {
+                    "resolved_snapshot_unverified"
+                } else if unresolved_mode_elevator {
+                    "source_mode_unverified"
+                } else if verified {
+                    "unsupported_verified_check"
+                } else if semantic_failure.is_some() && !replayable_security_refusal {
+                    "typecheck_refusal_not_pca_verified"
+                } else if !reproducible_policy {
+                    "unsupported_nondefault_check_policy"
+                } else {
+                    match verify_pca_scope(&bundle.dir) {
+                        Ok(Some(PcaScope::SourceCheckV1)) => "verified_source_check_v1",
+                        Ok(Some(_)) => "source_only_not_check_verified",
+                        Ok(None) => "claim_invalid",
+                        Err(_) => "rederivation_unavailable",
+                    }
+                };
                 let summary = serde_json::json!({
-                    "bounty_ready": bundle.manifest.verdict == "PASS" && check_error.is_none(),
+                    // PCA cannot re-derive the stronger --verified typecheck yet. A successful
+                    // check still has a useful diagnostic, but its evidence is not ready for a
+                    // proof-required consumer until that option is represented and rechecked.
+                    // PCA checks source semantics, not engagement authorization or scope.
+                    // The legacy field remains false until a separate authorization verifier
+                    // can supply that claim, including for an unsigned Research check.
+                    "bounty_ready": false,
+                    "check_evidence_verified": pca_status == "verified_source_check_v1",
+                    "authorization_status": "not_verified_by_pca",
+                    "scope_status": "not_verified_by_pca",
+                    "pca_status": pca_status,
                     "bundle": bundle.dir.to_string_lossy(),
                     "source_hash": bundle.manifest.source_hash,
                     "verdict": bundle.manifest.verdict,
@@ -3311,47 +3405,39 @@ fn cli_main() -> Result<()> {
         }
         Commands::BountyReport { bundle, out } => {
             println!(
-                "anubis bounty-report {} --out {} (Gate 15 real)",
+                "anubis bounty-report {} --out {}",
                 bundle.display(),
                 out.display()
             );
-            std::fs::create_dir_all(&out)?;
-            let evidence_path = bundle.join("evidence.json");
-            let sec_info = if evidence_path.exists() {
-                if let Ok(text) = std::fs::read_to_string(&evidence_path) {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                        val.get("security").cloned()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
+            // PCA authenticates the source-analysis claim, not an engagement's authorization or
+            // scope. Never project free-form manifest.security into a REAL bounty verdict.
+            let Some(pca_scope) = verify_pca_scope(&bundle).map_err(|e| anyhow!("{}", e))? else {
+                return Err(anyhow!(
+                    "ANUBIS_BOUNTY_REPORT_UNVERIFIED: bundle PCA did not re-derive"
+                ));
             };
-            let auth_status = sec_info
-                .as_ref()
-                .and_then(|s| s.get("authorization"))
-                .map(|v| v.to_string())
-                .unwrap_or("missing".into());
-            let scope_status = sec_info
-                .as_ref()
-                .and_then(|s| s.get("scope"))
-                .map(|v| v.to_string())
-                .unwrap_or("missing".into());
+            std::fs::create_dir_all(&out)?;
+            let auth_status = "not_verified_by_pca";
+            let scope_status = "not_verified_by_pca";
+            let pca_scope_label = match pca_scope {
+                PcaScope::SourceCheckV1 => "source_check_v1",
+                PcaScope::PackagePublishV1 => "package_publish_v1_pending_identity",
+                PcaScope::SourceOnly => "source_only",
+                PcaScope::LegacySourceOnly => "legacy_source_only",
+            };
             let report_md = format!(
-                "# Bug Bounty Report (real)\n\nBundle: {}\n\n**Security:** {:?}\n\n**authorization_status:** {}\n**scope_status:** {}\n\nReproduction: see evidence bundle and source.\nNon-destructive: see attrs.\nEvidence manifest hash and tamper instructions in bundle.\n",
-                bundle.display(), sec_info, auth_status, scope_status
+                "# Bundle Evidence Report\n\nBundle: {}\n\nPCA source analysis: re-derived ({pca_scope_label}).\nAuthorization and engagement scope: not verified by PCA.\nsource-tree.json is hash-bound but not independently PCA re-derived.\n\n**authorization_status:** {}\n**scope_status:** {}\n\nThe bundle and source retain the recorded checks; this report does not approve an engagement.\n",
+                bundle.display(), auth_status, scope_status
             );
             std::fs::write(out.join("bounty-report.md"), report_md)?;
             let report_json = serde_json::json!({
                 "schema": "1.0",
-                "verdict": "REAL",
-                "security": sec_info,
+                "verdict": "SCOPE_UNVERIFIED",
+                "pca_status": "rederived",
+                "pca_scope": pca_scope_label,
                 "authorization_status": auth_status,
                 "scope_status": scope_status,
-                "note": "real extraction from bundle; no simulated"
+                "note": "source-analysis PCA does not establish engagement authorization or scope"
             });
             std::fs::write(
                 out.join("bounty-report.json"),
@@ -3362,7 +3448,10 @@ fn cli_main() -> Result<()> {
                 out.join("evidence_summary.json"),
                 serde_json::json!({"bundle": bundle.display().to_string()}).to_string(),
             )?;
-            println!("Wrote real bounty report files to {}", out.display());
+            println!(
+                "Wrote scope-unverified bundle report files to {}",
+                out.display()
+            );
             Ok(())
         }
         Commands::EngageInit {
@@ -6068,7 +6157,8 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             }
             // PCA verification: hash/tamper validation PLUS re-deriving the claim block from the
             // bundle's own source and confirming it matches the recorded pca.json (fail-closed).
-            let mut ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
+            let pca_scope = verify_pca_scope(&bundle).map_err(|e| anyhow!("{}", e))?;
+            let mut ok = pca_scope.is_some();
             // An advertised ZK receipt is checked by the same gate used by
             // validate and evidence-verify. A binary without `prove` cannot
             // declare that claim valid.
@@ -6108,7 +6198,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 }
             }
             if ok {
-                print_verified_pca_scope(&bundle)?;
+                print_verified_pca_scope(&bundle, pca_scope.expect("verified scope"))?;
             }
             println!("bundle valid: {}", ok);
             if !ok {
@@ -6149,9 +6239,10 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     "ANUBIS_EVIDENCE_UNVERIFIED: validate requires a re-derived PASS artifact"
                 ));
             }
-            let claim_valid = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
-            if claim_valid {
-                print_verified_pca_scope(&bundle)?;
+            let pca_scope = verify_pca_scope(&bundle).map_err(|e| anyhow!("{}", e))?;
+            let claim_valid = pca_scope.is_some();
+            if let Some(scope) = pca_scope {
+                print_verified_pca_scope(&bundle, scope)?;
             }
             // `validate` has historically required a PASS artifact. Unlike it,
             // `verify` may validate an honest FAIL claim and report that verdict.
@@ -6192,26 +6283,43 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             Ok(())
         }
         Commands::Report { bundle } => {
+            // `bounty-report.md` is executable-authority-adjacent presentation. Refuse to display
+            // a rehashed, forged report as Anubis output before verifying its source-derived PCA.
+            let Some(scope) = verify_pca_scope(&bundle).map_err(|e| anyhow!("{}", e))? else {
+                return Err(anyhow!(
+                    "ANUBIS_REPORT_UNVERIFIED: bundle PCA did not re-derive"
+                ));
+            };
             let manifest_text = std::fs::read_to_string(bundle.join("evidence.json"))?;
             let manifest: EvidenceManifest = serde_json::from_str(&manifest_text)?;
             let report_path = bundle.join("bounty-report.md");
             // A bundle's text is the bundle author's: shown without its control characters.
             let shown = |t: &str| anubis_compiler::diagnostics::printable(t).into_owned();
-            if report_path.exists() {
+            let source_only_check =
+                manifest.lane.as_deref() == Some(format!("{}-check", manifest.mode).as_str());
+            if source_only_check && scope == PcaScope::SourceCheckV1 {
                 println!("{}", shown(&std::fs::read_to_string(report_path)?));
             } else {
-                println!("Anubis evidence report");
+                // Build/platform rows are producer-reported and are not source-rederived by PCA.
+                // Display the checked claim, without upgrading those extra rows to authority.
+                let claim: ClaimBlock =
+                    serde_json::from_slice(&std::fs::read(bundle.join("pca.json"))?)?;
+                println!("Anubis source-analysis PCA report");
                 println!("bundle: {}", shown(&bundle.display().to_string()));
-                println!("verdict: {}", shown(&manifest.verdict));
-                for check in manifest.checks {
-                    println!(
-                        "{}: {} - {}",
-                        shown(&check.name),
-                        shown(&check.status),
-                        shown(&check.detail)
-                    );
+                println!("claim verdict: {}", shown(&claim.verdict));
+                println!("mode: {}", shown(&claim.mode));
+                println!("parse_ok: {}", claim.parse_ok);
+                println!("typecheck_ok: {}", claim.typecheck_ok);
+                println!("solver_all_discharged: {}", claim.solver_all_discharged);
+                if scope == PcaScope::PackagePublishV1 {
+                    println!("Package summary identity is pending comparison with mounted package sources.");
+                } else if scope == PcaScope::LegacySourceOnly {
+                    println!("Legacy PCA: check sidecars are producer-reported and are not independently re-derived.");
+                } else {
+                    println!("Additional build/platform checks are producer-reported; PCA does not re-derive them.");
                 }
             }
+            println!("source-tree.json is hash-bound but is not independently PCA re-derived.");
             Ok(())
         }
     }
@@ -8408,12 +8516,17 @@ fn read_lane_observed(meta_path: &Path) -> Result<String> {
 /// Display the declared claim scope only after `verify_pca` accepted its re-derivation.
 /// The recorded verdict is distinct from the bundle-validity result. An unsigned,
 /// rehashed bundle does not authenticate when it was first produced.
-fn print_verified_pca_scope(bundle: &Path) -> Result<()> {
+fn print_verified_pca_scope(bundle: &Path, scope: PcaScope) -> Result<()> {
     let claim: ClaimBlock = serde_json::from_slice(&std::fs::read(bundle.join("pca.json"))?)?;
-    let version_scope = if claim.pca_version == 2 {
-        "compatibility count semantics; historical origin not established"
-    } else {
-        "current count semantics"
+    let version_scope = match scope {
+        PcaScope::SourceCheckV1 => "source check and check sidecars independently re-derived",
+        PcaScope::PackagePublishV1 => {
+            "source check re-derived; package summary identity pending mounted-package comparison"
+        }
+        PcaScope::SourceOnly => "source claim only; build/platform sidecars producer-reported",
+        PcaScope::LegacySourceOnly => {
+            "legacy source claim only; check sidecars and historical origin not established"
+        }
     };
     println!(
         "declared PCA version: {} ({version_scope})",
@@ -8423,7 +8536,16 @@ fn print_verified_pca_scope(bundle: &Path) -> Result<()> {
         "recorded verdict: {}",
         anubis_compiler::diagnostics::printable(&claim.verdict)
     );
-    println!("assurance: recorded claim re-derived; manifest hashes match the bundle");
+    if let Some(execution) = claim.solver_execution {
+        println!(
+            "solver execution: {}",
+            match execution {
+                SolverExecution::Ran => "ran (see exact obligation outcomes)",
+                SolverExecution::NotRun => "not_run (no solver proof or counterexample)",
+            }
+        );
+    }
+    println!("assurance: {version_scope}; manifest hashes match the bundle");
     Ok(())
 }
 
@@ -8628,37 +8750,261 @@ fn run_risc0_prove_child(
 /// Safe. Recursing through modules and impls closes the old first-function gap where a leading Safe
 /// helper could make command gates and evidence label a later Research function as Safe.
 pub(crate) fn program_mode(items: &[Item]) -> Option<Mode> {
-    fn rank(mode: Mode) -> u8 {
-        match mode {
-            Mode::Safe => 0,
-            Mode::Research => 1,
-            Mode::Exploit => 2,
-        }
-    }
+    anubis_compiler::frontend::program_mode(items)
+}
 
-    let mut aggregate = None;
-    for item in items {
-        let candidate = match item {
-            Item::Fn { mode, .. } => Some(*mode),
-            Item::Module { items, .. } => program_mode(items),
-            Item::Impl { methods, .. } | Item::Trait { methods, .. } => program_mode(methods),
-            Item::Import { .. } | Item::Struct { .. } | Item::Enum { .. } => None,
-        };
-        if let Some(candidate) = candidate {
-            if aggregate.is_none_or(|current| rank(candidate) > rank(current)) {
-                aggregate = Some(candidate);
-            }
-            if matches!(aggregate, Some(Mode::Exploit)) {
-                break;
-            }
-        }
+/// Choose the evidence lane from the same typed result as the command. A resource or IFC2 limit
+/// takes precedence over a security finding observed before the limit: the check is undecided,
+/// even when one earlier finding independently explains why this source was refused.
+fn check_evidence_lane(
+    mode: Mode,
+    verified: bool,
+    invalid_input: bool,
+    failure: Option<&TypecheckFailure>,
+    resolved_program: bool,
+    unresolved_mode_elevator: bool,
+) -> &'static str {
+    if invalid_input {
+        // Malformed source and failed imports do not establish a contract counterexample.
+        return "safe-invalid-input-check";
     }
-    aggregate
+    if failure.is_some_and(anubis_compiler::evidence::source_analysis_limit_refusal) {
+        return match mode {
+            Mode::Safe => "safe-analysis-limit-check",
+            Mode::Research => "research-analysis-limit-check",
+            Mode::Exploit => "exploit-analysis-limit-check",
+        };
+    }
+    if resolved_program {
+        // The sealed resolved snapshot is not yet independently shown to be the translation
+        // of the original entry and its imported dependencies.
+        return match mode {
+            Mode::Safe => "safe-resolved-snapshot-unverified-check",
+            Mode::Research => "research-resolved-snapshot-unverified-check",
+            Mode::Exploit => "exploit-resolved-snapshot-unverified-check",
+        };
+    }
+    if unresolved_mode_elevator {
+        return match mode {
+            Mode::Safe => "safe-source-mode-unverified-check",
+            Mode::Research => "research-source-mode-unverified-check",
+            Mode::Exploit => "exploit-source-mode-unverified-check",
+        };
+    }
+    if failure.is_some()
+        && !verified
+        && !failure.is_some_and(anubis_compiler::evidence::replayable_security_refusal)
+    {
+        return match mode {
+            Mode::Safe => "safe-typecheck-refusal-check",
+            Mode::Research => "research-typecheck-refusal-check",
+            Mode::Exploit => "exploit-typecheck-refusal-check",
+        };
+    }
+    match (mode, verified) {
+        (Mode::Safe, false) => "safe-check",
+        (Mode::Research, false) => "research-check",
+        (Mode::Exploit, false) => "exploit-check",
+        (Mode::Safe, true) => "safe-verified-check",
+        (Mode::Research, true) => "research-verified-check",
+        (Mode::Exploit, true) => "exploit-verified-check",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ifc2_limit_with_or_without_prior_security_finding_is_undecided() {
+        let finding = |code: &str| anubis_compiler::middle::SemanticDiagnostic {
+            code: Some(code.into()),
+            message: code.into(),
+            span: None,
+        };
+        for diagnostics in [
+            vec![finding("ANUBIS_IFC2_LIMIT")],
+            vec![
+                finding("ANUBIS_SECRET_EXFILTRATION"),
+                finding("ANUBIS_IFC2_LIMIT"),
+            ],
+        ] {
+            let failure = TypecheckFailure {
+                message: "analysis limit".into(),
+                diagnostics,
+                limit: None,
+            };
+            assert_eq!(
+                check_evidence_lane(Mode::Safe, false, false, Some(&failure), false, false),
+                "safe-analysis-limit-check"
+            );
+            assert!(!anubis_compiler::evidence::replayable_security_refusal(
+                &failure
+            ));
+        }
+    }
+
+    #[test]
+    fn resolved_program_cannot_get_plain_check_lane_from_a_snapshot_alone() {
+        assert_eq!(
+            check_evidence_lane(Mode::Safe, false, false, None, true, false),
+            "safe-resolved-snapshot-unverified-check"
+        );
+        assert_eq!(
+            check_evidence_lane(Mode::Safe, false, false, None, false, false),
+            "safe-check"
+        );
+    }
+
+    #[test]
+    fn package_publish_refuses_honest_failed_claim_before_signing_or_registry_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("failing-package");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(
+            package.join("Anubis.toml"),
+            "[package]\nname = \"published_failure\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("src/main.anb"),
+            "fn main() { let x = 1; assert(x == 2); }",
+        )
+        .unwrap();
+        let registry_root = temp.path().join("registry");
+        // Deliberately nonexistent: a failed source claim must be refused before key access.
+        let key = temp.path().join("not-a-key");
+        let error = publish_package_to_registry(&package, &key, &registry_root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("accepted Safe PASS claim"), "{error}");
+        assert!(!package.join("evidence").exists());
+        assert!(!registry_root.join("published_failure/1.0.0").exists());
+        let generated = std::fs::read_dir(package.join("out"))
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("evidence-"))
+            })
+            .unwrap();
+        assert_eq!(
+            verify_pca_scope(&generated).unwrap(),
+            Some(PcaScope::PackagePublishV1),
+            "an honest FAIL can be valid evidence but cannot be published as a dependency"
+        );
+        let claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(generated.join("pca.json")).unwrap()).unwrap();
+        assert_eq!(claim.verdict, "FAIL");
+        assert!(!generated.join("pca.sig").exists());
+    }
+
+    #[test]
+    fn package_publish_then_resolve_accepts_exact_signed_package_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("package");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(
+            package.join("Anubis.toml"),
+            "[package]\nname = \"published_one\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("src/main.anb"),
+            "fn main() { let x = 1; assert(x == 1); }",
+        )
+        .unwrap();
+        let (secret, public) = generate_keypair().unwrap();
+        let key = temp.path().join("publisher.key");
+        std::fs::write(&key, secret).unwrap();
+        let registry_root = temp.path().join("registry");
+        let (name, version, dest, signer) =
+            publish_package_to_registry(&package, &key, &registry_root).unwrap();
+        assert_eq!(name, "published_one");
+        assert_eq!(version, "1.0.0");
+        assert_eq!(signer, public);
+        assert!(dest.join("evidence/pca.sig").is_file());
+        assert_eq!(
+            verify_pca_scope(&dest.join("evidence")).unwrap(),
+            Some(PcaScope::PackagePublishV1)
+        );
+
+        let trust_path = temp.path().join("trust/signers.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&public, "test publisher");
+        trust.save(&trust_path).unwrap();
+        let consumer = temp.path().join("consumer");
+        std::fs::create_dir_all(consumer.join("src")).unwrap();
+        std::fs::write(
+            consumer.join("Anubis.toml"),
+            "[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n\n[dependencies]\npublished_one = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let entry = consumer.join("src/main.anb");
+        std::fs::write(&entry, "fn main() { let x = 1; }").unwrap();
+        let layout = ProjectLayout::discover(&entry).unwrap();
+        let options = ResolveOptions {
+            registry_root: Some(registry_root),
+            cache_root: Some(temp.path().join("cache")),
+            trust_path: Some(trust_path),
+            write_lock: true,
+            ..Default::default()
+        };
+        let resolved = resolve_workspace(&layout, &options).unwrap();
+        assert!(resolved.deps.contains_key("published_one"));
+        let resolved_again = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                write_lock: false,
+                ..options
+            },
+        )
+        .unwrap();
+        assert!(resolved_again.deps.contains_key("published_one"));
+    }
+
+    #[test]
+    fn package_publish_accepts_a_checked_empty_obligation_inventory() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("empty-proof-package");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(
+            package.join("Anubis.toml"),
+            "[package]\nname = \"published_empty\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(package.join("src/main.anb"), "fn main() { let x = 1; }").unwrap();
+        let (secret, public) = generate_keypair().unwrap();
+        let key = temp.path().join("publisher.key");
+        std::fs::write(&key, secret).unwrap();
+        let registry_root = temp.path().join("registry");
+        let (_, _, dest, signer) =
+            publish_package_to_registry(&package, &key, &registry_root).unwrap();
+        assert_eq!(signer, public);
+        let evidence = dest.join("evidence");
+        let claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(evidence.join("pca.json")).unwrap()).unwrap();
+        assert_eq!(claim.verdict, "PASS");
+        assert_eq!(claim.solver_obligations, 0);
+        assert_eq!(claim.solver_execution, Some(SolverExecution::NotRun));
+        assert!(claim.solver_all_discharged);
+        assert_eq!(
+            verify_pca_scope(&evidence).unwrap(),
+            Some(PcaScope::PackagePublishV1)
+        );
+        let mut trust = TrustStore::default();
+        trust.add(&public, "test publisher");
+        let admitted = anubis_compiler::package::proof::verify_dep_evidence_for_package(
+            Some(&dest),
+            &evidence,
+            &trust,
+            &anubis_compiler::package::proof::ProofPolicy::default(),
+        );
+        assert_eq!(admitted.unwrap(), Some(public));
+    }
 
     #[test]
     fn evidence_program_files_refuses_changed_resolved_checker_input() {

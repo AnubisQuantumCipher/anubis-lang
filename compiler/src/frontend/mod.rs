@@ -309,6 +309,38 @@ pub enum Item {
     },
 }
 
+/// The most privileged mode present anywhere in a parsed program. Command admission and
+/// evidence re-derivation must use this same traversal so a nested Research/Exploit function
+/// cannot be relabeled as a Safe program in a sealed claim.
+pub fn program_mode(items: &[Item]) -> Option<Mode> {
+    fn rank(mode: Mode) -> u8 {
+        match mode {
+            Mode::Safe => 0,
+            Mode::Research => 1,
+            Mode::Exploit => 2,
+        }
+    }
+
+    let mut aggregate = None;
+    for item in items {
+        let candidate = match item {
+            Item::Fn { mode, .. } => Some(*mode),
+            Item::Module { items, .. } => program_mode(items),
+            Item::Impl { methods, .. } | Item::Trait { methods, .. } => program_mode(methods),
+            Item::Import { .. } | Item::Struct { .. } | Item::Enum { .. } => None,
+        };
+        if let Some(candidate) = candidate {
+            if aggregate.is_none_or(|current| rank(candidate) > rank(current)) {
+                aggregate = Some(candidate);
+            }
+            if matches!(aggregate, Some(Mode::Exploit)) {
+                break;
+            }
+        }
+    }
+    aggregate
+}
+
 /// Item visibility. `Private` (the default, no `pub`) is callable only within its own module;
 /// `Public` (`pub`) is exported and callable across a module boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

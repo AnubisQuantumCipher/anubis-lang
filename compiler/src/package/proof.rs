@@ -1,6 +1,11 @@
 //! Verify dependency evidence bundles and signer trust.
 
-use crate::evidence::{pca_signature_status, validate_bundle, verify_pca, ClaimBlock};
+#[cfg(test)]
+use crate::evidence::verify_pca;
+use crate::evidence::{
+    pca_signature_status, solver_execution_matches_obligations, validate_bundle, verify_pca_scope,
+    ClaimBlock, PcaScope,
+};
 use crate::package::trust::TrustStore;
 use std::io::Read;
 use std::path::Path;
@@ -56,14 +61,24 @@ pub fn verify_dep_evidence_for_package(
             evidence_dir.display()
         ));
     }
-    let ok = verify_pca(evidence_dir)
+    let scope = verify_pca_scope(evidence_dir)
         .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: pca verify failed: {e}"))?;
-    if !ok {
+    if scope.is_none() {
         return Err(
             "ANUBIS_DEP_PROOF_UNVERIFIED: evidence bundle failed hash/claim verification"
                 .to_string(),
         );
     }
+    if scope != Some(PcaScope::PackagePublishV1) {
+        return Err(
+            "ANUBIS_DEP_PROOF_UNVERIFIED: dependency requires a current package-publish claim; legacy, build-only, and ordinary check bundles cannot bind package identity"
+                .to_string(),
+        );
+    }
+    let root = package_root.ok_or_else(|| {
+        "ANUBIS_DEP_PROOF_UNVERIFIED: package root required to verify published summary identity"
+            .to_string()
+    })?;
     // PCA verification also accepts an honestly re-derived disproof. A dependency
     // proof gate needs an accepted artifact and a PASS claim, not merely valid
     // evidence that the dependency failed a contract.
@@ -72,7 +87,11 @@ pub fn verify_dep_evidence_for_package(
     let claim: ClaimBlock =
         serde_json::from_slice(&read_package_source(&evidence_dir.join("pca.json"))?)
             .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: PCA parse failed: {e}"))?;
-    if !accepted || claim.verdict != "PASS" || claim.mode != "safe" {
+    if !accepted
+        || claim.verdict != "PASS"
+        || claim.mode != "safe"
+        || !solver_execution_matches_obligations(&claim)
+    {
         return Err(
             "ANUBIS_DEP_PROOF_UNVERIFIED: dependency evidence requires a Safe PASS claim"
                 .to_string(),
@@ -88,18 +107,19 @@ pub fn verify_dep_evidence_for_package(
     // modes of every source module before a Safe consumer may mount it; a signed
     // "safe" label cannot turn an @research function into Safe code.
     ensure_safe_source(&read_package_source(&evidence_dir.join("source.anubis"))?)?;
-    if let Some(root) = package_root {
-        bind_evidence_to_package_sources(root, evidence_dir)?;
-        ensure_safe_package_modules(root)?;
-        // Sealed summaries must re-derive from the package the consumer mounts.
-        // (skip only when evidence lacks summaries.json for pre-summary fixtures —
-        // resolve_deps enforces summaries by default via summary::verify_against_package.)
-        if evidence_dir
-            .join(crate::package::summary::SUMMARIES_FILENAME)
-            .is_file()
-        {
-            crate::package::summary::verify_against_package(root, evidence_dir)?;
-        }
+    bind_evidence_to_package_sources(root, evidence_dir)?;
+    ensure_safe_package_modules(root)?;
+    let sealed_bytes =
+        read_package_source(&evidence_dir.join(crate::package::summary::SUMMARIES_FILENAME))?;
+    let sealed: crate::package::summary::PackageSummaries =
+        serde_json::from_slice(&sealed_bytes)
+            .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: summaries.json parse: {e}"))?;
+    let live = crate::package::summary::extract_from_package(root)?;
+    if sealed != live {
+        return Err(
+            "ANUBIS_DEP_PROOF_UNVERIFIED: published package summary differs from mounted package identity, source merkle, or functions"
+                .to_string(),
+        );
     }
     match pca_signature_status(evidence_dir)
         .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: signature status: {e}"))?
@@ -415,6 +435,120 @@ mod tests {
     use crate::package::merkle;
 
     #[test]
+    fn verified_dependency_requires_package_publish_scope_and_mounted_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let package = root.path().join("pkg");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(
+            package.join("Anubis.toml"),
+            "[package]\nname = \"scope_test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let source = "fn main() { let x = 1; }";
+        std::fs::write(package.join("src/main.anb"), source).unwrap();
+        let bundle = build_evidence_bundle(
+            source,
+            "safe",
+            None,
+            vec![],
+            &package.join("out"),
+            Some(crate::evidence::PACKAGE_PUBLISH_LANE),
+            None,
+        )
+        .unwrap();
+        let summary = crate::package::summary::extract_from_package(&package).unwrap();
+        crate::package::summary::write_to_evidence_dir(&bundle.dir, &summary).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        let policy = ProofPolicy {
+            allow_unsigned: true,
+            ..ProofPolicy::default()
+        };
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::PackagePublishV1)
+        );
+        assert!(verify_dep_evidence_for_package(
+            Some(&package),
+            &bundle.dir,
+            &TrustStore::default(),
+            &policy,
+        )
+        .is_ok());
+
+        let source_check = build_evidence_bundle(
+            source,
+            "safe",
+            None,
+            vec![],
+            &package.join("out"),
+            Some("safe-check"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_pca_scope(&source_check.dir).unwrap(),
+            Some(PcaScope::SourceCheckV1)
+        );
+        assert!(verify_dep_evidence_for_package(
+            Some(&package),
+            &source_check.dir,
+            &TrustStore::default(),
+            &policy,
+        )
+        .is_err());
+
+        let mut forged_summary = summary.clone();
+        forged_summary.version = "2.0.0".into();
+        crate::package::summary::write_to_evidence_dir(&bundle.dir, &forged_summary).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::PackagePublishV1),
+            "package metadata is explicitly pending mounted-package verification"
+        );
+        assert!(verify_dep_evidence_for_package(
+            Some(&package),
+            &bundle.dir,
+            &TrustStore::default(),
+            &policy,
+        )
+        .is_err());
+        crate::package::summary::write_to_evidence_dir(&bundle.dir, &summary).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(verify_dep_evidence_for_package(
+            Some(&package),
+            &bundle.dir,
+            &TrustStore::default(),
+            &policy,
+        )
+        .is_ok());
+
+        // Previously a source-only PCA could enter this proof-required dependency gate.
+        // Preserve an actual version-specific v3 source result for migration, while withholding
+        // verified dependency admission. Rewriting only a v4 version number is not a v3 fixture.
+        let path = bundle.dir.join("pca.json");
+        let legacy =
+            crate::evidence::derive_version_three_claim_for_test(&bundle.dir, source, "safe");
+        assert_eq!(legacy.pca_version, 3);
+        assert!(legacy.claim_kind.is_none());
+        assert!(legacy.evidence_lane.is_none());
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert_eq!(
+            verify_pca_scope(&bundle.dir).unwrap(),
+            Some(PcaScope::LegacySourceOnly)
+        );
+        let error = verify_dep_evidence_for_package(
+            Some(&package),
+            &bundle.dir,
+            &TrustStore::default(),
+            &policy,
+        )
+        .unwrap_err();
+        assert!(error.contains("current package-publish"), "{error}");
+    }
+
+    #[test]
     fn checked_disproof_never_authorizes_a_dependency() {
         let root = tempfile::tempdir().unwrap();
         let bundle = build_evidence_bundle(
@@ -463,7 +597,9 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(verify_pca(&bundle.dir).unwrap());
+        // A Research label over a Safe source is now refused by the source-derived PCA
+        // itself. The hash-only validator still confirms these are intact recorded bytes.
+        assert!(!verify_pca(&bundle.dir).unwrap());
         assert!(validate_bundle(&bundle.dir).unwrap());
         let policy = ProofPolicy {
             allow_unsigned: true,
@@ -475,7 +611,7 @@ mod tests {
         sign_pca(&bundle.dir, &secret_key).unwrap();
         let mut trust = TrustStore::default();
         trust.add(&public_key, "test signer");
-        assert!(verify_pca(&bundle.dir).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap());
         assert!(verify_dep_evidence(&bundle.dir, &trust, &ProofPolicy::default()).is_err());
     }
 
@@ -492,7 +628,9 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(verify_pca(&bundle.dir).unwrap());
+        // The source's intrinsic Research mode wins over a forged Safe label even before
+        // package-specific policy checks. Neither a refreshed hash nor a signature fixes it.
+        assert!(!verify_pca(&bundle.dir).unwrap());
         assert!(validate_bundle(&bundle.dir).unwrap());
         let policy = ProofPolicy {
             allow_unsigned: true,
@@ -500,7 +638,7 @@ mod tests {
         };
         let error = verify_dep_evidence(&bundle.dir, &TrustStore::default(), &policy)
             .expect_err("an intrinsic Research function cannot be mounted as Safe");
-        assert!(error.contains("Research/Exploit"), "{error}");
+        assert!(error.contains("ANUBIS_DEP_PROOF_UNVERIFIED"), "{error}");
     }
 
     #[test]
