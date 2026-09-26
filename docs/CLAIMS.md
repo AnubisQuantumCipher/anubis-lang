@@ -15,7 +15,25 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — evidence and package source boundaries remain open.**
+**UPDATE 2026-09-26 — scoped arm-binder repair and source-graph primitive.**
+At local commit `70b200c7197f1cee4eb0ceb6429da7b70ed649c5`, the
+[source-bound local receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
+records a checked disproof of the formerly silent sibling-binder precondition,
+acceptance of selected satisfied match/if-let and dead-guard controls, and
+preservation of selected reachable violated controls. Its verdict is
+`INCOMPLETE` because a valid constructed-enum payload mismatch in a dead arm
+is still refused as UNDECIDED. The caller-supplied
+[source-graph primitive](mission/VERIFIED_SOURCE_GRAPH_DESIGN_2026-09-26.md)
+binds origin, path, bytes and supplied import edges, but it has no admission or
+evidence authority until a bounded reader and resolver/checker correspondence
+are connected. Verified transitive package admission remains a required valid
+workload that currently refuses. A freshly produced honest FAIL check bundle
+also fails `verify_pca`; candidate verifier patches are under review and are
+not integrated. The full matrix runner remains `INCOMPLETE`, and the stopped
+unfiltered compiler-library attempt is not a gate witness. No final workspace,
+guest, platform, hosted or release result is asserted for this head.
+
+**Earlier update 2026-09-26 — evidence and package source boundaries remain open.**
 The local stack through `8869116a` now records solver replay per obligation,
 refuses undecided solver outcomes as proof, counts PCA v3's real obligations,
 checks sealed evidence and signatures, and re-derives a Merkle root from the

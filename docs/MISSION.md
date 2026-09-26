@@ -66,35 +66,34 @@ matrix is the reference for open defects.
 
 ## Current checkpoint and next executable step (2026-09-26)
 
-The isolated evidence stack through `8869116a` contains per-obligation solver
-replay reporting (`47be70a8`), typed undecided outcomes and PCA v3 counts
-(`49671337`), Safe package admission restrictions (`610fe01e`), evidence and
-signature checks (`fd206be0`), sealed source-leaf bytes (`4a64f3fa`), and a
-provisional matrix runner (`8869116a`). These are local code units, not a
-source-bound release or a hosted green result for this exact head. In
-particular, source leaves bind the bytes *supplied* to the bundle; they do not
-prove which modules and dependencies the resolver selected. The package gate
-therefore refuses multi-module and transitive dependencies, even though both
-are required valid workloads.
+The isolated local integration branch is at `70b200c7197f1cee4eb0ceb6429da7b70ed649c5`.
+It includes the evidence, package-refusal and provisional-matrix units listed
+in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
+builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
+caller-supplied [source-graph identity primitive](mission/VERIFIED_SOURCE_GRAPH_DESIGN_2026-09-26.md):
+the resolver, checker, lowering and verifier are not yet bound to a complete
+captured graph. The valid transitive package fixture therefore still fails at
+`ANUBIS_DEP_PROOF_UNVERIFIED`; this is an open precision/product gate.
 
-The lead's local full compiler-library run on this code reported **958 passed,
-1 failed**. The failure is
-`phase6_package_tests::phase6_transitive_path_deps_lock_and_mount`, which now
-receives `ANUBIS_DEP_PROOF_UNVERIFIED` because a transitive package manifest is
-outside the PCA source closure. This is an unmet required gate, not an accepted
-compatibility change. Focused tests and earlier hosted runs do not replace it.
-The new matrix runner reports `INCOMPLETE` by construction, so it has not
-established a current silent-accept total or accepted-program count. Mandatory
-guest, full workspace, platform, final diff review, and clean-source artifact
-gates remain separate.
+The [scoped arm-binder receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
+records a clean local release CLI for this head. Its violated sibling-binder
+call changes from an unexamined PASS to a checked DISPROVED result, while the
+selected satisfied match/if-let and dead-guard controls now pass. Its selected
+receipt remains `INCOMPLETE`: the valid dead enum-payload arm is still refused
+as UNDECIDED. The full matrix runner also remains `INCOMPLETE` by design. The
+local unfiltered compiler-library attempt was interrupted after a Research
+execution test was identified in this Linux guest; it is not a required suite
+witness. No disposable Tart, hosted, full workspace, independent rebuild or
+release gate is claimed for this head.
 
-Next, connect the package resolver's actual mounted source/dependency graph to
-the analyzed program and evidence claim, restore the valid transitive package
-test, and rerun the full compiler suite. Then build a source-bound CLI from the
-reviewed code head, validate the retained evidence fixtures, and grade the
-registered matrix with reviewed typed expectations. Continue the distinct
-[match/if-let contract mechanisms](evidence/ARM_BINDER_REGISTRATION_2026-09-26/README.md)
-and [min/max precision controls](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md)
-without treating a refusal of valid code as completion. The full dependency map
-remains [here](mission/REQUIREMENTS.md); draft PR #44 still requires a reviewable
-split and human review before protected-branch integration.
+Next, repair the enum-payload dead-arm precision case with matched reachable
+invalid controls and independent review. Separately, connect a bounded
+source-graph reader to resolver/checker input, then to versioned package and
+evidence closure claims before restoring transitive verified admission. The
+honest FAIL-bundle verifier also needs its producer/consumer consistency fixes;
+reviewed draft patches remain unintegrated. Continue the distinct
+[min/max precision controls](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md)
+without treating refusal of valid code as completion. The canonical defect
+status is [CLAIMS](CLAIMS.md), and the requirement dependencies remain in
+[the requirement map](mission/REQUIREMENTS.md). PR #44 still requires a
+reviewable split and human review before protected-branch integration.
