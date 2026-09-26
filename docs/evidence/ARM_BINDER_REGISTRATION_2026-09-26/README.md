@@ -11,6 +11,42 @@ The pinned baseline accepted the satisfied scrutinee, guard, and if-let calls,
 the short-circuited false guard, and the later guard after an unguarded wildcard
 arm. All are `ACCEPT` requirements for the repair, not permission to turn a
 violated call into a refusal by rejecting these valid forms too.
+
+The later control freeze at `5e4604d2ca9204787ac4a6d58ec98b0d1ea14094`
+adds valid `let x = 1` paths through pure calls in a match scrutinee, a match
+guard, and an `if let` scrutinee. The reached body calls `g(x)` with
+`requires(x > 0)`; a repair must retain the independent outer fact. The same
+immutable checker pin accepted each source with exit code 0 and a JSON `pass`
+summary. Exact source hashes and outcomes are in
+[outer-fact-controls.tsv](outer-fact-controls.tsv). The checker first failed
+to start because the shell lacked the user-bus environment; those
+infrastructure failures are retained only in ignored local logs and were
+re-run with the established user-bus variables. They were not classified as
+program results. The compiler-input diff from the pin's code commit to the
+control freeze was empty (`git diff --quiet` exit 0). These passing summaries
+do not by themselves establish which named contract obligations were emitted;
+obligation-level regression tests are required for the candidate.
+
+Independent review then found two more reachability and state controls. A
+literal first arm makes a later violated guard unreachable; an untaken first
+arm's assignment cannot invalidate an outer fact needed by a later guard.
+Their source freezes are `d7c110c174e141dba12f72e6a23de0ac78dbfcb2`
+and `7162d2fce8ebba276132cb0b46aa7543fbcd17aa`; the baseline pin accepted
+both with exit code 0 and JSON `pass`. Source hashes and outcomes are in
+[literal-reachability-control.tsv](literal-reachability-control.tsv) and
+[untaken-write-control.tsv](untaken-write-control.tsv). Compiler inputs still
+match the pin's recorded code commit (`git diff --quiet` exit 0 through the
+latter freeze). A candidate that rejects these valid paths has a precision
+regression even if it rejects the violated reachable guard.
+
+The `594c51621b96a55d8ba6d981749017f3d569ffe8` registration adds a
+guard assignment-RHS call and its valid twin. The same source-bound pin
+silently accepted `b = f(-1)` in an evaluated match guard, while its direct
+call twin was **disproved**; it also accepted `b = f(1)`. The result and source
+hash for each form are in [guard-assignment-results.tsv](guard-assignment-results.tsv).
+The source-input diff from the pin's code commit to this registration was
+empty (`git diff --quiet` exit 0). This is another missing call position, not
+evidence that a repair of the simpler direct guard expression is complete.
 Independent review found that the scrutinee and wildcard-guard cases have no
 sibling binder, so their family was corrected from the initially registered
 `M-ARM-BINDER` to `M-CALL-POSITION` in

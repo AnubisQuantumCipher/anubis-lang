@@ -66,11 +66,14 @@ matrix is the reference for open defects.
 
 See the last section of this file's history in git, and the next-dependency line below.
 
-**Next dependency (2026-09-26, after the `80176685` control freeze):**
+**Next dependency (2026-09-26, after the `594c5162` guard registration):**
 The [focused match/if-let registration](evidence/ARM_BINDER_REGISTRATION_2026-09-26/README.md)
 records distinct open binder-collision and omitted call-position mechanisms,
-with satisfied, short-circuited, and unreachable valid controls checked on the
-unchanged pinned compiler inputs. Implement the statement-position contract
+with satisfied, short-circuited, unreachable, and independent outer-fact valid
+controls checked on unchanged pinned compiler inputs. Independent review added
+literal-arm reachability and untaken-body-write controls. The guard assignment
+RHS leaks another `requires`; its direct twin disproves and valid twin accepts.
+Implement the statement-position contract
 transfer in its isolated worktree, then classify every registered verdict on a
 source-bound candidate and independently review the actual diff. Preserve the
 valid controls; a blanket unresolved result is not completion. The separate

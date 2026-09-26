@@ -1669,7 +1669,9 @@ and cannot verify later repairs.
     violated calls in a `match` scrutinee, a `match` guard, and an `if let`
     scrutinee while direct-call twins were disproved. Same-binder violated
     calls were undecided rather than disproved; valid same-binder, dead-path,
-    and guarded calls were also undecided. The [focused result rows and
+    and guarded calls were also undecided. A guard assignment RHS silently
+    accepts a violated `requires` even though its direct twin disproves; the
+    satisfied RHS is a required valid control. The [focused result rows and
     source hashes](evidence/ARM_BINDER_REGISTRATION_2026-09-26/README.md)
     record the exact scope. Neither `e99db1d1` nor a binder-only repair closes
     these expression-position omissions or the valid-case precision defects.
