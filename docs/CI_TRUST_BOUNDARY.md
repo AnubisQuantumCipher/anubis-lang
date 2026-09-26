@@ -6,7 +6,7 @@ require-Metal statement.
 ## Required hosted check
 
 `hosted-gate-witness` runs `scripts/audit_unified.sh --profile hosted` on a stock GitHub macOS
-runner. The runner derives the exact named 29-gate roster from the script. Every host-verifiable
+runner. The runner derives the exact named 31-gate roster from the script. Every host-verifiable
 gate, including the pinned Lean formal gate, must pass. `G9_poc_kit` is exactly `EXTERNAL`, and G14
 is limited to its non-executing host-isolation witness. The only successful hosted verdict is
 `HOSTED_PASS`.

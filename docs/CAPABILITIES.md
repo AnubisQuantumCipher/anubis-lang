@@ -16,8 +16,8 @@ This project bans a freestanding "REAL" stamp. A claim here is one of:
 | 🔴 **known-open** | a measured defect is currently published against this surface |
 | ⬜ **planned** | not built; stated so it is not mistaken for shipped |
 
-**A green gate is an empty published residual inventory, not a proof of total soundness.** Absence
-of a red row is not evidence of absence.
+**A green gate reports its configured checks.** Known false accepts remain in the published
+residual inventory; absence of a red row is not evidence of absence.
 
 ---
 
@@ -28,35 +28,36 @@ of a red row is not evidence of absence.
 | **Contract checking** | ✅ | `requires` / `ensures` / `assert` discharged by SMT, with real solver counterexamples; `--suggest-contracts` infers clauses for you |
 | **Verified build front door** | ✅ | Without the explicit `--no-verify` escape hatch, `anubis build` runs the same checker and refuses the currently modeled unproven-contract cases |
 | **Contract lanes** | 🟡 | integer (exact i64) · float **comparison** · string **equality/length** · bounded arrays · loop invariants · struct fields. Outside the modeled fragment the checker **defers** — see the scoped promise below |
-| **Native SMT solver** | ✅ | a zero-dependency, Lean-verified QF_BV solver; **default-authoritative** on the proven integer fragment (opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`); Z3 cross-checks when present |
+| **Native SMT solver** | ✅ | a Rust crate with no external crate dependencies, default-authoritative on its admitted integer fragment. Lean models cover selected operations; only SecurityLabel has a production-linked correspondence check. Z3 remains part of the full checker path |
 | **Mechanized components** | 🟡 | 199 Lean 4 theorems across 16 modules cover the stated encoding, bit-blast, non-interference, effect, and (Phase-8 Slice-1) production-linked SecurityLabel-abstraction lemmas; `run_formal_gate.sh` checks those files and rejects `sorry`/`admit`/`axiom`. **Not** a proof of total language soundness. Hosted CI installs the pinned Lean toolchain and requires this gate; see [CI reality](#ci-reality) below |
 
 ### What a green `check` actually promises
 
-The original promise sentence was found false in its second clause on 2026-07-28 and has been
-replaced. The current scoped sentence, quoted from [`docs/CLAIMS.md`](CLAIMS.md):
+The original promise sentence was found false in its second clause on 2026-07-28 and was
+replaced. The intended scope and known gaps are described in [`docs/CLAIMS.md`](CLAIMS.md):
 
-> `anubis check` PASS means: every obligation class listed as **proved** was discharged or the check
-> failed; every class listed as **deferred** produced a **visible residual** — a diagnostic or a
-> report field — not a silent accept; and the source bytes were **fully tokenized** (unknown
-> characters refuse). Deferred classes are **not** "proved absent."
+> The project intends `anubis check` to discharge modeled obligations, visibly report deferred
+> classes, and reject unknown source characters. Known false accepts in [`docs/CLAIMS.md`](CLAIMS.md)
+> show that this policy is not yet established for every accepted program.
 
-A deferral is an accept: the program compiles and runs. The three-tier policy (MUST REFUSE /
+A deferral may leave a program accepted and runnable. The three-tier policy (MUST REFUSE /
 deferred-but-named / runtime-enforced) and the list of what sits in each tier is in
 [`docs/CLAIMS.md`](CLAIMS.md). Do not quote the older, unscoped sentence.
 
-### It proves its own math
+### Native solver and proof boundary
 
-Most verifiers lean on **Z3** — a large, external, unverified C++ trusted base. Anubis is removing
-it from the loop.
+Anubis uses a native solver for an admitted integer fragment and Z3 for other obligations. The
+native solver reduces the external solver dependency for its fragment; it does not remove Z3 from
+the whole checker or prove that the shipped Rust implements every Lean model.
 
 The [`solver/`](../solver/) crate is a **from-scratch QF_BV decision procedure with zero external
 dependency** (`std` only, empty `[dependencies]`): an SMT-LIB2 parser, a Tseitin bit-blaster, and a
-CDCL SAT engine (watched literals, 1-UIP learning, VSIDS, Luby restarts). Every bit-blast the
-authoritative path relies on is **machine-checked in Lean 4 core** (no Mathlib) — the ripple-carry
+CDCL SAT engine (watched literals, 1-UIP learning, VSIDS, Luby restarts). The stated bit-blast
+models are **machine-checked in Lean 4 core** (no Mathlib) — the ripple-carry
 adder, all eight signed/unsigned comparators, equality, bitwise `& | ^ ~`, negation, both shifts,
 and the structural ops — the operation surface a real integer contract emits, **except division**,
-each proven equal to the runtime's `i64` semantics.
+each proved within the Lean model. Linking those models to the shipped Rust is a separate open
+obligation; SecurityLabel has a bounded production-linked correspondence check.
 
 ```bash
 anubis check <int-contract>.anb                                 # native-authoritative by default
@@ -65,9 +66,9 @@ bash scripts/run_native_authoritative_gate.sh                   # cert + ≡ Z3 
 bash scripts/run_formal_gate.sh                                 # Lean theorem check, no sorry/admit/axiom
 ```
 
-> **Honest boundary.** Unsat only after a **verified pure RUP certificate** (`solver/src/lrat.rs`),
-> Sat only after independent model replay. Z3 **cross-checks every native verdict when present**,
-> failing closed on disagreement. **Division / remainder** (`bvsdiv`/`bvsrem`/`bvudiv`/`bvurem`) stay
+> **Native solver boundary.** Its unsat path checks a **pure RUP certificate** (`solver/src/lrat.rs`),
+> and its sat path replays the model. Z3 cross-checks native verdicts when present; some
+> obligations are decided by Z3 without an independently checked certificate. **Division / remainder** (`bvsdiv`/`bvsrem`/`bvudiv`/`bvurem`) stay
 > z3-deferred — the only op class a real integer contract emits that the native lane declines.
 > Variable×variable multiply is **not** deferred: it is machine-checked (`mulVar_correct`,
 > `formal/Anubis/BitBlast.lean`) and admitted by the fragment gate (`MulVar` in `PROVEN_OP_TAGS`).
@@ -181,7 +182,7 @@ Deeper: [`docs/language/PACKAGES.md`](language/PACKAGES.md) ·
 | **Executable core** | ✅ | Turing-complete: loops, recursion, mutation, enums + `match`, `for x in xs` / `for i in a..b`, structs, maps, closures, `Option`/`Result`/`?`, **213 builtins** (inventory: [`docs/language/BUILTINS.md`](language/BUILTINS.md)) — native Apple-Silicon executables |
 | **Type system** | 🟡 | bidirectional inference, traits + coherence. **Generics are decided by a string heuristic** (`compiler/src/middle/ty.rs:258` treats any annotation ≤2 chars and all-uppercase, or containing `<`, as an erased generic) — two measured defects in opposite directions, currently open. Multi-file `import` resolution is in progress |
 | **Developer experience** | 🟡 | `fmt` (self-verifying), `test` (`// EXPECT: PASS\|FAIL`), `doc` (Contracts section), `repl`, `lsp` (contract hovers), tree-sitter grammar + VS Code extension — gate: `bash scripts/run_dx_gate.sh out/dx`. **Semantic diagnostics carry no source location**: a lexer error gives `file:line:col` with a caret, while a security-lane refusal is a bare string. Open |
-| **Self-hosting spine** | 🟡 | `selfhost/` implements a stage0→stage3 bootstrap plus Anubis-authored effect, type, and taint engines. The named differential gates report the corpus comparison; the post-registry VM fixpoint is currently **unsealed** and must not be represented as current proof |
+| **Self-hosting spine** | 🟡 | `selfhost/` implements a stage0→stage3 bootstrap plus Anubis-authored effect, type, and taint engines. An earlier bounded VM fixpoint has [recorded evidence](evidence/PHASE_3_VM_SEAL_2026-08-15.md); full current self-hosting and its trust chain remain open |
 
 Deeper: [`LANGUAGE.md`](../LANGUAGE.md) · [`docs/CLI.md`](CLI.md) ·
 [`docs/language/SELFHOST.md`](language/SELFHOST.md)
@@ -192,16 +193,16 @@ Deeper: [`LANGUAGE.md`](../LANGUAGE.md) · [`docs/CLI.md`](CLI.md) ·
 
 What the hosted CI workflow is configured to execute on this branch:
 
-- The canonical roster contains **29 named gates**. Hosted CI installs the pinned Lean toolchain,
+- The canonical roster contains **31 named gates**. Hosted CI installs the pinned Lean toolchain,
   runs the formal gate explicitly, then runs `scripts/audit_unified.sh --profile hosted`.
-- A successful hosted result requires **28 PASS plus exactly `G9_poc_kit=EXTERNAL`**. G14 is only
+- A successful hosted result requires **30 PASS plus exactly `G9_poc_kit=EXTERNAL`**. G14 is only
   its non-executing 5-check host-isolation witness. The verdict is `HOSTED_PASS`, never a full seal.
 - G9, the full 34-check G14 battery, and require-Metal parity are separately approved operator-run
   evidence outside public CI. No persistent self-hosted runner is authorized by this design.
 - This text describes workflow intent, not a current GitHub result. Re-derive the live status:
 
 ```bash
-gh run list --workflow anubis-ci --status completed --limit 1 \
+gh run list --workflow anubis-ci --branch main --status completed --limit 1 \
   --json conclusion,displayTitle,headBranch
 bash scripts/audit_unified.sh --profile hosted  # same bounded hosted contract, locally
 ```

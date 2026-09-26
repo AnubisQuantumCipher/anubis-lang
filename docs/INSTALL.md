@@ -1,12 +1,22 @@
 # Installing and Running Anubis (Local Release-Candidate)
 
+## Prerequisites
+
+The reference release target is Apple Silicon/macOS. Install Xcode Command Line Tools and Rust
+with `rustup`; the repository
+pins its toolchain in `rust-toolchain.toml`. Put Z3 on `PATH` for the reference solver behavior.
+The hosted workflow pins Z3 4.15.4 with an archive digest; use that workflow as the source
+for its exact version and platform package, then check `z3 --version`. Linux support is being
+developed in [draft PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44); it is
+not a supported release target yet.
+
 ## Build from source (recommended for this host)
 
 ```bash
 cd /path/to/anubis-lang
 cargo build --release -p anubis
 ./target/release/anubis --version
-./target/release/anubis doctor --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover
+./target/release/anubis doctor
 ```
 
 The binary is at `./target/release/anubis`. **Prefer that path** (or a symlink you control). On some
@@ -44,10 +54,10 @@ cargo run --release -p anubis -- --version
 ```bash
 # CLI flag (highest precedence)
 anubis prove foo.anb --backend risc0 --lane cpu \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover
+  --metal-reference /path/to/metal-hybrid-prover
 
 # Env
-ANUBIS_RISC0_METAL_REFERENCE=/Users/sicarii/Desktop/metal-hybrid-prover \
+ANUBIS_RISC0_METAL_REFERENCE=/path/to/metal-hybrid-prover \
   anubis doctor --require-risc0
 
 # Anubis.toml (see Anubis.toml.example)
@@ -59,7 +69,7 @@ Evidence bundles always record which source was used (`config_source`).
 
 ```bash
 bash scripts/build_release_candidate.sh \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --require-metal \
   --out out/release_candidate
 ```
