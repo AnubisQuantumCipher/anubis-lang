@@ -1,0 +1,3 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp15_closure_param_capture_elem.txt", x); return 0; }
+fn app(xs) { let f = xs[0]; let h = |s| f(s); h("a"); return 0; }
+fn main() { app([leak]); }

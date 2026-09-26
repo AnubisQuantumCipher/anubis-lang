@@ -1,0 +1,9 @@
+struct P { x: i64 }
+fn g(c: i64) -> i64 requires(c >= 0) requires(c <= 10) {
+    let p = P { x: 1 };
+    let i = 0;
+    while i < c { p.x = 0 - 1; i = i + 1; }
+    assert(p.x > 0);
+    return p.x;
+}
+fn main() { print(g(7)); }

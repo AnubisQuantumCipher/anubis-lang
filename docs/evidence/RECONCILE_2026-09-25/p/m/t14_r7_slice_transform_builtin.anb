@@ -1,0 +1,1 @@
+fn main() { let fs = slice([write_file], 0, 1); fs[0]("/home/sicarii/.cache/anubis-item21/reconcile/tmp/t14_r7_slice_transform_builtin.txt", "x"); }

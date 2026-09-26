@@ -1,0 +1,3 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp13_control_bare_param.txt", x); return 0; }
+fn app(f) { f("a"); return 0; }
+fn main() { app(leak); }

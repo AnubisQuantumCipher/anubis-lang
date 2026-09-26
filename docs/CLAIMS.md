@@ -1612,6 +1612,17 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-26 — reconciliation of the open items (`d052f817`).**
+    - Every open item here and in DEFECTS.md was re-measured on the head checker; 15 turned out already
+      fixed (their entries were stale: among them the nested secret-selected constants heading and item
+      15), 42 are open. The witnessed leaks and controls that had no matrix case are registered (49
+      cases; 19 are open leaks the current lanes miss), and the open non-flow items (an unmodelable
+      assert dropped silently, expression if-let contracts, the contract lane's global-name resolution,
+      reduce over unknown callbacks, a module struct overridden by a same-named one, evidence
+      labelling, solver trust) are listed with their probes. Evidence:
+      docs/evidence/RECONCILE_2026-09-25/. Matrix at d052f817: 2206 cases, 2027 PASS, 58 silent
+      accepts, 111 wrong-class, 10 INVALID.
+
     **UPDATE 2026-09-26 — whole-struct lane: review round 39, landing steps 2-4 (boundary `892df460`, fnret `9d46b7e5`, loose `a05b6100`).**
     - Round 39's remaining fix designs land with the cross-check's two corrections for unsound
       refinements (a reduce fold order; a declared place type the runtime does not check). Five

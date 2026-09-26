@@ -1,0 +1,4 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp4_method_formal_param.txt", x); return 0; }
+struct T { n: i64 }
+impl T { fn run(self, xs) { xs[0]("a"); return 0; } }
+fn main() { let t = T { n: 1 }; t.run([leak]); }

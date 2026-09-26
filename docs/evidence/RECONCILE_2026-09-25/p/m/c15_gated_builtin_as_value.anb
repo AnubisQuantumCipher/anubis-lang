@@ -1,0 +1,4 @@
+fn main() uses(shell) {
+    let f = shell;
+    print(1);
+}

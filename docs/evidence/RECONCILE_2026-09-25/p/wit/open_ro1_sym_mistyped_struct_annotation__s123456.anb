@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct P { k: i64, pub_n: i64 }
+fn g(y: P) {
+    return y.k;
+}
+fn main() {
+    let p = S { k: 123456, pub_n: 3 };
+    print(g(p));
+}

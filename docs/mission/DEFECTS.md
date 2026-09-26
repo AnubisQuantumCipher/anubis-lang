@@ -547,3 +547,45 @@ loose's place-receiver arm). Matrix at a05b6100 (pin `anubis-ord3x4l`): 2157 cas
 | OR-WHOLE-R39-RESIDUE | S4 | documented over-refusals of this stack: fnret's untyped-receiver residue (ov2_f, ov3_f, ov4_f, ov4_m, v10), loop-rewrapped closures (f9 loop_rewrap, pv1_f, pw13_m), loose's t09 (lost with the place arm), n5, u02, and the two twins fnret's receiver change refuses; the cross-check's nr_a1, nr_a3 | `rv39_fnret_acc_f8_*`, `rv39_fnret_acc_f9_*`, `rv39_loose_accept_*`, `rv39_loose_overrefusal_*`, `rv39_xc_nr_*` (wrong-class) | documented |
 | OR-ALIAS-METHOD-RETURN | S3 | precision regression of the alias unit (d61c33d8), found while landing fnret: the ordinary lane takes a function a method returns from every impl of that name (`mkt().pick()(p)` calls T::pick, which prints a constant) | `rv39_fnret_acc_tw_f5_call_receiver_kept` (wrong-class; ord3b accepts it) | **open** |
 | TY-UNENFORCED-R39 | S1 | a declared type the runtime does not check still lets a leak through: loose's claimed fix for a map under a struct annotation does not work (the runtime calls the map's closure under the method name), a one-`let` form of R39F-6, a variable of a place or index, a direct place receiver, a round-38 literal-field case | `open_rv39_loose_reject_r39_loose4_e2_map_under_annotation`, `open_rv39_xc_f6_onelet`, `open_rv39_xc_l9_var_of_place`, `open_rv39_xc_l10_var_of_index`, `open_rv39_xc_l3b_place_direct`, `open_rv39_loose_open_r38pl_dt_field_literal_field` | **open** |
+
+### Reconciliation of the open items (2026-09-25; registered by d052f817)
+
+Every open S1/S2 row here and every open "Known open issues" entry of CLAIMS.md was re-measured on
+the head checker of that day (e7b56507); the report, its table and its probe programs are in
+[docs/evidence/RECONCILE_2026-09-25/](../evidence/RECONCILE_2026-09-25/). Of 76 items: 42 open,
+15 already fixed, 3 not reproducible as described, 16 non-code. The fixed rows below were stale;
+their original rows are kept as they were written.
+
+| id (row) | state now | evidence (measured on e7b56507) |
+|---|---|---|
+| F-PARSE-1, F-PARSE-2 | **fixed** (stale rows) | `parse_*` and `limit_nesting_*` cases: located ANUBIS_PARSE_ERROR, no abort |
+| F-JSON-1 | **fixed** (stale row) | `--message-format json` reports verdict fail with a located parse error |
+| D9 (residual) | **fixed** 1b40f653 (stale row) | `d9_unknown_arg_type` PASS |
+| FV-OPEN-3 (residual) | **fixed** 2f0b2805 (stale row) | `open_whole2_B2` PASS |
+| TY-SHADOW-RETYPE | **fixed** 8ea94c78 (stale row) | `open_whole13_rv36x_sp2_*`, `open_whole13_rv36x_rs1_*` PASS |
+| IFC-ORDINARY-RETURN, IFC-JOIN-BREAK-SHADOW | **fixed** 9dc7be91, 1696925b (stale rows) | the rows' cases PASS (7/7 for the join-break shapes) |
+| IFC-ALIAS-PREFERENCE, IFC-ALIAS-RESOLUTION, IFC-SUMMARY-GAPS, IFC-HOF-NAMED | **fixed** (stale open rows; the later 1696925b section records it) | the rows' `open_ro1_*` cases PASS |
+| M-BUILTIN-HOF | **fixed** for apply/call/map over literals | `h_*_violated` refused, `h_*_satisfied` accepted; the residual is M-HOF-UNKNOWN |
+| CLAIMS: secret-selected constants (nested) | **fixed** (stale heading; the body already says closed) | probes ssc1-ssc3 refused (registered by d052f817) |
+| CLAIMS item 15 (research-lane gate immunity) | **fixed** (stale entry) | the gated-builtin predicate and its test exist |
+
+Registered by d052f817 (49 REJECT cases, family RECONCILE-2026-09-25): 24 witnessed leaks, 22
+check-only controls and container shapes, 3 with notes. 19 are silent accepts on the head checker
+(open_rc25_*): the M-SINK-ARGS shapes (a printing builtin in a field, list or map, called with a
+secret), M-JOIN-CLOSURE, IFC-LOOP-CARRIED-VALUEBLOCK, IFC-CALLBACK-RETURN (ordinary), and review
+leaks of 1696925b's summary cluster.
+
+Still open with a probe and no matrix case (not information flow; they need their own families):
+| id | sev | defect | probe (evidence dir) | state |
+|---|---|---|---|---|
+| OBS-ASSERT-UNMODELED | S1 | an `assert` the checker cannot model is dropped silently: check passes and only the runtime trap catches it (contradicts SPEC.md's normative text) | `p/m/pj1`, `pj7`, `pj8`, `pj9` | **open** |
+| M-IFLET-EXPR (expression if-let) | S1 | an `if let` used as an expression skips the contract check in its arm | `p/m/mi1`, `mi2`, `mi6` | **open** |
+| M-GLOBAL-SCOPE (contract lane) | S1 | the contract lane resolves a local named like a global function to the global | `p/m/gs2` | **open** |
+| M-HOF-UNKNOWN (reduce) | S1 | a contracted callback through `reduce` over unknown inputs is accepted | `p/m/mh3` | **open** |
+| F-RESOLVE-1 | S1 | a module's struct with a secret field is overridden by a same-named public struct in main, and the secret prints | `p/fres2/` | **open** |
+| TY-UNENFORCED (base) | S2 | a declared list type holding a string | `p/m/ty1` | **open** |
+| F-SPAN-1 | S3 | semantic JSON diagnostics carry no location | `p/m/fs1` | **open** |
+| A-EVID-1, A-EVID-2 | S2 | a bundle labels passing obligations "counterexample_replayed" and records the solver as z3 | the report's `pj1_evidence/` | **open** |
+| A-SOLVER-1 (= CLAIMS item 6) | S2 | an obligation trusted to z3 with no certificate passes | `p/m/as2` | **open** |
+| GEN-STRING-HEURISTIC | S2 | generics are a string heuristic: a long type-parameter name is wrongly refused, an Option annotation accepts a string | `p/m/gen1`, `gen2` | **open** |
+| R-IFEXPR-FOLD | S3 | a struct-literal field in an if-expression initializer is wrongly refused | `p/m/rif1` | **open** |

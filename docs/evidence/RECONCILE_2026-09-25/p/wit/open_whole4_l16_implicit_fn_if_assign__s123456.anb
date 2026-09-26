@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(s) { let n = 0; if len(str(s)) > 22 { n = 1; } return n; }
+fn main() {
+    let p = S { k: 123456, pub_n: 3 };
+    print(f(p));
+}

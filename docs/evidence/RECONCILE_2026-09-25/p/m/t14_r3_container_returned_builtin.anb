@@ -1,0 +1,2 @@
+fn mk() { return [write_file]; }
+fn main() { let fs = mk(); fs[0]("/home/sicarii/.cache/anubis-item21/reconcile/tmp/t14_r3_container_returned_builtin.txt", "x"); }

@@ -1,0 +1,7 @@
+struct P { x: i64 }
+fn g(c: i64) -> i64 requires(c >= 0) requires(c <= 10) ensures(result > 0) {
+    let p = P { x: 1 };
+    if c > 5 { p.x = 2; }
+    return p.x;
+}
+fn main() { print(g(7)); }
