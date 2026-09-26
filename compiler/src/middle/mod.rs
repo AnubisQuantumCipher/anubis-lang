@@ -23,6 +23,8 @@ mod ifc2;
 mod infer_params;
 pub mod loopctl;
 pub mod proptest;
+#[cfg(test)]
+mod replay_inventory;
 /// Security research HIR types (Phase 3 stubs — profiles, scoped targets, effect IR).
 pub mod research_profile;
 pub(crate) mod security_label;
