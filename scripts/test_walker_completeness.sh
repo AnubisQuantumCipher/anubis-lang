@@ -56,6 +56,24 @@ if hits_after != hits_before + 1:
     )
 print("walker_source_scrub_cache_isolation: PASS")
 
+# Fixed lexical outcomes from the pre-optimization scrubber: lifetimes survive, literals/comments
+# retain offsets, and malformed strings/comments keep their fail-closed diagnostic.
+for name, source, expected in (
+    ('raw-and-lifetimes', 'fn f<\'a>() { let a = r#"/*raw*/"#; let b = br##"a\nb"##; let c = \'c\'; let d = b\'q\'; let e = \'\\n\'; let f = "escaped\\"quote"; }', ('ok', "fn f<'a>() { let a =             ; let b =       \n    ; let c =    ; let d =     ; let e =     ; let f =                 ; }")),
+    ('nested-comments', 'fn f() { /* one /* nested */ still */ let x = 1; // rest\n x }', ('ok', 'fn f() {                              let x = 1;        \n x }')),
+    ('malformed-block', 'fn f() { /* one /* closed */ still', ('SystemExit', 'unterminated Rust block comment')),
+    ('malformed-raw', 'fn f() { let x = r##"bad"#;', ('SystemExit', 'unterminated Rust raw string')),
+    ('malformed-byte-raw', 'fn f() { let x = br##"bad"#;', ('SystemExit', 'unterminated Rust raw string')),
+    ('malformed-string', 'fn f() { let x = "bad\\"', ('SystemExit', 'unterminated Rust string')),
+ ):
+    try:
+        actual = ("ok", walker.scrub_rust(source))
+    except SystemExit as error:
+        actual = ("SystemExit", str(error))
+    if actual != expected:
+        raise SystemExit(f"walker_scrub_lexical_golden: FAIL {name} actual={actual!r}")
+print("walker_scrub_lexical_goldens: PASS")
+
 src = """pub enum Pattern {
     Binding(String),
     List(Vec<Pattern>),
@@ -740,10 +758,13 @@ with tempfile.TemporaryDirectory(prefix="anubis-walker-deferred-poison.") as tmp
 
     middle = root / "mod.rs"
     middle_source = (repo / "compiler/src/middle/mod.rs").read_text()
-    hof_anchor = "for &i in effects::higher_order_closure_args(callee)"
-    hof_at = middle_source.find(hof_anchor)
+    hof_anchor = "for &i in effects::higher_order_closure_args(hof)"
+    effect_body = walker.walker_body(middle_source, "analyze_expr_effect")
+    effect_start = middle_source.index(effect_body)
+    effect_end = effect_start + len(effect_body)
+    hof_at = middle_source.find(hof_anchor, effect_start, effect_end)
     consumer = "analyze_expr_effect(body, mode, &local, effects, ctx);"
-    consumer_at = middle_source.find(consumer, hof_at)
+    consumer_at = middle_source.find(consumer, hof_at, effect_end)
     if hof_at < 0 or consumer_at < 0:
         raise SystemExit("walker_analyze_hof_consumer_poison: FAIL source anchor missing")
     middle.write_text(
@@ -762,6 +783,133 @@ with tempfile.TemporaryDirectory(prefix="anubis-walker-deferred-poison.") as tmp
     ):
         raise SystemExit(f"walker_analyze_hof_consumer_poison: FAIL problems={problems!r}")
     print("walker_analyze_hof_consumer_poison: PASS")
+
+    # Poison each other deferred consumer separately. The gate must fail for that
+    # consumer, rather than borrowing a later call in analyze_expr_effect.
+    for requirement, owner, anchor, call in (
+        (
+            "direct_local_consumer",
+            "analyze_expr_effect",
+            "for lam in applied_closure_candidates(callee, scope)",
+            "analyze_closure_body_effect(body, mode, &local, effects, ctx);",
+        ),
+        (
+            "applied_param_consumer",
+            "analyze_expr_effect",
+            "let resolved = callback_closure_candidates(arg, scope, ctx);",
+            "analyze_expr_effect(body, mode, &local, effects, ctx);",
+        ),
+        (
+            "closure_body_helper",
+            "analyze_closure_body_effect",
+            "if let Some(_frame) = closure_frame()",
+            "analyze_expr_effect(body, mode, scope, effects, ctx);",
+        ),
+        (
+            "known_hof_consumer",
+            "analyze_expr_effect",
+            "for &i in effects::higher_order_closure_args(hof)",
+            "analyze_closure_body_effect(body, mode, &local, effects, ctx);",
+        ),
+        (
+            "applied_param_consumer",
+            "analyze_expr_effect",
+            "let resolved = callback_closure_candidates(arg, scope, ctx);",
+            "analyze_closure_body_effect(body, mode, &local, effects, ctx);",
+        ),
+        (
+            "unknown_call_fallback",
+            "check_calls_expr_nc",
+            "if !fns.contains(callee)",
+            """ctx.push_diag(SemanticDiagnostic {
+                    code: Some("ANUBIS_UNKNOWN_FUNCTION".into()),
+                    message: format!("call to unknown function `{}`", callee),
+                    span: None,
+                });""",
+        ),
+    ):
+        owner_body = walker.walker_body(middle_source, owner)
+        owner_at = middle_source.index(owner_body)
+        anchor_at = middle_source.find(anchor, owner_at, owner_at + len(owner_body))
+        call_at = middle_source.find(call, anchor_at, owner_at + len(owner_body))
+        if anchor_at < 0 or call_at < 0:
+            raise SystemExit(f"walker_analyze_{requirement}_poison: FAIL source anchor missing")
+        replacement = "let _ = callee;" if requirement == "unknown_call_fallback" else "let _ = body;"
+        middle.write_text(
+            middle_source[:call_at] + replacement + middle_source[call_at + len(call):]
+        )
+        walker._read_source.cache_clear()
+        walker.walker_body.cache_clear()
+        walker.variant_arms.cache_clear()
+        problems = walker.check("analyze_expr_effect", "expr")
+        missing = {
+            problem.split("requirement=", 1)[1].split()[0]
+            for problem in problems
+            if "WALKER_DEFERRED_CONTRACT_MISSING" in problem and "requirement=" in problem
+        }
+        if missing != {requirement}:
+            raise SystemExit(f"walker_analyze_{requirement}_poison: FAIL problems={problems!r}")
+        print(f"walker_analyze_{requirement}_poison: PASS call={call}")
+
+    # A call can still exist after its enclosing dispatch loop stops owning it. Keep the complete
+    # consumer body, but run it under an unrelated empty iterator: once with the original loop
+    # removed, once leaving an empty original loop immediately before the moved body. These are
+    # balanced source mutations; the latter defeats an anchor that crosses the owner's `}`.
+    # The path producer and consumer are siblings and each must retain its own loop witness.
+    clean_middle = walker.scrub_source(middle_source)
+    for requirement, marker, unrelated in (
+        (
+            "known_hof_consumer",
+            "for &i in effects::higher_order_closure_args(hof) {",
+            "for i in std::iter::empty::<usize>()",
+        ),
+        (
+            "applied_param_consumer",
+            "for (i, paths) in applied_paths {",
+            "for (i, paths) in std::iter::empty::<(usize, BTreeSet<String>)>()",
+        ),
+        (
+            "applied_param_producer",
+            "for t in &targets {\n                if let Some(applied) = ctx.fn_applies_param.get(t) {",
+            "for t in std::iter::empty::<&String>()",
+        ),
+    ):
+        starts = [
+            match.start()
+            for match in re.finditer(re.escape(marker), clean_middle)
+            if effect_start <= match.start() < effect_end
+        ]
+        if len(starts) != 1:
+            raise SystemExit(
+                f"walker_analyze_{requirement}_owner_poison: FAIL anchor count={len(starts)}"
+            )
+        start = starts[0]
+        opening = clean_middle.index("{", start)
+        closing = walker.matching_delimiter(clean_middle, opening)
+        if closing >= effect_end:
+            raise SystemExit(f"walker_analyze_{requirement}_owner_poison: FAIL wrong owner")
+        original_header = middle_source[start:opening]
+        inner = middle_source[opening + 1:closing]
+        for mutation in ("removed", "moved"):
+            empty_owner = original_header + "{}\n" if mutation == "moved" else ""
+            middle.write_text(
+                middle_source[:start] + empty_owner + unrelated + " {" + inner + "}"
+                + middle_source[closing + 1:]
+            )
+            walker._read_source.cache_clear()
+            walker.walker_body.cache_clear()
+            walker.variant_arms.cache_clear()
+            problems = walker.check("analyze_expr_effect", "expr")
+            missing = {
+                problem.split("requirement=", 1)[1].split()[0]
+                for problem in problems
+                if "WALKER_DEFERRED_CONTRACT_MISSING" in problem and "requirement=" in problem
+            }
+            if missing != {requirement} or len(problems) != 1:
+                raise SystemExit(
+                    f"walker_analyze_{requirement}_owner_{mutation}_poison: FAIL problems={problems!r}"
+                )
+            print(f"walker_analyze_{requirement}_owner_{mutation}_poison: PASS")
 
 walker.AST = ORIGINAL_AST
 walker.MID = ORIGINAL_MID

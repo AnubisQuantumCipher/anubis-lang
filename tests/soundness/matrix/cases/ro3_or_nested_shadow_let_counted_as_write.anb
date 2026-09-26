@@ -1,0 +1,25 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pr(x) {
+    print(x);
+    return 0;
+}
+fn zero(x) {
+    return 0;
+}
+fn h2(x) {
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let c = p.pub_n > 1;
+    let f = zero;
+    if c {
+        f = zero;
+        if c {
+            let f = pr;
+            let y = f(1);
+        }
+    }
+    let z = f(p.k);
+    print(z);
+}

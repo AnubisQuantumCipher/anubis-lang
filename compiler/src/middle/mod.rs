@@ -1095,6 +1095,27 @@ fn fn_may_into<'a>(
             fn_may_into(&args[0], scope, ctx, defs, seen, depth + 1, out);
             fn_may_resolved(e, scope, ctx, defs, seen, depth, out);
         }
+        // Any other builtin may hand back what it is given: an element (`first(fs)`, `values(m)`),
+        // an argument (`call(identity, f)`), or a function built from its arguments (`compose(f, g)`
+        // runs both). Neither resolver names these, so `let g = first(fs); g(k)` and
+        // `let c = compose(pr, identity); c(k)` checked no summary (ELEMENT-BUILTIN-EXTRACTED-FN,
+        // COMPOSE-VALUE-CALLED). Every function an argument may be or carry is a candidate; the
+        // value stays open.
+        Expr::Call { callee, args } if builtin_may_forward_fn(callee, scope, ctx) => {
+            for a in args {
+                fn_may_carried(a, scope, ctx, depth + 1, &mut out.names);
+            }
+            fn_may_resolved(e, scope, ctx, defs, seen, depth, out);
+        }
+        // An element or field of a value no variable roots (`values(m)[0]`, `reverse(fs)[0]`):
+        // the path resolvers read a binding's recorded paths and find none, so it may be any
+        // function the value carries.
+        Expr::FieldAccess { base, .. } | Expr::Index { base, .. }
+            if access_chain_root(e).is_none() =>
+        {
+            fn_may_carried(base, scope, ctx, depth + 1, &mut out.names);
+            fn_may_resolved(e, scope, ctx, defs, seen, depth, out);
+        }
         Expr::Call { .. }
         | Expr::CallExpr { .. }
         | Expr::FieldAccess { .. }
@@ -1187,6 +1208,12 @@ fn fn_may_of_name<'a>(
     if user_fn || is_sink(n) || is_egress_sink(n) {
         out.names.insert(n.to_string());
     }
+    // A higher-order builtin held as a value (`let m = apply; m(pr, k)`) is named too, so a call
+    // through the binding runs the builtin's callback checks (BUILTIN-HOF-VIA-LOCAL-ALIAS). No
+    // summary is keyed by a builtin name, so the other consumers of the set are unaffected.
+    if !user_fn && scope.get(n).is_none() && !effects::higher_order_closure_args(n).is_empty() {
+        out.names.insert(n.to_string());
+    }
     match scope.get(n) {
         Some(b) => {
             out.names.extend(b.fn_alias.iter().cloned());
@@ -1203,9 +1230,152 @@ fn fn_may_of_name<'a>(
                 out.open = true;
             }
         }
-        // A builtin value, or a name nothing resolves.
-        None if !user_fn && !defs.contains_key(n) => out.open = true,
+        // A builtin value, or a name nothing resolves. The defs are name-keyed and order-free, so a
+        // builtin's name bound somewhere in the value (`if c { abs } else { let abs = zero; abs }`)
+        // may still be read as the builtin in another branch: that read stays open.
+        None if !user_fn && (!defs.contains_key(n) || crate::backends::run::is_builtin_name(n)) => {
+            out.open = true
+        }
         None => {}
+    }
+}
+
+/// Whether a call of `callee` runs a builtin that may return a function its arguments are or carry
+/// (an element, an argument, a function composed from them). A user function or a local of that name
+/// runs instead in call position; a builtin that yields only a scalar or text is excluded.
+fn builtin_may_forward_fn(
+    callee: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> bool {
+    !ctx.fn_params.contains_key(callee)
+        && !scope.contains_key(callee)
+        && crate::backends::run::is_builtin_name(callee)
+        && !matches!(
+            callee,
+            "len"
+                | "count"
+                | "is_empty"
+                | "contains"
+                | "position"
+                | "any"
+                | "all"
+                | "sum"
+                | "product"
+                | "print"
+                | "println"
+                | "eprint"
+                | "eprintln"
+                | "to_string"
+                | "str"
+        )
+}
+
+/// Every named function `e` may be, or hold as an element (a list element, a field, a map value, a
+/// payload, at any depth), for [`FnMay`]: what an element builtin or an index into an unrooted value
+/// may hand back. A lower bound like the rest of the may-set (the caller keeps the value open), read
+/// in ONE pass over `e` bounded like the resolvers, so nested builtins cost linear time.
+fn fn_may_carried(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+    out: &mut BTreeSet<String>,
+) {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
+        return;
+    }
+    match e {
+        Expr::Var(n) => {
+            if ctx.fn_params.contains_key(n) || is_sink(n) || is_egress_sink(n) {
+                out.insert(n.clone());
+            }
+            match scope.get(n) {
+                Some(b) => {
+                    out.extend(b.fn_alias.iter().cloned());
+                    if let FnIdentitySet::Known(ns) = &b.fn_identities {
+                        out.extend(ns.iter().cloned());
+                    }
+                    out.extend(b.fn_may.names.iter().cloned());
+                    for ids in b.field_fn_identities.values() {
+                        if let FnIdentitySet::Known(ns) = ids {
+                            out.extend(ns.iter().cloned());
+                        }
+                    }
+                }
+                None if !effects::higher_order_closure_args(n).is_empty() => {
+                    out.insert(n.clone());
+                }
+                None => {}
+            }
+        }
+        Expr::ArrayLiteral { elements } => {
+            for x in elements {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for x in fields {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, x) in fields {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (_, x) in entries {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
+            fn_may_carried(base, scope, ctx, depth + 1, out)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            fn_may_carried(lhs, scope, ctx, depth + 1, out);
+            fn_may_carried(rhs, scope, ctx, depth + 1, out);
+        }
+        Expr::Call { callee, args } if builtin_may_forward_fn(callee, scope, ctx) => {
+            for a in args {
+                fn_may_carried(a, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::Call { .. } | Expr::CallExpr { .. } => {
+            out.extend(fn_alias_of_d(e, scope, ctx, depth + 1));
+            if let FnIdentitySet::Known(ns) = fn_identities_of_d(e, scope, ctx, depth + 1) {
+                out.extend(ns);
+            }
+            if let FnIdentitySet::Known(ns) =
+                fn_identities_carried_by_value_d(e, scope, ctx, depth + 1)
+            {
+                out.extend(ns);
+            }
+        }
+        Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } | Expr::Block { .. } => {
+            let mut tails = Vec::new();
+            expr_tail_values(e, &mut tails);
+            for t in &tails {
+                fn_may_carried(t, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            fn_may_carried(inner, scope, ctx, depth + 1, out)
+        }
+        Expr::Lambda { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Unary { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Try(_)
+        | Expr::Other(_) => {}
     }
 }
 
@@ -1246,45 +1416,96 @@ fn fn_may_part<'a>(
 
 /// Before the ordered walk of `stmt`: a function assigned to an outer binding anywhere nested in
 /// `stmt` (a branch, a loop body, a `match` arm, a value block) may be what the binding holds after
-/// it, and in a loop at the next iteration, so it joins the binding's [`FnMay`].
+/// it, and in a loop at the next iteration, so it joins the binding's [`FnMay`], and a closure
+/// assigned there joins its closure candidates ([`applied_closure_candidates`]). A function or closure
+/// written into a field, key or element of an outer binding (`b.g = v`, `xs[i] = v`, `push(xs, v)`)
+/// joins what that path may hold, as [`loop_carried_fn_values`] joins it for a loop.
 ///
 /// The joins after a branch or a loop keep only END states and skip a path that shadows the name
 /// (`merge_fn_alias_over`), a loop body is walked once from the pre-loop state, and a value block is
 /// walked in a discarded scope. So `let z = if c { f = h2; 1 } else { 2 }; f(k)`
 /// (FN-ASSIGNED-IN-VALUE-BLOCK-LOST), `loop { f = h2; if d { break; } f = zero; } f(k)`,
 /// `if c { f = h2; let f = zero; } f(k)` and `while c { f(k); f = h2; }` all lost `h2` (the
-/// function-identity siblings of IFC-JOIN-BREAK-SHADOW). Order-free and only ever adding names, so
-/// a function assigned and then overwritten inside ONE nested statement still counts (a documented
-/// over-refusal, the trade `nested_may_labels` makes). The statement's own top-level assignment is
-/// left to the ordered walk, which replaces the set.
+/// function-identity siblings of IFC-JOIN-BREAK-SHADOW); the closure forms (`if c { f = |x| print(x);
+/// }`, `while c { f(k); f = |x| print(x); }`, LAMBDA-WRITTEN-IN-BRANCH-LOST,
+/// LOOP-CARRIED-LAMBDA-AFTER-CALL) and the place forms (`let y = if c { b.g = pr; 1 } else { 2 }`,
+/// `if c { b.g = pr; let b = .. }`, PLACE-FN-WRITE-IN-VALUE-BLOCK-LOST / -BEFORE-SHADOW-LOST) lost
+/// the closure body or the written function the same way. Order-free and only ever adding, so a
+/// function assigned and then overwritten inside ONE nested statement still counts (a documented
+/// over-refusal, the trade `nested_may_labels` makes). Only an ASSIGNMENT writes the outer binding:
+/// a nested `let` or binder of the same name is another binding, read only where a value names it
+/// (OR-NESTED-SHADOW-LET-COUNTED-AS-WRITE). The statement's own top-level assignment is left to the
+/// ordered walk, which replaces the set.
 fn join_nested_fn_writes(
     stmt: &Stmt,
     scope: &mut BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) {
     let mut defs: BlockFnDefs<'_> = BTreeMap::new();
-    let mut assigned: BTreeSet<&str> = BTreeSet::new();
+    let mut assigned: BTreeMap<&str, Vec<&Expr>> = BTreeMap::new();
+    // (root, access path, value); the path is `None` for a `push` / `insert` slot or a target whose
+    // path does not flatten.
+    let mut place_writes: Vec<(String, Option<String>, &Expr)> = Vec::new();
     visit::each_stmt(std::slice::from_ref(stmt), &mut |s, in_lambda| {
         if in_lambda || std::ptr::eq(s, stmt) {
             return;
         }
         record_fn_def(s, &mut defs);
-        if let Stmt::Assign {
-            target: Expr::Var(n),
-            ..
-        } = s
-        {
-            assigned.insert(n.as_str());
+        match s {
+            Stmt::Assign {
+                target: Expr::Var(n),
+                value,
+            } => assigned.entry(n.as_str()).or_default().push(value),
+            Stmt::Assign { target, value } => match flatten_access_path(target) {
+                Some((root, path)) => place_writes.push((root, Some(path), value)),
+                None => {
+                    if let Some(root) = assign_target_root(target) {
+                        place_writes.push((root.to_string(), None, value));
+                    }
+                }
+            },
+            Stmt::ExprStmt(e) | Stmt::Let { init: e, .. } => {
+                if let Some((root, values)) = in_place_container_write(e) {
+                    for v in values {
+                        place_writes.push((root.clone(), None, v));
+                    }
+                }
+            }
+            // A research, exploit or hybrid block is emitted inline, not as a scope of its own, so
+            // a `let` directly in it may rebind the name for what follows: counted as a write.
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                for inner in body {
+                    if let Stmt::Let { name, init, .. } = inner {
+                        assigned.entry(name.as_str()).or_default().push(init);
+                    }
+                }
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for inner in [gpu, cpu, prove].into_iter().flatten().flatten() {
+                    if let Stmt::Let { name, init, .. } = inner {
+                        assigned.entry(name.as_str()).or_default().push(init);
+                    }
+                }
+            }
+            _ => {}
         }
     });
-    if assigned.is_empty() {
+    if assigned.is_empty() && place_writes.is_empty() {
         return;
     }
     visit::each_expr_in_stmts(std::slice::from_ref(stmt), &mut |x| {
         record_fn_binders(x, &mut defs)
     });
-    for n in assigned {
-        if !scope.contains_key(n) {
+    // Whether any value in `stmt` may be a closure at all; most assignment-heavy code holds none,
+    // and the candidate walk below follows every def of every name it reads.
+    let closures_possible = stmt_may_hold_closure(stmt, scope, ctx);
+    let (def_lams, def_reach) = if closures_possible {
+        def_closure_candidates(&defs, scope, ctx)
+    } else {
+        (Vec::new(), BTreeMap::new())
+    };
+    for (n, values) in &assigned {
+        if !scope.contains_key(*n) {
             continue;
         }
         let mut may = FnMay::closed();
@@ -1294,21 +1515,377 @@ fn join_nested_fn_writes(
         // checks read those, not the names (review of the ordinary-lane designs, C8).
         let mut tags = Vec::new();
         let mut ids = FnIdentitySet::empty();
-        for d in defs.get(n).into_iter().flatten().copied() {
-            if let BlockFnDef::Value(v) = d {
-                fn_may_into(v, scope, ctx, &defs, &mut seen, 0, &mut may);
-                tags.push(builtin_gate_tags_of(v, scope, ctx));
-                ids = ids.union(fn_identities_of(v, scope, ctx));
+        let mut lams: Vec<Box<Expr>> = Vec::new();
+        for v in values.iter().copied() {
+            fn_may_into(v, scope, ctx, &defs, &mut seen, 0, &mut may);
+            tags.push(builtin_gate_tags_of(v, scope, ctx));
+            ids = ids.union(fn_identities_of(v, scope, ctx));
+            if closures_possible {
+                lams.extend(value_closure_candidates(
+                    v, scope, ctx, &def_lams, &def_reach,
+                ));
             }
         }
-        if let Some(b) = scope.get_mut(n) {
+        if let Some(b) = scope.get_mut(*n) {
             b.fn_may.join(&may);
             b.builtin_gate_tags = BuiltinGateTags::union_concrete(
                 std::iter::once(b.builtin_gate_tags.clone()).chain(tags),
             );
             b.fn_identities = b.fn_identities.clone().union(ids);
+            for lam in lams {
+                add_closure_candidate(b, lam);
+            }
         }
     }
+    for (root, path, v) in place_writes {
+        if !scope.contains_key(&root) {
+            continue;
+        }
+        let mut may = FnMay::closed();
+        fn_may_into(v, scope, ctx, &defs, &mut BTreeSet::new(), 0, &mut may);
+        let mut names = may.names;
+        if let FnIdentitySet::Known(ns) = fn_identities_of(v, scope, ctx) {
+            names.extend(ns);
+        }
+        let tags = builtin_gate_tags_of(v, scope, ctx);
+        let mut lams: Vec<Box<Expr>> = Vec::new();
+        if closures_possible {
+            lams.extend(value_closure_candidates(
+                v, scope, ctx, &def_lams, &def_reach,
+            ));
+        }
+        let Some(b) = scope.get_mut(&root) else {
+            continue;
+        };
+        // Only a path with every segment concrete is the one slot written; any other write may
+        // have touched any slot, so it joins every recorded path and a slot of its own.
+        let exact = path.clone().filter(|p| !p.split('.').any(|seg| seg == "*"));
+        if !names.is_empty() {
+            let keys: Vec<String> = match &exact {
+                Some(p) => vec![p.clone()],
+                None => {
+                    let mut keys: Vec<String> = b.field_fn_identities.keys().cloned().collect();
+                    keys.push(
+                        path.clone()
+                            .unwrap_or_else(|| format!("_p{}", b.field_fn_identities.len())),
+                    );
+                    keys
+                }
+            };
+            for key in keys {
+                let slot = b
+                    .field_fn_identities
+                    .entry(key)
+                    .or_insert_with(FnIdentitySet::empty);
+                *slot = slot.clone().union(FnIdentitySet::Known(names.clone()));
+            }
+        }
+        if matches!(&tags, BuiltinGateTags::Known(found) if !found.is_empty()) {
+            let keys: Vec<String> = match &exact {
+                Some(p) => vec![p.clone()],
+                None => {
+                    let mut keys: Vec<String> = b.field_builtin_gate_tags.keys().cloned().collect();
+                    keys.push(path.clone().unwrap_or_else(|| {
+                        format!(
+                            "{SYNTHETIC_BUILTIN_GATE_TAG_SLOT_PREFIX}{}",
+                            b.field_builtin_gate_tags.len()
+                        )
+                    }));
+                    keys
+                }
+            };
+            for key in keys {
+                let cur = b
+                    .field_builtin_gate_tags
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(BuiltinGateTags::empty);
+                b.field_builtin_gate_tags
+                    .insert(key, BuiltinGateTags::union_concrete([cur, tags.clone()]));
+            }
+        }
+        for lam in lams {
+            add_field_closure_candidate(b, exact.as_deref(), lam);
+        }
+    }
+}
+
+/// Whether any value in `stmt` may be a closure: a lambda literal, a binding holding one (or a
+/// container holding one), a call that may return one (a function returning a lambda or forwarding a
+/// parameter, a local, a method). What [`value_closure_candidates`] can find is always one of these,
+/// so when there is none the candidate walk is skipped.
+fn stmt_may_hold_closure(
+    stmt: &Stmt,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> bool {
+    let holds = |n: &str| {
+        scope
+            .get(n)
+            .is_some_and(|b| b.closure_lambda.is_some() || !b.field_closures.is_empty())
+    };
+    let mut hit = false;
+    visit::each_expr_in_stmts(std::slice::from_ref(stmt), &mut |e| {
+        hit |= match e {
+            Expr::Lambda { .. } | Expr::CallExpr { .. } => true,
+            Expr::Var(n) => holds(n),
+            Expr::Call { callee, .. } => {
+                scope.contains_key(callee)
+                    || ctx.fn_returns_lambda.contains_key(callee)
+                    || ctx.fn_returns_param.contains_key(callee)
+            }
+            _ => false,
+        };
+    });
+    hit
+}
+
+/// The container and the stored values of an in-place `push(xs, v)` / `insert(xs, k, v)` (or the
+/// method forms), as [`apply_container_mutation_taint`] reads them.
+fn in_place_container_write(e: &Expr) -> Option<(String, &[Expr])> {
+    match e {
+        Expr::Call { callee, args }
+            if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+        {
+            Some((assign_target_root(&args[0])?.to_string(), &args[1..]))
+        }
+        Expr::CallExpr { callee, args } if !args.is_empty() => match callee.as_ref() {
+            Expr::FieldAccess { base, field, .. } if field == "push" || field == "insert" => {
+                Some((assign_target_root(base)?.to_string(), args.as_slice()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Every closure each name bound or assigned inside a statement may hold there (read through the
+/// statement's `defs`, as [`fn_may_of`] reads names): the closures its values' tails are (a lambda
+/// literal, a local holding closures, a call returning one, a closure stored at an access path), and
+/// those of every statement-bound name a tail reads, to a fixpoint. Each distinct closure is kept
+/// once (by its text) and each def is read once, so a long chain of assignments costs linear time.
+#[allow(clippy::vec_box)]
+fn def_closure_candidates(
+    defs: &BlockFnDefs<'_>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> (Vec<Box<Expr>>, BTreeMap<String, BTreeSet<usize>>) {
+    let mut lams: Vec<Box<Expr>> = Vec::new();
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    let mut reach: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let mut refs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (name, ds) in defs {
+        let mut own = BTreeSet::new();
+        for d in ds {
+            let BlockFnDef::Value(v) = d else {
+                continue;
+            };
+            let mut tails = Vec::new();
+            expr_tail_values(v, &mut tails);
+            for t in &tails {
+                if let Expr::Var(m) = t {
+                    if defs.contains_key(m) {
+                        refs.entry(name.clone()).or_default().insert(m.clone());
+                    }
+                }
+                for lam in callback_closure_candidates(t, scope, ctx) {
+                    let i = *index.entry(format!("{lam:?}")).or_insert_with(|| {
+                        lams.push(lam);
+                        lams.len() - 1
+                    });
+                    own.insert(i);
+                }
+            }
+        }
+        reach.insert(name.clone(), own);
+    }
+    loop {
+        let mut changed = false;
+        for (name, rs) in &refs {
+            let add: BTreeSet<usize> = rs
+                .iter()
+                .flat_map(|r| reach.get(r).into_iter().flatten().copied())
+                .collect();
+            let cur = reach.entry(name.clone()).or_default();
+            let before = cur.len();
+            cur.extend(add);
+            changed |= cur.len() != before;
+        }
+        if !changed {
+            break;
+        }
+    }
+    (lams, reach)
+}
+
+/// Every closure a value assigned inside a nested statement may be: the closures of its tails
+/// ([`callback_closure_candidates`]) and of every statement-bound name a tail reads
+/// ([`def_closure_candidates`]).
+#[allow(clippy::vec_box)]
+fn value_closure_candidates(
+    v: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    def_lams: &[Box<Expr>],
+    def_reach: &BTreeMap<String, BTreeSet<usize>>,
+) -> Vec<Box<Expr>> {
+    let mut out = Vec::new();
+    let mut from_defs = BTreeSet::new();
+    let mut tails = Vec::new();
+    expr_tail_values(v, &mut tails);
+    for t in &tails {
+        if let Expr::Var(m) = t {
+            if let Some(r) = def_reach.get(m) {
+                from_defs.extend(r.iter().copied());
+            }
+        }
+        out.extend(callback_closure_candidates(t, scope, ctx));
+    }
+    out.extend(from_defs.into_iter().map(|i| def_lams[i].clone()));
+    out
+}
+
+/// Every closure a callback or applied value `arg` may be: the lambda itself, what a local holds
+/// (its primary closure and every alternative, [`applied_closure_candidates`]), a closure stored at
+/// an access path (`fs[0]`, `b.g`), one a call returns (`mk()`), or any branch of a join.
+#[allow(clippy::vec_box)]
+fn callback_closure_candidates(
+    arg: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Vec<Box<Expr>> {
+    match arg {
+        Expr::Lambda { .. } => vec![Box::new(arg.clone())],
+        Expr::Var(g) => applied_closure_candidates(g, scope),
+        Expr::Index { .. } | Expr::FieldAccess { .. } => {
+            resolve_applied_container_lambda(arg, scope, ctx)
+                .into_iter()
+                .chain(weak_field_closures(arg, scope))
+                .filter(|l| matches!(l.as_ref(), Expr::Lambda { .. }))
+                .collect()
+        }
+        Expr::Call { .. } | Expr::CallExpr { .. } => resolve_closure_value(
+            arg,
+            scope,
+            &ctx.fn_returns_lambda,
+            &ctx.fn_returns_param,
+            &ctx.method_returns_lambda,
+            &ctx.method_returns_param,
+            0,
+        )
+        .into_iter()
+        .collect(),
+        Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } | Expr::Block { .. } => {
+            multi_candidate_closures(arg, scope)
+        }
+        Expr::Tainted { inner, .. } | Expr::Try(inner) => {
+            callback_closure_candidates(inner, scope, ctx)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The closures a WEAK write left in the container an access path reads, when the path's own slot
+/// holds one: a `push` (`_pN`), a write through a computed index (a `*` segment), a closure joined
+/// from a nested block over a slot that already held another ([`add_field_closure_candidate`]). The
+/// weak write may have been to this very slot, and the exact lookup
+/// ([`resolve_applied_container_lambda`]) returns the slot's own entry only, so
+/// `let xs = [|x| 0]; xs[i] = |x| print(x); xs[0](k)` and `if c { b.g = |x| print(x); }` over a
+/// `b.g` that held a lambda applied the old closure alone. A missing slot already falls back to
+/// every stored closure.
+#[allow(clippy::vec_box)]
+fn weak_field_closures(access: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Vec<Box<Expr>> {
+    let Some((root, path)) = flatten_access_path(access) else {
+        return Vec::new();
+    };
+    let Some(b) = scope.get(&root) else {
+        return Vec::new();
+    };
+    if path.is_empty() || !b.field_closures.contains_key(&path) {
+        return Vec::new();
+    }
+    let weak = |k: &str| {
+        k.split('.').any(|seg| seg == "*")
+            || k.strip_prefix("_p")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+    };
+    b.field_closures
+        .iter()
+        .filter(|(k, l)| **k != path && weak(k) && matches!(l.as_ref(), Expr::Lambda { .. }))
+        .map(|(_, l)| l.clone())
+        .collect()
+}
+
+/// Add `lam` to what binding `b` may be applied as: its primary closure when it has none, otherwise
+/// an alternative under [`ALT_CLOSURE_PREFIX`] (once per closure).
+fn add_closure_candidate(b: &mut ScopeBinding, lam: Box<Expr>) {
+    let Some(primary) = &b.closure_lambda else {
+        b.closure_lambda = Some(lam);
+        return;
+    };
+    let shown = format!("{lam:?}");
+    if format!("{primary:?}") == shown
+        || b.field_closures
+            .iter()
+            .any(|(k, l)| k.starts_with(ALT_CLOSURE_PREFIX) && format!("{l:?}") == shown)
+    {
+        return;
+    }
+    let mut n = b.field_closures.len();
+    while b
+        .field_closures
+        .contains_key(&format!("{ALT_CLOSURE_PREFIX}{n}"))
+    {
+        n += 1;
+    }
+    b.field_closures
+        .insert(format!("{ALT_CLOSURE_PREFIX}{n}"), lam);
+}
+
+/// Add `lam` to what binding `b` may hold at access path `path` (`None`: a slot no path names). A
+/// free path takes it. A path holding a NAMED function's eta-expansion (or its bare name) takes it too,
+/// once the functions that entry stood for are in the path's identity set, which the application
+/// sites read as well (`b.g(k)` re-enters the direct call of each). A path holding another closure
+/// keeps it, and `lam` goes to a synthetic `_p` slot, as a weak write does in the ordered walk.
+fn add_field_closure_candidate(b: &mut ScopeBinding, path: Option<&str>, lam: Box<Expr>) {
+    if let Some(path) = path {
+        let replaceable = match b.field_closures.get(path) {
+            None => true,
+            Some(old) => {
+                let named: Option<Vec<String>> = match old.as_ref() {
+                    Expr::Var(n) => Some(vec![n.clone()]),
+                    Expr::Lambda { params, body }
+                        if params.iter().all(|p| p.starts_with(ETA_PARAM_PREFIX)) =>
+                    {
+                        let mut callees = Vec::new();
+                        collect_called_names(body, &mut callees, 0);
+                        Some(callees)
+                    }
+                    _ => None,
+                };
+                match named {
+                    Some(names) => match b
+                        .field_fn_identities
+                        .entry(path.to_string())
+                        .or_insert_with(FnIdentitySet::empty)
+                    {
+                        FnIdentitySet::Known(have) => {
+                            have.extend(names);
+                            true
+                        }
+                        FnIdentitySet::Unknown => false,
+                    },
+                    None => false,
+                }
+            }
+        };
+        if replaceable {
+            b.field_closures.insert(path.to_string(), lam);
+            return;
+        }
+    }
+    let key = format!("_p{}", b.field_closures.len());
+    b.field_closures.insert(key, lam);
 }
 
 /// Every function a higher-order call may run when it applies the callback `arg`.
@@ -1380,6 +1957,25 @@ fn check_applied_callback(
         Expr::Var(n) => n.clone(),
         _ => "a callback".to_string(),
     };
+    check_applied_callback_targets(&targets, &tags, &shown, via, taint, secret, mode, ctx);
+}
+
+/// [`check_applied_callback`] over a resolved set: every function in `targets` and every builtin
+/// gate in `tags` the applied callback may be (`shown` names it in a diagnostic).
+#[allow(clippy::too_many_arguments)]
+fn check_applied_callback_targets(
+    targets: &BTreeSet<String>,
+    tags: &BuiltinGateTags,
+    shown: &str,
+    via: &str,
+    taint: Option<&str>,
+    secret: bool,
+    mode: Mode,
+    ctx: &mut SemanticContext,
+) {
+    if mode != Mode::Safe || (taint.is_none() && !secret) {
+        return;
+    }
     let summary_hit = |summary: &BTreeMap<String, BTreeSet<usize>>| {
         targets
             .iter()
@@ -1393,7 +1989,7 @@ fn check_applied_callback(
             .cloned()
             .or_else(|| {
                 tags.contains(&BuiltinGateTag::EgressSink)
-                    .then(|| shown.clone())
+                    .then(|| shown.to_string())
             });
         if let Some(sink) = egress {
             ctx.emit(
@@ -1423,7 +2019,7 @@ fn check_applied_callback(
             .cloned()
             .or_else(|| {
                 tags.contains(&BuiltinGateTag::IntegritySink)
-                    .then(|| shown.clone())
+                    .then(|| shown.to_string())
             });
         if let Some(sink) = sink {
             ctx.push_diag(SemanticDiagnostic {
@@ -1438,6 +2034,104 @@ fn check_applied_callback(
                 message: format!("safe mode tainted flow from `{src}` through `{via}` into `{f}`, which reaches a sink without declassify"),
                 span: None,
             });
+        }
+    }
+}
+
+/// Every closure an operand `a` may be or carry: [`callback_closure_candidates`] of the value itself,
+/// and every closure stored in it (a local's fields and elements, a literal's elements).
+#[allow(clippy::vec_box)]
+fn carried_closure_candidates(
+    a: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Vec<Box<Expr>> {
+    let mut out = callback_closure_candidates(a, scope, ctx);
+    let stored: Vec<Box<Expr>> = match a {
+        Expr::Var(root) => scope
+            .get(root)
+            .map(|b| {
+                b.field_closures
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with(ALT_CLOSURE_PREFIX))
+                    .map(|(_, l)| l.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Expr::ArrayLiteral { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::EnumConstruct { .. } => {
+            let mut m = BTreeMap::new();
+            collect_container_closures(a, "", scope, ctx, &mut m);
+            m.into_values().collect()
+        }
+        _ => Vec::new(),
+    };
+    out.extend(
+        stored
+            .into_iter()
+            .filter(|l| matches!(l.as_ref(), Expr::Lambda { .. })),
+    );
+    out
+}
+
+/// An operand `a` of a higher-order call whose callback may be a user function applying one of its
+/// formals: every function `a` may be or carry may be applied to the call's data (labelled `taint` /
+/// `secret`), so each is checked and charged as a callback of `via`, and each closure is descended with
+/// its parameters bound to those labels.
+#[allow(clippy::too_many_arguments)]
+fn check_forwarded_callbacks(
+    a: &Expr,
+    via: &str,
+    taint: Option<&str>,
+    secret: bool,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    let mut values: Vec<&Expr> = vec![a];
+    if let Expr::ArrayLiteral { elements } = a {
+        values.extend(elements.iter());
+    }
+    for v in values {
+        check_applied_callback(v, via, taint, secret, mode, scope, ctx);
+        charge_applied_callback_capabilities(v, mode, scope, effects, ctx);
+        let tags = builtin_gate_tags_of(v, scope, ctx);
+        charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+    }
+    let mut carried = BTreeSet::new();
+    fn_may_carried(a, scope, ctx, 0, &mut carried);
+    let carried_tags = builtin_gate_tags_carried_by_value_d(a, scope, ctx, 0);
+    check_applied_callback_targets(
+        &carried,
+        &carried_tags,
+        "a callback",
+        via,
+        taint,
+        secret,
+        mode,
+        ctx,
+    );
+    charge_applied_builtin_gate_tags(&carried_tags, mode, effects, ctx);
+    for name in &carried {
+        if let Some(caps) = ctx.fn_declared_effects.get(name).cloned() {
+            for raw in caps {
+                apply_inherited_capability(raw, mode, effects, ctx);
+            }
+        }
+    }
+    for lam in carried_closure_candidates(a, scope, ctx) {
+        if let Expr::Lambda { params, body } = lam.as_ref() {
+            let mut local = scope.clone();
+            for p in params {
+                local.insert(
+                    p.clone(),
+                    labelled_param_binding(p, taint.is_some(), taint.map(str::to_string), secret),
+                );
+            }
+            analyze_closure_body_effect(body, mode, &local, effects, ctx);
         }
     }
 }
@@ -3083,6 +3777,15 @@ fn collect_container_fn_identities_d(
                 | Expr::Match { .. }
         ) {
             collect_container_fn_identities_d(value, &key, scope, ctx, out, depth + 1);
+        } else if let Some(binding) = match value {
+            Expr::Var(name) => scope.get(name),
+            _ => None,
+        } {
+            // An element is in VALUE position, where a local shadows a function of its name at
+            // runtime (`backends/run.rs` `var_as_value`): `let h2 = pr; [h2]` stores `pr`, and
+            // `fn_identities_of_d` reads a name as the user function first (right for a CALL), so
+            // the element was checked against the pure `h2` (SHADOWED-LOCAL-IN-CONTAINER-AS-CALLBACK).
+            out.insert(key, binding.fn_identities.clone());
         } else {
             out.insert(key, fn_identities_of_d(value, scope, ctx, depth + 1));
         }
@@ -4447,6 +5150,26 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
     // safe in a way that re-running the whole surface registration (which also emits diagnostics)
     // would not be.
     rescan_applied_param_forwarders(&ast.items, &mut ctx);
+    // A formal that reaches a local, a container, a field or a loop-carried binding the body applies
+    // (or a value a user function applies) is applied too; each such formal can make a forwarder's
+    // formal applied, so the two closures alternate until nothing is added.
+    loop {
+        let size = |ctx: &SemanticContext| {
+            ctx.fn_applies_param.values().map(Vec::len).sum::<usize>()
+                + ctx
+                    .fn_applied_param_paths
+                    .values()
+                    .flat_map(|m| m.values())
+                    .map(BTreeSet::len)
+                    .sum::<usize>()
+        };
+        let before = size(&ctx);
+        compute_escaped_applied_params(&ast.items, &mut ctx);
+        compute_applies_param_fixpoint(&mut ctx);
+        if size(&ctx) == before {
+            break;
+        }
+    }
     // Trait coherence + missing-required-method, over the trait environment captured before
     // `resolve_traits` erased it. Analysis-only: emits (shadow-gated) diagnostics and reads no
     // desugaring output, so it cannot move the fixpoint.
@@ -11940,6 +12663,11 @@ fn analyze_stmts(
                         fclos.insert(format!("{ALT_CLOSURE_PREFIX}{n}"), lam);
                     }
                 }
+                // A closure a weak write left in the container may be the one read out
+                // ([`weak_field_closures`]): an alternative of the binding.
+                for (n, lam) in weak_field_closures(init, scope).into_iter().enumerate() {
+                    fclos.insert(format!("{ALT_CLOSURE_PREFIX}w{n}"), lam);
+                }
                 let fal = fn_alias_of(init, scope, ctx);
                 let fn_identities = fn_identities_of(init, scope, ctx);
                 let fn_may = fn_may_of(init, scope, ctx);
@@ -12428,6 +13156,7 @@ fn analyze_stmts(
                 )
                 .is_some();
                 let pattern_whole = whole::whole_value_source(init, scope, ctx);
+                let binder_closures = pattern_closures(scope, init, pattern, ctx);
                 seed_effect_pattern(
                     scope,
                     pattern,
@@ -12437,6 +13166,7 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
+                apply_pattern_closures(scope, binder_closures);
                 // Each binder holds what its position of the value holds (`let [q] = xs`, a pair slot,
                 // a record field `let T { a, b } = t`).
                 for (n, src) in whole::pattern_binders(pattern, &pattern_whole, ctx) {
@@ -12780,7 +13510,7 @@ fn analyze_stmts(
                         &ctx.place_types(),
                         ctx,
                     );
-                    propagate_pattern_closures(&mut arm_scope, scrutinee, pattern);
+                    propagate_pattern_closures(&mut arm_scope, scrutinee, pattern, ctx);
                     let scrut_whole = whole::whole_value_source(scrutinee, scope, ctx);
                     for (n, src) in whole::pattern_binders(pattern, &scrut_whole, ctx) {
                         if let (Some(b), Some(src)) = (arm_scope.get_mut(&n), src) {
@@ -12914,7 +13644,7 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
-                propagate_pattern_closures(&mut then_scope, scrutinee, pattern);
+                propagate_pattern_closures(&mut then_scope, scrutinee, pattern, ctx);
                 let scrut_whole = whole::whole_value_source(scrutinee, scope, ctx);
                 for (n, src) in whole::pattern_binders(pattern, &scrut_whole, ctx) {
                     if let (Some(b), Some(src)) = (then_scope.get_mut(&n), src) {
@@ -16451,8 +17181,29 @@ fn analyze_expr_effect(
             // The generic `args` walk above hit the `Expr::Lambda` catch-all (opaque), so this is the
             // only visit of the body — no double-emit. Guarded to fire ONLY when `callee` resolves to the
             // real builtin (not a local binding and not a user fn — which is analyzed on its own).
-            if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
-                for &i in effects::higher_order_closure_args(callee) {
+            //
+            // A local holding a higher-order builtin (`let m = apply; m(pr, k)`) applies its callback
+            // exactly as the builtin does: its may-set names the builtin ([`fn_may_of`]), and each such
+            // builtin gets the same descent (BUILTIN-HOF-VIA-LOCAL-ALIAS). A user function of the
+            // callee's name runs instead in call position, so it has none.
+            let hof_names: Vec<String> =
+                if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
+                    vec![callee.clone()]
+                } else if !user_fn {
+                    targets
+                        .iter()
+                        .filter(|t| {
+                            !ctx.all_fns.contains(t.as_str())
+                                && !effects::higher_order_closure_args(t).is_empty()
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            for hof in &hof_names {
+                let hof = hof.as_str();
+                for &i in effects::higher_order_closure_args(hof) {
                     if let Some(arg) = args.get(i) {
                         let tags = builtin_gate_tags_of(arg, scope, ctx);
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
@@ -16465,6 +17216,9 @@ fn analyze_expr_effect(
                     let mut elem_taint: Option<String> = None;
                     let mut elem_secret = false;
                     let mut elem_callable_ids = FnIdentitySet::empty();
+                    // What the element may be as a FUNCTION: `call(|g| g(k), pr)` binds `g` to `pr`
+                    // itself, `each([pr], |g| g(k))` to an element, so both what an operand may be
+                    // and what it carries count (HOF-LAMBDA-PARAM-BOUND-TO-FN-ARG).
                     for (j, a) in args.iter().enumerate() {
                         if j == i {
                             continue;
@@ -16497,16 +17251,30 @@ fn analyze_expr_effect(
                         }
                     }
                     // Task #47: the closure arg is either an INLINE lambda (`each([1], |x| ...)`, the #65
-                    // case) or a VAR bound to a lambda (`let g = |x| ...; each([1], g)`) — resolve both so a
-                    // var-bound closure's body is enforced too (it otherwise laundered its taint/effect).
-                    let resolved: Option<&Expr> = match args.get(i) {
-                        Some(l @ Expr::Lambda { .. }) => Some(l),
-                        Some(Expr::Var(g)) => {
-                            scope.get(g).and_then(|b| b.closure_lambda.as_deref())
+                    // case) or a value holding closures — a local (every closure it may hold, not only
+                    // the primary one), an element or field (`each(xs, fs[0])`), a call returning one
+                    // (`each(xs, mk())`) — resolve them all so the body is enforced wherever it came
+                    // from (CONTAINER-LAMBDA-AS-HOF-CALLBACK, HELPER-RETURNED-CLOSURE-INLINE).
+                    let inline = matches!(args.get(i), Some(Expr::Lambda { .. }));
+                    let resolved: Vec<Box<Expr>> = args
+                        .get(i)
+                        .map(|a| callback_closure_candidates(a, scope, ctx))
+                        .unwrap_or_default();
+                    let mut elem_fn_names: BTreeSet<String> = BTreeSet::new();
+                    let mut elem_closures: Vec<Box<Expr>> = Vec::new();
+                    if !resolved.is_empty() {
+                        for (j, a) in args.iter().enumerate() {
+                            if j != i {
+                                elem_fn_names.extend(fn_may_of(a, scope, ctx).names);
+                                fn_may_carried(a, scope, ctx, 0, &mut elem_fn_names);
+                                elem_closures.extend(carried_closure_candidates(a, scope, ctx));
+                            }
                         }
-                        _ => None,
-                    };
-                    if let Some(Expr::Lambda { params, body }) = resolved {
+                    }
+                    for lam in &resolved {
+                        let Expr::Lambda { params, body } = lam.as_ref() else {
+                            continue;
+                        };
                         let mut local = scope.clone();
                         for p in params {
                             let mut binding = labelled_param_binding(
@@ -16516,9 +17284,13 @@ fn analyze_expr_effect(
                                 elem_secret,
                             );
                             binding.fn_identities = elem_callable_ids.clone();
+                            binding.fn_may.names.extend(elem_fn_names.iter().cloned());
+                            for c in &elem_closures {
+                                add_closure_candidate(&mut binding, c.clone());
+                            }
                             local.insert(p.clone(), binding);
                         }
-                        if matches!(args.get(i), Some(Expr::Lambda { .. })) {
+                        if inline {
                             analyze_expr_effect(body, mode, &local, effects, ctx);
                         } else {
                             analyze_closure_body_effect(body, mode, &local, effects, ctx);
@@ -16538,13 +17310,38 @@ fn analyze_expr_effect(
                     if let Some(arg) = args.get(i) {
                         check_applied_callback(
                             arg,
-                            callee,
+                            hof,
                             elem_taint.as_deref(),
                             elem_secret,
                             mode,
                             scope,
                             ctx,
                         );
+                        // A callback that is itself a user function applying one of ITS formals
+                        // (`apply(app, [pr, k])`, `call(app, pr, k)` with `fn app(g, x) { g(x) }`)
+                        // applies a function the builtin hands it to the rest of what it is handed.
+                        // Its own summaries cannot say which, so every function an operand may be or
+                        // carry is checked as a callback applied to the operands' labels
+                        // (BUILTIN-HOF-APPLIES-USER-HOF).
+                        if applied_callback_targets(arg, scope, ctx)
+                            .iter()
+                            .any(|t| ctx.fn_applies_param.get(t).is_some_and(|v| !v.is_empty()))
+                        {
+                            for (j, a) in args.iter().enumerate() {
+                                if j != i {
+                                    check_forwarded_callbacks(
+                                        a,
+                                        hof,
+                                        elem_taint.as_deref(),
+                                        elem_secret,
+                                        mode,
+                                        scope,
+                                        effects,
+                                        ctx,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -16603,216 +17400,205 @@ fn analyze_expr_effect(
             // dynamic extent through the callee. Only param positions the callee applies-and-never-
             // shadows are enforced (`fn_applies_param`), so a non-applied/shadowed closure arg is never
             // spuriously charged (no false reject). Cloned out of `ctx` first to free the borrow.
-            if let Some(applied) = ctx.fn_applies_param.get(callee).cloned() {
-                let applied_paths = ctx.fn_applied_param_paths.get(callee).cloned();
-                for i in applied {
-                    if let Some(arg) = args.get(i) {
-                        let tags = applied_paths
-                            .as_ref()
-                            .and_then(|by_param| by_param.get(&i))
-                            .map(|paths| {
-                                BuiltinGateTags::union_concrete(paths.iter().map(|path| {
-                                    if path.is_empty() {
-                                        builtin_gate_tags_of(arg, scope, ctx)
-                                    } else if path == "*" {
-                                        builtin_gate_tags_carried_by_value_d(arg, scope, ctx, 0)
-                                    } else {
-                                        builtin_gate_tags_at_path(arg, path, scope, ctx, 0)
-                                    }
-                                }))
-                            })
-                            .unwrap_or_else(|| builtin_gate_tags_of(arg, scope, ctx));
-                        charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
-                        if let Some(paths) =
-                            applied_paths.as_ref().and_then(|by_param| by_param.get(&i))
-                        {
-                            if paths.iter().any(|path| !path.is_empty()) {
-                                let mut closures = BTreeMap::new();
-                                collect_container_closures(arg, "", scope, ctx, &mut closures);
-                                let selected = closures
-                                    .into_iter()
-                                    .filter(|(path, _)| paths.contains("*") || paths.contains(path))
-                                    .map(|(_, closure)| closure);
-                                for closure in selected {
-                                    if let Expr::Lambda { params, body } = closure.as_ref() {
-                                        let mut local = scope.clone();
-                                        for p in params {
-                                            local.insert(
-                                                p.clone(),
-                                                labelled_param_binding(p, false, None, false),
-                                            );
-                                        }
-                                        analyze_closure_body_effect(
-                                            body, mode, &local, effects, ctx,
-                                        );
-                                    }
-                                }
-                            }
-                            for path in paths {
-                                // The argument itself: every function it may be ([`FnMay`]), not
-                                // only a Known identity set, which one unresolvable branch erased.
-                                let names = if path.is_empty() {
-                                    fn_may_of(arg, scope, ctx).names
-                                } else {
-                                    let ids = if path == "*" {
-                                        fn_identities_carried_by_value(arg, scope, ctx)
-                                    } else {
-                                        fn_identities_at_contract_path(arg, path, scope, ctx, 0)
-                                    };
-                                    match ids {
-                                        FnIdentitySet::Known(names) => names,
-                                        FnIdentitySet::Unknown => BTreeSet::new(),
-                                    }
-                                };
-                                for name in names {
-                                    if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned()
-                                    {
-                                        for raw in caps {
-                                            apply_inherited_capability(raw, mode, effects, ctx);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // The parameter is applied AT THE FORMAL ITSELF — no path — so there is
-                            // no entry in `fn_applied_param_paths` and the whole charge above is
-                            // skipped.
-                            //
-                            // `fn app(f) { let g = f; g(...) }` recorded `applies = true` with an
-                            // empty path set, correctly: `g` IS the formal, not a field of it. The
-                            // consumer then found no paths and charged nothing, so the simplest
-                            // alias in the language — bind a callable formal to a local, apply the
-                            // local — passed `check` and wrote the file at runtime.
-                            //
-                            // Producer and consumer disagreeing on what "no path" MEANS: the
-                            // producer said "the formal itself", the consumer read "nothing to
-                            // charge". This is the same shape as every carrier defect in this file,
-                            // in the one place that decides the verdict.
-                            // Every function the argument may be ([`FnMay`]): `app(f, 1)` with
-                            // `let f = if c { w } else { if d { let t = w; t } else { h1 } }` had an
-                            // `Unknown` identity set and charged nothing.
-                            for name in fn_may_of(arg, scope, ctx).names {
-                                if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned() {
-                                    for raw in caps {
-                                        apply_inherited_capability(raw, mode, effects, ctx);
-                                    }
-                                }
+            // A call through a local holding a user HOF (`let a = app; a(pr, k)`) applies what every
+            // function it may run applies ([`call_targets`]): the positions and paths are the union
+            // over them, where the lookup by the raw callee found none (USER-HOF-VIA-LOCAL-ALIAS). A
+            // formal a target applies AT THE FORMAL ITSELF has no recorded path; it is path "" here,
+            // which every consumer below reads as the argument itself.
+            //
+            // `fn app(f) { let g = f; g(...) }` recorded `applies = true` with an empty path set,
+            // correctly: `g` IS the formal, not a field of it. The consumer once found no paths and
+            // charged nothing, so the simplest alias in the language — bind a callable formal to a
+            // local, apply the local — passed `check` and wrote the file at runtime.
+            let mut applied_paths: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+            for t in &targets {
+                if let Some(applied) = ctx.fn_applies_param.get(t) {
+                    let by_param = ctx.fn_applied_param_paths.get(t);
+                    for &i in applied {
+                        let entry = applied_paths.entry(i).or_default();
+                        match by_param.and_then(|m| m.get(&i)) {
+                            Some(paths) => entry.extend(paths.iter().cloned()),
+                            None => {
+                                entry.insert(String::new());
                             }
                         }
                     }
-                    // The callee applies this formal to ITS OWN parameters, which are bound to the
-                    // caller's OTHER arguments — so what it applies receives those arguments' labels.
-                    // Binding a closure's params unlabelled (as this did) meant `apply(f, v) { f(v); }`
-                    // called as `apply(|v| shell(v), input())` charged NOTHING: command injection
-                    // through a higher-order function, while the direct `g(input())` was correctly
-                    // rejected. Same hole in the secret lane. GROK-SEKHMET round 9 surfaced this via an
-                    // enum payload; it is general.
-                    //
-                    // Conservative JOIN over the other arguments rather than tracking which one the
-                    // callee forwards: that would need a param→param application summary, and
-                    // over-approximating here can only over-charge a callback whose sibling argument is
-                    // labelled — the fail-closed direction, matching this file's convention for
-                    // summaries.
-                    let mut arg_taint: Option<String> = None;
-                    let mut arg_secret = false;
-                    for (j, a) in args.iter().enumerate() {
-                        if j == i {
-                            continue;
-                        }
-                        if arg_taint.is_none() {
-                            arg_taint = expr_source(
-                                a,
-                                scope,
-                                &ctx.tainting_fns,
-                                &ctx.param_return_taint,
-                                &ctx.method_tainting_fns,
-                                &ctx.place_types(),
-                                SourceLane::Taint,
-                            );
-                        }
-                        arg_secret = arg_secret
-                            || expr_source(
-                                a,
-                                scope,
-                                &ctx.secret_fns,
-                                &ctx.param_return_taint,
-                                &ctx.method_secret_fns,
-                                &ctx.place_types(),
-                                SourceLane::Secret,
-                            )
-                            .is_some();
+                }
+            }
+            for (i, paths) in applied_paths {
+                // The callee applies this formal to ITS OWN parameters, which are bound to the
+                // caller's OTHER arguments — so what it applies receives those arguments' labels.
+                // Binding a closure's params unlabelled meant `apply(f, v) { f(v); }` called as
+                // `apply(|v| shell(v), input())` charged NOTHING: command injection through a
+                // higher-order function, while the direct `g(input())` was correctly rejected. Same
+                // hole in the secret lane (GROK-SEKHMET round 9), and for a closure stored in a
+                // container formal the callee applies (`runall([|x| pr(x)], k)`).
+                //
+                // Conservative JOIN over the other arguments rather than tracking which one the
+                // callee forwards: that would need a param→param application summary, and
+                // over-approximating here can only over-charge a callback whose sibling argument is
+                // labelled — the fail-closed direction, matching this file's convention for
+                // summaries. What those arguments may be as FUNCTIONS binds a closure's params too:
+                // `app(|g| g(k), pr)` applies `pr` (HOF-LAMBDA-PARAM-BOUND-TO-FN-ARG).
+                let mut arg_taint: Option<String> = None;
+                let mut arg_secret = false;
+                for (j, a) in args.iter().enumerate() {
+                    if j == i {
+                        continue;
                     }
-                    // A NAMED function passed here — or a local, a join, an element or a call that
-                    // holds one — is applied to those arguments exactly as a lambda is: `app(h2, k)`
-                    // with `fn app(g, x) { g(x) }` runs `h2(k)`. Only a lambda was descended (below),
-                    // so the eta-equivalent `app(|x| h2(x), k)` was rejected while the name, an alias
-                    // and a join printed the secret (review ordret1 USER-HOF-NAMED-FN-ARG). Checked
-                    // against every function the argument may be, as the builtin appliers are.
-                    if let Some(arg) = args.get(i) {
-                        check_applied_callback(
-                            arg,
-                            callee,
-                            arg_taint.as_deref(),
-                            arg_secret,
-                            mode,
+                    if arg_taint.is_none() {
+                        arg_taint = expr_source(
+                            a,
                             scope,
-                            ctx,
+                            &ctx.tainting_fns,
+                            &ctx.param_return_taint,
+                            &ctx.method_tainting_fns,
+                            &ctx.place_types(),
+                            SourceLane::Taint,
                         );
                     }
-                    let resolved = args.get(i).and_then(|arg| {
-                        resolve_closure_value(
-                            arg,
+                    arg_secret = arg_secret
+                        || expr_source(
+                            a,
                             scope,
-                            &ctx.fn_returns_lambda,
-                            &ctx.fn_returns_param,
-                            &ctx.method_returns_lambda,
-                            &ctx.method_returns_param,
-                            0,
+                            &ctx.secret_fns,
+                            &ctx.param_return_taint,
+                            &ctx.method_secret_fns,
+                            &ctx.place_types(),
+                            SourceLane::Secret,
                         )
-                    });
-                    if let Some(boxed) = resolved {
-                        let Expr::Lambda { params, body } = boxed.as_ref() else {
-                            continue;
-                        };
-                        let mut local = scope.clone();
-                        for pp in params {
-                            local.insert(
-                                pp.clone(),
-                                ScopeBinding {
-                                    whole_struct: None,
-                                    whole_captures: None,
-                                    whole_list: false,
-                                    whole_map: false,
-                                    info: BindingInfo {
-                                        name: pp.clone(),
-                                        ty: None,
-                                        mode: String::new(),
-                                        tainted: arg_taint.is_some(),
-                                        taint_source: arg_taint.clone(),
-                                        declassified: false,
-                                        span: None,
-                                    },
-                                    closure_arity: None,
-                                    closure_lambda: None,
-                                    field_closures: BTreeMap::new(),
-                                    fn_alias: None,
-                                    fn_may: FnMay::default(),
-                                    fn_identities: FnIdentitySet::Unknown,
-                                    field_fn_identities: BTreeMap::new(),
-                                    builtin_gate_tags: BuiltinGateTags::Unknown,
-                                    field_builtin_gate_tags: BTreeMap::new(),
-                                    taint_label: security_label::SecurityLabel::default(),
-                                    secret_label: security_label::SecurityLabel::default(),
-                                    secret: arg_secret,
-                                }
-                                .with_labels(),
-                            );
-                        }
-                        if matches!(args.get(i), Some(Expr::Lambda { .. })) {
-                            analyze_expr_effect(body, mode, &local, effects, ctx);
-                        } else {
+                        .is_some();
+                }
+                let Some(arg) = args.get(i) else {
+                    continue;
+                };
+                let tags = BuiltinGateTags::union_concrete(paths.iter().map(|path| {
+                    if path.is_empty() {
+                        builtin_gate_tags_of(arg, scope, ctx)
+                    } else if path == "*" {
+                        builtin_gate_tags_carried_by_value_d(arg, scope, ctx, 0)
+                    } else {
+                        builtin_gate_tags_at_path(arg, path, scope, ctx, 0)
+                    }
+                }));
+                charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+                if paths.iter().any(|path| !path.is_empty()) {
+                    let mut closures = BTreeMap::new();
+                    collect_container_closures(arg, "", scope, ctx, &mut closures);
+                    let selected = closures
+                        .into_iter()
+                        .filter(|(path, _)| paths.contains("*") || paths.contains(path))
+                        .map(|(_, closure)| closure);
+                    for closure in selected {
+                        if let Expr::Lambda { params, body } = closure.as_ref() {
+                            let mut local = scope.clone();
+                            for p in params {
+                                local.insert(
+                                    p.clone(),
+                                    labelled_param_binding(
+                                        p,
+                                        arg_taint.is_some(),
+                                        arg_taint.clone(),
+                                        arg_secret,
+                                    ),
+                                );
+                            }
                             analyze_closure_body_effect(body, mode, &local, effects, ctx);
                         }
+                    }
+                }
+                // Every function the applied value may be: the argument itself ([`FnMay`], not only
+                // a Known identity set, which one unresolvable branch erased), or what it carries at
+                // an applied path (an element of a callback list the callee iterates).
+                let mut path_names: BTreeSet<String> = BTreeSet::new();
+                for path in &paths {
+                    if path.is_empty() {
+                        path_names.extend(fn_may_of(arg, scope, ctx).names);
+                    } else {
+                        let ids = if path == "*" {
+                            fn_identities_carried_by_value(arg, scope, ctx)
+                        } else {
+                            fn_identities_at_contract_path(arg, path, scope, ctx, 0)
+                        };
+                        if let FnIdentitySet::Known(names) = ids {
+                            path_names.extend(names);
+                        }
+                        if path == "*" {
+                            fn_may_carried(arg, scope, ctx, 0, &mut path_names);
+                        }
+                    }
+                }
+                for name in &path_names {
+                    if let Some(caps) = ctx.fn_declared_effects.get(name).cloned() {
+                        for raw in caps {
+                            apply_inherited_capability(raw, mode, effects, ctx);
+                        }
+                    }
+                }
+                // A NAMED function passed here — or a local, a join, an element or a call that holds
+                // one, or one a callback list carries at an applied path — is applied to those
+                // arguments exactly as a lambda is: `app(h2, k)` with `fn app(g, x) { g(x) }` runs
+                // `h2(k)`. Only a lambda was descended (below), so the eta-equivalent
+                // `app(|x| h2(x), k)` was rejected while the name, an alias and a join printed the
+                // secret (review ordret1 USER-HOF-NAMED-FN-ARG), and `runall([pr], k)` with
+                // `for g in gs { g(x) }` still did (USER-HOF-OVER-CALLBACK-LIST).
+                let mut cb_targets = applied_callback_targets(arg, scope, ctx);
+                cb_targets.extend(path_names);
+                let cb_tags = BuiltinGateTags::union_concrete([
+                    builtin_gate_tags_of(arg, scope, ctx),
+                    tags.clone(),
+                ]);
+                let shown = match arg {
+                    Expr::Var(n) => n.clone(),
+                    _ => "a callback".to_string(),
+                };
+                check_applied_callback_targets(
+                    &cb_targets,
+                    &cb_tags,
+                    &shown,
+                    callee,
+                    arg_taint.as_deref(),
+                    arg_secret,
+                    mode,
+                    ctx,
+                );
+                // Every closure the argument may be (a local's alternatives, an element, a call
+                // returning one), descended with its params bound to the other arguments.
+                let inline = matches!(arg, Expr::Lambda { .. });
+                let resolved = callback_closure_candidates(arg, scope, ctx);
+                let mut arg_fn_names: BTreeSet<String> = BTreeSet::new();
+                let mut arg_closures: Vec<Box<Expr>> = Vec::new();
+                if !resolved.is_empty() {
+                    for (j, a) in args.iter().enumerate() {
+                        if j != i {
+                            arg_fn_names.extend(fn_may_of(a, scope, ctx).names);
+                            fn_may_carried(a, scope, ctx, 0, &mut arg_fn_names);
+                            arg_closures.extend(carried_closure_candidates(a, scope, ctx));
+                        }
+                    }
+                }
+                for lam in resolved {
+                    let Expr::Lambda { params, body } = lam.as_ref() else {
+                        continue;
+                    };
+                    let mut local = scope.clone();
+                    for pp in params {
+                        let mut binding = labelled_param_binding(
+                            pp,
+                            arg_taint.is_some(),
+                            arg_taint.clone(),
+                            arg_secret,
+                        );
+                        binding.fn_may.names.extend(arg_fn_names.iter().cloned());
+                        for c in &arg_closures {
+                            add_closure_candidate(&mut binding, c.clone());
+                        }
+                        local.insert(pp.clone(), binding);
+                    }
+                    if inline {
+                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                    } else {
+                        analyze_closure_body_effect(body, mode, &local, effects, ctx);
                     }
                 }
             }
@@ -16934,7 +17720,7 @@ fn analyze_expr_effect(
                     &ctx.place_types(),
                     ctx,
                 );
-                propagate_pattern_closures(&mut local, scrutinee, pattern);
+                propagate_pattern_closures(&mut local, scrutinee, pattern, ctx);
                 // A LAMBDA arm value is opaque at its definition, and this file's own justification
                 // for that is "safe only if EVERY application site descends". A closure built in an
                 // arm and returned OUT of the match breaks that premise: the arm's bindings are gone
@@ -17014,7 +17800,7 @@ fn analyze_expr_effect(
                 &ctx.place_types(),
                 ctx,
             );
-            propagate_pattern_closures(&mut local, scrutinee, pattern);
+            propagate_pattern_closures(&mut local, scrutinee, pattern, ctx);
             analyze_expr_effect(then, mode, &local, effects, ctx);
             analyze_expr_effect(else_, mode, scope, effects, ctx);
         }
@@ -17152,7 +17938,13 @@ fn analyze_expr_effect(
                         );
                     }
                 }
-                if let Some(lam) = resolve_applied_container_lambda(callee, scope, ctx) {
+                // A closure a weak write left in the container may be at this slot too
+                // ([`weak_field_closures`]).
+                let stored: Vec<Box<Expr>> = resolve_applied_container_lambda(callee, scope, ctx)
+                    .into_iter()
+                    .chain(weak_field_closures(callee, scope))
+                    .collect();
+                for lam in stored {
                     if let Expr::Lambda { params, body } = lam.as_ref() {
                         let mut local = scope.clone();
                         // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
@@ -17187,6 +17979,72 @@ fn analyze_expr_effect(
                                 .insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                         }
                         analyze_closure_body_effect(body, mode, &local, effects, ctx);
+                    }
+                }
+            } else {
+                // A value applied in place — a call's result (`mk()(k)`), a join
+                // (`(if c { f } else { g })(k)`), a block — reached neither the stored-closure
+                // descent above nor the direct-call checks: `mk()(k)` with `fn mk() { return |x|
+                // print(x); }` printed the secret while `let g = mk(); g(k)` was rejected
+                // (HELPER-RETURNED-CLOSURE-INLINE). Every closure it may be is descended with its
+                // params bound to the arguments' labels, and every function it may be is checked as a
+                // direct call of it (a user function by name; a builtin only where no local of its name
+                // is in scope, so the call resolves to it).
+                let arg_labels: Vec<(Option<String>, bool)> = args
+                    .iter()
+                    .map(|a| {
+                        (
+                            expr_source(
+                                a,
+                                scope,
+                                &ctx.tainting_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_tainting_fns,
+                                &ctx.place_types(),
+                                SourceLane::Taint,
+                            ),
+                            expr_source(
+                                a,
+                                scope,
+                                &ctx.secret_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_secret_fns,
+                                &ctx.place_types(),
+                                SourceLane::Secret,
+                            )
+                            .is_some(),
+                        )
+                    })
+                    .collect();
+                for lam in callback_closure_candidates(callee, scope, ctx) {
+                    if let Expr::Lambda { params, body } = lam.as_ref() {
+                        let mut local = scope.clone();
+                        for (j, p) in params.iter().enumerate() {
+                            let (pt, ps) = arg_labels.get(j).cloned().unwrap_or((None, false));
+                            local
+                                .insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
+                        }
+                        analyze_closure_body_effect(body, mode, &local, effects, ctx);
+                    }
+                }
+                let mut names = fn_may_of(callee, scope, ctx).names;
+                if let FnIdentitySet::Known(ns) = fn_identities_of(callee, scope, ctx) {
+                    names.extend(ns);
+                }
+                for n in names {
+                    if ctx.fn_params.contains_key(&n)
+                        || (!scope.contains_key(&n) && crate::backends::run::is_builtin_name(&n))
+                    {
+                        analyze_expr_effect(
+                            &Expr::Call {
+                                callee: n,
+                                args: args.clone(),
+                            },
+                            mode,
+                            scope,
+                            effects,
+                            ctx,
+                        );
                     }
                 }
             }
@@ -17922,7 +18780,9 @@ fn walk_block_effects(
                 )
                 .is_some();
                 let pattern_whole = whole::whole_value_source(init, scope, ctx);
+                let binder_closures = pattern_closures(scope, init, pattern, ctx);
                 seed_effect_pattern(scope, pattern, init, &t, s, &ctx.place_types(), ctx);
+                apply_pattern_closures(scope, binder_closures);
                 for (n, src) in whole::pattern_binders(pattern, &pattern_whole, ctx) {
                     if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
                         whole::whole_mark(&mut b.whole_struct, src);
@@ -23329,7 +24189,7 @@ fn scan_applied_param_stmts(
                     ForSource::Collection { expr } => {
                         if (matches!(expr, Expr::Var(root) if root == p)
                             || matches!(expr, Expr::Call { callee, args } if matches!(callee.as_str(), "values" | "entries" | "map_values") && args.iter().any(|a| matches!(a, Expr::Var(root) if root == p))))
-                            && body_has_direct_callee(body, var)
+                            && body_applies_name(body, var)
                         {
                             *applies = true;
                             paths.insert("*".to_string());
@@ -23366,25 +24226,33 @@ fn scan_applied_param_stmts(
     }
 }
 
-fn body_has_direct_callee(body: &[Stmt], name: &str) -> bool {
-    body.iter().any(|stmt| match stmt {
-        Stmt::ExprStmt(Expr::Call { callee, .. }) => callee == name,
-        Stmt::ExprStmt(Expr::CallExpr { callee, .. }) => {
-            matches!(callee.as_ref(), Expr::Var(v) if v == name)
+/// Whether `name` is applied anywhere in `body`: called (`name(..)`, in a `let`, an argument, a value
+/// block or a lambda as much as in a statement of its own), called as a value, or handed to a
+/// higher-order builtin's closure position. Over-approximated (a shadow of `name` counts too): the
+/// loop binder of a callback list is applied however the body spells the call, and
+/// `for g in gs { let r = g(x); }` was not counted (USER-HOF-OVER-CALLBACK-LIST).
+fn body_applies_name(body: &[Stmt], name: &str) -> bool {
+    let mut hit = false;
+    visit::each_expr_in_stmts(body, &mut |e| hit |= node_applies_name(e, name));
+    hit
+}
+
+/// Whether the node `e` itself applies `name` ([`body_applies_name`]).
+fn node_applies_name(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Call { callee, args } => {
+            callee == name
+                || effects::higher_order_closure_args(callee)
+                    .iter()
+                    .any(|&j| matches!(args.get(j), Some(Expr::Var(v)) if v == name))
         }
-        Stmt::If { then, else_, .. } => {
-            body_has_direct_callee(then, name)
-                || else_
-                    .as_deref()
-                    .is_some_and(|b| body_has_direct_callee(b, name))
-        }
-        Stmt::While { body, .. }
-        | Stmt::WhileLet { body, .. }
-        | Stmt::Loop { body, .. }
-        | Stmt::ResearchBlock { body, .. }
-        | Stmt::ExploitBlock { body, .. } => body_has_direct_callee(body, name),
+        Expr::CallExpr { callee, .. } => matches!(callee.as_ref(), Expr::Var(v) if v == name),
         _ => false,
-    })
+    }
+}
+
+fn body_has_direct_callee(body: &[Stmt], name: &str) -> bool {
+    body_applies_name(body, name)
 }
 
 /// Expression half of `scan_applied_param_stmts`. A nested `Lambda` is a HARD STOP (deferred body).
@@ -23585,17 +24453,9 @@ fn scan_applied_param_expr(
 }
 
 fn body_has_direct_callee_expr(expr: &Expr, name: &str) -> bool {
-    match expr {
-        Expr::Call { callee, .. } => callee == name,
-        Expr::CallExpr { callee, .. } => matches!(callee.as_ref(), Expr::Var(v) if v == name),
-        Expr::Block { stmts, tail } => {
-            body_has_direct_callee(stmts, name)
-                || tail
-                    .as_deref()
-                    .is_some_and(|t| body_has_direct_callee_expr(t, name))
-        }
-        _ => false,
-    }
+    let mut hit = false;
+    visit::each_expr(expr, &mut |e| hit |= node_applies_name(e, name));
+    hit
 }
 
 /// Task #48 (transitive closure forwarding): collect forward edges `(callee, arg_pos, param_idx)` — a
@@ -23765,6 +24625,216 @@ fn scan_forward_edges_expr(
         Expr::Lambda { .. } => {}
         _ => {}
     }
+}
+
+/// Every free function (in modules too) with its formals and body.
+fn collect_free_fn_bodies<'a>(
+    items: &'a [Item],
+    out: &mut Vec<(&'a str, Vec<String>, &'a [Stmt])>,
+) {
+    for item in items {
+        match item {
+            Item::Module { items, .. } => collect_free_fn_bodies(items, out),
+            Item::Fn {
+                name, params, body, ..
+            } => out.push((
+                name.as_str(),
+                params.iter().map(|(n, _)| n.clone()).collect(),
+                body.as_slice(),
+            )),
+            _ => {}
+        }
+    }
+}
+
+/// A formal that reaches something the body applies beyond what the syntactic scan reads off it
+/// (`scan_applied_param_stmts`, `scan_applied_param_local_aliases`): taken as
+/// applied at the formal itself and at anything it carries (paths `""` and `"*"`), so a callback
+/// passed there is checked and charged at the call site like any applied formal. The scan follows a
+/// formal through a direct call, a HOF position, an index or field of the formal and a plain local
+/// alias; `let fs = [g]; let h = fs[0]; h(x)`, `let b = B { g: g }; b.g(x)`,
+/// `while .. { h(x); h = g; }` and `app1([g], x)` (with `app1` applying its first formal) applied
+/// `g` unseen and printed the secret (USER-HOF-APPLIES-FORMAL-VIA-CONTAINER-OR-LOOP). A formal the
+/// scan found applied at a path gains these paths too when it also escapes. A formal the body shadows
+/// keeps the scan's verdict (`fn_param_shadowed`).
+fn compute_escaped_applied_params(items: &[Item], ctx: &mut SemanticContext) {
+    let mut fns = Vec::new();
+    collect_free_fn_bodies(items, &mut fns);
+    for (name, params, body) in fns {
+        let shadowed = ctx.fn_param_shadowed.get(name).cloned().unwrap_or_default();
+        for (i, p) in params.iter().enumerate() {
+            if shadowed.contains(&i) {
+                continue;
+            }
+            let add = formal_reaches_application(body, p, ctx);
+            if add.is_empty() {
+                continue;
+            }
+            let applied = ctx.fn_applies_param.entry(name.to_string()).or_default();
+            if !applied.contains(&i) {
+                applied.push(i);
+            }
+            ctx.fn_applied_param_paths
+                .entry(name.to_string())
+                .or_default()
+                .entry(i)
+                .or_default()
+                .extend(add);
+        }
+    }
+}
+
+/// The paths at which formal `p` of `body` may be applied beyond what the syntactic scan reads off the
+/// formal itself ([`compute_escaped_applied_params`]); empty when none. Order-free and name-keyed:
+/// every name bound or assigned from a value that mentions the formal, or a name already reached (as
+/// a value, or as a function a closure calls), is reached — through a container, a field, a join, a
+/// loop-carried assignment, a pattern or loop binder, a `push`. A plain alias of the formal or of a
+/// path of it (`let f = gs[0]`) applied anywhere (`return f(x)`, inside an argument or a lambda,
+/// where the scan reads only a statement `f(x);` or `let r = f(x)`) is applied at that path; any
+/// other reached name applied (called, called through an element or field, handed to a HOF callback
+/// position), or a value mentioning one — or holding the formal inside it — passed at a position a
+/// user function applies, applies the formal at `""` and at every element `"*"`. Lambda bodies count
+/// wherever they sit (over-approximated).
+fn formal_reaches_application(body: &[Stmt], p: &str, ctx: &SemanticContext) -> BTreeSet<String> {
+    use crate::frontend::ForSource;
+    let mentions = |e: &Expr, names: &BTreeSet<String>| {
+        let mut hit = false;
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Var(n) | Expr::Call { callee: n, .. } if names.contains(n) => hit = true,
+            _ => {}
+        });
+        hit
+    };
+    let mut writes: Vec<(Vec<String>, &Expr)> = Vec::new();
+    visit::each_stmt(body, &mut |s, _| match s {
+        Stmt::Let { name, init, .. } => writes.push((vec![name.clone()], init)),
+        Stmt::Assign { target, value } => {
+            if let Some(root) = assign_target_root(target) {
+                writes.push((vec![root.to_string()], value));
+            }
+        }
+        Stmt::LetPattern { pattern, init, .. } => writes.push((pattern.bound_names(), init)),
+        Stmt::WhileLet { pattern, expr, .. } => writes.push((pattern.bound_names(), expr)),
+        Stmt::For {
+            var,
+            source: ForSource::Collection { expr },
+            ..
+        } => writes.push((vec![var.clone()], expr)),
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| {
+        match e {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                for arm in arms {
+                    writes.push((arm.pattern.bound_names(), scrutinee));
+                }
+            }
+            Expr::IfLet {
+                pattern, scrutinee, ..
+            } => writes.push((pattern.bound_names(), scrutinee)),
+            _ => {}
+        }
+        if let Some((root, values)) = in_place_container_write(e) {
+            for v in values {
+                writes.push((vec![root.clone()], v));
+            }
+        }
+    });
+    let formal = BTreeSet::from([p.to_string()]);
+    let mut reached = formal.clone();
+    loop {
+        let mut changed = false;
+        for (targets, v) in &writes {
+            if mentions(v, &reached) {
+                for t in targets {
+                    changed |= reached.insert(t.clone());
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    reached.remove(p);
+    // A plain alias: a single-name binding every write of which is the formal or an access path of
+    // it, with the paths it stands for.
+    let mut alias_paths: BTreeMap<&String, BTreeSet<String>> = BTreeMap::new();
+    for n in &reached {
+        let mut paths = BTreeSet::new();
+        let plain = writes
+            .iter()
+            .filter(|(targets, _)| targets.contains(n))
+            .all(|(targets, v)| {
+                let path = match v {
+                    Expr::Var(m) if m == p => Some(String::new()),
+                    _ => flatten_access_path(v)
+                        .filter(|(root, _)| root == p)
+                        .map(|(_, path)| path)
+                        .or_else(|| {
+                            (access_chain_root(v).as_deref() == Some(p)).then(|| "*".into())
+                        }),
+                };
+                match path {
+                    Some(path) if targets.len() == 1 => {
+                        paths.insert(path);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+        if plain && !paths.is_empty() {
+            alias_paths.insert(n, paths);
+        }
+    }
+    // A value that is the formal itself, or an access rooted at it, is the scan's business; one that
+    // holds it deeper (`[g]`, `B { g: g }`) or mentions a reached name is not.
+    let carries = |a: &Expr| {
+        mentions(a, &reached)
+            || (!matches!(a, Expr::Var(v) if v == p)
+                && access_chain_root(a).as_deref() != Some(p)
+                && mentions(a, &formal))
+    };
+    let whole: BTreeSet<String> = BTreeSet::from([String::new(), "*".to_string()]);
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    // An applied value: a plain alias applies its own paths, anything else carrying the formal
+    // applies it whole.
+    let applied_value = |a: &Expr, out: &mut BTreeSet<String>| {
+        if let Expr::Var(v) = a {
+            if let Some(paths) = alias_paths.get(v) {
+                out.extend(paths.iter().cloned());
+                return;
+            }
+        }
+        if carries(a) {
+            out.extend(whole.iter().cloned());
+        }
+    };
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Call { callee, args } => {
+            if let Some(paths) = alias_paths.get(callee) {
+                out.extend(paths.iter().cloned());
+            } else if reached.contains(callee) {
+                out.extend(whole.iter().cloned());
+            }
+            for &j in effects::higher_order_closure_args(callee) {
+                if let Some(a) = args.get(j) {
+                    applied_value(a, &mut out);
+                }
+            }
+            if let Some(applied) = ctx.fn_applies_param.get(callee) {
+                for &k in applied {
+                    if let Some(a) = args.get(k) {
+                        applied_value(a, &mut out);
+                    }
+                }
+            }
+        }
+        Expr::CallExpr { callee, .. } if carries(callee) => out.extend(whole.iter().cloned()),
+        _ => {}
+    });
+    out
 }
 
 /// Task #48: close `fn_applies_param` under transitive forwarding. Direct/HOF applies are the seed; a
@@ -32501,29 +33571,73 @@ fn seed_pattern(
 /// closure (and `f(0)` carries `g`'s captured secret/taint to an egress). The scrutinee's
 /// `field_closures` (populated by `collect_container_closures` for the `EnumConstruct`) are keyed by
 /// positional index; an `EnumVariant` pattern's positional `bindings[i]` binds payload field `i`.
-/// Closes soundness hunt2 [03]. Only a `Var` scrutinee with a positional `Binding` sub-pattern
-/// resolves — anything else is left as-is (no false labelling).
+/// Closes soundness hunt2 [03]. Every binder of every pattern shape resolves, through
+/// [`pattern_closures`] (a scrutinee that is a literal, a struct or list pattern, a nested path).
 fn propagate_pattern_closures(
     scope: &mut BTreeMap<String, ScopeBinding>,
     scrutinee: &Expr,
     pattern: &Pattern,
+    ctx: &SemanticContext,
 ) {
-    let Expr::Var(sv) = scrutinee else {
-        return;
+    let found = pattern_closures(scope, scrutinee, pattern, ctx);
+    apply_pattern_closures(scope, found);
+}
+
+/// The closures each name `pattern` binds out of `scrutinee` may be applied as: the closure stored at
+/// the binder's access path (`let [a, b] = [zero, |x| ..]` gives `b` the lambda; `Some(g) =>` the
+/// payload's), every closure a mutation stored at a slot no path names (`push`), and for a binder that
+/// takes the whole value, the scrutinee's own closures. Only an enum payload of a variable was followed,
+/// so `let [a, b] = [zero, |x| print(x)]; b(k)` descended nothing (a variant of
+/// CONTAINER-LAMBDA-AS-HOF-CALLBACK). Read before the binders are seeded, so a binder shadowing a name
+/// the scrutinee reads does not stand in for it.
+fn pattern_closures(
+    scope: &BTreeMap<String, ScopeBinding>,
+    scrutinee: &Expr,
+    pattern: &Pattern,
+    ctx: &SemanticContext,
+) -> Vec<(String, Box<Expr>)> {
+    let stored: BTreeMap<String, Box<Expr>> = match scrutinee {
+        Expr::Var(sv) => scope
+            .get(sv)
+            .map(|b| b.field_closures.clone())
+            .unwrap_or_default(),
+        _ => {
+            let mut m = BTreeMap::new();
+            collect_container_closures(scrutinee, "", scope, ctx, &mut m);
+            m
+        }
     };
-    let fclos = match scope.get(sv) {
-        Some(b) if !b.field_closures.is_empty() => b.field_closures.clone(),
-        _ => return,
+    let weak = |k: &str| {
+        k.strip_prefix("_p")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
     };
-    if let Pattern::EnumVariant { bindings, .. } = pattern {
-        for (i, sub) in bindings.iter().enumerate() {
-            if let Pattern::Binding(name) = sub {
-                if let Some(lam) = fclos.get(&i.to_string()) {
-                    if let Some(b) = scope.get_mut(name) {
-                        b.closure_lambda = Some(lam.clone());
-                    }
-                }
+    let mut paths = BTreeMap::new();
+    collect_pattern_binding_paths(pattern, "", &mut paths);
+    let mut out = Vec::new();
+    for (name, path) in paths {
+        if path.is_empty() {
+            for lam in callback_closure_candidates(scrutinee, scope, ctx) {
+                out.push((name.clone(), lam));
             }
+            continue;
+        }
+        for (k, lam) in &stored {
+            if (k == &path || weak(k)) && matches!(lam.as_ref(), Expr::Lambda { .. }) {
+                out.push((name.clone(), lam.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Add what [`pattern_closures`] found to the seeded binders.
+fn apply_pattern_closures(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    found: Vec<(String, Box<Expr>)>,
+) {
+    for (name, lam) in found {
+        if let Some(b) = scope.get_mut(&name) {
+            add_closure_candidate(b, lam);
         }
     }
 }

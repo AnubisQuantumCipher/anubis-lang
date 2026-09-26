@@ -5158,6 +5158,13 @@ fn resolve_local(n: &str, env: &Env, at: &At) -> Option<Local> {
         return None;
     }
     let b = env.scope.get(n)?;
+    // Following a name of the caller's scope to its closures is a closure descent, bounded like the
+    // walkers' (`analysis_limit`): a capture held too deep is widened (`Env::closure`), widening
+    // follows what it can reach (`reach`, with a set of its own), and that resolves the closure's
+    // free names here again. Two closures reassigned to call each other (`g = |s| h(s) + g(s)`)
+    // made that an endless descent that overflowed the stack; it now reaches the limit, which
+    // refuses the request.
+    let _descent = analysis_limit::Frame::enter()?;
     // What the lane's own interpretation of the value bound here found it may be as a function
     // (`value_captures`, `expr_writes`). A function the ordinary lane names (`fn_alias`, a `Known`
     // set of one) is taken without the name's value half only when that interpretation is sure it
@@ -7789,6 +7796,11 @@ fn worst(binds: &[Local], callee: Option<&str>, env: &Env) -> FnFx {
 
 /// Everything a binding can reach.
 fn reach(l: &Local, env: &Env, seen: &mut BTreeSet<usize>) -> Option<WholeSrc> {
+    // The stack guard, as at the walkers' entries: past a limit the request is refused, so the
+    // answer cut short here is never used as a check.
+    if analysis_limit::cut() {
+        return None;
+    }
     match l {
         Local::Src(s, _) => s.clone(),
         Local::Named(f) => built_by(f, env),

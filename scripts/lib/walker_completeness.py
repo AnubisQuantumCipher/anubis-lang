@@ -57,11 +57,23 @@ SIBLINGS = [
 
 
 @dataclass(frozen=True)
+class ScopedPattern:
+    """Match an anchor ending at `{`, then its body only inside that balanced block.
+
+    Nest these to own each enclosing loop separately: an anchor spanning several opening braces
+    bounds only its final brace, so a wildcard between them could borrow a later sibling's text.
+    """
+
+    anchor: str
+    body: str | ScopedPattern
+
+
+@dataclass(frozen=True)
 class DeferredDisposition:
     kind: str
     rationale: str
-    consumer_patterns: tuple[tuple[str, str, str], ...]
-    fallback_patterns: tuple[tuple[str, str, str], ...]
+    consumer_patterns: tuple[tuple[str, str, str | ScopedPattern], ...]
+    fallback_patterns: tuple[tuple[str, str, str | ScopedPattern], ...]
 
 
 DEFERRED_KINDS = frozenset({"DEFERRED_AT_DEFINITION"})
@@ -121,45 +133,97 @@ DEFERRED_FIELDS: dict[tuple[str, str, str], DeferredDisposition] = {
             "user-function application paths consume the body, while unknown callees are rejected"
         ),
         consumer_patterns=(
+            # A consumer is witnessed only inside the balanced block named by its anchor.
+            # Stopping at the next `for lam` is insufficient: the applied path has a `for closure`
+            # consumer between those loops, which previously hid a removed direct-local descent.
             (
                 "direct_local_consumer",
                 "analyze_expr_effect",
-                r"for\s+lam\s+in\s+applied_closure_candidates\s*\(\s*callee\s*,\s*scope\s*\)\s*\{.*?"
-                r"if\s+let\s+Expr::Lambda\s*\{\s*params\s*,\s*body\s*\}\s*=\s*lam\.as_ref\s*\(\s*\)"
-                r"\s*\{.*?analyze_expr_effect\s*\(\s*body\s*,\s*mode\s*,\s*&local\s*,\s*effects\s*,"
-                r"\s*ctx\s*\)",
+                ScopedPattern(
+                    r"for\s+lam\s+in\s+applied_closure_candidates\s*\(\s*callee\s*,\s*scope\s*\)\s*\{"
+                    r"\s*if\s+let\s+Expr::Lambda\s*\{\s*params\s*,\s*body\s*\}\s*=\s*lam\.as_ref\s*\(\s*\)\s*\{",
+                    r"analyze_closure_body_effect\s*\(\s*body\s*,\s*mode\s*,\s*&local\s*,\s*effects\s*,\s*ctx\s*\)",
+                ),
             ),
             (
                 "known_hof_consumer",
                 "analyze_expr_effect",
-                r"let\s+resolved\s*:\s*Option\s*<\s*&Expr\s*>\s*=\s*match\s+args\.get\s*\(\s*i\s*\)"
-                r".*?if\s+let\s+Some\s*\(\s*Expr::Lambda\s*\{\s*params\s*,\s*body\s*\}\s*\)\s*="
-                r"\s*resolved\s*\{(?:(?!\}\s*else\s+if).)*?analyze_expr_effect\s*\(\s*body\s*,"
-                r"\s*mode\s*,\s*&local\s*,\s*effects\s*,\s*ctx\s*\)",
+                ScopedPattern(
+                    r"for\s+&i\s+in\s+effects::higher_order_closure_args\s*\(\s*hof\s*\)\s*\{",
+                    ScopedPattern(
+                        r"let\s+resolved\s*:\s*Vec\s*<\s*Box\s*<\s*Expr\s*>\s*>\s*="
+                        r"\s*args\s*\.get\s*\(\s*i\s*\)\s*\.map\s*\(\s*\|\s*a\s*\|\s*callback_closure_candidates"
+                        r"\s*\(\s*a\s*,\s*scope\s*,\s*ctx\s*\)\s*\)(?:(?!for\s+lam\s+in).)*?"
+                        r"for\s+lam\s+in\s+&resolved\s*\{",
+                        r"\A\s*let\s+Expr::Lambda\s*\{\s*params\s*,\s*body\s*\}\s*=\s*lam\.as_ref\s*\(\s*\)"
+                        r"\s*else\s*\{\s*continue\s*;\s*\}\s*;.*?"
+                        r"if\s+inline\s*\{\s*analyze_expr_effect\s*\(\s*body\s*,\s*mode\s*,\s*&local\s*,\s*effects\s*,\s*ctx\s*\)\s*;\s*\}"
+                        r"\s*else\s*\{\s*analyze_closure_body_effect\s*\(\s*body\s*,\s*mode\s*,\s*&local\s*,\s*effects\s*,\s*ctx\s*\)\s*;\s*\}",
+                    ),
+                ),
+            ),
+            (
+                # Applied paths are collected in one loop and consumed in a following sibling.
+                # Witness both owners, rather than letting one regex cross the producer's close.
+                "applied_param_producer",
+                "analyze_expr_effect",
+                ScopedPattern(
+                    r"for\s+t\s+in\s+&targets\s*\{",
+                    ScopedPattern(
+                        r"\A\s*if\s+let\s+Some\s*\(\s*applied\s*\)\s*="
+                        r"\s*ctx\.fn_applies_param\.get\s*\(\s*t\s*\)\s*\{",
+                        ScopedPattern(
+                            r"for\s+&i\s+in\s+applied\s*\{",
+                            r"\A\s*let\s+entry\s*=\s*applied_paths\.entry\s*\(\s*i\s*\)"
+                            r"\.or_default\s*\(\s*\)\s*;",
+                        ),
+                    ),
+                ),
             ),
             (
                 "applied_param_consumer",
                 "analyze_expr_effect",
-                r"if\s+let\s+Some\s*\(\s*applied\s*\)\s*=\s*ctx\.fn_applies_param\.get\s*\(\s*callee"
-                r"\s*\)\.cloned\s*\(\s*\)\s*\{.*?if\s+let\s+Expr::Lambda\s*\{\s*params\s*,\s*body"
-                r"\s*\}.*?analyze_expr_effect\s*\(\s*body\s*,\s*mode\s*,\s*&local\s*,\s*effects\s*,"
-                r"\s*ctx\s*\)",
+                ScopedPattern(
+                    r"for\s*\(\s*i\s*,\s*paths\s*\)\s+in\s+applied_paths\s*\{",
+                    ScopedPattern(
+                        r"let\s+resolved\s*=\s*callback_closure_candidates\s*\(\s*arg\s*,\s*scope\s*,\s*ctx\s*\)\s*;"
+                        r"(?:(?!for\s+lam\s+in).)*?for\s+lam\s+in\s+resolved\s*\{",
+                        r"\A\s*let\s+Expr::Lambda\s*\{\s*params\s*,\s*body\s*\}\s*=\s*lam\.as_ref\s*\(\s*\)"
+                        r"\s*else\s*\{\s*continue\s*;\s*\}\s*;.*?"
+                        r"if\s+inline\s*\{\s*analyze_expr_effect\s*\(\s*body\s*,\s*mode\s*,\s*&local\s*,\s*effects\s*,\s*ctx\s*\)\s*;\s*\}"
+                        r"\s*else\s*\{\s*analyze_closure_body_effect\s*\(\s*body\s*,\s*mode\s*,\s*&local\s*,\s*effects\s*,\s*ctx\s*\)\s*;\s*\}",
+                    ),
+                ),
+            ),
+            (
+                # The direct path (and the non-inline branches of the other two) hand the body to
+                # this helper; it must analyze it (a None frame is the analysis limit's refusal).
+                "closure_body_helper",
+                "analyze_closure_body_effect",
+                r"if\s+let\s+Some\s*\(\s*_frame\s*\)\s*=\s*closure_frame\s*\(\s*\)\s*\{"
+                r"\s*analyze_expr_effect\s*\(\s*body\s*,\s*mode\s*,\s*scope\s*,\s*effects\s*,\s*ctx\s*\)",
             ),
         ),
         fallback_patterns=(
             (
                 "unknown_call_fallback",
                 "check_calls_expr_nc",
-                r"Expr::Call\s*\{\s*callee\s*,\s*args\s*\}\s*=>\s*\{"
-                r".*?if\s+!fns\.contains\s*\(\s*callee\s*\).*?&&\s*!bound\.contains\s*\(\s*callee\s*\)"
-                r".*?&&\s*!crate::backends::run::is_builtin_name\s*\(\s*callee\s*\).*?"
-                # Every enforcing diagnostic goes through `push_diag` (which marks where the ones a
-                # limit leaves behind begin, 0275f5f3); a direct push is still accepted.
-                r"ctx\.(?:diagnostics\.push|push_diag)\s*\(",
+                ScopedPattern(
+                    r"Expr::Call\s*\{\s*callee\s*,\s*args\s*\}\s*=>\s*\{"
+                    r"\s*if\s+!fns\.contains\s*\(\s*callee\s*\)"
+                    r"\s*&&\s*!bound\.contains\s*\(\s*callee\s*\)"
+                    r"\s*&&\s*!crate::backends::run::is_builtin_name\s*\(\s*callee\s*\)\s*\{",
+                    # The diagnostic must be inside this guard, never the following arity guard.
+                    r"\A\s*ctx\.(?:diagnostics\.push|push_diag)\s*\(",
+                ),
             ),
         ),
     ),
 }
+
+
+_RAW_STRING_START = re.compile(r'(?:br|r)(?P<hashes>#{0,255})"')
+_CHAR_LITERAL = re.compile(r"(?:b)?'(?:\\.|[^\\'\n])'")
 
 
 def _scrub_rust(src: str) -> str:
@@ -195,11 +259,11 @@ def _scrub_rust(src: str) -> str:
                 if out[j] != "\n":
                     out[j] = " "
             continue
-        raw = re.match(r"(?:br|r)(?P<hashes>#{0,255})\"", src[i:])
+        raw = _RAW_STRING_START.match(src, i)
         if raw:
             start = i
             hashes = raw.group("hashes")
-            i += raw.end()
+            i = raw.end()
             terminator = '"' + hashes
             end = src.find(terminator, i)
             if end < 0:
@@ -231,9 +295,9 @@ def _scrub_rust(src: str) -> str:
                     out[j] = " "
             continue
         # Scrub character/byte-character literals, but not lifetimes such as `'a`.
-        char_match = re.match(r"(?:b)?'(?:\\.|[^\\'\n])'", src[i:])
+        char_match = _CHAR_LITERAL.match(src, i)
         if char_match:
-            end = i + char_match.end()
+            end = char_match.end()
             for j in range(i, end):
                 out[j] = " "
             i = end
@@ -888,6 +952,19 @@ def binding_is_directly_used(arm_value: str, binding: str) -> bool:
     return re.search(rf"\b{escaped}\b", clean) is not None
 
 
+def deferred_pattern_matches(pattern: str | ScopedPattern, clean: str) -> bool:
+    if isinstance(pattern, str):
+        return re.search(pattern, clean, re.S) is not None
+    for anchor in re.finditer(pattern.anchor, clean, re.S):
+        opening = anchor.end() - 1
+        if clean[opening] != "{":
+            raise ValueError("ScopedPattern anchor must end at its opening brace")
+        closing = matching_delimiter(clean, opening)
+        if deferred_pattern_matches(pattern.body, clean[opening + 1 : closing]):
+            return True
+    return False
+
+
 def deferred_contract_problems(
     key: tuple[str, str, str], source: str
 ) -> list[str]:
@@ -919,7 +996,7 @@ def deferred_contract_problems(
                 f"WALKER_DEFERRED_CONTRACT_MISSING {prefix} requirement={label} owner={owner}"
             )
             continue
-        if not re.search(pattern, scrub_rust(owner_body), re.S):
+        if not deferred_pattern_matches(pattern, scrub_rust(owner_body)):
             problems.append(
                 f"WALKER_DEFERRED_CONTRACT_MISSING {prefix} requirement={label} owner={owner}"
             )

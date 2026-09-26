@@ -1,8 +1,4 @@
 fn	field	writes	reads	kind	target_slice	notes
-analyze_expr_effect	declassified	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-analyze_expr_effect	secret	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-analyze_expr_effect	taint_source	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
-analyze_expr_effect	tainted	1	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 analyze_function	declassified	2	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 analyze_function	secret	2	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
 analyze_function	taint_source	2	0	constructor	3	ScopeBinding/BindingInfo literal initialization (Slice 3)
@@ -100,4 +96,4 @@ unknown_taint_label_promotes_to_labeled_view	tainted	0	1	lattice_adapter	3	Slice
 var_source	secret	0	1	reader	5	expr_source Var arm reader (Slice 5)
 var_source	taint_source	0	1	reader	5	expr_source Var arm reader (Slice 5)
 var_source	tainted	0	1	reader	5	expr_source Var arm reader (Slice 5)
-__totals__	-	88	37	-	-	totals
+__totals__	-	84	37	-	-	totals
