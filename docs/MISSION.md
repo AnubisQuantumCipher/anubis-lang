@@ -15,6 +15,9 @@ The current `tests/soundness/matrix/run.sh` records a source- and binary-bound
 provisional receipt. It always reports `INCOMPLETE` until a reviewed canonical
 diagnostic-expectation manifest and safe history publication exist. Older
 `history.tsv` rows remain historical measurements, not results of the new runner.
+The fixed-path canonical inventory loader is banked at `b3ddf665` with a
+[scoped receipt](evidence/MATRIX_CANONICAL_LOADER_2026-09-26.md); no live
+canonical manifest is checked in and no full-matrix completion is claimed.
 
 ## Finish lines
 
@@ -102,7 +105,7 @@ design review approved the oracles and held a call-boundary-only workaround:
 the direct source walker and interprocedural summary also collapse protected
 fields into root secrecy.
 
-The next implementation dependency is a typed distinction between protected
+The next soundness implementation dependency is a typed distinction between protected
 struct fields and whole-value secrecy, carried through direct reads, calls,
 aliases, returns, joins and writes. Preserve the negative controls and compare
 all frozen forms on the same source-bound pins before claiming restored
@@ -111,13 +114,14 @@ precision. In parallel, connect the
 to checker/lowering and package admission; the valid transitive package still
 fails at `ANUBIS_DEP_PROOF_UNVERIFIED`. The honest FAIL-bundle verifier v10
 scratch patch remains withheld after a destructive rebase and source-scope
-overclaim. Independent review held v11 because it mislabeled a no-obligation
-check as a solver run and put a Research check in the host test target. A
-narrow v12 scratch patch must receive fresh review before lead testing. The matrix
-[canonical-manifest dependency](mission/REQUIREMENTS.md) remains open: typed
-expectations alone cannot bind diagnostics lacking source locators. Preserve
-the old `history.tsv` and add compact event history only after that gate is
-reviewed. `docs/CLAIMS.md` is the defect authority.
+overclaim. Later independent review required an honest no-solver-query status,
+removed an active Research host test and closed stripped-refusal authority
+paths. The frozen v15 scratch patch is awaiting lead-owned source-bound tests;
+its archived v3 producer compatibility is explicitly unproved. The matrix
+[canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
+the new fixed-path loader: production diagnostics still lack complete stable
+source locators. Preserve the old `history.tsv` and add compact event history
+only after that gate is reviewed. `docs/CLAIMS.md` is the defect authority.
 
 No current full workspace, hosted, disposable-guest, independent clean-room,
 protected-branch, product-release, or full trust-chain result is claimed.
