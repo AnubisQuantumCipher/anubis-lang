@@ -68,6 +68,10 @@ pub struct SourceTreeEntry {
 pub struct EvidenceBundle {
     pub dir: PathBuf,
     pub manifest: EvidenceManifest,
+    /// The analysis limit the bundle's own analysis stopped at (its re-check, or the derivation of
+    /// its claim), with no finding before it: the bundle records no verdict about the program, and
+    /// the command reports this limit rather than a program verdict.
+    pub limit: Option<String>,
 }
 
 fn sha256_bytes(data: &[u8]) -> String {
@@ -182,6 +186,123 @@ pub fn build_rejected_evidence_bundle_tree(
     )
 }
 
+/// The bundle's own validator, copied into every evidence directory.
+///
+/// It answers two different questions and never conflates them:
+///
+///   1. Has anything been edited?  Every file in MANIFEST.sha256 is re-hashed.
+///   2. Do the proofs actually check?  Every exported DRAT refutation is
+///      replayed against its DIMACS CNF with an external checker.
+///
+/// The second question is the one that matters, and a validator that only
+/// answered the first was reporting "OK" for a bundle whose proofs had never
+/// been re-derived. When no DRAT checker is installed the script says so in
+/// plain words and exits non-zero rather than implying the proofs passed:
+/// "unchecked" is not "verified".
+///
+/// `sha256sum` is tried before `shasum` because Linux is the primary target and
+/// a stock Linux box has coreutils but not necessarily perl's shasum.
+const VALIDATE_SH: &str = r#"#!/usr/bin/env sh
+# Self-contained evidence validation. No 'anubis' binary is used, by design:
+# a bundle you can only check with the tool that produced it is not evidence.
+set -eu
+DIR=$(dirname "$0")
+
+# ---- pick a SHA-256 tool (Linux first, then macOS) --------------------------
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+  echo 'validate.sh: no sha256sum or shasum on PATH' >&2
+  exit 2
+fi
+
+# ---- 1. integrity: nothing in the bundle was edited --------------------------
+if [ ! -f "$DIR/MANIFEST.sha256" ]; then
+  echo 'MISSING MANIFEST.sha256' >&2
+  exit 1
+fi
+while read -r line; do
+  [ -z "$line" ] && continue
+  hash=$(echo "$line" | cut -d' ' -f1)
+  file=$(echo "$line" | cut -d' ' -f2- | xargs)
+  if [ -f "$DIR/$file" ]; then
+    actual=$(sha256 "$DIR/$file")
+    if [ "$actual" != "$hash" ]; then
+      echo "TAMPER: $file hash mismatch" >&2
+      exit 1
+    fi
+  else
+    echo "MISSING: $file" >&2
+    exit 1
+  fi
+done < "$DIR/MANIFEST.sha256"
+echo 'integrity: OK (every file matches MANIFEST.sha256)'
+
+# ---- 2. proofs: replay every refutation with an external checker -------------
+PROOF_DIR="$DIR/analysis/proofs"
+if [ ! -d "$PROOF_DIR" ]; then
+  echo 'proofs: none exported in this bundle'
+  echo 'validate.sh: OK (integrity only)'
+  exit 0
+fi
+
+total=0
+for cnf in "$PROOF_DIR"/obligation_*.cnf; do
+  [ -e "$cnf" ] || break
+  total=$((total + 1))
+done
+if [ "$total" -eq 0 ]; then
+  echo 'proofs: none exported in this bundle'
+  echo 'validate.sh: OK (integrity only)'
+  exit 0
+fi
+
+if command -v drat-trim >/dev/null 2>&1; then
+  CHECKER=drat-trim
+elif command -v cake_lpr >/dev/null 2>&1; then
+  CHECKER=cake_lpr
+else
+  echo "proofs: $total refutation(s) present but NOT REPLAYED: no drat-trim or cake_lpr on PATH" >&2
+  echo 'validate.sh: INCOMPLETE - integrity checked, proofs unchecked' >&2
+  echo '  install a DRAT checker and re-run; unchecked is not verified' >&2
+  exit 3
+fi
+
+checked=0
+for cnf in "$PROOF_DIR"/obligation_*.cnf; do
+  [ -e "$cnf" ] || break
+  drat="${cnf%.cnf}.drat"
+  name=$(basename "$cnf" .cnf)
+  if [ ! -f "$drat" ]; then
+    echo "PROOF MISSING: $name has a formula but no refutation" >&2
+    exit 1
+  fi
+  # The checker's EXIT CODE is the verdict, not its stdout: drat-trim prefixes
+  # its "s VERIFIED" line with a carriage return, so matching on text silently
+  # fails. 0 means the refutation re-derived the empty clause; nonzero means it
+  # did not, which is exactly what a forged, empty, or satisfiable input gives.
+  if "$CHECKER" "$cnf" "$drat" >/dev/null 2>&1; then
+    checked=$((checked + 1))
+  else
+    echo "PROOF FAILED: $name did not replay under $CHECKER" >&2
+    exit 1
+  fi
+done
+echo "proofs: $checked/$total refutation(s) replayed and VERIFIED by $CHECKER"
+
+# What this does and does not establish, stated in the artifact itself.
+cat <<'NOTE'
+validate.sh: OK
+  established: every bundled file is unedited, and every exported refutation
+               re-derives the empty clause under an external checker.
+  NOT established: that each CNF is the faithful encoding of its .smt2, or that
+               each .smt2 is the faithful obligation for the source. That link
+               is still the compiler's word. See analysis/proofs.json.
+NOTE
+"#;
+
 #[allow(clippy::too_many_arguments)]
 fn build_evidence_bundle_tree_inner(
     files: &[(String, Vec<u8>)],
@@ -195,7 +316,23 @@ fn build_evidence_bundle_tree_inner(
     rejection: Option<&str>,
 ) -> Result<EvidenceBundle, String> {
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let dir = out_base.join(format!("evidence-{}-{}", ts, mode));
+    // The bundle is written under a name ending in `.partial` and renamed when it is complete: a
+    // process the allocator ends at the hard budget or the reserve (it cannot unwind) left a bundle
+    // whose evidence and manifest said PASS but had no claim or hashes (eighth review of the checker
+    // limits, B8-4).
+    // The name is this build's own (process and sequence number): checks started in one directory
+    // in the same second must not write into, or clear, each other's unfinished bundle.
+    let final_name = format!("evidence-{}-{}", ts, mode);
+    static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = out_base.join(format!(
+        ".{final_name}.{}.{}.partial",
+        std::process::id(),
+        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    if dir.exists() {
+        // Left by an earlier process of the same number, in the same second: unfinished.
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let source_hash = crate::package::merkle::merkle_root(files.to_vec());
@@ -309,7 +446,25 @@ fn build_evidence_bundle_tree_inner(
         },
     });
 
-    if let Ok(ast) = parse_res {
+    // A check refused at the analysis limit ran out of stack or memory; running the same analysis
+    // again for the bundle would only repeat that (and double the time to the refusal).
+    // A limit refusal is a refusal of the analysis of a program that parsed (a parse error's
+    // rendering begins with the input's path, which can be anything).
+    let limit_refusal =
+        parse_res.is_ok() && rejection.is_some_and(crate::diagnostics::is_analysis_limit);
+    if limit_refusal {
+        checks.push(Check {
+            name: "typecheck".into(),
+            status: "FAIL".into(),
+            detail: "not run again: the command's check reached the analysis limit \
+                     (command_rejection)"
+                .into(),
+        });
+    }
+    // The analysis limit this bundle's own analysis stopped at, with no finding before it (see
+    // [`EvidenceBundle::limit`]).
+    let mut lane_limit: Option<String> = None;
+    if let (Ok(ast), false) = (parse_res, limit_refusal) {
         let tc_mode = match mode {
             "research" => crate::frontend::Mode::Research,
             "exploit" => crate::frontend::Mode::Exploit,
@@ -346,8 +501,40 @@ fn build_evidence_bundle_tree_inner(
                     for (i, c) in solver_checks.iter().enumerate() {
                         let stem = format!("obligation_{i:04}");
                         let _ = std::fs::write(pdir.join(format!("{stem}.smt2")), &c.smt);
+                        // Refuted only over an over-approximated value: the encoded query has a
+                        // model, but that is not a counterexample to the program, so the native
+                        // solver's SAT label would misstate it.
+                        if c.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL {
+                            index.push(serde_json::json!({
+                                "obligation": c.name,
+                                "status": c.status,
+                                "proof": "undecided_overapproximated",
+                                "smt": format!("analysis/proofs/{stem}.smt2"),
+                            }));
+                            continue;
+                        }
+                        // Never encoded, so there is no query to prove or refute. Handing its
+                        // comment-only `.smt2` to the native solver would label the row as a
+                        // counterexample or a deferral — both false.
+                        if c.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL {
+                            index.push(serde_json::json!({
+                                "obligation": c.name,
+                                "status": c.status,
+                                "proof": "unresolved_not_encoded",
+                                "smt": format!("analysis/proofs/{stem}.smt2"),
+                            }));
+                            continue;
+                        }
                         match anubis_solver::native_prove_with_artifacts(&c.smt) {
-                            Some((anubis_solver::NativeVerdict::Unsat, Some(a))) => {
+                            // Only an obligation the CHECK accepted gets a published refutation. A
+                            // native refutation of a query the check refused — for any reason: z3
+                            // rejected the query or disagreed, the premises were vacuous, the verdict
+                            // was withdrawn — is not a proof of anything, and a `rup_refutation` row
+                            // would present it as one. The row says only what is true of every such
+                            // case: the check did not accept it.
+                            Some((anubis_solver::NativeVerdict::Unsat, Some(a)))
+                                if c.status == "PASS" =>
+                            {
                                 let _ =
                                     std::fs::write(pdir.join(format!("{stem}.cnf")), &a.cnf_dimacs);
                                 let _ = std::fs::write(
@@ -379,6 +566,9 @@ fn build_evidence_bundle_tree_inner(
                                     "proof": match other {
                                         Some((anubis_solver::NativeVerdict::Sat(_), _)) =>
                                             "counterexample_no_refutation",
+                                        Some((anubis_solver::NativeVerdict::Unsat, _))
+                                            if c.status != "PASS" =>
+                                            "refutation_not_accepted_by_check",
                                         Some(_) => "unsat_without_published_certificate",
                                         None => "declined_by_native_solver_deferred",
                                     },
@@ -408,10 +598,20 @@ fn build_evidence_bundle_tree_inner(
                     } else {
                         true
                     };
-                    let replay_json = serde_json::json!({
-                        "status": if replay { "counterexample_replayed" } else { "replay_failed" },
-                        "replay_valid": replay
-                    });
+                    // An unencoded obligation has no counterexample to replay; say so rather than
+                    // reporting a replay that never happened.
+                    let replay_json = if first.detail
+                        == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
+                    {
+                        serde_json::json!({ "status": "not_encoded", "replay_valid": false })
+                    } else if first.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL {
+                        serde_json::json!({ "status": "overapproximated_not_replayed", "replay_valid": false })
+                    } else {
+                        serde_json::json!({
+                            "status": if replay { "counterexample_replayed" } else { "replay_failed" },
+                            "replay_valid": replay
+                        })
+                    };
                     let _ = std::fs::write(
                         dir.join("analysis").join("solver_replay.json"),
                         serde_json::to_string_pretty(&replay_json).unwrap(),
@@ -475,11 +675,21 @@ fn build_evidence_bundle_tree_inner(
                         .join(","),
                 });
             }
-            Err(err) => checks.push(Check {
-                name: "typecheck".into(),
-                status: "FAIL".into(),
-                detail: err,
-            }),
+            Err(err) => {
+                // The re-check is a request of its own: stopped at a limit (another process took
+                // the memory, or two checks share a scope) with nothing found, it says nothing
+                // about the program the command already checked (B8-2).
+                if crate::diagnostics::is_analysis_limit(&err)
+                    && !crate::middle::last_analysis_kept_findings()
+                {
+                    lane_limit = Some(err.clone());
+                }
+                checks.push(Check {
+                    name: "typecheck".into(),
+                    status: "FAIL".into(),
+                    detail: err,
+                })
+            }
         }
     }
 
@@ -535,6 +745,42 @@ fn build_evidence_bundle_tree_inner(
         }
     }
 
+    // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
+    // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Derived before
+    // the manifest is written, so a limit it stops at is in the bundle's verdict: the claim's own
+    // analysis is a third request, and a limit there was written as `typecheck_ok: false, verdict:
+    // FAIL` under a command that had passed, rc 0 (B8-3). A limit refusal's claim is not
+    // re-derived (its tier and verdict are set below), nor one whose re-check already stopped.
+    let derived = if limit_refusal || lane_limit.is_some() {
+        derive_claim(&source, mode, false)
+    } else {
+        derive_claim_bound(&dir, &source, mode)
+    };
+    if lane_limit.is_none() && derived.limit.is_some() && !derived.kept_finding {
+        lane_limit = Some(derived.limit_text.clone().unwrap_or_else(|| {
+            "ANUBIS_ANALYSIS_LIMIT: the analysis of the bundle's claim stopped at the analysis \
+             limit"
+                .into()
+        }));
+    }
+    let mut claim = derived.claim;
+    if rejection.is_none() {
+        if let Some(limit) = &lane_limit {
+            checks.push(Check {
+                name: "evidence_analysis_limit".into(),
+                status: "FAIL".into(),
+                detail: format!(
+                    "this bundle's own analysis stopped at the analysis limit, so it records no \
+                     verdict about the program: {limit}"
+                ),
+            });
+            claim = derive_claim(&source, mode, false).claim;
+            claim.tier = "rejected".into();
+            claim.rejection = Some(limit.clone());
+            claim.verdict = "FAIL".into();
+        }
+    }
+
     write_json(&dir.join("hir.json"), &hir_json)?;
     write_json(&dir.join("mir.json"), &mir_json)?;
     write_json(&dir.join("taint-traces.json"), &taint_json)?;
@@ -549,11 +795,7 @@ fn build_evidence_bundle_tree_inner(
 
     let report = build_bounty_report(mode, lane, &checks);
     std::fs::write(dir.join("bounty-report.md"), &report).map_err(|e| e.to_string())?;
-    std::fs::write(
-        dir.join("validate.sh"),
-        "#!/usr/bin/env sh\nset -eu\n# Self-contained bundle validation (no 'anubis' CLI dependency to avoid arg parsing errors).\n# Checks that all files listed in MANIFEST.sha256 still match their recorded hashes.\nDIR=$(dirname \"$0\")\nif [ ! -f \"$DIR/MANIFEST.sha256\" ]; then\n  echo 'MISSING MANIFEST.sha256' >&2\n  exit 1\nfi\nwhile read -r line; do\n  [ -z \"$line\" ] && continue\n  hash=$(echo \"$line\" | cut -d' ' -f1)\n  file=$(echo \"$line\" | cut -d' ' -f2- | xargs)\n  if [ -f \"$DIR/$file\" ]; then\n    actual=$(shasum -a 256 \"$DIR/$file\" | cut -d' ' -f1)\n    if [ \"$actual\" != \"$hash\" ]; then\n      echo \"TAMPER: $file hash mismatch\" >&2\n      exit 1\n    fi\n  else\n    echo \"MISSING: $file\" >&2\n    exit 1\n  fi\ndone < \"$DIR/MANIFEST.sha256\"\necho 'validate.sh: OK'\n",
-    )
-    .map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("validate.sh"), VALIDATE_SH).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -616,19 +858,50 @@ fn build_evidence_bundle_tree_inner(
     std::fs::write(dir.join("evidence.json"), &json).map_err(|e| e.to_string())?;
     // v1 schema prefers manifest.json as well
     std::fs::write(dir.join("manifest.json"), &json).map_err(|e| e.to_string())?;
-    // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
-    // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Written before
-    // the manifest hashing so it is covered by MANIFEST.sha256.
-    let mut claim = derive_claim_block_bound(&dir, &source, mode);
+    // The claim block (derived above) is written before the manifest hashing so it is covered by
+    // MANIFEST.sha256.
     if let Some(rejection) = rejection {
         claim.tier = "rejected".into();
         claim.rejection = Some(rejection.to_string());
         claim.verdict = "FAIL".into();
     }
     write_json(&dir.join("pca.json"), &claim)?;
+    // anubis.program-evidence.v3: assembled from the sealed bundle files and covered by the
+    // manifest below. Best-effort — a program that does not fully discharge simply omits it and
+    // the downstream verifier fail-closes on the missing v3 document.
+    if let Err(err) = emit_program_evidence_v3(&dir) {
+        eprintln!("program-evidence.v3 skipped: {err}");
+    }
     write_manifest_hashes(&dir)?;
 
-    Ok(EvidenceBundle { dir, manifest })
+    // Complete: under its own name (a new one, if a bundle of this second already holds it, or
+    // another process takes it first: a directory is never renamed over one that has files).
+    let mut n = 1;
+    let done = loop {
+        let name = if n == 1 {
+            final_name.clone()
+        } else {
+            format!("{final_name}-{n}")
+        };
+        let done = out_base.join(name);
+        if !done.exists() {
+            match std::fs::rename(&dir, &done) {
+                Ok(()) => break done,
+                Err(e) if !done.exists() => return Err(e.to_string()),
+                Err(_) => {}
+            }
+        }
+        n += 1;
+    };
+    Ok(EvidenceBundle {
+        dir: done,
+        manifest,
+        limit: if rejection.is_none() {
+            lane_limit
+        } else {
+            None
+        },
+    })
 }
 
 pub fn validate_bundle(dir: &Path) -> Result<bool, String> {
@@ -746,6 +1019,26 @@ fn default_solver_backend() -> String {
 /// Re-derive the claim block from source. Deterministic and side-effect free — the single source of
 /// truth used both when emitting a PCA and when verifying one, so the two agree exactly.
 pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
+    derive_claim(source, mode, true).claim
+}
+
+/// The claim block, and the analysis limit its analysis stopped at, if any (then its verdict is not
+/// a fact about the program). `analyze: false` records the parse only.
+/// A claim block derived from a source, and how its analysis ended.
+struct Derived {
+    claim: ClaimBlock,
+    /// The analysis limit the analysis stopped at, if any.
+    limit: Option<crate::middle::AnalysisLimit>,
+    /// Stopped at a limit: the refusal it stopped with.
+    limit_text: Option<String>,
+    /// Stopped at the memory limit because the memory left ran low (the reserve), not the budget.
+    by_reserve: bool,
+    /// Whether, stopped at a limit, it still reported findings made before it: those hold on any
+    /// machine, so the program does not type-check whatever memory a re-derivation had.
+    kept_finding: bool,
+}
+
+fn derive_claim(source: &str, mode: &str, analyze: bool) -> Derived {
     let source_sha256 = sha256_bytes(source.as_bytes());
     let tc_mode = match mode {
         "research" => crate::frontend::Mode::Research,
@@ -755,10 +1048,21 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     let parse_res = crate::frontend::parse_source(source);
     let parse_ok = parse_res.is_ok();
     let mut typecheck_ok = false;
+    let mut limit = None;
+    let mut limit_text = None;
+    let mut by_reserve = false;
+    let mut kept_finding = false;
     let mut solver_obligations = 0usize;
     let mut solver_all_discharged = true;
-    if let Ok(ast) = parse_res {
-        if let Ok(ir) = crate::middle::typecheck(ast, tc_mode) {
+    if let (Ok(ast), true) = (parse_res, analyze) {
+        let typed = crate::middle::typecheck(ast, tc_mode);
+        limit = crate::middle::last_analysis_limit();
+        kept_finding = crate::middle::last_analysis_kept_findings();
+        by_reserve = crate::middle::last_analysis_by_reserve();
+        if let (Err(e), Some(_)) = (&typed, limit) {
+            limit_text = Some(e.clone());
+        }
+        if let Ok(ir) = typed {
             typecheck_ok = true;
             let tainted = crate::middle::TaintPass::apply(ir);
             // The earlier schema translated `typecheck` returning Ok into `taint_clean: true`.
@@ -777,23 +1081,29 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     } else {
         "FAIL"
     };
-    ClaimBlock {
-        pca_version: 2,
-        source_sha256,
-        mode: mode.to_string(),
-        tier: "checked".into(),
-        rejection: None,
-        parse_ok,
-        typecheck_ok,
-        solver_obligations,
-        solver_all_discharged,
-        solver_backend: default_solver_backend(),
-        zk_present: false,
-        zk_image_id: None,
-        zk_receipt_sha256: None,
-        zk_journal_sha256: None,
-        verdict: verdict.into(),
-        tool: tool_identity(),
+    Derived {
+        claim: ClaimBlock {
+            pca_version: 2,
+            source_sha256,
+            mode: mode.to_string(),
+            tier: "checked".into(),
+            rejection: None,
+            parse_ok,
+            typecheck_ok,
+            solver_obligations,
+            solver_all_discharged,
+            solver_backend: default_solver_backend(),
+            zk_present: false,
+            zk_image_id: None,
+            zk_receipt_sha256: None,
+            zk_journal_sha256: None,
+            verdict: verdict.into(),
+            tool: tool_identity(),
+        },
+        limit,
+        limit_text,
+        by_reserve,
+        kept_finding,
     }
 }
 
@@ -868,14 +1178,19 @@ pub fn derive_zk_binding(dir: &Path) -> Option<ZkBinding> {
 /// when the bundle carries a genuine receipt. Used both when emitting a PCA and when verifying one,
 /// so the two agree exactly (including the ZK fields).
 pub fn derive_claim_block_bound(dir: &Path, source: &str, mode: &str) -> ClaimBlock {
-    let mut cb = derive_claim_block(source, mode);
+    derive_claim_bound(dir, source, mode).claim
+}
+
+/// [`derive_claim_block_bound`], and how its analysis ended.
+fn derive_claim_bound(dir: &Path, source: &str, mode: &str) -> Derived {
+    let mut d = derive_claim(source, mode, true);
     if let Some(zk) = derive_zk_binding(dir) {
-        cb.zk_present = true;
-        cb.zk_image_id = Some(zk.image_id);
-        cb.zk_receipt_sha256 = Some(zk.receipt_sha256);
-        cb.zk_journal_sha256 = Some(zk.journal_sha256);
+        d.claim.zk_present = true;
+        d.claim.zk_image_id = Some(zk.image_id);
+        d.claim.zk_receipt_sha256 = Some(zk.receipt_sha256);
+        d.claim.zk_journal_sha256 = Some(zk.journal_sha256);
     }
-    cb
+    d
 }
 
 /// Verify a Proof-Carrying Artifact: first the hash / tamper validation, then — the PCA hardening —
@@ -915,11 +1230,6 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // source. (Also implied by `fresh == recorded`, but asserted directly so the source↔claim tie
     // can never drift.)
     let source_bound = recorded.source_sha256 == sha256_bytes(source.as_bytes());
-    // Re-derive the full claim — including the ZK binding — from the bundle's own artifacts. A
-    // tampered receipt, a swapped ImageID, or a claim that lies about carrying a receipt makes the
-    // re-derived block differ from the recorded one and fails closed here (the CLI additionally
-    // re-verifies the receipt cryptographically against the ImageID).
-    let fresh = derive_claim_block_bound(dir, &source, &recorded.mode);
     // If the bundle is signed, the signature must verify over the current claim + manifest. An
     // unsigned bundle is still a valid (unsigned) PCA. A forged/invalid signature fails closed.
     let sig_ok = match pca_signature_status(dir)? {
@@ -973,12 +1283,52 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
             true // legacy bundle without an entitlement profile
         }
     };
-    Ok(hashes_ok
-        && source_bound
-        && sig_ok
-        && confine_ok
-        && entitlement_ok
-        && claim_semantically_matches(&fresh, &recorded))
+    // A claim no derivation produces is refuted as it stands: a PASS needs the parse, the type
+    // check and every obligation discharged, and no rejection (a forged PASS with `typecheck_ok:
+    // false` was answered "could not be re-derived" when the re-derivation stopped at a limit;
+    // eighth review of the checker limits, E3).
+    let consistent = recorded.verdict != "PASS"
+        || (recorded.parse_ok
+            && recorded.typecheck_ok
+            && recorded.solver_all_discharged
+            && recorded.rejection.is_none());
+    // Integrity decides first, before any re-derivation (which can stop at a limit, or end the
+    // process at the hard memory budget): a bundle whose files, source binding, signature,
+    // confinement or entitlements do not check is invalid, whatever the analysis could re-derive.
+    if !(hashes_ok && source_bound && sig_ok && confine_ok && entitlement_ok && consistent) {
+        return Ok(false);
+    }
+    // Re-derive the full claim — including the ZK binding — from the bundle's own artifacts. A
+    // tampered receipt, a swapped ImageID, or a claim that lies about carrying a receipt makes the
+    // re-derived block differ from the recorded one and fails closed here (the CLI additionally
+    // re-verifies the receipt cryptographically against the ImageID).
+    let derived = derive_claim_bound(dir, &source, &recorded.mode);
+    let matches = claim_semantically_matches(&derived.claim, &recorded);
+    // A re-derivation stopped by the MEMORY budget of this machine neither confirms nor refutes an
+    // intact bundle's claim: say so, rather than "invalid", which reads as tampering. A stack or
+    // closure-depth limit is the same on every machine, so the claim it could not re-derive is
+    // refuted as it stands. So is a claim that the program type-checks when the stopped analysis
+    // still found something wrong before the limit: that finding holds on any machine.
+    if !matches && derived.limit == Some(crate::middle::AnalysisLimit::Memory) {
+        if derived.kept_finding && (recorded.typecheck_ok || recorded.verdict == "PASS") {
+            return Ok(false);
+        }
+        // The reserve, not the budget, may have stopped it: then more budget does not help (E5).
+        return Err(if derived.by_reserve {
+            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the memory left to the \
+             check (on the machine, or in the memory-capped cgroup it runs in) fell below the \
+             reserve the checker keeps free, so the intact bundle is neither confirmed nor \
+             refuted (other processes are using the memory it needs, and raising \
+             ANUBIS_ANALYSIS_MEMORY_MIB does not change that: run it with more memory free)"
+        } else {
+            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the checker's \
+             analysis reached its memory budget on this machine, so the intact bundle is \
+             neither confirmed nor refuted (give the check more memory: \
+             ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
+        }
+        .into());
+    }
+    Ok(matches)
 }
 
 /// The `pca.sig` sidecar: an Ed25519 signature over the PCA, written OUTSIDE `MANIFEST.sha256` (it
@@ -1070,6 +1420,312 @@ pub fn pca_signature_status(dir: &Path) -> Result<Option<(bool, String)>, String
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+/// Canonical JSON matching Python `json.dumps(sort_keys=True, separators=(",", ":"),
+/// ensure_ascii=False)`: recursively key-sorted, compact, non-ASCII emitted raw. Object keys
+/// are ASCII throughout this schema, so byte-wise sort equals Python's codepoint sort. Scalars
+/// reuse serde_json's escaping/number formatting, which matches Python for this integer/ASCII
+/// data. Used to reproduce, in the compiler, the exact obligation/function digests the frozen
+/// `anubis_program_verify` recomputes from the sealed bundle files.
+fn canonical_json(value: &serde_json::Value, out: &mut String) {
+    match value {
+        serde_json::Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                canonical_json(item, out);
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, key) in keys.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).unwrap_or_default());
+                out.push(':');
+                canonical_json(map.get(*key).unwrap(), out);
+            }
+            out.push('}');
+        }
+        scalar => out.push_str(&serde_json::to_string(scalar).unwrap_or_default()),
+    }
+}
+
+fn canonical_sha256(value: &serde_json::Value) -> String {
+    let mut buf = String::new();
+    canonical_json(value, &mut buf);
+    sha256_bytes(buf.as_bytes())
+}
+
+fn stage_authority(stage: &str) -> &'static str {
+    match stage {
+        "parse" => "anubis-frontend-parser",
+        "typecheck" => "anubis-typecheck",
+        "monomorphization" => "anubis-monomorphization-inventory",
+        "policy-effects" => "anubis-typecheck-effect-inventory",
+        "policy-capability" => "anubis-confinement-derivation",
+        "policy-information-flow" => "anubis-taint-pass",
+        "policy-declassification" => "anubis-source-walker",
+        "symbolic" => "anubis-symbolic-engine",
+        "solver" => "anubis-solver-native-rup",
+        "source-binding" => "anubis-source-merkle",
+        "artifact-binding" => "anubis-artifact-sha256",
+        "evidence-closure" => "anubis-manifest-sha256",
+        _ => "anubis",
+    }
+}
+
+const PROGRAM_EVIDENCE_STAGES: [&str; 12] = [
+    "parse",
+    "typecheck",
+    "monomorphization",
+    "policy-effects",
+    "policy-capability",
+    "policy-information-flow",
+    "policy-declassification",
+    "symbolic",
+    "solver",
+    "source-binding",
+    "artifact-binding",
+    "evidence-closure",
+];
+
+/// Assemble `program-evidence.json` (`anubis.program-evidence.v3`) from the already-written
+/// bundle files, matching the frozen `inventory-safe-v1` verifier contract. Emitted only for a
+/// fully-discharged safe program — every obligation an rup_refutation PASS and a native artifact
+/// present — so a partial build fail-closes at the verifier rather than presenting an incomplete
+/// v3 document. Best-effort: any shape it cannot map returns Err and the file is simply skipped.
+fn emit_program_evidence_v3(dir: &Path) -> Result<(), String> {
+    let read_json = |rel: &str| -> Result<serde_json::Value, String> {
+        let bytes = std::fs::read(dir.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("{rel}: {e}"))
+    };
+    let artifact_row = |rel: &str| -> Result<serde_json::Value, String> {
+        let path = dir.join(rel);
+        let sha = sha256_file(&path).ok_or_else(|| format!("{rel}: sha"))?;
+        let bytes = std::fs::metadata(&path)
+            .map_err(|e| format!("{rel}: {e}"))?
+            .len();
+        Ok(serde_json::json!({"path": rel, "sha256": sha, "bytes": bytes}))
+    };
+
+    // Native artifact is mandatory for inventory-safe-v1.
+    let artifact_path = dir.join("artifact");
+    if !artifact_path.is_file() {
+        return Err("no native artifact".into());
+    }
+    let artifact_sha = sha256_file(&artifact_path).ok_or("artifact sha")?;
+
+    let source_bytes = std::fs::read(dir.join("source.anubis")).map_err(|e| e.to_string())?;
+    let source_sha = sha256_bytes(&source_bytes);
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let compiler_sha = sha256_file(&exe).ok_or("compiler self-hash")?;
+    let compiler_basename = exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("anubis")
+        .to_string();
+
+    // Function inventory: recompute ids exactly as the verifier does from hir.json.
+    let hir = read_json("hir.json")?;
+    let functions_val = hir
+        .get("functions")
+        .and_then(|v| v.as_array())
+        .ok_or("hir.functions")?;
+    let mut functions = Vec::new();
+    let mut fids: Vec<serde_json::Value> = Vec::new();
+    for f in functions_val {
+        if f.get("mode").and_then(|m| m.as_str()) != Some("safe") {
+            return Err("non-safe function".into());
+        }
+        let fid = canonical_sha256(f);
+        fids.push(serde_json::Value::String(fid.clone()));
+        functions.push(serde_json::json!({
+            "id": fid,
+            "name": f.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+            "module": f.get("module").cloned().unwrap_or(serde_json::Value::Null),
+            "mode": f.get("mode").and_then(|v| v.as_str()).unwrap_or(""),
+            "effects": f.get("effects").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "param_count": f.get("params").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+            "symbol_count": f.get("symbols").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+        }));
+    }
+    let fids_val = serde_json::Value::Array(fids);
+
+    // Solver inventory from analysis/proofs.json (order preserved to match solver.json).
+    let proofs = read_json("analysis/proofs.json")?;
+    let proof_rows = proofs
+        .get("obligations")
+        .and_then(|v| v.as_array())
+        .ok_or("proofs.obligations")?;
+    let mut obligations = Vec::new();
+    for row in proof_rows {
+        if row.get("proof").and_then(|v| v.as_str()) != Some("rup_refutation")
+            || row.get("status").and_then(|v| v.as_str()) != Some("PASS")
+        {
+            return Err("obligation without published rup refutation".into());
+        }
+        let name = row
+            .get("obligation")
+            .and_then(|v| v.as_str())
+            .ok_or("obligation name")?;
+        let smt_p = row.get("smt").and_then(|v| v.as_str()).ok_or("smt path")?;
+        let cnf_p = row
+            .get("cnf_dimacs")
+            .and_then(|v| v.as_str())
+            .ok_or("cnf path")?;
+        let drat_p = row
+            .get("proof_drat")
+            .and_then(|v| v.as_str())
+            .ok_or("drat path")?;
+        let smt_sha = sha256_file(&dir.join(smt_p)).ok_or("smt sha")?;
+        let cnf_sha = sha256_file(&dir.join(cnf_p)).ok_or("cnf sha")?;
+        let drat_sha = sha256_file(&dir.join(drat_p)).ok_or("drat sha")?;
+        let stable = serde_json::json!({
+            "name": name,
+            "smt_sha256": smt_sha,
+            "cnf_sha256": cnf_sha,
+            "proof_sha256": drat_sha,
+        });
+        obligations.push(serde_json::json!({
+            "id": canonical_sha256(&stable),
+            "name": name,
+            "status": "PASS",
+            "proof_kind": "rup_refutation",
+            "smt_path": smt_p,
+            "smt_sha256": smt_sha,
+            "cnf_path": cnf_p,
+            "cnf_sha256": cnf_sha,
+            "proof_path": drat_p,
+            "proof_sha256": drat_sha,
+            "num_vars": row.get("num_vars").cloned().unwrap_or_else(|| serde_json::json!(0)),
+            "num_clauses": row.get("num_clauses").cloned().unwrap_or_else(|| serde_json::json!(0)),
+            "steps": row.get("steps").cloned().unwrap_or_else(|| serde_json::json!(0)),
+            "checker": row.get("checker").and_then(|v| v.as_str()).unwrap_or(""),
+            "checker_version": row.get("checker_version").and_then(|v| v.as_str()).unwrap_or(""),
+        }));
+    }
+    if obligations.is_empty() {
+        return Err("zero obligations".into());
+    }
+    let verified = obligations.len();
+
+    let declassifications = read_json("declassify_audit.json")
+        .ok()
+        .and_then(|v| {
+            v.get("declassifications")
+                .and_then(|d| d.as_array())
+                .map(|a| a.len())
+        })
+        .unwrap_or(0);
+    let capabilities = read_json("confinement_manifest.json")
+        .ok()
+        .and_then(|v| {
+            v.get("capabilities_present")
+                .and_then(|d| d.as_array())
+                .map(|a| a.len())
+        })
+        .unwrap_or(0);
+    let taint_count = read_json("taint-traces.json")?
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let mono_count = read_json("mono_specializations.json")?
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let mir_count = read_json("mir.json")?
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    let mut consumers = Vec::new();
+    for cid in ["effects", "capability", "information-flow"] {
+        consumers.push(serde_json::json!({
+            "id": cid,
+            "status": "PASS",
+            "authority": "anubis-typecheck-producer-attested",
+            "subjects": fids_val.clone(),
+        }));
+    }
+    consumers.push(serde_json::json!({
+        "id": "declassification",
+        "status": "PASS",
+        "authority": "anubis-source-walker-producer-attested",
+        "subjects": {"count": declassifications},
+    }));
+    consumers.push(serde_json::json!({
+        "id": "mode",
+        "status": "PASS",
+        "authority": "anubis-typecheck-producer-attested",
+        "subjects": fids_val.clone(),
+    }));
+    consumers.push(serde_json::json!({
+        "id": "contracts",
+        "status": "PASS",
+        "authority": "anubis-typecheck-producer-attested",
+        "subjects": {"solver_obligation_count": verified},
+    }));
+
+    let stages: Vec<serde_json::Value> = PROGRAM_EVIDENCE_STAGES
+        .iter()
+        .map(|s| serde_json::json!({"id": s, "status": "PASS", "authority": stage_authority(s)}))
+        .collect();
+
+    let program = serde_json::json!({
+        "schema": "anubis.program-evidence.v3",
+        "version": 3,
+        "mode": "safe",
+        "source": {
+            "path": "source.anubis",
+            "sha256": source_sha,
+            "merkle": source_sha,
+            "bytes": source_bytes.len(),
+        },
+        "compiler": {
+            "tool": tool_identity(),
+            "path_basename": compiler_basename,
+            "sha256": compiler_sha,
+        },
+        "artifacts": {
+            "hir": artifact_row("hir.json")?,
+            "mir": artifact_row("mir.json")?,
+            "taint": artifact_row("taint-traces.json")?,
+            "solver": artifact_row("solver.json")?,
+            "monomorphization": artifact_row("mono_specializations.json")?,
+            "native": {"path": "artifact", "sha256": artifact_sha},
+        },
+        "stages": stages,
+        "solver_inventory": {"count": verified, "obligations": obligations},
+        "policy_inventory": {
+            "functions": functions,
+            "consumers": consumers,
+            "capabilities_present_count": capabilities,
+            "taint_trace_count": taint_count,
+            "monomorphization_count": mono_count,
+            "mir_function_count": mir_count,
+        },
+        "residual_non_claims": [
+            "no-source-to-vc-proof",
+            "no-smt-to-cnf-proof",
+            "no-source-native-refinement",
+            "no-universal-language-soundness",
+            "policy-semantics-producer-attested",
+            "runtime-not-observed",
+            "derived-confinement-is-not-os-enforcement",
+        ],
+    });
+
+    let text = serde_json::to_string_pretty(&program).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("program-evidence.json"), text).map_err(|e| e.to_string())
 }
 
 fn capture_environment() -> EnvironmentCapture {
@@ -1506,34 +2162,44 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
 mod pca_tests {
     use super::*;
 
-    fn known_place_assignment_leak() -> &'static str {
-        // Was: `let b = Box { f: plain }; b.f = key; let g = b.f; print(g());` — the
-        // `let`-bound-alias place-assignment carrier `docs/CLAIMS.md` item 21 named as a true
-        // accept. That exact shape is now CLOSED (Completion Phase 4, 2026-08-15):
-        // `fn_alias_of_d` gained a `FieldAccess`/`Index` arm resolving through
-        // `field_fn_identities` — the same multi-candidate spine `fn_identities_of` already used
-        // — so `check` now correctly rejects it with `ANUBIS_SECRET_EXFILTRATION`. Using it here
-        // would make this poison fixture a "vacuous rejected input" instead of a live known false
-        // accept, which is exactly the failure mode this test exists to catch.
-        //
-        // The DIRECT method-call-syntax variant — calling the stored closure immediately via
-        // `obj.field()` with no intermediate `let` — remains open: `Expr::CallExpr` (parsed
-        // identically to a genuine method call) resolves callee identity only through
-        // `method_returns_param`/`method_sole_return`, never through `field_fn_identities`, so a
-        // field holding a dynamically place-assigned closure is invisible to it regardless of how
-        // well the write side is tracked. Confirmed still-leaking on the post-fix binary and
-        // identical on the pre-fix binary (not a regression from the Phase 4 fix; a separate,
-        // pre-existing residual named in the Phase 4 completion evidence).
+    /// An ACCEPTED program that handles untrusted input without letting it reach a sink. The three
+    /// tests below use it to build a legitimate bundle.
+    ///
+    /// These tests used to require a LIVE known false accept (a program `check` accepted while it
+    /// leaked at runtime), repointed to the next open specimen each time one was fixed: first
+    /// `b.f = key; let g = b.f; print(g());` (closed in Completion Phase 4), then
+    /// `b.f = key; print(b.f());` (closed by the item-21 Family-2 slice), then the taint
+    /// sink-argument carrier `b.f = |x| shell(x); b.f(input())` (closed by the item-21
+    /// sink-argument slice). A test suite that needs a vulnerability to stay open works against
+    /// fixing it.
+    ///
+    /// The properties do not depend on a leak. The PCA pipeline never derives a `taint_clean`
+    /// guarantee (typecheck success is not a noninterference proof), so a v2 claim must not contain
+    /// one, and `verify_pca` must reject one that was injected and re-hashed — whether or not the
+    /// injected claim happens to be true of the program. That is a stronger statement than "the
+    /// verifier rejects one particular false claim". The fixture reads `input()` so that a taint
+    /// claim is meaningful for it; `pca_fixture_is_accepted_and_nearby_leak_is_not` pins that it is
+    /// accepted and that the same program printing the input is rejected, so it is not vacuously
+    /// clean.
+    fn accepted_untrusted_input_program() -> &'static str {
         r#"
-struct Box { f: u64 }
-fn plain() -> i64 { return 7; }
-fn key() -> secret<i64> { return 42; }
-fn main() {
-    let b = Box { f: plain };
-    b.f = key;
-    print(b.f());
+fn main() uses(io.read) {
+    let raw = input();
+    let copy = raw;
+    let n = 2 + 3;
+    print(n);
 }
 "#
+    }
+
+    #[test]
+    fn pca_fixture_is_accepted_and_nearby_leak_is_not() {
+        assert!(derive_claim_block(accepted_untrusted_input_program(), "safe").typecheck_ok);
+        let leaky = "fn main() uses(io.read) {\n    let raw = input();\n    print(raw);\n}\n";
+        assert!(
+            !derive_claim_block(leaky, "safe").typecheck_ok,
+            "the control must be rejected, or the fixture proves nothing about taint"
+        );
     }
 
     fn unique_dir(tag: &str) -> PathBuf {
@@ -1555,15 +2221,14 @@ fn main() {
     }
 
     #[test]
-    fn pca_v2_does_not_assert_unearned_taint_clean_for_a_known_leak() {
-        // `docs/CLAIMS.md` item 21 records this place-assignment carrier as a current true accept:
-        // check accepts it and the runtime prints the secret. Until the unified total-flow work can
-        // derive a separate taint theorem, the PCA must report the bounded typecheck result without
-        // translating `typecheck returned Ok` into the stronger `taint_clean: true` guarantee.
-        let claim = derive_claim_block(known_place_assignment_leak(), "safe");
+    fn pca_v2_does_not_assert_unearned_taint_clean_for_an_accepted_program() {
+        // Until a separate taint theorem is derived, the PCA must report the bounded typecheck
+        // result without translating `typecheck returned Ok` into the stronger `taint_clean: true`
+        // guarantee — for every accepted program, not only a leaking one.
+        let claim = derive_claim_block(accepted_untrusted_input_program(), "safe");
         assert!(
             claim.typecheck_ok,
-            "the poison must remain a live known false accept, not become a vacuous rejected input"
+            "the fixture must be an accepted program"
         );
         let json = serde_json::to_value(&claim).unwrap();
         assert_eq!(json["pca_version"], 2);
@@ -1577,7 +2242,7 @@ fn main() {
     fn verify_pca_rejects_legacy_v1_unearned_taint_clean_claim() {
         let base = unique_dir("legacy-taint-claim");
         let bundle = build_evidence_bundle(
-            known_place_assignment_leak(),
+            accepted_untrusted_input_program(),
             "safe",
             None,
             vec![],
@@ -1596,7 +2261,7 @@ fn main() {
 
         assert!(
             validate_bundle(&bundle.dir).unwrap(),
-            "the poison must pass the hash-only layer before semantic verification"
+            "the forged bundle must pass the hash-only layer before semantic verification"
         );
         assert!(
             !matches!(verify_pca(&bundle.dir), Ok(true)),
@@ -1609,7 +2274,7 @@ fn main() {
     fn verify_pca_rejects_rehashed_v2_with_a_retired_taint_claim() {
         let base = unique_dir("v2-retired-taint-claim");
         let bundle = build_evidence_bundle(
-            known_place_assignment_leak(),
+            accepted_untrusted_input_program(),
             "safe",
             None,
             vec![],
@@ -1631,7 +2296,7 @@ fn main() {
 
         assert!(
             validate_bundle(&bundle.dir).unwrap(),
-            "the poison must pass the hash layer before semantic verification"
+            "the forged bundle must pass the hash layer before semantic verification"
         );
         assert!(
             !matches!(verify_pca(&bundle.dir), Ok(true)),
@@ -1664,6 +2329,78 @@ fn main() {
             !verify_pca(&bundle.dir).unwrap(),
             "missing semantic evidence must not downgrade verify to integrity-only success"
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_refutes_a_pass_claim_no_derivation_produces() {
+        // A PASS verdict beside `typecheck_ok: false` (eighth review of the checker limits, E3):
+        // refuted as it stands, not left to a re-derivation that may stop at a limit.
+        let base = unique_dir("inconsistent");
+        let good = "fn main() { let x = 1; print(x); }";
+        let bundle = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        let mut lie = derive_claim_block(good, "safe");
+        assert_eq!(lie.verdict, "PASS");
+        lie.typecheck_ok = false;
+        write_json(&bundle.dir.join("pca.json"), &lie).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle(&bundle.dir).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_bundle_is_complete_under_its_name_and_never_overwritten() {
+        // Built under a `.partial` name and renamed when complete (B8-4); a second bundle of the
+        // same second takes a name of its own.
+        let base = unique_dir("staged");
+        let good = "fn main() { let x = 1; print(x); }";
+        let a = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        let b = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        assert_ne!(a.dir, b.dir);
+        for bundle in [&a, &b] {
+            let name = bundle
+                .dir
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            assert!(name.starts_with("evidence-"), "{name}");
+            assert!(bundle.dir.join("MANIFEST.sha256").exists());
+            assert!(bundle.dir.join("pca.json").exists());
+            assert!(bundle.limit.is_none());
+            assert!(verify_pca(&bundle.dir).unwrap());
+        }
+        let partial = std::fs::read_dir(&base)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().ends_with(".partial"));
+        assert!(!partial);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn bundles_built_side_by_side_in_one_directory_are_all_complete() {
+        // Checks started together in one directory stage apart and take distinct names.
+        let base = unique_dir("side-by-side");
+        let good = "fn main() { let x = 1; print(x); }";
+        let dirs: Vec<std::path::PathBuf> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        build_evidence_bundle(good, "safe", None, vec![], &base, None, None)
+                            .unwrap()
+                            .dir
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let distinct: std::collections::BTreeSet<&std::path::PathBuf> = dirs.iter().collect();
+        assert_eq!(distinct.len(), 4);
+        for dir in &dirs {
+            assert!(verify_pca(dir).unwrap(), "{}", dir.display());
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

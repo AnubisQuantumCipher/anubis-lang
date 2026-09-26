@@ -1,0 +1,13 @@
+struct Item { sku: string, qty: i64, cost: secret<i64> }
+struct Shelf { name: string, items: list<Item> }
+impl Shelf {
+    fn add(self, it) -> Shelf {
+        return Shelf { name: self.name, items: self.items + [it] };
+    }
+}
+fn main() {
+    let b = Shelf { name: "B", items: [] };
+    let b2 = b.add(Item { sku: "nut", qty: 9, cost: 42 });
+    print(b2.name);
+    print(len(b2.items));
+}

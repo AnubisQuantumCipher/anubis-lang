@@ -1,0 +1,23 @@
+struct Scaled { n: i64 }
+struct Plain { n: i64 }
+impl Scaled {
+    fn get(self, f: i64) -> i64 { self.n * f }
+}
+impl Plain {
+    fn get(self) -> i64 { self.n }
+}
+fn audit(x) -> i64 {
+    if x > 100 {
+        println("big");
+    } else {
+        println("small");
+    }
+    1
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let items = [Scaled { n: 3 }, Plain { n: 7 }];
+    let c = items[1];
+    let v = c.get(audit(k));
+    println(v);
+}

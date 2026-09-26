@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h(q: S) { let x = 0; if true { x = q.k; } return x; }
+fn f(q: S) { let y = h(q); return y + 1; }
+fn main() { let p = S { k: 42, pub_n: 3 }; println(f(p)); }

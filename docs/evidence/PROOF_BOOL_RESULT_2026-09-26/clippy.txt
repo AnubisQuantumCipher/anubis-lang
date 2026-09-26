@@ -1,0 +1,3 @@
+    Checking anubis-solver v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-proof-bool/solver)
+    Checking anubis-compiler v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-proof-bool/compiler)
+    Finished `release` profile [optimized] target(s) in 4.54s

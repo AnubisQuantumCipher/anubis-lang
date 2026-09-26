@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn size(v) { return len(v); }
+fn main() { let p = S { k: 42, pub_n: 3 }; let ys = [p, S { k: 7000, pub_n: 1 }]; print(size(filter(ys, |s| len(str(s)) == 21))); }

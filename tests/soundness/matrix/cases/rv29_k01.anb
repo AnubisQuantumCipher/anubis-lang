@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn r(f1, f2, f3, f4, f5, n) {
+    if n == 0 { return f1(0) }
+    return r(|z| f2(z), |z| f3(z), |z| f4(z), |z| f5(z), |z| f1(z), n - 1)
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(r(|z| 1, |z| 2, |z| 3, |z| 4, |z| p, 4));
+}

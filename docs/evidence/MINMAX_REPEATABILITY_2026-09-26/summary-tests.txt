@@ -1,0 +1,16 @@
+   Compiling anubis-compiler v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/compiler)
+    Finished `release` profile [optimized] target(s) in 43.30s
+     Running unittests src/lib.rs (/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/anubis_compiler-21769457dd6f0746)
+
+running 8 tests
+test middle::ifc2::repeatable::tests::return_namespace_is_required_only_in_expression_position ... ok
+test middle::ifc2::repeatable::tests::bounded_fallback_covers_depth_work_and_shared_term_growth ... ok
+test middle::ifc2::repeatable::tests::implicit_statement_tail_and_default_zero_match_lowering ... ok
+test middle::ifc2::repeatable::tests::capture_literals_and_ordered_constructors_are_repeatable ... ok
+test middle::ifc2::repeatable::tests::varying_values_and_unsupported_transfers_do_not_become_stable ... ok
+test middle::ifc2::repeatable::tests::statement_output_and_expression_output_have_different_resolution ... ok
+test middle::ifc2::repeatable::tests::printed_blocks_preserve_outer_mutation_and_lexical_shadowing ... ok
+test middle::ifc2::repeatable::tests::returns_in_print_arguments_and_initializers_stop_continuation ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 907 filtered out; finished in 0.00s
+

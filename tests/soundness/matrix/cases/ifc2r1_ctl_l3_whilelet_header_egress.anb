@@ -1,0 +1,15 @@
+fn next_item(xs, s) {
+    println("next");
+    if len(xs) < s {
+        Some(1)
+    } else {
+        None
+    }
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let mut xs = [];
+    while let Some(v) = next_item(push(xs, 0), s) {
+    }
+    println("done");
+}

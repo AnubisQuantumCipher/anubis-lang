@@ -66,11 +66,20 @@ impl EgressPolicy {
     }
 
     /// Empty allow-list denies every IPv4 destination.
+    // Called only by the macOS/aarch64 VZ frame filter (and tests); unused on other targets.
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        allow(dead_code)
+    )]
     pub fn permits_ipv4(&self, dst: Ipv4Addr) -> bool {
         self.allowed_ipv4.contains(&dst)
     }
 
     /// Inspect a raw Ethernet frame (no FCS). Return true if it may be forwarded.
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        allow(dead_code)
+    )]
     pub fn permits_ethernet_frame(&self, frame: &[u8]) -> bool {
         // Need dst MAC(6) + src MAC(6) + ethertype(2) + IPv4 header (>=20)
         if frame.len() < 14 + 20 {

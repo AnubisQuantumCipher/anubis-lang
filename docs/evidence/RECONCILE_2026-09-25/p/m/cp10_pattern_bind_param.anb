@@ -1,0 +1,3 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp10_pattern_bind_param.txt", x); return 0; }
+fn app(o) { if let Some(f) = o { f("a"); } return 0; }
+fn main() { app(Some(leak)); }

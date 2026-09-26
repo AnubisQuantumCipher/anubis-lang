@@ -1,0 +1,8 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let xs = [0];
+    if let Some(n) = Some(1) {
+        push(xs, k);
+    }
+    println(xs);
+}

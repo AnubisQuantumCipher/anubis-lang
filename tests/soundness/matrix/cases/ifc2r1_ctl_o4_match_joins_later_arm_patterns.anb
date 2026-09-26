@@ -1,0 +1,17 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let k = 1;
+    let pair = [k, s];
+    match pair {
+        [1, _] => {
+            println("k is one");
+        }
+        [_, 5] => {
+            let z = 0;
+        }
+        _ => {
+            let z = 1;
+        }
+    }
+    println("done");
+}

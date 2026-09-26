@@ -1,0 +1,40 @@
+// One pipeline, two datasets: private salaries (kept internal) and public response times
+// (reported). The same named stages clean, scale and summarize both.
+fn clean(xs) {
+    return filter(xs, |x| x >= 0);
+}
+
+fn scale(xs, k) {
+    return map(xs, |x| x * k);
+}
+
+fn summarize(xs) {
+    let mut lo = xs[0];
+    let mut hi = xs[0];
+    let mut sum = 0;
+    for x in xs {
+        if x < lo {
+            lo = x;
+        }
+        if x > hi {
+            hi = x;
+        }
+        sum = sum + x;
+    }
+    return [lo, hi, sum / len(xs)];
+}
+
+fn pipeline(xs, k) {
+    return summarize(scale(clean(xs), k));
+}
+
+fn main() {
+    let s: secret<i64> = 42;
+    let salaries = [s, s + 1000, s + 2500, -1];
+    let pay = pipeline(salaries, 12);
+    assert(pay[2] >= pay[0]);
+
+    let times = [120, 95, -1, 130, 101];
+    let t = pipeline(times, 1);
+    print("latency min/max/avg: " + str(t[0]) + "/" + str(t[1]) + "/" + str(t[2]));
+}

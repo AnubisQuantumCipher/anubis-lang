@@ -1,0 +1,1 @@
+fn main() uses(io.read, shell) { let m = { "a": shell }; m["a"](input()); }

@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { n: i64 }
+impl W { fn pr(self, x) { print(x); } fn pl(self, x) { let g = |y| { let t = y; print(t); }; g(x); } fn ap(self, f, x) { f(x); } }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p }; let w = W { n: 1 }; w.pl(xs[0]); }

@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct B { n: i64 }
+impl B { fn mk(self, q) { return || q; } fn mk2(self, q) { let h = || q; return h; } }
+fn mk5(q) { let h = || q; return identity(h); }
+fn mk6(q) { return if true { || q } else { || 0 }; }
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let m = { "a": p };
+    let b = B { n: 1 };
+    let g = mk5(p);
+    print(g());
+}

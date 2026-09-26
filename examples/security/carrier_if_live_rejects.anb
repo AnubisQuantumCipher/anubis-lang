@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Item-21 Family-1: requires carried into a live if-branch
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn app(g, y) { if 1 == 1 { g(-1); } }
+fn main() { app(f, 0); }

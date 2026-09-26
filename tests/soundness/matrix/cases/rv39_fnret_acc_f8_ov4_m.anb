@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+struct T { n: i64 }
+struct U { n: i64 }
+struct W { t: T }
+impl T { fn pick(self) { return other; } }
+impl U { fn pick(self) { return show; } }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let o = Some(T { n: 1 });
+    if let Some(t) = o { t.pick()(p); }
+}

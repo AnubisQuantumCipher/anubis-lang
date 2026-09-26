@@ -14,12 +14,14 @@ mod vz_apply;
 mod vz_egress_gateway;
 mod vz_native;
 
+// The signed Keychain run path (codesign + NE bind) exists only on macOS.
+#[cfg(target_os = "macos")]
+use anubis_compiler::backends::run::compile_sign_and_run_source;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
-        compile_native_rust_to_exe, compile_sign_and_run_source, lower_program_to_guest,
-        lower_program_to_rust_with_mono, resolved_run_timeout, run_child_capped,
-        ANUBIS_RUN_CRYPTO_CACHE_TAG,
+        compile_native_rust_to_exe, lower_program_to_guest, lower_program_to_rust_with_mono,
+        resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
@@ -504,6 +506,18 @@ enum Commands {
         /// authoring. Suggestions are editable and NOT auto-applied; the check still runs normally.
         #[arg(long)]
         suggest_contracts: bool,
+
+        /// Verdict rendering: `human` (default) or `json`.
+        ///
+        /// `json` writes the `anubis-diagnostics/1` stream to stdout as JSON Lines — one
+        /// diagnostic per refusal, then a summary — and nothing else, so a consumer can parse
+        /// stdout without stripping banners. The exit code is unchanged.
+        ///
+        /// An unrecognised value is refused rather than silently treated as `human`: a consumer
+        /// that mistyped the format would otherwise parse an empty stream and read a refusal as
+        /// an accepted program.
+        #[arg(long, value_name = "FORMAT")]
+        message_format: Option<String>,
     },
 
     /// Prove using a specific backend (e.g. risc0 for ZK receipt).
@@ -543,6 +557,14 @@ enum Commands {
         /// Output directory
         #[arg(short, long, default_value = "out")]
         out: PathBuf,
+    },
+
+    /// Developer measurement: IFC v2's information-flow findings alone (not a check; `check` runs
+    /// every lane). Exit 1 when it finds a flow.
+    #[command(hide = true)]
+    Ifc2Report {
+        /// Input .anb file
+        input: PathBuf,
     },
 
     /// Internal child process for risky local RISC0 proving.
@@ -1446,6 +1468,7 @@ define_command_vz_policy! {
             Commands::Fmt { .. } => None,
             Commands::Build { .. } => None,
             Commands::Check { .. } => None,
+            Commands::Ifc2Report { .. } => None,
             Commands::Fuzz { .. } => None,
             Commands::BountyReport { .. } => None,
             Commands::EngageInit { .. } => None,
@@ -2360,7 +2383,45 @@ fn seal_vz_execution_receipt(
     Ok(receipt.receipt_hash)
 }
 
-fn main() -> Result<()> {
+/// Every allocation is counted, so a check's analyses stay within a memory budget taken from what
+/// the machine has free: past it the check is refused before the machine runs out
+/// (`anubis_compiler::resource`; parsing, the solver and code generation are not counted).
+#[global_allocator]
+static ALLOC: anubis_compiler::resource::CountingAlloc = anubis_compiler::resource::CountingAlloc;
+
+/// The checker's analyses recurse over the program. Run on a stack well above the 8 MiB main thread:
+/// a deep but valid program would otherwise reach the checker's stack guard and be refused
+/// (`ANUBIS_ANALYSIS_LIMIT`, compiler/src/middle/analysis_limit.rs). Only the pages used are
+/// committed.
+const MAIN_STACK: usize = 64 << 20;
+
+fn main() -> std::process::ExitCode {
+    anubis_compiler::resource::install();
+    let result = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(MAIN_STACK)
+        .spawn(cli_main)
+        .map_err(anyhow::Error::from)
+        .and_then(|worker| match worker.join() {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        });
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        // An error can quote a bundle's or a program's own text (a `verify` of a stranger's bundle
+        // quotes an unknown field's name): shown like every diagnostic, so its control characters
+        // cannot drive the terminal (seventh review of the checker limits, N8).
+        Err(e) => {
+            eprintln!(
+                "Error: {}",
+                anubis_compiler::diagnostics::printable(&format!("{e:?}"))
+            );
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn cli_main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
@@ -2637,6 +2698,10 @@ fn main() -> Result<()> {
                     out.join("bounty-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
+                // The bundle's own analysis stopped at a limit: report the limit (B8-2 / B8-3).
+                if let Some(limit) = &bundle.limit {
+                    return Err(anyhow!("{}", limit));
+                }
                 require_passing_build_evidence(&bundle.manifest.verdict)?;
             }
 
@@ -2647,6 +2712,30 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::Ifc2Report { input } => {
+            let source = std::fs::read_to_string(&input)
+                .map_err(|e| anyhow!("reading {}: {e}", input.display()))?;
+            let (ast, _ws) = load_program_items(&input, &source)?;
+            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+            println!(
+                "anubis ifc2-report {} (IFC v2 alone; not a check)",
+                input.display()
+            );
+            if mode != Mode::Safe {
+                println!("not a Safe-mode program: IFC v2 does not run");
+                return Ok(());
+            }
+            let found = anubis_compiler::ifc2_findings(&ast, mode);
+            for (code, message) in &found {
+                println!("{code}: [ifc2] {message}");
+            }
+            if found.is_empty() {
+                println!("no information flow found");
+                Ok(())
+            } else {
+                Err(anyhow!("{} information-flow finding(s)", found.len()))
+            }
+        }
         Commands::Check {
             input,
             evidence,
@@ -2654,8 +2743,42 @@ fn main() -> Result<()> {
             out,
             verified,
             suggest_contracts,
+            message_format,
         } => {
-            println!(
+            // Fail closed on an unknown format. Defaulting to `human` here would hand a consumer
+            // that mistyped `--message-format=jsonl` a stream it cannot parse, and an unparseable
+            // stream is indistinguishable from a clean run to anything reading finding counts.
+            let json_mode = match message_format.as_deref() {
+                None | Some("human") => false,
+                Some("json") => true,
+                Some(other) => {
+                    return Err(anyhow!(
+                        "ANUBIS_MESSAGE_FORMAT_UNKNOWN: `--message-format={other}` is not a \
+                         rendering this compiler knows. Use `human` or `json`."
+                    ))
+                }
+            };
+            // The memory exits (from inside the allocator, `anubis_compiler::resource`) cannot
+            // format anything: give them the JSON refusals now, so the stream never ends empty.
+            if json_mode {
+                let report = |text: &str| -> &'static [u8] {
+                    let refusal = anubis_compiler::diagnostics::diagnostic_of_refusal(text);
+                    Box::leak(
+                        anubis_compiler::diagnostics::render_with_coverage(&[refusal], None)
+                            .into_bytes()
+                            .into_boxed_slice(),
+                    )
+                };
+                anubis_compiler::resource::set_exit_reports(
+                    report(anubis_compiler::resource::HARD_EXIT_DIAGNOSTIC),
+                    report(anubis_compiler::resource::RESERVE_EXIT_DIAGNOSTIC),
+                );
+            }
+            // In `json` mode stdout carries the diagnostic stream and nothing else.
+            macro_rules! say {
+                ($($t:tt)*) => { if !json_mode { println!($($t)*); } };
+            }
+            say!(
                 "anubis check {} (evidence={}, verified={})",
                 input.display(),
                 evidence,
@@ -2709,13 +2832,13 @@ fn main() -> Result<()> {
                 if let Some(ref a) = ast {
                     let suggestions = anubis_compiler::middle::suggest_contracts(&a.items);
                     if suggestions.is_empty() {
-                        println!("suggest-contracts: no obvious contracts to infer");
+                        say!("suggest-contracts: no obvious contracts to infer");
                     } else {
-                        println!("suggest-contracts: inferred clauses (edit + paste onto the fn signature):");
+                        say!("suggest-contracts: inferred clauses (edit + paste onto the fn signature):");
                         for s in &suggestions {
-                            println!("  fn {}:", s.function);
+                            say!("  fn {}:", s.function);
                             for c in &s.clauses {
-                                println!("      {c}");
+                                say!("      {c}");
                             }
                         }
                     }
@@ -2751,17 +2874,27 @@ fn main() -> Result<()> {
             // program whose own asserted proof is false. The evidence bundle already recorded this;
             // here it becomes the command's verdict (and exit code), not just a bundle field.
             // Codes: DISPROVED (concrete model) ≠ UNDECIDED (timeout) ≠ residual UNPROVEN.
+            // Kept in structured form as well as rendered: `format_check_failures` flattens every
+            // obligation into one human string, which is the right thing to print and the wrong
+            // thing to hand a machine. The JSON lane reads these checks directly.
+            // All of them, not only the failures: certificate coverage is a fact about the
+            // obligations that PASSED, and a verdict that omits it says the same thing whether
+            // every obligation carried a re-checkable witness or none did.
+            let mut solver_checks: Vec<anubis_compiler::middle::SolverCheck> = Vec::new();
             if check_error.is_none() {
                 if let Some(t) = &tainted {
-                    let fails: Vec<_> = SymbolicEngine::check_obligations(t)
-                        .into_iter()
+                    solver_checks = SymbolicEngine::check_obligations(t);
+                    let fails: Vec<_> = solver_checks
+                        .iter()
                         .filter(|c| c.status == "FAIL")
+                        .cloned()
                         .collect();
                     if !fails.is_empty() {
                         check_error = Some(anubis_compiler::middle::format_check_failures(&fails));
                     }
                 }
             }
+            let mut coverage = anubis_compiler::middle::certificate_coverage(&solver_checks);
 
             std::fs::create_dir_all(&out)?;
 
@@ -2780,6 +2913,13 @@ fn main() -> Result<()> {
                 .to_string();
             let do_emit = emit.as_deref().unwrap_or("");
             let emit_evidence = evidence || check_error.is_some();
+            // Recorded rather than returned immediately, so the JSON stream below can state this
+            // refusal too instead of leaving a consumer to infer it from the exit code.
+            let mut verdict_failure: Option<String> = None;
+            // The refutations behind `certified` only outlive the process when a bundle is
+            // written. Without this the verdict claimed a witness a stranger could re-check on a
+            // command that writes no artifact at all.
+            coverage.witnesses_retained = emit_evidence;
             let emit_all = do_emit == "all" || do_emit.contains("ast") || emit_evidence;
             if emit_all {
                 let ast_rep = serde_json::json!({
@@ -2818,7 +2958,7 @@ fn main() -> Result<()> {
                     let _ = std::fs::write(out.join(format!("{}.mono.json", stem)), m);
                 }
                 if !t.mono_specializations.is_empty() {
-                    println!(
+                    say!(
                         "static monomorphization: {} specialization(s) (see {}.mono.json)",
                         t.mono_specializations.len(),
                         stem
@@ -2893,15 +3033,18 @@ fn main() -> Result<()> {
                 .map_err(|e| anyhow!("{}", e))?;
 
                 if !evidence {
-                    println!("automatic rejection evidence: enabled");
+                    say!("automatic rejection evidence: enabled");
                 }
-                println!("evidence bundle: {}", bundle.dir.display());
-                println!("verdict: {}", bundle.manifest.verdict);
+                say!("evidence bundle: {}", bundle.dir.display());
+                say!("verdict: {}", bundle.manifest.verdict);
 
                 if let Some(err) = &check_error {
-                    println!("check failed: {}", err);
+                    say!(
+                        "check failed: {}",
+                        anubis_compiler::diagnostics::printable(err)
+                    );
                 } else {
-                    println!("check passed (no policy violations)");
+                    say!("check passed (no policy violations)");
                 }
 
                 let summary = serde_json::json!({
@@ -2915,20 +3058,84 @@ fn main() -> Result<()> {
                     out.join("check-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
-                if let Some(err) = &check_error {
-                    return Err(anyhow!("check failed: {}", err));
-                }
-                if bundle.manifest.verdict != "PASS" {
-                    return Err(anyhow!(
+                if let (None, Some(limit)) = (&check_error, &bundle.limit) {
+                    // The bundle's own analysis stopped at a limit with nothing found: a limit of
+                    // the checker, reported as one, not a verdict about the program to repair
+                    // (eighth review of the checker limits, B8-2 / B8-3).
+                    verdict_failure = Some(limit.clone());
+                } else if check_error.is_none() && bundle.manifest.verdict != "PASS" {
+                    verdict_failure = Some(format!(
                         "ANUBIS_EVIDENCE_VERDICT_FAILED: check produced verdict={} and therefore \
                          cannot exit successfully",
                         bundle.manifest.verdict
                     ));
                 }
-            } else if let Some(err) = &check_error {
-                return Err(anyhow!("check failed: {}", err));
-            } else {
-                println!("check passed");
+            } else if check_error.is_none() {
+                say!("check passed");
+            }
+
+            // Stated on pass and on failure alike. A reader deciding how much to trust a verdict
+            // needs to know how much of it rested on the solver's word, and that is as true of the
+            // obligations that passed in a failing run as of a clean one.
+            if let Some(line) = coverage.verdict_line() {
+                say!("{line}");
+                let named = anubis_compiler::diagnostics::named_uncertified(&coverage.uncertified);
+                for name in &named {
+                    say!(
+                        "  no witness (REG-002, out of the proven fragment): {}",
+                        anubis_compiler::diagnostics::printable(name)
+                    );
+                }
+                let more = coverage.uncertified.len().saturating_sub(named.len());
+                if more > 0 {
+                    say!("  … and {more} more with no witness");
+                }
+            }
+
+            // The machine-readable verdict. It precedes the refusal returns below, so a contract
+            // or effect refusal is STATED in the stream rather than implied by the exit code, and
+            // `verdict: pass` appears only when there is nothing to report on any lane.
+            //
+            // It does NOT precede every early return. A `?` on reading the source, creating the
+            // output directory, building the bundle, or writing the summary exits before this
+            // point and produces empty stdout — the very thing this format calls unacceptable,
+            // because it is indistinguishable from a clean run to anything counting findings.
+            // Those are I/O failures that also print to stderr and exit non-zero, so the exit code
+            // is not silent; the stream is. Narrowing that gap needs the emission moved above the
+            // bundle work, which is a restructure rather than a comment, and it is not done here.
+            if json_mode {
+                use anubis_compiler::diagnostics as diag;
+                // Most specific lane first. A parse failure has real spans, so it is reported per
+                // error with a location rather than as one blob; the solver lane has structured
+                // obligations and counterexamples; anything else is reported as the refusal it is.
+                let parse_diags = diag::diagnostics_of_parse_errors(&src, &input.to_string_lossy());
+                let diagnostics = if !parse_diags.is_empty() {
+                    parse_diags
+                } else if solver_checks.iter().any(|c| c.status == "FAIL") {
+                    solver_checks
+                        .iter()
+                        .filter(|c| c.status == "FAIL")
+                        .map(diag::diagnostic_of)
+                        .collect()
+                } else if let Some(err) = check_error.clone().or_else(|| verdict_failure.clone()) {
+                    diag::diagnostics_of_refusal(&err)
+                } else {
+                    Vec::new()
+                };
+                print!(
+                    "{}",
+                    diag::render_with_coverage(&diagnostics, Some((&coverage).into()))
+                );
+            }
+
+            if let Some(err) = &check_error {
+                return Err(anyhow!(
+                    "check failed: {}",
+                    anubis_compiler::diagnostics::printable(err)
+                ));
+            }
+            if let Some(err) = verdict_failure {
+                return Err(anyhow!("{}", err));
             }
 
             Ok(())
@@ -5794,7 +6001,13 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             // Report (and optionally require) the signature.
             match pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))? {
                 Some((sig_ok, signer)) => {
-                    println!("signed: {} (signer {})", sig_ok, signer);
+                    // The signer is the bundle's own text when it is not a valid key (eighth review of the
+                    // checker limits, E4).
+                    println!(
+                        "signed: {} (signer {})",
+                        sig_ok,
+                        anubis_compiler::diagnostics::printable(&signer)
+                    );
                     if let Some(expected) = &pubkey {
                         if !sig_ok || signer != expected.trim() {
                             eprintln!("signature required by --pubkey did not match");
@@ -5876,14 +6089,21 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             let manifest_text = std::fs::read_to_string(bundle.join("evidence.json"))?;
             let manifest: EvidenceManifest = serde_json::from_str(&manifest_text)?;
             let report_path = bundle.join("bounty-report.md");
+            // A bundle's text is the bundle author's: shown without its control characters.
+            let shown = |t: &str| anubis_compiler::diagnostics::printable(t).into_owned();
             if report_path.exists() {
-                println!("{}", std::fs::read_to_string(report_path)?);
+                println!("{}", shown(&std::fs::read_to_string(report_path)?));
             } else {
                 println!("Anubis evidence report");
-                println!("bundle: {}", bundle.display());
-                println!("verdict: {}", manifest.verdict);
+                println!("bundle: {}", shown(&bundle.display().to_string()));
+                println!("verdict: {}", shown(&manifest.verdict));
                 for check in manifest.checks {
-                    println!("{}: {} - {}", check.name, check.status, check.detail);
+                    println!(
+                        "{}: {} - {}",
+                        shown(&check.name),
+                        shown(&check.status),
+                        shown(&check.detail)
+                    );
                 }
             }
             Ok(())
@@ -7067,64 +7287,69 @@ fn run_anubis_source_signed(
     args: &[String],
     proof_inputs_env: Option<&str>,
 ) -> Result<RunOutcome> {
-    let (ast, _ws) = load_program_items(input, source)?;
-    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
-    require_program_research_boundary(ProgramArtifactAction::Run, mode, allow_research)?;
-    let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-    std::fs::create_dir_all(out)?;
-    let rs_path = out.join("anubis_run.rs");
-    let exe_path = out.join("anubis_run");
-
-    #[cfg(target_os = "macos")]
-    {
-        eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
-        let rust_source = lower_program_to_rust_with_mono(
-            &ast.items,
-            allow_research,
-            &typed.mono_specializations,
-            &typed.mono_call_sites,
-        )
-        .map_err(|e| anyhow!("{e}"))?;
-        let _ = std::fs::write(&rs_path, &rust_source);
-        if let Some(pin) = proof_inputs_env {
-            // SAFETY: process-local env for child inherit of proof inputs.
-            unsafe { std::env::set_var("ANUBIS_PROOF_INPUTS", pin) };
-        }
-        let output = compile_sign_and_run_source(source, allow_research, args)
-            .map_err(|e| anyhow!("{e}"))?;
-        if proof_inputs_env.is_some() {
-            unsafe { std::env::remove_var("ANUBIS_PROOF_INPUTS") };
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let _ = std::fs::write(
-            out.join("signed_run.json"),
-            serde_json::json!({
-                "signed": true,
-                "keychain_caps": true,
-                "exit_code": output.status.code(),
-                "stdout": stdout,
-                "stderr": stderr,
-            })
-            .to_string(),
-        );
-        Ok(RunOutcome {
-            input: input.to_path_buf(),
-            mode: mode_name(mode).to_string(),
-            source_hash: sha256_bytes(source.as_bytes()),
-            artifact: exe_path,
-            rust_source: rs_path,
-            stdout,
-            stderr,
-            exit_code: output.status.code(),
-            status_success: output.status.success(),
-            contracts_verified: false,
-        })
-    }
+    // Off macOS there is no signed path: `run_anubis_source` loads, checks the research boundary,
+    // typechecks and runs. Delegating here, rather than after a typecheck of our own, avoids analyzing
+    // the whole program twice on every `anubis run` (the result of the first pass was discarded).
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (rs_path, exe_path);
+        std::fs::create_dir_all(out)?;
         run_anubis_source(input, source, out, allow_research, args, proof_inputs_env)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let (ast, _ws) = load_program_items(input, source)?;
+        let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+        require_program_research_boundary(ProgramArtifactAction::Run, mode, allow_research)?;
+        let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+        std::fs::create_dir_all(out)?;
+        let rs_path = out.join("anubis_run.rs");
+        let exe_path = out.join("anubis_run");
+
+        {
+            eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
+            let rust_source = lower_program_to_rust_with_mono(
+                &ast.items,
+                allow_research,
+                &typed.mono_specializations,
+                &typed.mono_call_sites,
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+            let _ = std::fs::write(&rs_path, &rust_source);
+            if let Some(pin) = proof_inputs_env {
+                // SAFETY: process-local env for child inherit of proof inputs.
+                unsafe { std::env::set_var("ANUBIS_PROOF_INPUTS", pin) };
+            }
+            let output = compile_sign_and_run_source(source, allow_research, args)
+                .map_err(|e| anyhow!("{e}"))?;
+            if proof_inputs_env.is_some() {
+                unsafe { std::env::remove_var("ANUBIS_PROOF_INPUTS") };
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let _ = std::fs::write(
+                out.join("signed_run.json"),
+                serde_json::json!({
+                    "signed": true,
+                    "keychain_caps": true,
+                    "exit_code": output.status.code(),
+                    "stdout": stdout,
+                    "stderr": stderr,
+                })
+                .to_string(),
+            );
+            Ok(RunOutcome {
+                input: input.to_path_buf(),
+                mode: mode_name(mode).to_string(),
+                source_hash: sha256_bytes(source.as_bytes()),
+                artifact: exe_path,
+                rust_source: rs_path,
+                stdout,
+                stderr,
+                exit_code: output.status.code(),
+                status_success: output.status.success(),
+                contracts_verified: false,
+            })
+        }
     }
 }
 

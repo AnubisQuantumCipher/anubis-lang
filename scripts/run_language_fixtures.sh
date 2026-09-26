@@ -125,7 +125,23 @@ for f in "${fixtures[@]}"; do
   needle_ok=1
   if [[ -n "$err_needle" ]]; then
     needle_ok=0
-    if grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null || grep -qi "$err_needle" "$outd/check_diagnostics.txt" 2>/dev/null; then
+    # Only what the checker said. The other files in "$outd" (the AST and HIR dumps) carry the
+    # fixture's own header comment, so its `ERROR_CONTAINS:` line matched itself and every FAIL
+    # fixture with a needle passed on any failure (found 2026-09-24). The summary JSON names the
+    # bundle's path, so it is not read either. Needles are extended regular expressions: several are
+    # written `A|B`, which basic grep reads as a literal bar.
+    # The command line's echo of the command (`anubis check <path> …`) and every path naming the
+    # fixture or its output directory are not diagnostics: `ANUBIS` matched `anubis check`, and a
+    # word of the fixture's name matched its path (found by review, 2026-09-24).
+    # awk, not `sed '1{/…/d}'`: BSD sed (macOS) rejects a command before `}` without a `;`, and
+    # with the error hidden the text searched was empty, so every needle missed on the hosted gate.
+    # The run log always exists; failing to read it must fail the fixture, not empty the search.
+    said=$( { awk 'NR == 1 && /^anubis check / { next } { print }' "$outd/run.log"
+              cat "$outd/check_diagnostics.txt" 2>/dev/null || true; } \
+      | sed -e "s#$(printf '%s' "$f" | sed 's/[#.[\*^$/]/\\&/g')##g" \
+            -e "s#$(printf '%s' "$outd" | sed 's/[#.[\*^$/]/\\&/g')##g" \
+            -e "s#$(printf '%s' "$base" | sed 's/[#.[\*^$/]/\\&/g')##g" )
+    if grep -qiE -- "$err_needle" <<<"$said"; then
       needle_ok=1
     fi
   fi

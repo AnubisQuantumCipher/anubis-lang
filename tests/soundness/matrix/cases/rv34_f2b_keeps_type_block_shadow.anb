@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+struct U { n: i64 }
+impl T { fn show(self, y) { return 0; } }
+impl U { fn show(self, y) { print(y); return 0; } }
+fn main() { let p = S { k: 42, pub_n: 3 }; let x = T { n: 1 }; x = if p.pub_n > 0 { let x = U { n: 2 }; x } else { x }; let z = x.show(p); }

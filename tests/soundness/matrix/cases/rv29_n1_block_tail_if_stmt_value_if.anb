@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 }
+    let y = if true { let t = 1; if true { p } else { 0 } } else { 0 }
+    print(y)
+}

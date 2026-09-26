@@ -1,0 +1,11 @@
+fn main() {
+    let k: secret<i64> = 42;
+    for x in [0] {
+        x = k;
+        match 5 {
+            Some(x) => { }
+            x => { }
+        }
+        println(x);
+    }
+}

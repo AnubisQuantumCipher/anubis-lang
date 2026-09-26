@@ -1,0 +1,7 @@
+fn f(n) {
+    let g = secret_source;
+    return g(n);
+}
+fn main() {
+    print(f(123456));
+}

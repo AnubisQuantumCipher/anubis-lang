@@ -1,0 +1,5 @@
+fn main() uses(fs.write, io.read) {
+    let s = input();
+    let g = || { match s { v => v } };
+    write_file("c05tm_out.txt", g());
+}

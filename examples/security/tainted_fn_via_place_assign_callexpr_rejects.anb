@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Integrity twin of secret_fn_via_place_assign_callexpr_rejects: the same place-assigned
+// return-carrier read via `b.f()` on the TAINT lane. One `expr_source` fix closes both lanes
+// because that resolver is lane-parameterized.
+struct Box { f: u64 }
+fn dirty() -> tainted<i64> { return input(); }
+fn main() uses(io.read, shell) { let b = Box { f: 0 }; b.f = dirty; shell(b.f()); }

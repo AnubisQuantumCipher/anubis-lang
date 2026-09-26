@@ -1,0 +1,11 @@
+fn h2(n) {
+    let s: secret<i64> = 42;
+    return s;
+}
+fn f(n) {
+    let g = h2;
+    return g(n);
+}
+fn main() {
+    print(f(3));
+}

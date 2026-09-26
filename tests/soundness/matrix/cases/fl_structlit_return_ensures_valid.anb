@@ -1,0 +1,3 @@
+struct R { status: i64 }
+fn mk() -> R ensures(result.status == 0) { return R { status: 0 }; }
+fn main() { let _ = mk(); }

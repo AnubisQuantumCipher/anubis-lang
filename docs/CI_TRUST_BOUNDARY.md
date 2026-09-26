@@ -47,7 +47,19 @@ exit code on the immediately following line. A run without `--release` is bounde
 point is `bash scripts/check_metal_parity.sh --require-metal --out <new-evidence-root>`. These lines
 describe the contract; they are not evidence that either command ran for a given commit.
 
-## Future runner minimum
+## Supplemental native Linux ordinary checks
+
+The `linux-native-x86_64` and `linux-native-aarch64` jobs in `linux-native.yml`
+build and execute only the source-reviewed finite integration-test roster. Their
+claim is `LINUX_NATIVE_ORDINARY_PASS`, separately for each observed architecture;
+it does not satisfy `HOSTED_PASS`, the full workspace, Tart/VZ, crash/fuzz,
+Omarchy installation, bootstrap, or release requirements. The driver requires
+resource admission, source and executable identity, exact test results, and
+completed teardown before finalizing a receipt. See the
+[lane contract](../scripts/ci/linux_native.md) and
+[preparation receipt](evidence/MISSION_RESUME_2026-09-26/README.md).
+
+## Future runner minimum (specialized self-hosted lanes)
 
 A future runner requires separate operator approval and, at minimum, a dedicated host or account,
 ephemeral registration, `contents: read`, checkout without persisted credentials, reviewed action

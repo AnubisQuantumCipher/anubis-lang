@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn benign(x) { return 0 }
+fn ident(x) { return x }
+fn run(a) { return a(0) }
+fn l1(b) { let a = |x| b(x); return run(a) }
+fn l2(c) { let b = |x| c(x); return l1(b) }
+fn l3(d, v) { let c = |x| d(v); return l2(c) }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print([l3(benign, p), l3(ident, p)]);
+}

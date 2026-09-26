@@ -87,6 +87,291 @@ impl EvidenceVerifyReport {
     }
 }
 
+// ---------------------------------------------------------------- proof replay
+//
+// A bundle that verifies only its own hashes answers "was this edited?", never
+// "do the proofs hold?". Recomputing MANIFEST.sha256 over a forged refutation
+// therefore used to produce `overall: PASS`. The check below closes that by
+// re-deriving every published refutation.
+//
+// It deliberately reads the PUBLISHED TEXT FORMATS — DIMACS CNF and the
+// DRAT-shaped refutation — rather than any solver struct, so it exercises the
+// same artifacts and the same path a stranger with `drat-trim` would. It is
+// still Anubis code, so it is evidence of internal consistency, not of
+// independence; the bundle prints the external replay command for that, and the
+// detail string below says so rather than implying more.
+
+/// Parse DIMACS or DRAT clause text. Comment and problem lines are skipped;
+/// every other line is a zero-terminated list of literals.
+fn parse_clauses(text: &str) -> Vec<Vec<i32>> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('c') || line.starts_with('p') {
+            continue;
+        }
+        // A deletion line ("d 1 2 0") removes a clause; skipping it is sound for
+        // checking, it only makes propagation do more work.
+        if line.starts_with('d') {
+            continue;
+        }
+        let mut clause = Vec::new();
+        let mut terminated = false;
+        for tok in line.split_whitespace() {
+            match tok.parse::<i32>() {
+                Ok(0) => {
+                    terminated = true;
+                    break;
+                }
+                Ok(l) => clause.push(l),
+                Err(_) => break,
+            }
+        }
+        if terminated {
+            out.push(clause);
+        }
+    }
+    out
+}
+
+/// Unit-propagate to fixpoint. Returns true when a clause is falsified.
+fn propagate(clauses: &[Vec<i32>], assign: &mut [i8]) -> bool {
+    loop {
+        let mut progressed = false;
+        for clause in clauses {
+            let mut unassigned = 0i32;
+            let mut last = 0i32;
+            let mut satisfied = false;
+            for &lit in clause {
+                let var = lit.unsigned_abs() as usize;
+                if var >= assign.len() {
+                    continue;
+                }
+                let want: i8 = if lit > 0 { 1 } else { -1 };
+                match assign[var] {
+                    0 => {
+                        unassigned += 1;
+                        last = lit;
+                    }
+                    v if v == want => {
+                        satisfied = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if satisfied {
+                continue;
+            }
+            if unassigned == 0 {
+                return true; // every literal false: conflict
+            }
+            if unassigned == 1 {
+                let var = last.unsigned_abs() as usize;
+                assign[var] = if last > 0 { 1 } else { -1 };
+                progressed = true;
+            }
+        }
+        if !progressed {
+            return false;
+        }
+    }
+}
+
+/// Re-derive a refutation by reverse unit propagation. Returns the number of
+/// lemmas checked, or a named reason it was rejected.
+fn check_rup(cnf_text: &str, proof_text: &str) -> std::result::Result<usize, String> {
+    let mut formula = parse_clauses(cnf_text);
+    let lemmas = parse_clauses(proof_text);
+    if lemmas.is_empty() {
+        return Err("refutation contains no lemmas".into());
+    }
+    let max_var = formula
+        .iter()
+        .chain(lemmas.iter())
+        .flatten()
+        .map(|l| l.unsigned_abs() as usize)
+        .max()
+        .unwrap_or(0);
+    let mut derived_empty = false;
+    for (i, lemma) in lemmas.iter().enumerate() {
+        let mut assign = vec![0i8; max_var + 1];
+        // RUP: assume the lemma is false, then propagate. A conflict means the
+        // formula already implied it.
+        for &lit in lemma {
+            let var = lit.unsigned_abs() as usize;
+            let want: i8 = if lit > 0 { -1 } else { 1 };
+            if assign[var] != 0 && assign[var] != want {
+                return Err(format!("lemma {i} is tautological or self-contradictory"));
+            }
+            assign[var] = want;
+        }
+        if !propagate(&formula, &mut assign) {
+            return Err(format!(
+                "lemma {i} is not implied by the formula (reverse unit propagation found no conflict)"
+            ));
+        }
+        if lemma.is_empty() {
+            derived_empty = true;
+        }
+        formula.push(lemma.clone());
+    }
+    if !derived_empty {
+        return Err("refutation never derives the empty clause".into());
+    }
+    Ok(lemmas.len())
+}
+
+/// Replay every refutation the bundle publishes.
+fn verify_published_proofs(dir: &Path, id_prefix: &str, report: &mut EvidenceVerifyReport) {
+    let index = dir.join("analysis").join("proofs.json");
+    if !index.is_file() {
+        // Fail closed rather than return silently. A silent return pushes NO
+        // check, so the report contains no `.proofs` row at all and reads as
+        // though the proofs were examined and were fine. The documented
+        // forgery is "stub the .drat and recompute MANIFEST.sha256"; DELETING
+        // the proofs is the cheaper variant, and it used to reach
+        // `overall: PASS` with the proof lane silently absent.
+        //
+        // Safe to fail here: `--evidence` always writes this file. A program
+        // with no contracts at all still publishes an obligations array. So an
+        // evidence bundle without it is either pre-v3 and archived, or altered
+        // — and the message says both so an operator can tell which.
+        report.push(
+            &format!("{id_prefix}.proofs"),
+            CheckStatus::Fail,
+            "LAB_REAL",
+            "analysis/proofs.json is absent: this bundle publishes no refutations, so nothing \
+             in it was re-derived. Every `--evidence` bundle writes this file, including for a \
+             program with no contracts, so its absence means the bundle predates the proofs \
+             lane or has been altered."
+                .to_string(),
+        );
+        return;
+    }
+    let raw = match std::fs::read_to_string(&index) {
+        Ok(r) => r,
+        Err(e) => {
+            report.push(
+                &format!("{id_prefix}.proofs"),
+                CheckStatus::Fail,
+                "LAB_REAL",
+                format!("read analysis/proofs.json: {e}"),
+            );
+            return;
+        }
+    };
+    let doc: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            report.push(
+                &format!("{id_prefix}.proofs"),
+                CheckStatus::Fail,
+                "LAB_REAL",
+                format!("analysis/proofs.json parse: {e}"),
+            );
+            return;
+        }
+    };
+    let obligations = doc
+        .get("obligations")
+        .and_then(|o| o.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if obligations.is_empty() {
+        // Same reasoning as the absent file: silence here reads as "checked, fine".
+        report.push(
+            &format!("{id_prefix}.proofs"),
+            CheckStatus::Fail,
+            "LAB_REAL",
+            "analysis/proofs.json publishes an empty obligations array: there is nothing to \
+             re-derive, and a bundle that proves nothing must not verify as though it did."
+                .to_string(),
+        );
+        return;
+    }
+
+    let mut replayed = 0usize;
+    let mut uncertified = Vec::new();
+    for ob in &obligations {
+        let kind = ob.get("proof").and_then(|v| v.as_str()).unwrap_or("");
+        let name = ob.get("obligation").and_then(|v| v.as_str()).unwrap_or("?");
+        if kind != "rup_refutation" {
+            // A row without a refutation is not a failure, but it IS a claim
+            // resting on the solver's word, and it gets counted as such.
+            uncertified.push(format!("{name} [{kind}]"));
+            continue;
+        }
+        let cnf_rel = ob.get("cnf_dimacs").and_then(|v| v.as_str()).unwrap_or("");
+        let drat_rel = ob.get("proof_drat").and_then(|v| v.as_str()).unwrap_or("");
+        if cnf_rel.is_empty() || drat_rel.is_empty() {
+            report.push(
+                &format!("{id_prefix}.proofs"),
+                CheckStatus::Fail,
+                "LAB_REAL",
+                format!("obligation {name} claims a refutation but names no cnf/drat file"),
+            );
+            return;
+        }
+        let cnf = match std::fs::read_to_string(dir.join(cnf_rel)) {
+            Ok(t) => t,
+            Err(e) => {
+                report.push(
+                    &format!("{id_prefix}.proofs"),
+                    CheckStatus::Fail,
+                    "LAB_REAL",
+                    format!("{cnf_rel}: {e}"),
+                );
+                return;
+            }
+        };
+        let drat = match std::fs::read_to_string(dir.join(drat_rel)) {
+            Ok(t) => t,
+            Err(e) => {
+                report.push(
+                    &format!("{id_prefix}.proofs"),
+                    CheckStatus::Fail,
+                    "LAB_REAL",
+                    format!("{drat_rel}: {e}"),
+                );
+                return;
+            }
+        };
+        match check_rup(&cnf, &drat) {
+            Ok(_) => replayed += 1,
+            Err(reason) => {
+                report.push(
+                    &format!("{id_prefix}.proofs"),
+                    CheckStatus::Fail,
+                    "LAB_REAL",
+                    format!("REFUTATION REJECTED for {name}: {reason} ({drat_rel})"),
+                );
+                return;
+            }
+        }
+    }
+
+    let detail = if uncertified.is_empty() {
+        format!(
+            "{replayed}/{} refutation(s) re-derived from the published CNF/DRAT (Anubis-side replay; run validate.sh with drat-trim for an independent one)",
+            obligations.len()
+        )
+    } else {
+        format!(
+            "{replayed}/{} refutation(s) re-derived; {} obligation(s) carry NO certificate and rest on the solver's word: {}",
+            obligations.len(),
+            uncertified.len(),
+            uncertified.join(", ")
+        )
+    };
+    report.push(
+        &format!("{id_prefix}.proofs"),
+        CheckStatus::Pass,
+        "LAB_REAL",
+        detail,
+    );
+}
+
 /// Verify all recognizable evidence artifacts under `path` (file or directory).
 pub fn verify_path(path: &Path, opts: &EvidenceVerifyOpts) -> Result<EvidenceVerifyReport> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -330,6 +615,8 @@ fn verify_evidence_bundle(
             format!("signature status error: {e}"),
         ),
     }
+
+    verify_published_proofs(dir, &id_prefix, report);
 
     // Confinement re-derive when sealed alongside source.
     let conf_path = dir.join(CONFINEMENT_FILENAME);
@@ -635,10 +922,16 @@ fn short_path(path: &Path) -> String {
         .to_string()
 }
 
-/// Human-readable summary lines for CLI.
+/// Human-readable summary lines for CLI. Every part that can quote a bundle's own text (a path,
+/// a check's detail, a classification, a note) is shown through `printable`: a stranger's bundle
+/// must not drive the terminal (eighth review of the checker limits, E4).
 pub fn format_human(report: &EvidenceVerifyReport) -> String {
+    use anubis_compiler::diagnostics::printable;
     let mut lines = Vec::new();
-    lines.push(format!("anubis evidence-verify: {}", report.path));
+    lines.push(format!(
+        "anubis evidence-verify: {}",
+        printable(&report.path)
+    ));
     lines.push(format!(
         "overall: {}  checks={}",
         if report.ok { "PASS" } else { "FAIL" },
@@ -652,17 +945,19 @@ pub fn format_human(report: &EvidenceVerifyReport) -> String {
         };
         lines.push(format!(
             "  [{mark}] {} ({}) — {}",
-            c.id, c.classification, c.detail
+            printable(&c.id),
+            printable(&c.classification.to_string()),
+            printable(&c.detail)
         ));
     }
     if !report.classifications_seen.is_empty() {
         lines.push(format!(
             "classifications: {}",
-            report.classifications_seen.join(", ")
+            printable(&report.classifications_seen.join(", "))
         ));
     }
     for n in &report.notes {
-        lines.push(format!("note: {n}"));
+        lines.push(format!("note: {}", printable(n)));
     }
     lines.join("\n")
 }
@@ -794,5 +1089,59 @@ mod tests {
     #[allow(dead_code)]
     fn _silence_mutex() {
         let _ = Mutex::new(HashSet::<String>::new());
+    }
+}
+
+#[cfg(test)]
+mod proof_replay_tests {
+    use super::{check_rup, parse_clauses};
+
+    // (x | y) & (x | !y) & (!x | y) & (!x | !y) is unsatisfiable.
+    const UNSAT_CNF: &str = "p cnf 2 4\n1 2 0\n1 -2 0\n-1 2 0\n-1 -2 0\n";
+    // Resolve to the two units, then the empty clause.
+    const GOOD_DRAT: &str = "1 0\n-1 0\n0\n";
+
+    #[test]
+    fn an_honest_refutation_replays() {
+        assert_eq!(check_rup(UNSAT_CNF, GOOD_DRAT).unwrap(), 3);
+    }
+
+    #[test]
+    fn the_documented_forgery_is_rejected() {
+        // The exact attack from the audit: swap the refutation for a plausible
+        // two-line file. Recomputing MANIFEST.sha256 hides it from a hash check,
+        // so this is the only thing standing between a forgery and a PASS.
+        let err = check_rup(UNSAT_CNF, "1 2 0\n0\n").unwrap_err();
+        assert!(err.contains("not implied"), "unexpected reason: {err}");
+    }
+
+    #[test]
+    fn a_truncated_refutation_is_rejected() {
+        let err = check_rup(UNSAT_CNF, "1 0\n-1 0\n").unwrap_err();
+        assert!(err.contains("empty clause"), "unexpected reason: {err}");
+    }
+
+    #[test]
+    fn an_empty_refutation_is_rejected() {
+        assert!(check_rup(UNSAT_CNF, "").is_err());
+    }
+
+    #[test]
+    fn a_satisfiable_formula_cannot_be_refuted() {
+        // Nothing may derive the empty clause from a formula with a model.
+        assert!(check_rup("p cnf 2 1\n1 2 0\n", "0\n").is_err());
+    }
+
+    #[test]
+    fn comments_problem_and_deletion_lines_are_skipped() {
+        let parsed = parse_clauses("c a comment\np cnf 2 1\nd 1 2 0\n1 -2 0\n");
+        assert_eq!(parsed, vec![vec![1, -2]]);
+    }
+
+    #[test]
+    fn an_unterminated_clause_line_is_not_accepted_as_a_clause() {
+        // A line with no terminating 0 is malformed; treating it as a clause
+        // would let a truncated file look like a shorter valid proof.
+        assert!(parse_clauses("1 2\n").is_empty());
     }
 }

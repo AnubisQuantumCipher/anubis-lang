@@ -1,0 +1,15 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn layer1(xs) { return layer2(xs); }
+fn layer2(xs) { return layer3(xs); }
+fn layer3(xs) { return layer4(xs); }
+fn layer4(xs) { return layer5(xs); }
+fn layer5(xs) { return layer6(xs); }
+fn layer6(xs) { return layer7(xs); }
+fn layer7(xs) { return layer8(xs); }
+fn layer8(xs) { return layer9(xs); }
+fn layer9(xs) { return xs[0].owner; }
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }, Account { id: 3, owner: "cy", k: 9, balance: 175 }];
+    print(layer1(accts));
+}

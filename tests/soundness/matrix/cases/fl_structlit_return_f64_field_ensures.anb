@@ -1,0 +1,3 @@
+struct R { v: f64 }
+fn mk() -> R ensures(result.v / 2 == 3) { return R { v: 7 }; }
+fn main() { let r = mk(); println(r.v / 2); }

@@ -1,0 +1,2 @@
+anubis check /home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_argument.anb (evidence=false, verified=false)
+check passed

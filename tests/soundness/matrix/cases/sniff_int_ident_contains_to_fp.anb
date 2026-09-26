@@ -1,0 +1,4 @@
+fn next_crypto_fp(crypto_fp: i64) -> i64 requires(crypto_fp >= 0 && crypto_fp < 1000) ensures(result > crypto_fp) {
+  return crypto_fp + 1;
+}
+fn main() { println(next_crypto_fp(41)); }

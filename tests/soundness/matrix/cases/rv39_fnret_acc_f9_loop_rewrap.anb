@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+fn wrap(f) { return |x| f(x); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut g = other;
+    for i in 0..2 { g = wrap(g); }
+    g(p);
+}

@@ -1,0 +1,17 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn noop(x) { return 0; }
+fn leak(x) { print(x); return 0; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let f1 = noop;
+    let f2 = noop;
+    let f3 = noop;
+    let i = 0;
+    while i < 3 {
+        f3 = f2;
+        f2 = f1;
+        f1 = leak;
+        i = i + 1;
+    }
+    let z = f3(p);
+}

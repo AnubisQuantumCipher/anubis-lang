@@ -1,0 +1,4 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp16_if_bind_param_one_arm.txt", x); return 0; }
+fn nop(x) { return 0; }
+fn app(xs, c) { let f = if c > 0 { xs[0] } else { nop }; f("a"); return 0; }
+fn main() { app([leak], 1); }

@@ -1,0 +1,12 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }, Account { id: 3, owner: "cy", k: 9, balance: 175 }];
+    let entries = [];
+    for a in accts {
+        push(entries, [a.id, a]);
+    }
+    for e in entries {
+        print(e[0]);
+    }
+}

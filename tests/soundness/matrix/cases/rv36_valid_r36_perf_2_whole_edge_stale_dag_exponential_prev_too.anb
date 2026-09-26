@@ -1,0 +1,62 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+impl T {
+    fn show(self) -> str {
+        return "t ${self.v}";
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mode = 1;
+    let a0: T = T { v: 1 };
+    let b0: T = T { v: 2 };
+    let a1: T = match mode { 0 => a0, _ => b0 };
+    let b1: T = match mode { 0 => b0, _ => a0 };
+    let a2: T = match mode { 0 => a1, _ => b1 };
+    let b2: T = match mode { 0 => b1, _ => a1 };
+    let a3: T = match mode { 0 => a2, _ => b2 };
+    let b3: T = match mode { 0 => b2, _ => a2 };
+    let a4: T = match mode { 0 => a3, _ => b3 };
+    let b4: T = match mode { 0 => b3, _ => a3 };
+    let a5: T = match mode { 0 => a4, _ => b4 };
+    let b5: T = match mode { 0 => b4, _ => a4 };
+    let a6: T = match mode { 0 => a5, _ => b5 };
+    let b6: T = match mode { 0 => b5, _ => a5 };
+    let a7: T = match mode { 0 => a6, _ => b6 };
+    let b7: T = match mode { 0 => b6, _ => a6 };
+    let a8: T = match mode { 0 => a7, _ => b7 };
+    let b8: T = match mode { 0 => b7, _ => a7 };
+    let a9: T = match mode { 0 => a8, _ => b8 };
+    let b9: T = match mode { 0 => b8, _ => a8 };
+    let a10: T = match mode { 0 => a9, _ => b9 };
+    let b10: T = match mode { 0 => b9, _ => a9 };
+    let a11: T = match mode { 0 => a10, _ => b10 };
+    let b11: T = match mode { 0 => b10, _ => a10 };
+    let a12: T = match mode { 0 => a11, _ => b11 };
+    let b12: T = match mode { 0 => b11, _ => a11 };
+    let a13: T = match mode { 0 => a12, _ => b12 };
+    let b13: T = match mode { 0 => b12, _ => a12 };
+    let a14: T = match mode { 0 => a13, _ => b13 };
+    let b14: T = match mode { 0 => b13, _ => a13 };
+    let a15: T = match mode { 0 => a14, _ => b14 };
+    let b15: T = match mode { 0 => b14, _ => a14 };
+    let a16: T = match mode { 0 => a15, _ => b15 };
+    let b16: T = match mode { 0 => b15, _ => a15 };
+    let a17: T = match mode { 0 => a16, _ => b16 };
+    let b17: T = match mode { 0 => b16, _ => a16 };
+    let a18: T = match mode { 0 => a17, _ => b17 };
+    let b18: T = match mode { 0 => b17, _ => a17 };
+    let a19: T = match mode { 0 => a18, _ => b18 };
+    let b19: T = match mode { 0 => b18, _ => a18 };
+    let a20: T = match mode { 0 => a19, _ => b19 };
+    let b20: T = match mode { 0 => b19, _ => a19 };
+    let a21: T = match mode { 0 => a20, _ => b20 };
+    let b21: T = match mode { 0 => b20, _ => a20 };
+    let a22: T = match mode { 0 => a21, _ => b21 };
+    let b22: T = match mode { 0 => b21, _ => a21 };
+    let a23: T = match mode { 0 => a22, _ => b22 };
+    let b23: T = match mode { 0 => b22, _ => a22 };
+    let a24: T = match mode { 0 => a23, _ => b23 };
+    let b24: T = match mode { 0 => b23, _ => a23 };
+    println(a24.show());
+}

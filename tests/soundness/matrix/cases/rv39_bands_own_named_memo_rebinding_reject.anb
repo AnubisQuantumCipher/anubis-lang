@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn show(p) { print(p); return 0; }
+fn run(p) {
+    let f = zero;
+    call(f, p);
+    f = show;
+    call(f, p);
+    return 0;
+}
+fn main() { run(S { k: 42, pub_n: 3 }); }

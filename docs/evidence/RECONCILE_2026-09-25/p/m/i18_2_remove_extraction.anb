@@ -1,0 +1,2 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/i18_2_remove_extraction.txt", x); return 0; }
+fn main() { let fs = [leak]; let f = remove(fs, 0); f("a"); }

@@ -1,0 +1,26 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(p) {
+    let mut c = |z| z;
+    let mut i = 0;
+    while i < 2 {
+        let mut j = 0;
+        while j < 2 {
+            let mut k = 0;
+            while k < 2 {
+                let mut l = 0;
+                while l < 2 {
+                    c = |z| c(z);
+                    l = l + 1;
+                }
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return p.pub_n;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

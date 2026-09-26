@@ -7,15 +7,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+mod analysis_limit;
 pub(crate) mod capability;
 /// Compile-time carrier classification. TOTAL over `Expr` with no wildcard arm, so adding a
 /// variant BREAKS THE BUILD until someone states what it can carry — the forcing function that
 /// keeps the false-accept class from reopening silently.
 pub mod carrier;
+mod contract_carrier;
 /// Fall-through analysis: does a block definitely NOT continue to the next statement? Lets
 /// wrap-safety read an early-return guard the programmer already wrote.
 pub mod diverge;
 pub(crate) mod effects;
+mod ifc2;
+mod infer_params;
 pub mod loopctl;
 pub mod proptest;
 /// Security research HIR types (Phase 3 stubs — profiles, scoped targets, effect IR).
@@ -23,6 +27,8 @@ pub mod research_profile;
 pub(crate) mod security_label;
 pub(crate) mod trifecta;
 pub(crate) mod ty;
+mod visit;
+mod whole;
 
 /// Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer for
 /// `SecurityLabel`. Emits one canonical TSV row per (op, args) tuple over the DECLARED
@@ -171,6 +177,11 @@ pub struct TypedIR {
     pub symbols: Vec<BindingInfo>,
     pub taint_traces: Vec<TaintTrace>,
     pub solver_obligations: Vec<SolverObligation>,
+    /// Names of obligations built over a value the analysis over-approximates (a variable kept as an
+    /// arbitrary integer across a loop or branch join, see `havoc_mark`). A PROOF of such an obligation
+    /// is sound; a counterexample may not be reachable, so `check_obligations` reports a failure as
+    /// undecided (`OVERAPPROX_UNDECIDED_DETAIL`), never as a disproof.
+    pub over_approx_obligations: BTreeSet<String>,
     pub diagnostics: Vec<SemanticDiagnostic>,
     /// Non-blocking warnings (implicit-flow, etc.) — informational, do not fail the check.
     pub warnings: Vec<SemanticDiagnostic>,
@@ -214,6 +225,9 @@ struct ScopeBinding {
     /// user-function identity and keeps `Unknown` distinct from a proven-empty set. Existing
     /// label-lane consumers continue to use `fn_alias` unchanged.
     fn_identities: FnIdentitySet,
+    /// Every named function this binding may hold as far as any branch, arm or block tail resolves,
+    /// kept where `fn_identities` is `Unknown` ([`FnMay`], [`fn_may_of`]). Read by [`call_targets`].
+    fn_may: FnMay,
     /// Named-function identities stored at concrete aggregate access paths (`"0"`, `"field.1"`).
     /// Separate from `field_closures`: eta expansion is useful for body descent but loses the
     /// original set-valued identity required by contracts.
@@ -229,6 +243,22 @@ struct ScopeBinding {
     taint_label: security_label::SecurityLabel,
     /// Confidentiality-lane lattice. Same adapter contract as `taint_label`.
     secret_label: security_label::SecurityLabel,
+    /// A WHOLE-VALUE struct source (`WHOLE_STRUCT_SOURCE`): this binding holds a struct (or a
+    /// container of them) one of whose declared fields is `secret`. Kept apart from `secret`, which
+    /// would make every mention secret: releasing the whole value leaks the field, reading another
+    /// field (`p.pub_n`) does not.
+    whole_struct: Option<whole::WholeSrc>,
+    /// For a closure written here: what the names it closes over held when it was written (a later
+    /// `let` of the same name must not change what the closure sees); and, for a value bound here that
+    /// the whole-struct lane interprets itself, what that value may be as a function
+    /// (`whole::value_captures`).
+    whole_captures: Option<whole::Captures>,
+    /// Whether this binding is known to be a list from the shape of what was bound (`[]`, `xs + [x]`),
+    /// never from a declared type, which the checker does not enforce. The whole-struct lane reads
+    /// `+` on a list as concatenation, not rendering.
+    whole_list: bool,
+    /// Likewise, whether it is known to be a map (a string-key write lands only under that key).
+    whole_map: bool,
 }
 
 impl ScopeBinding {
@@ -355,11 +385,58 @@ impl FnIdentitySet {
     /// against a guessed member of a join is unsound; discharging every member is sound but rejects
     /// ordinary dynamic HOF/container code whose path is not modeled. Singleton-only is the bounded
     /// improvement: exact identities compose, joins and unknown values retain the runtime boundary.
+    #[cfg(test)]
     fn into_singleton(self) -> Option<String> {
         match self {
             Self::Known(candidates) if candidates.len() == 1 => candidates.into_iter().next(),
             Self::Known(_) | Self::Unknown => None,
         }
+    }
+}
+
+/// The named functions a callable value MAY be, for the call-site summaries ([`call_targets`]).
+///
+/// `fn_alias` keeps ONE name and prefers a secret- or taint-returning one, and `fn_identities`
+/// becomes `Unknown` as soon as one branch is unresolvable (a builtin call, a value-block tail read
+/// in the enclosing scope). So `let f = if c { h2 } else { if d { let t = h2; t } else { h1 } }`
+/// offered the egress, sink and capability checks only `h1` once `h1` returned a secret, and the
+/// printing `h2` went unchecked (review ordret1, ALIAS-REGRESSION-UNKNOWN-SET-*). `names` keeps every
+/// name a branch resolves to, whatever another branch does; `open` records that some branch may hold
+/// a callable no name covers (a builtin value, a lambda, a value nothing resolves), so a check that
+/// needs the WHOLE set (a returned argument) cannot take `names` for it. A lower bound on what a call
+/// may run, never a contract identity: `fn_identities` stays the exact spine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FnMay {
+    names: BTreeSet<String>,
+    open: bool,
+}
+
+/// A binding nothing has resolved may hold any callable: open until a `let` or an assignment says
+/// what it holds ([`fn_may_of`]). A pattern binder, a loop variable, a parameter or any other seeded
+/// binding stays open, so a check that needs the whole set falls back to what it did before the set
+/// existed (review of the ordinary-lane designs, U3: a closed default let `let (g, h) = if c { (abs,
+/// zero) } else { .. }` and a `Some(g)` arm binder pass `abs` as a function returning nothing).
+impl Default for FnMay {
+    fn default() -> Self {
+        Self {
+            names: BTreeSet::new(),
+            open: true,
+        }
+    }
+}
+
+impl FnMay {
+    /// Nothing yet: where [`FnMay`]s are gathered and joined.
+    fn closed() -> Self {
+        Self {
+            names: BTreeSet::new(),
+            open: false,
+        }
+    }
+
+    fn join(&mut self, other: &FnMay) {
+        self.names.extend(other.names.iter().cloned());
+        self.open |= other.open;
     }
 }
 
@@ -476,6 +553,7 @@ fn fn_alias_of_d(
     depth: u32,
 ) -> Option<String> {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return None;
     }
     match init {
@@ -551,6 +629,15 @@ fn fn_alias_of_d(
             // closed under chains by `compute_returns_param_fixpoint`). It was populated and simply
             // never consulted for identity. Resolve the ARGUMENT at that position instead, which also
             // makes chains work for free: `id(fwd(key))` resolves by re-entering this arm.
+            // A multi-return function may yield any of its return values: prefer a secret/tainting one.
+            // Only when EVERY value named a function is the first one the answer; otherwise an
+            // unresolved value may be the one that matters, so the tail-based paths below still get
+            // their say.
+            if let Some(rv) = ctx.fn_return_values.get(callee) {
+                if let Ok(n) = return_values_alias(callee, rv, args, scope, ctx, depth) {
+                    return n;
+                }
+            }
             if let Some((pnames, j)) = ctx.fn_returns_param.get(callee) {
                 if pnames.len() == args.len() {
                     if let Some(a) = args.get(*j) {
@@ -560,13 +647,51 @@ fn fn_alias_of_d(
                     }
                 }
             }
-            let ret = ctx.fn_sole_return.get(callee).map(|(_, r)| r.clone())?;
+            let (pnames, ret) = ctx.fn_sole_return.get(callee).cloned()?;
+            // The returned expression is the callee's: its parameters mean this call's arguments
+            // (walker parity with `fn_identities_of_d`). A join `if c { pub1 } else { g }` otherwise
+            // resolved `g` in the caller's scope, to nothing, and `pick(getsec, 1)()` leaked.
+            if pnames.len() == args.len() {
+                let sub: BTreeMap<String, Expr> =
+                    pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                return fn_alias_of_d(&substitute_vars(&ret, &sub), scope, ctx, depth + 1);
+            }
             fn_alias_of_d(&ret, scope, ctx, depth + 1)
         }
         Expr::CallExpr { callee, args } => {
             let Expr::FieldAccess { base, field, .. } = callee.as_ref() else {
                 return None;
             };
+            if let Some(Ok(defs)) = method_defs(ctx, scope, base, field) {
+                let full: Vec<Expr> = std::iter::once((**base).clone())
+                    .chain(args.iter().cloned())
+                    .collect();
+                // A secret or tainting value in ANY definition wins; the first named function only
+                // when every definition named one.
+                let mut first: Option<String> = None;
+                let mut all_named = true;
+                for rv in defs {
+                    match return_values_alias(
+                        &format!("impl {field}"),
+                        rv,
+                        &full,
+                        scope,
+                        ctx,
+                        depth,
+                    ) {
+                        Ok(Some(n)) => {
+                            if ctx.secret_fns.contains(&n) || ctx.tainting_fns.contains(&n) {
+                                return Some(n);
+                            }
+                            first.get_or_insert(n);
+                        }
+                        _ => all_named = false,
+                    }
+                }
+                if all_named && first.is_some() {
+                    return first;
+                }
+            }
             // Method-side identity forwarder: `impl S { fn id(self, x) { return x; } }` then
             // `s.id(key)` — `method_returns_param` is the twin of free-fn `fn_returns_param`.
             // Self is index 0; call args are indices 1.. so formal j maps to args[j-1] when j>0.
@@ -714,6 +839,1325 @@ fn join_fn_alias<'a>(
     first
 }
 
+/// Every user function a call to `callee` may run.
+///
+/// A CALL-position name resolves to a user function before a local or parameter of the same name
+/// (the runtime's order, `backends/run.rs` `Expr::Call`: user functions, then locals, then builtins;
+/// matrix recategorizations s12/c41), so when `user_fn` says `callee` names one, it is the only
+/// target: `let h = pubfn; h(k)` runs the user `h`, and resolving through the local checked `pubfn`'s
+/// summaries instead (LOCAL-SHADOWS-USER-FN-NAME). Otherwise a local binding's single-name alias,
+/// every name of a Known identity set and every name of its may-set ([`FnMay`]), or `callee` itself
+/// when no binding of that name holds one.
+///
+/// A per-parameter summary (`param_egress`, `param_sinks`, `param_return_taint`) of a call through a
+/// join (`let f = if c { h2 } else { h1 }; f(x)`) is the union over these. `fn_alias` keeps ONE name
+/// and prefers a secret- or taint-returning candidate, so a join of a printing `h2` and a
+/// secret-returning `h1` resolved to `h1`, and `h2`'s egress of the argument was never checked; an
+/// `Unknown` identity set (one unresolvable branch) then offered nothing but that one name.
+fn call_targets(
+    callee: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    user_fn: bool,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if !user_fn {
+        if let Some(b) = scope.get(callee) {
+            out.extend(b.fn_alias.iter().cloned());
+            if let FnIdentitySet::Known(ns) = &b.fn_identities {
+                out.extend(ns.iter().cloned());
+            }
+            out.extend(b.fn_may.names.iter().cloned());
+        }
+    }
+    if out.is_empty() {
+        out.insert(callee.to_string());
+    }
+    out
+}
+
+/// The union of a per-parameter `summary` over `targets` ([`call_targets`]); `None` when no target
+/// has an entry.
+fn union_over_targets(
+    summary: &BTreeMap<String, BTreeSet<usize>>,
+    targets: &BTreeSet<String>,
+) -> Option<BTreeSet<usize>> {
+    let mut found = None::<BTreeSet<usize>>;
+    for t in targets {
+        if let Some(ps) = summary.get(t) {
+            found
+                .get_or_insert_with(BTreeSet::new)
+                .extend(ps.iter().copied());
+        }
+    }
+    found
+}
+
+/// Whether `b` may hold a function in `fns`: its single-name alias, any name in its identity set, or
+/// any name in its may-set.
+fn binding_may_call<'a>(b: &'a ScopeBinding, fns: &BTreeSet<String>) -> Option<&'a String> {
+    let known = match &b.fn_identities {
+        FnIdentitySet::Known(ns) => Some(ns),
+        FnIdentitySet::Unknown => None,
+    };
+    b.fn_alias
+        .iter()
+        .chain(known.into_iter().flatten())
+        .chain(b.fn_may.names.iter())
+        .find(|n| fns.contains(n.as_str()))
+}
+
+/// What a name bound or assigned inside a value block (or a statement) may hold there.
+#[derive(Clone, Copy)]
+enum BlockFnDef<'a> {
+    /// `let n = v` / `n = v`: the value itself.
+    Value(&'a Expr),
+    /// A pattern, `for`, `while let`, `match`-arm or `if let` binder over `v`: a part of `v`, or all
+    /// of it.
+    Part(&'a Expr),
+}
+
+/// Every name a block binds or assigns, with every [`BlockFnDef`] it is given there (order-free).
+type BlockFnDefs<'a> = BTreeMap<String, Vec<BlockFnDef<'a>>>;
+
+/// Record what `s` itself binds or assigns into `defs` (its nested statements are visited by the
+/// caller).
+fn record_fn_def<'a>(s: &'a Stmt, defs: &mut BlockFnDefs<'a>) {
+    match s {
+        Stmt::Let { name, init, .. } => defs
+            .entry(name.clone())
+            .or_default()
+            .push(BlockFnDef::Value(init)),
+        Stmt::Assign {
+            target: Expr::Var(name),
+            value,
+        } => defs
+            .entry(name.clone())
+            .or_default()
+            .push(BlockFnDef::Value(value)),
+        Stmt::LetPattern { pattern, init, .. } => {
+            for n in pattern.bound_names() {
+                defs.entry(n).or_default().push(BlockFnDef::Part(init));
+            }
+        }
+        Stmt::WhileLet { pattern, expr, .. } => {
+            for n in pattern.bound_names() {
+                defs.entry(n).or_default().push(BlockFnDef::Part(expr));
+            }
+        }
+        Stmt::For { var, source, .. } => {
+            let src = match source {
+                crate::frontend::ForSource::Range { start, .. } => start,
+                crate::frontend::ForSource::Collection { expr } => expr,
+            };
+            defs.entry(var.clone())
+                .or_default()
+                .push(BlockFnDef::Part(src));
+        }
+        Stmt::Assign { .. }
+        | Stmt::If { .. }
+        | Stmt::While { .. }
+        | Stmt::Loop { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::ResearchBlock { .. }
+        | Stmt::ExploitBlock { .. }
+        | Stmt::HybridBlock { .. }
+        | Stmt::SpecBlock { .. }
+        | Stmt::ExprStmt(_) => {}
+    }
+}
+
+/// Record the binders of a `match` arm or an `if let` in `x` (each a part of its scrutinee).
+fn record_fn_binders<'a>(x: &'a Expr, defs: &mut BlockFnDefs<'a>) {
+    match x {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            for arm in arms {
+                for n in arm.pattern.bound_names() {
+                    defs.entry(n).or_default().push(BlockFnDef::Part(scrutinee));
+                }
+            }
+        }
+        Expr::IfLet {
+            pattern, scrutinee, ..
+        } => {
+            for n in pattern.bound_names() {
+                defs.entry(n).or_default().push(BlockFnDef::Part(scrutinee));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`record_fn_def`] over `stmts` and the statement lists nested in them (not their expressions,
+/// which the caller's expression walk reaches on its own).
+fn record_stmt_list_defs<'a>(stmts: &'a [Stmt], defs: &mut BlockFnDefs<'a>) {
+    for s in stmts {
+        record_fn_def(s, defs);
+        match s {
+            Stmt::WhileLet { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => record_stmt_list_defs(body, defs),
+            Stmt::If { then, else_, .. } => {
+                record_stmt_list_defs(then, defs);
+                if let Some(e) = else_ {
+                    record_stmt_list_defs(e, defs);
+                }
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    record_stmt_list_defs(b, defs);
+                }
+            }
+            Stmt::Let { .. }
+            | Stmt::LetPattern { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::SpecBlock { .. }
+            | Stmt::ExprStmt(_) => {}
+        }
+    }
+}
+
+/// The [`FnMay`] of a value: the set-valued twin of [`fn_alias_of`]. Every branch, arm and block
+/// tail contributes the names it resolves to, and one that resolves to nothing, or to a callable
+/// no name covers, sets `open` instead of erasing the others. A value block's own `let`s and
+/// assignments are read as the values they bind: `if c { let t = h2; t } else { zero }` may be `h2`,
+/// where both resolvers read `t` in the enclosing scope, found nothing, and kept only `zero`
+/// (VALUE-BLOCK-TAIL-IDENTITY).
+///
+/// What every block, arm and binder inside `e` binds or assigns is collected ONCE, order-free and
+/// name-keyed (a name bound in two blocks is one name here, which can only add candidates), so the
+/// walk stays linear in the size of `e` however deeply its blocks nest.
+fn fn_may_of(e: &Expr, scope: &BTreeMap<String, ScopeBinding>, ctx: &SemanticContext) -> FnMay {
+    let mut defs: BlockFnDefs<'_> = BTreeMap::new();
+    visit::each_expr(e, &mut |x| {
+        if let Expr::Block { stmts, .. } = x {
+            record_stmt_list_defs(stmts, &mut defs);
+        }
+        record_fn_binders(x, &mut defs);
+    });
+    let mut out = FnMay::closed();
+    fn_may_into(e, scope, ctx, &defs, &mut BTreeSet::new(), 0, &mut out);
+    out
+}
+
+/// Core of [`fn_may_of`]. `defs` holds what the value's blocks and binders bind (complete before the
+/// walk starts); `seen` holds the names whose defs this walk has already expanded, so each name is
+/// expanded once (a self-referential `t = t` ends there) and the walk is linear in the defs;
+/// `depth` bounds the resolvers exactly as [`fn_alias_of_d`] does.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_into<'a>(
+    e: &'a Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
+        out.open = true;
+        return;
+    }
+    match e {
+        Expr::Var(n) => fn_may_of_name(n, scope, ctx, defs, seen, depth, out),
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            fn_may_into(then, scope, ctx, defs, seen, depth + 1, out);
+            fn_may_into(else_, scope, ctx, defs, seen, depth + 1, out);
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                fn_may_into(&arm.body, scope, ctx, defs, seen, depth + 1, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            let mut candidates: Vec<&'a Expr> = Vec::new();
+            collect_block_fn_alias_candidates(stmts, tail.as_deref(), &mut candidates);
+            for c in candidates {
+                fn_may_into(c, scope, ctx, defs, seen, depth + 1, out);
+            }
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            fn_may_into(inner, scope, ctx, defs, seen, depth + 1, out)
+        }
+        // A closure is callable but names no function; its body is the closure lanes' business.
+        Expr::Lambda { .. } => out.open = true,
+        // A pass-through builtin hands its argument back (as in `fn_alias_of_d`).
+        Expr::Call { callee, args }
+            if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 =>
+        {
+            fn_may_into(&args[0], scope, ctx, defs, seen, depth + 1, out);
+            fn_may_resolved(e, scope, ctx, defs, seen, depth, out);
+        }
+        // Any other builtin may hand back what it is given: an element (`first(fs)`, `values(m)`),
+        // an argument (`call(identity, f)`), or a function built from its arguments (`compose(f, g)`
+        // runs both). Neither resolver names these, so `let g = first(fs); g(k)` and
+        // `let c = compose(pr, identity); c(k)` checked no summary (ELEMENT-BUILTIN-EXTRACTED-FN,
+        // COMPOSE-VALUE-CALLED). Every function an argument may be or carry is a candidate; the
+        // value stays open.
+        Expr::Call { callee, args } if builtin_may_forward_fn(callee, scope, ctx) => {
+            for a in args {
+                fn_may_carried(a, scope, ctx, depth + 1, &mut out.names);
+            }
+            fn_may_resolved(e, scope, ctx, defs, seen, depth, out);
+        }
+        // An element or field of a value no variable roots (`values(m)[0]`, `reverse(fs)[0]`):
+        // the path resolvers read a binding's recorded paths and find none, so it may be any
+        // function the value carries.
+        Expr::FieldAccess { base, .. } | Expr::Index { base, .. }
+            if access_chain_root(e).is_none() =>
+        {
+            fn_may_carried(base, scope, ctx, depth + 1, &mut out.names);
+            fn_may_resolved(e, scope, ctx, defs, seen, depth, out);
+        }
+        Expr::Call { .. }
+        | Expr::CallExpr { .. }
+        | Expr::FieldAccess { .. }
+        | Expr::Index { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::Try(_)
+        | Expr::Other(_) => fn_may_resolved(e, scope, ctx, defs, seen, depth, out),
+    }
+}
+
+/// A value [`fn_may_into`] does not take apart: whatever the single-name and set-valued resolvers
+/// name, and always `open`: a set the set-valued resolver calls `Known` is no evidence that nothing
+/// else is held (it maps a builtin name to no identity at all), so only a name, or a join of names,
+/// is ever closed (review of the ordinary-lane designs, U3). Both resolvers read names in the
+/// enclosing scope, so when `e` reads a name the enclosing value block binds (`{ let t = h2;
+/// fwd(t) }`), every value of that name counts too.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_resolved<'a>(
+    e: &'a Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    out.open = true;
+    out.names.extend(fn_alias_of_d(e, scope, ctx, depth + 1));
+    if let FnIdentitySet::Known(ns) = fn_identities_of_d(e, scope, ctx, depth + 1) {
+        out.names.extend(ns);
+    }
+    if defs.is_empty() {
+        return;
+    }
+    let mut read: BTreeSet<String> = BTreeSet::new();
+    visit::each_expr(e, &mut |x| match x {
+        Expr::Var(n) | Expr::Call { callee: n, .. } if defs.contains_key(n) => {
+            read.insert(n.clone());
+        }
+        _ => {}
+    });
+    for n in read {
+        out.open = true;
+        fn_may_of_name(&n, scope, ctx, defs, seen, depth, out);
+    }
+}
+
+/// The [`FnMay`] of the name `n` read as a VALUE: every value the enclosing value blocks give it,
+/// the user function (or builtin sink/egress, as `fn_alias_of` records it) of that name, and what a
+/// binding of that name may hold. In value position a local shadows a user function of the same
+/// name at runtime (`backends/run.rs` `var_as_value`) while `fn_alias_of` / `fn_identities_of` read
+/// the user function first; both are kept.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_of_name<'a>(
+    n: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    // Every value the name is given, once per walk: the defs are complete and name-keyed, so a
+    // second read of the name adds nothing (and a self-referential `t = t` ends here).
+    if let Some(ds) = defs.get(n) {
+        if seen.insert((n.to_string(), false)) {
+            for d in ds.iter().copied() {
+                match d {
+                    BlockFnDef::Value(v) => fn_may_into(v, scope, ctx, defs, seen, depth + 1, out),
+                    BlockFnDef::Part(v) => fn_may_part(v, scope, ctx, defs, seen, depth + 1, out),
+                }
+            }
+        }
+    }
+    let user_fn = ctx.fn_params.contains_key(n);
+    if user_fn || is_sink(n) || is_egress_sink(n) {
+        out.names.insert(n.to_string());
+    }
+    // A higher-order builtin held as a value (`let m = apply; m(pr, k)`) is named too, so a call
+    // through the binding runs the builtin's callback checks (BUILTIN-HOF-VIA-LOCAL-ALIAS). No
+    // summary is keyed by a builtin name, so the other consumers of the set are unaffected.
+    if !user_fn && scope.get(n).is_none() && !effects::higher_order_closure_args(n).is_empty() {
+        out.names.insert(n.to_string());
+    }
+    match scope.get(n) {
+        Some(b) => {
+            out.names.extend(b.fn_alias.iter().cloned());
+            if let FnIdentitySet::Known(ns) = &b.fn_identities {
+                out.names.extend(ns.iter().cloned());
+            }
+            out.join(&b.fn_may);
+            // A lambda, or a binding nothing names, may be a callable no name covers.
+            if b.closure_lambda.is_some()
+                || (matches!(b.fn_identities, FnIdentitySet::Unknown)
+                    && b.fn_alias.is_none()
+                    && b.fn_may.names.is_empty())
+            {
+                out.open = true;
+            }
+        }
+        // A builtin value, or a name nothing resolves. The defs are name-keyed and order-free, so a
+        // builtin's name bound somewhere in the value (`if c { abs } else { let abs = zero; abs }`)
+        // may still be read as the builtin in another branch: that read stays open.
+        None if !user_fn && (!defs.contains_key(n) || crate::backends::run::is_builtin_name(n)) => {
+            out.open = true
+        }
+        None => {}
+    }
+}
+
+/// Whether a call of `callee` runs a builtin that may return a function its arguments are or carry
+/// (an element, an argument, a function composed from them). A user function or a local of that name
+/// runs instead in call position; a builtin that yields only a scalar or text is excluded.
+fn builtin_may_forward_fn(
+    callee: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> bool {
+    !ctx.fn_params.contains_key(callee)
+        && !scope.contains_key(callee)
+        && crate::backends::run::is_builtin_name(callee)
+        && !matches!(
+            callee,
+            "len"
+                | "count"
+                | "is_empty"
+                | "contains"
+                | "position"
+                | "any"
+                | "all"
+                | "sum"
+                | "product"
+                | "print"
+                | "println"
+                | "eprint"
+                | "eprintln"
+                | "to_string"
+                | "str"
+        )
+}
+
+/// Every named function `e` may be, or hold as an element (a list element, a field, a map value, a
+/// payload, at any depth), for [`FnMay`]: what an element builtin or an index into an unrooted value
+/// may hand back. A lower bound like the rest of the may-set (the caller keeps the value open), read
+/// in ONE pass over `e` bounded like the resolvers, so nested builtins cost linear time.
+fn fn_may_carried(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+    out: &mut BTreeSet<String>,
+) {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
+        return;
+    }
+    match e {
+        Expr::Var(n) => {
+            if ctx.fn_params.contains_key(n) || is_sink(n) || is_egress_sink(n) {
+                out.insert(n.clone());
+            }
+            match scope.get(n) {
+                Some(b) => {
+                    out.extend(b.fn_alias.iter().cloned());
+                    if let FnIdentitySet::Known(ns) = &b.fn_identities {
+                        out.extend(ns.iter().cloned());
+                    }
+                    out.extend(b.fn_may.names.iter().cloned());
+                    for ids in b.field_fn_identities.values() {
+                        if let FnIdentitySet::Known(ns) = ids {
+                            out.extend(ns.iter().cloned());
+                        }
+                    }
+                }
+                None if !effects::higher_order_closure_args(n).is_empty() => {
+                    out.insert(n.clone());
+                }
+                None => {}
+            }
+        }
+        Expr::ArrayLiteral { elements } => {
+            for x in elements {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for x in fields {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, x) in fields {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (_, x) in entries {
+                fn_may_carried(x, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
+            fn_may_carried(base, scope, ctx, depth + 1, out)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            fn_may_carried(lhs, scope, ctx, depth + 1, out);
+            fn_may_carried(rhs, scope, ctx, depth + 1, out);
+        }
+        Expr::Call { callee, args } if builtin_may_forward_fn(callee, scope, ctx) => {
+            for a in args {
+                fn_may_carried(a, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::Call { .. } | Expr::CallExpr { .. } => {
+            out.extend(fn_alias_of_d(e, scope, ctx, depth + 1));
+            if let FnIdentitySet::Known(ns) = fn_identities_of_d(e, scope, ctx, depth + 1) {
+                out.extend(ns);
+            }
+            if let FnIdentitySet::Known(ns) =
+                fn_identities_carried_by_value_d(e, scope, ctx, depth + 1)
+            {
+                out.extend(ns);
+            }
+        }
+        Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } | Expr::Block { .. } => {
+            let mut tails = Vec::new();
+            expr_tail_values(e, &mut tails);
+            for t in &tails {
+                fn_may_carried(t, scope, ctx, depth + 1, out);
+            }
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            fn_may_carried(inner, scope, ctx, depth + 1, out)
+        }
+        Expr::Lambda { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Unary { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Try(_)
+        | Expr::Other(_) => {}
+    }
+}
+
+/// What a binder over `src` (a pattern, loop or arm binder) may hold: `src` itself (a binder that
+/// takes the whole value), or any function `src` carries as an element, a field or a payload.
+/// Always `open`: which part is taken is not modeled.
+#[allow(clippy::too_many_arguments)]
+fn fn_may_part<'a>(
+    src: &'a Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    defs: &BlockFnDefs<'a>,
+    seen: &mut BTreeSet<(String, bool)>,
+    depth: u32,
+    out: &mut FnMay,
+) {
+    out.open = true;
+    fn_may_into(src, scope, ctx, defs, seen, depth, out);
+    if let FnIdentitySet::Known(ns) = fn_identities_carried_by_value_d(src, scope, ctx, depth + 1) {
+        out.names.extend(ns);
+    }
+    // A container the enclosing block binds, read by name (`let xs = [h2]; for g in xs { .. }`).
+    if let Expr::Var(m) = src {
+        if !seen.insert((m.clone(), true)) {
+            return;
+        }
+        for d in defs.get(m).into_iter().flatten().copied() {
+            if let BlockFnDef::Value(v) = d {
+                if let FnIdentitySet::Known(ns) =
+                    fn_identities_carried_by_value_d(v, scope, ctx, depth + 1)
+                {
+                    out.names.extend(ns);
+                }
+            }
+        }
+    }
+}
+
+/// Before the ordered walk of `stmt`: a function assigned to an outer binding anywhere nested in
+/// `stmt` (a branch, a loop body, a `match` arm, a value block) may be what the binding holds after
+/// it, and in a loop at the next iteration, so it joins the binding's [`FnMay`], and a closure
+/// assigned there joins its closure candidates ([`applied_closure_candidates`]). A function or closure
+/// written into a field, key or element of an outer binding (`b.g = v`, `xs[i] = v`, `push(xs, v)`)
+/// joins what that path may hold, as [`loop_carried_fn_values`] joins it for a loop.
+///
+/// The joins after a branch or a loop keep only END states and skip a path that shadows the name
+/// (`merge_fn_alias_over`), a loop body is walked once from the pre-loop state, and a value block is
+/// walked in a discarded scope. So `let z = if c { f = h2; 1 } else { 2 }; f(k)`
+/// (FN-ASSIGNED-IN-VALUE-BLOCK-LOST), `loop { f = h2; if d { break; } f = zero; } f(k)`,
+/// `if c { f = h2; let f = zero; } f(k)` and `while c { f(k); f = h2; }` all lost `h2` (the
+/// function-identity siblings of IFC-JOIN-BREAK-SHADOW); the closure forms (`if c { f = |x| print(x);
+/// }`, `while c { f(k); f = |x| print(x); }`, LAMBDA-WRITTEN-IN-BRANCH-LOST,
+/// LOOP-CARRIED-LAMBDA-AFTER-CALL) and the place forms (`let y = if c { b.g = pr; 1 } else { 2 }`,
+/// `if c { b.g = pr; let b = .. }`, PLACE-FN-WRITE-IN-VALUE-BLOCK-LOST / -BEFORE-SHADOW-LOST) lost
+/// the closure body or the written function the same way. Order-free and only ever adding, so a
+/// function assigned and then overwritten inside ONE nested statement still counts (a documented
+/// over-refusal, the trade `nested_may_labels` makes). Only an ASSIGNMENT writes the outer binding:
+/// a nested `let` or binder of the same name is another binding, read only where a value names it
+/// (OR-NESTED-SHADOW-LET-COUNTED-AS-WRITE). The statement's own top-level assignment is left to the
+/// ordered walk, which replaces the set.
+fn join_nested_fn_writes(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    let mut defs: BlockFnDefs<'_> = BTreeMap::new();
+    let mut assigned: BTreeMap<&str, Vec<&Expr>> = BTreeMap::new();
+    // (root, access path, value); the path is `None` for a `push` / `insert` slot or a target whose
+    // path does not flatten.
+    let mut place_writes: Vec<(String, Option<String>, &Expr)> = Vec::new();
+    visit::each_stmt(std::slice::from_ref(stmt), &mut |s, in_lambda| {
+        if in_lambda || std::ptr::eq(s, stmt) {
+            return;
+        }
+        record_fn_def(s, &mut defs);
+        match s {
+            Stmt::Assign {
+                target: Expr::Var(n),
+                value,
+            } => assigned.entry(n.as_str()).or_default().push(value),
+            Stmt::Assign { target, value } => match flatten_access_path(target) {
+                Some((root, path)) => place_writes.push((root, Some(path), value)),
+                None => {
+                    if let Some(root) = assign_target_root(target) {
+                        place_writes.push((root.to_string(), None, value));
+                    }
+                }
+            },
+            Stmt::ExprStmt(e) | Stmt::Let { init: e, .. } => {
+                if let Some((root, values)) = in_place_container_write(e) {
+                    for v in values {
+                        place_writes.push((root.clone(), None, v));
+                    }
+                }
+            }
+            // A research, exploit or hybrid block is emitted inline, not as a scope of its own, so
+            // a `let` directly in it may rebind the name for what follows: counted as a write.
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                for inner in body {
+                    if let Stmt::Let { name, init, .. } = inner {
+                        assigned.entry(name.as_str()).or_default().push(init);
+                    }
+                }
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for inner in [gpu, cpu, prove].into_iter().flatten().flatten() {
+                    if let Stmt::Let { name, init, .. } = inner {
+                        assigned.entry(name.as_str()).or_default().push(init);
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+    if assigned.is_empty() && place_writes.is_empty() {
+        return;
+    }
+    visit::each_expr_in_stmts(std::slice::from_ref(stmt), &mut |x| {
+        record_fn_binders(x, &mut defs)
+    });
+    // Whether any value in `stmt` may be a closure at all; most assignment-heavy code holds none,
+    // and the candidate walk below follows every def of every name it reads.
+    let closures_possible = stmt_may_hold_closure(stmt, scope, ctx);
+    let (def_lams, def_reach) = if closures_possible {
+        def_closure_candidates(&defs, scope, ctx)
+    } else {
+        (Vec::new(), BTreeMap::new())
+    };
+    for (n, values) in &assigned {
+        if !scope.contains_key(*n) {
+            continue;
+        }
+        let mut may = FnMay::closed();
+        let mut seen = BTreeSet::from([(n.to_string(), false)]);
+        // A builtin assigned there (`f = print`) carries its gate tags, and a function its
+        // identities, as `merge_fn_alias_over` joins them: the builtin egress, sink and capability
+        // checks read those, not the names (review of the ordinary-lane designs, C8).
+        let mut tags = Vec::new();
+        let mut ids = FnIdentitySet::empty();
+        let mut lams: Vec<Box<Expr>> = Vec::new();
+        for v in values.iter().copied() {
+            fn_may_into(v, scope, ctx, &defs, &mut seen, 0, &mut may);
+            tags.push(builtin_gate_tags_of(v, scope, ctx));
+            ids = ids.union(fn_identities_of(v, scope, ctx));
+            if closures_possible {
+                lams.extend(value_closure_candidates(
+                    v, scope, ctx, &def_lams, &def_reach,
+                ));
+            }
+        }
+        if let Some(b) = scope.get_mut(*n) {
+            b.fn_may.join(&may);
+            b.builtin_gate_tags = BuiltinGateTags::union_concrete(
+                std::iter::once(b.builtin_gate_tags.clone()).chain(tags),
+            );
+            b.fn_identities = b.fn_identities.clone().union(ids);
+            for lam in lams {
+                add_closure_candidate(b, lam);
+            }
+        }
+    }
+    for (root, path, v) in place_writes {
+        if !scope.contains_key(&root) {
+            continue;
+        }
+        let mut may = FnMay::closed();
+        fn_may_into(v, scope, ctx, &defs, &mut BTreeSet::new(), 0, &mut may);
+        let mut names = may.names;
+        if let FnIdentitySet::Known(ns) = fn_identities_of(v, scope, ctx) {
+            names.extend(ns);
+        }
+        let tags = builtin_gate_tags_of(v, scope, ctx);
+        let mut lams: Vec<Box<Expr>> = Vec::new();
+        if closures_possible {
+            lams.extend(value_closure_candidates(
+                v, scope, ctx, &def_lams, &def_reach,
+            ));
+        }
+        let Some(b) = scope.get_mut(&root) else {
+            continue;
+        };
+        // Only a path with every segment concrete is the one slot written; any other write may
+        // have touched any slot, so it joins every recorded path and a slot of its own.
+        let exact = path.clone().filter(|p| !p.split('.').any(|seg| seg == "*"));
+        if !names.is_empty() {
+            let keys: Vec<String> = match &exact {
+                Some(p) => vec![p.clone()],
+                None => {
+                    let mut keys: Vec<String> = b.field_fn_identities.keys().cloned().collect();
+                    keys.push(
+                        path.clone()
+                            .unwrap_or_else(|| format!("_p{}", b.field_fn_identities.len())),
+                    );
+                    keys
+                }
+            };
+            for key in keys {
+                let slot = b
+                    .field_fn_identities
+                    .entry(key)
+                    .or_insert_with(FnIdentitySet::empty);
+                *slot = slot.clone().union(FnIdentitySet::Known(names.clone()));
+            }
+        }
+        if matches!(&tags, BuiltinGateTags::Known(found) if !found.is_empty()) {
+            let keys: Vec<String> = match &exact {
+                Some(p) => vec![p.clone()],
+                None => {
+                    let mut keys: Vec<String> = b.field_builtin_gate_tags.keys().cloned().collect();
+                    keys.push(path.clone().unwrap_or_else(|| {
+                        format!(
+                            "{SYNTHETIC_BUILTIN_GATE_TAG_SLOT_PREFIX}{}",
+                            b.field_builtin_gate_tags.len()
+                        )
+                    }));
+                    keys
+                }
+            };
+            for key in keys {
+                let cur = b
+                    .field_builtin_gate_tags
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(BuiltinGateTags::empty);
+                b.field_builtin_gate_tags
+                    .insert(key, BuiltinGateTags::union_concrete([cur, tags.clone()]));
+            }
+        }
+        for lam in lams {
+            add_field_closure_candidate(b, exact.as_deref(), lam);
+        }
+    }
+}
+
+/// Whether any value in `stmt` may be a closure: a lambda literal, a binding holding one (or a
+/// container holding one), a call that may return one (a function returning a lambda or forwarding a
+/// parameter, a local, a method). What [`value_closure_candidates`] can find is always one of these,
+/// so when there is none the candidate walk is skipped.
+fn stmt_may_hold_closure(
+    stmt: &Stmt,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> bool {
+    let holds = |n: &str| {
+        scope
+            .get(n)
+            .is_some_and(|b| b.closure_lambda.is_some() || !b.field_closures.is_empty())
+    };
+    let mut hit = false;
+    visit::each_expr_in_stmts(std::slice::from_ref(stmt), &mut |e| {
+        hit |= match e {
+            Expr::Lambda { .. } | Expr::CallExpr { .. } => true,
+            Expr::Var(n) => holds(n),
+            Expr::Call { callee, .. } => {
+                scope.contains_key(callee)
+                    || ctx.fn_returns_lambda.contains_key(callee)
+                    || ctx.fn_returns_param.contains_key(callee)
+            }
+            _ => false,
+        };
+    });
+    hit
+}
+
+/// The container and the stored values of an in-place `push(xs, v)` / `insert(xs, k, v)` (or the
+/// method forms), as [`apply_container_mutation_taint`] reads them.
+fn in_place_container_write(e: &Expr) -> Option<(String, &[Expr])> {
+    match e {
+        Expr::Call { callee, args }
+            if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+        {
+            Some((assign_target_root(&args[0])?.to_string(), &args[1..]))
+        }
+        Expr::CallExpr { callee, args } if !args.is_empty() => match callee.as_ref() {
+            Expr::FieldAccess { base, field, .. } if field == "push" || field == "insert" => {
+                Some((assign_target_root(base)?.to_string(), args.as_slice()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Every closure each name bound or assigned inside a statement may hold there (read through the
+/// statement's `defs`, as [`fn_may_of`] reads names): the closures its values' tails are (a lambda
+/// literal, a local holding closures, a call returning one, a closure stored at an access path), and
+/// those of every statement-bound name a tail reads, to a fixpoint. Each distinct closure is kept
+/// once (by its text) and each def is read once, so a long chain of assignments costs linear time.
+#[allow(clippy::vec_box)]
+fn def_closure_candidates(
+    defs: &BlockFnDefs<'_>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> (Vec<Box<Expr>>, BTreeMap<String, BTreeSet<usize>>) {
+    let mut lams: Vec<Box<Expr>> = Vec::new();
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    let mut reach: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let mut refs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (name, ds) in defs {
+        let mut own = BTreeSet::new();
+        for d in ds {
+            let BlockFnDef::Value(v) = d else {
+                continue;
+            };
+            let mut tails = Vec::new();
+            expr_tail_values(v, &mut tails);
+            for t in &tails {
+                if let Expr::Var(m) = t {
+                    if defs.contains_key(m) {
+                        refs.entry(name.clone()).or_default().insert(m.clone());
+                    }
+                }
+                for lam in callback_closure_candidates(t, scope, ctx) {
+                    let i = *index.entry(format!("{lam:?}")).or_insert_with(|| {
+                        lams.push(lam);
+                        lams.len() - 1
+                    });
+                    own.insert(i);
+                }
+            }
+        }
+        reach.insert(name.clone(), own);
+    }
+    loop {
+        let mut changed = false;
+        for (name, rs) in &refs {
+            let add: BTreeSet<usize> = rs
+                .iter()
+                .flat_map(|r| reach.get(r).into_iter().flatten().copied())
+                .collect();
+            let cur = reach.entry(name.clone()).or_default();
+            let before = cur.len();
+            cur.extend(add);
+            changed |= cur.len() != before;
+        }
+        if !changed {
+            break;
+        }
+    }
+    (lams, reach)
+}
+
+/// Every closure a value assigned inside a nested statement may be: the closures of its tails
+/// ([`callback_closure_candidates`]) and of every statement-bound name a tail reads
+/// ([`def_closure_candidates`]).
+#[allow(clippy::vec_box)]
+fn value_closure_candidates(
+    v: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    def_lams: &[Box<Expr>],
+    def_reach: &BTreeMap<String, BTreeSet<usize>>,
+) -> Vec<Box<Expr>> {
+    let mut out = Vec::new();
+    let mut from_defs = BTreeSet::new();
+    let mut tails = Vec::new();
+    expr_tail_values(v, &mut tails);
+    for t in &tails {
+        if let Expr::Var(m) = t {
+            if let Some(r) = def_reach.get(m) {
+                from_defs.extend(r.iter().copied());
+            }
+        }
+        out.extend(callback_closure_candidates(t, scope, ctx));
+    }
+    out.extend(from_defs.into_iter().map(|i| def_lams[i].clone()));
+    out
+}
+
+/// Every closure a callback or applied value `arg` may be: the lambda itself, what a local holds
+/// (its primary closure and every alternative, [`applied_closure_candidates`]), a closure stored at
+/// an access path (`fs[0]`, `b.g`), one a call returns (`mk()`), or any branch of a join.
+#[allow(clippy::vec_box)]
+fn callback_closure_candidates(
+    arg: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Vec<Box<Expr>> {
+    match arg {
+        Expr::Lambda { .. } => vec![Box::new(arg.clone())],
+        Expr::Var(g) => applied_closure_candidates(g, scope),
+        Expr::Index { .. } | Expr::FieldAccess { .. } => {
+            resolve_applied_container_lambda(arg, scope, ctx)
+                .into_iter()
+                .chain(weak_field_closures(arg, scope))
+                .filter(|l| matches!(l.as_ref(), Expr::Lambda { .. }))
+                .collect()
+        }
+        Expr::Call { .. } | Expr::CallExpr { .. } => resolve_closure_value(
+            arg,
+            scope,
+            &ctx.fn_returns_lambda,
+            &ctx.fn_returns_param,
+            &ctx.method_returns_lambda,
+            &ctx.method_returns_param,
+            0,
+        )
+        .into_iter()
+        .collect(),
+        Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } | Expr::Block { .. } => {
+            multi_candidate_closures(arg, scope)
+        }
+        Expr::Tainted { inner, .. } | Expr::Try(inner) => {
+            callback_closure_candidates(inner, scope, ctx)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The closures a WEAK write left in the container an access path reads, when the path's own slot
+/// holds one: a `push` (`_pN`), a write through a computed index (a `*` segment), a closure joined
+/// from a nested block over a slot that already held another ([`add_field_closure_candidate`]). The
+/// weak write may have been to this very slot, and the exact lookup
+/// ([`resolve_applied_container_lambda`]) returns the slot's own entry only, so
+/// `let xs = [|x| 0]; xs[i] = |x| print(x); xs[0](k)` and `if c { b.g = |x| print(x); }` over a
+/// `b.g` that held a lambda applied the old closure alone. A missing slot already falls back to
+/// every stored closure.
+#[allow(clippy::vec_box)]
+fn weak_field_closures(access: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Vec<Box<Expr>> {
+    let Some((root, path)) = flatten_access_path(access) else {
+        return Vec::new();
+    };
+    let Some(b) = scope.get(&root) else {
+        return Vec::new();
+    };
+    if path.is_empty() || !b.field_closures.contains_key(&path) {
+        return Vec::new();
+    }
+    let weak = |k: &str| {
+        k.split('.').any(|seg| seg == "*")
+            || k.strip_prefix("_p")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+    };
+    b.field_closures
+        .iter()
+        .filter(|(k, l)| **k != path && weak(k) && matches!(l.as_ref(), Expr::Lambda { .. }))
+        .map(|(_, l)| l.clone())
+        .collect()
+}
+
+/// Add `lam` to what binding `b` may be applied as: its primary closure when it has none, otherwise
+/// an alternative under [`ALT_CLOSURE_PREFIX`] (once per closure).
+fn add_closure_candidate(b: &mut ScopeBinding, lam: Box<Expr>) {
+    let Some(primary) = &b.closure_lambda else {
+        b.closure_lambda = Some(lam);
+        return;
+    };
+    let shown = format!("{lam:?}");
+    if format!("{primary:?}") == shown
+        || b.field_closures
+            .iter()
+            .any(|(k, l)| k.starts_with(ALT_CLOSURE_PREFIX) && format!("{l:?}") == shown)
+    {
+        return;
+    }
+    let mut n = b.field_closures.len();
+    while b
+        .field_closures
+        .contains_key(&format!("{ALT_CLOSURE_PREFIX}{n}"))
+    {
+        n += 1;
+    }
+    b.field_closures
+        .insert(format!("{ALT_CLOSURE_PREFIX}{n}"), lam);
+}
+
+/// Add `lam` to what binding `b` may hold at access path `path` (`None`: a slot no path names). A
+/// free path takes it. A path holding a NAMED function's eta-expansion (or its bare name) takes it too,
+/// once the functions that entry stood for are in the path's identity set, which the application
+/// sites read as well (`b.g(k)` re-enters the direct call of each). A path holding another closure
+/// keeps it, and `lam` goes to a synthetic `_p` slot, as a weak write does in the ordered walk.
+fn add_field_closure_candidate(b: &mut ScopeBinding, path: Option<&str>, lam: Box<Expr>) {
+    if let Some(path) = path {
+        let replaceable = match b.field_closures.get(path) {
+            None => true,
+            Some(old) => {
+                let named: Option<Vec<String>> = match old.as_ref() {
+                    Expr::Var(n) => Some(vec![n.clone()]),
+                    Expr::Lambda { params, body }
+                        if params.iter().all(|p| p.starts_with(ETA_PARAM_PREFIX)) =>
+                    {
+                        let mut callees = Vec::new();
+                        collect_called_names(body, &mut callees, 0);
+                        Some(callees)
+                    }
+                    _ => None,
+                };
+                match named {
+                    Some(names) => match b
+                        .field_fn_identities
+                        .entry(path.to_string())
+                        .or_insert_with(FnIdentitySet::empty)
+                    {
+                        FnIdentitySet::Known(have) => {
+                            have.extend(names);
+                            true
+                        }
+                        FnIdentitySet::Unknown => false,
+                    },
+                    None => false,
+                }
+            }
+        };
+        if replaceable {
+            b.field_closures.insert(path.to_string(), lam);
+            return;
+        }
+    }
+    let key = format!("_p{}", b.field_closures.len());
+    b.field_closures.insert(key, lam);
+}
+
+/// Every function a higher-order call may run when it applies the callback `arg`.
+///
+/// A name no local binding holds is itself: a user function or a builtin (`each(xs, h2)`,
+/// `app(print, k)`). A local is what it may hold: its alias and every name of a Known identity set,
+/// the set a direct call through it already checks ([`call_targets`]); the local's own name is not
+/// a function, so it is not a target. Any other expression (a join written in place, an element or
+/// field, a call returning a function) is its alias and Known identity set. A lambda names none: its
+/// body is descended where it is applied.
+fn applied_callback_targets(
+    arg: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    match arg {
+        Expr::Lambda { .. } => {}
+        Expr::Var(name) => match scope.get(name) {
+            Some(b) => {
+                out.extend(b.fn_alias.iter().cloned());
+                if let FnIdentitySet::Known(names) = &b.fn_identities {
+                    out.extend(names.iter().cloned());
+                }
+                // Every name a branch of it resolves to, where the identity set went Unknown.
+                out.extend(b.fn_may.names.iter().cloned());
+            }
+            None => {
+                out.insert(name.clone());
+            }
+        },
+        _ => {
+            out.extend(fn_alias_of(arg, scope, ctx));
+            if let FnIdentitySet::Known(names) = fn_identities_of(arg, scope, ctx) {
+                out.extend(names);
+            }
+            out.extend(fn_may_of(arg, scope, ctx).names);
+        }
+    }
+    out
+}
+
+/// Check a callback that a higher-order call (`via`) applies to data labelled `taint` / `secret`
+/// against every function the callback may be: a builtin egress or sink (by name, or by the gate
+/// tags that also resolve a local holding one and a join of several), and each user function's
+/// parameter egress and sink summaries ([`applied_callback_targets`]).
+///
+/// The builtin appliers checked only a bare name that no local held, and a user function applying
+/// its formal descended only a lambda argument, so `let f = h2; each([k], f)`,
+/// `each([k], if c { h2 } else { h1 })` and `app(h2, k)` with `fn app(g, x) { g(x) }` all printed
+/// the secret while `each([k], h2)` and `app(|x| h2(x), k)` were rejected (review ordret1
+/// HOF-BUILTIN-LOCAL-FN-BINDING, USER-HOF-NAMED-FN-ARG). Fail-closed like the lambda descent: the
+/// labelled data may reach any parameter of the applied function.
+fn check_applied_callback(
+    arg: &Expr,
+    via: &str,
+    taint: Option<&str>,
+    secret: bool,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    if mode != Mode::Safe || (taint.is_none() && !secret) {
+        return;
+    }
+    let targets = applied_callback_targets(arg, scope, ctx);
+    let tags = builtin_gate_tags_of(arg, scope, ctx);
+    let shown = match arg {
+        Expr::Var(n) => n.clone(),
+        _ => "a callback".to_string(),
+    };
+    check_applied_callback_targets(&targets, &tags, &shown, via, taint, secret, mode, ctx);
+}
+
+/// [`check_applied_callback`] over a resolved set: every function in `targets` and every builtin
+/// gate in `tags` the applied callback may be (`shown` names it in a diagnostic).
+#[allow(clippy::too_many_arguments)]
+fn check_applied_callback_targets(
+    targets: &BTreeSet<String>,
+    tags: &BuiltinGateTags,
+    shown: &str,
+    via: &str,
+    taint: Option<&str>,
+    secret: bool,
+    mode: Mode,
+    ctx: &mut SemanticContext,
+) {
+    if mode != Mode::Safe || (taint.is_none() && !secret) {
+        return;
+    }
+    let summary_hit = |summary: &BTreeMap<String, BTreeSet<usize>>| {
+        targets
+            .iter()
+            .find(|t| summary.get(t.as_str()).is_some_and(|s| !s.is_empty()))
+            .cloned()
+    };
+    if secret {
+        let egress = targets
+            .iter()
+            .find(|t| is_egress_sink(t.as_str()))
+            .cloned()
+            .or_else(|| {
+                tags.contains(&BuiltinGateTag::EgressSink)
+                    .then(|| shown.to_string())
+            });
+        if let Some(sink) = egress {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
+                    message: format!("safe mode confidentiality violation: a secret element flows through `{via}` into egress `{sink}` without declassify"),
+                    span: None,
+                },
+                false,
+            );
+        }
+        if let Some(f) = summary_hit(&ctx.param_egress) {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                    message: format!("safe mode confidentiality violation: a secret element flows through `{via}` into `{f}`, which reaches an egress without declassify"),
+                    span: None,
+                },
+                false,
+            );
+        }
+    }
+    if let Some(src) = taint {
+        let sink = targets
+            .iter()
+            .find(|t| is_sink(t.as_str()))
+            .cloned()
+            .or_else(|| {
+                tags.contains(&BuiltinGateTag::IntegritySink)
+                    .then(|| shown.to_string())
+            });
+        if let Some(sink) = sink {
+            ctx.push_diag(SemanticDiagnostic {
+                code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
+                message: format!("safe mode tainted flow from `{src}` through `{via}` into sink `{sink}` without declassify"),
+                span: None,
+            });
+        }
+        if let Some(f) = summary_hit(&ctx.param_sinks) {
+            ctx.push_diag(SemanticDiagnostic {
+                code: Some("ANUBIS_INTERPROC_SINK".into()),
+                message: format!("safe mode tainted flow from `{src}` through `{via}` into `{f}`, which reaches a sink without declassify"),
+                span: None,
+            });
+        }
+    }
+}
+
+/// Every closure an operand `a` may be or carry: [`callback_closure_candidates`] of the value itself,
+/// and every closure stored in it (a local's fields and elements, a literal's elements).
+#[allow(clippy::vec_box)]
+fn carried_closure_candidates(
+    a: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Vec<Box<Expr>> {
+    let mut out = callback_closure_candidates(a, scope, ctx);
+    let stored: Vec<Box<Expr>> = match a {
+        Expr::Var(root) => scope
+            .get(root)
+            .map(|b| {
+                b.field_closures
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with(ALT_CLOSURE_PREFIX))
+                    .map(|(_, l)| l.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Expr::ArrayLiteral { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::EnumConstruct { .. } => {
+            let mut m = BTreeMap::new();
+            collect_container_closures(a, "", scope, ctx, &mut m);
+            m.into_values().collect()
+        }
+        _ => Vec::new(),
+    };
+    out.extend(
+        stored
+            .into_iter()
+            .filter(|l| matches!(l.as_ref(), Expr::Lambda { .. })),
+    );
+    out
+}
+
+/// An operand `a` of a higher-order call whose callback may be a user function applying one of its
+/// formals: every function `a` may be or carry may be applied to the call's data (labelled `taint` /
+/// `secret`), so each is checked and charged as a callback of `via`, and each closure is descended with
+/// its parameters bound to those labels.
+#[allow(clippy::too_many_arguments)]
+fn check_forwarded_callbacks(
+    a: &Expr,
+    via: &str,
+    taint: Option<&str>,
+    secret: bool,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    let mut values: Vec<&Expr> = vec![a];
+    if let Expr::ArrayLiteral { elements } = a {
+        values.extend(elements.iter());
+    }
+    for v in values {
+        check_applied_callback(v, via, taint, secret, mode, scope, ctx);
+        charge_applied_callback_capabilities(v, mode, scope, effects, ctx);
+        let tags = builtin_gate_tags_of(v, scope, ctx);
+        charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+    }
+    let mut carried = BTreeSet::new();
+    fn_may_carried(a, scope, ctx, 0, &mut carried);
+    let carried_tags = builtin_gate_tags_carried_by_value_d(a, scope, ctx, 0);
+    check_applied_callback_targets(
+        &carried,
+        &carried_tags,
+        "a callback",
+        via,
+        taint,
+        secret,
+        mode,
+        ctx,
+    );
+    charge_applied_builtin_gate_tags(&carried_tags, mode, effects, ctx);
+    for name in &carried {
+        if let Some(caps) = ctx.fn_declared_effects.get(name).cloned() {
+            for raw in caps {
+                apply_inherited_capability(raw, mode, effects, ctx);
+            }
+        }
+    }
+    for lam in carried_closure_candidates(a, scope, ctx) {
+        if let Expr::Lambda { params, body } = lam.as_ref() {
+            let mut local = scope.clone();
+            for p in params {
+                local.insert(
+                    p.clone(),
+                    labelled_param_binding(p, taint.is_some(), taint.map(str::to_string), secret),
+                );
+            }
+            analyze_closure_body_effect(body, mode, &local, effects, ctx);
+        }
+    }
+}
+
+/// Charge the declared `uses(...)` of every user function a higher-order builtin may apply as the
+/// callback `arg` ([`applied_callback_targets`]), as a direct call of it would; a builtin callback's
+/// own capability is charged from its gate tags. `each([1], w)` with `fn w(x) uses(fs.write)` wrote
+/// the file from a function that declares nothing, while `w(1)` was rejected (review ordret1
+/// HOF-BUILTIN-CAPABILITY-NOT-CHARGED).
+fn charge_applied_callback_capabilities(
+    arg: &Expr,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    for name in applied_callback_targets(arg, scope, ctx) {
+        if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned() {
+            for raw in caps {
+                apply_inherited_capability(raw, mode, effects, ctx);
+            }
+        }
+    }
+}
+
 /// Additive, set-valued function-identity spine. Existing `fn_alias_of` callers intentionally remain
 /// untouched: that API selects one label-dangerous identity at a join, while this API preserves the
 /// complete known set for policies (contracts, sealedness, builtin gating) whose result cannot be
@@ -733,6 +2177,7 @@ fn fn_identities_of_d(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     match expr {
@@ -776,6 +2221,10 @@ fn fn_identities_of_d(
                     .skip(1)
                     .map(|arg| fn_identities_of_d(arg, scope, ctx, depth + 1))
                     .fold(FnIdentitySet::empty(), FnIdentitySet::union);
+            }
+            // A multi-return function may yield ANY of its return values: name their union.
+            if let Some(rv) = ctx.fn_return_values.get(callee) {
+                return return_values_identities(callee, rv, args, scope, ctx, depth);
             }
             if let Some((param_names, index)) = ctx.fn_returns_param.get(callee) {
                 if param_names.len() == args.len() {
@@ -890,14 +2339,45 @@ fn fn_identities_of_d(
                         return carried;
                     }
                 }
+                // The returned expression is the CALLEE's: its parameters mean this call's arguments.
+                // A join such as `if c { pub1 } else { g }` (an early `return pub1` plus a tail
+                // `return g`) resolved `g` in the caller's scope, where it names nothing.
+                if param_names.len() == args.len() {
+                    let sub: BTreeMap<String, Expr> = param_names
+                        .iter()
+                        .cloned()
+                        .zip(args.iter().cloned())
+                        .collect();
+                    let inst = substitute_vars(returned, &sub);
+                    return fn_identities_of_d(&inst, scope, ctx, depth + 1);
+                }
                 return fn_identities_of_d(returned, scope, ctx, depth + 1);
             }
             FnIdentitySet::Unknown
         }
         Expr::CallExpr { callee, args } => {
-            let Expr::FieldAccess { field, .. } = callee.as_ref() else {
+            let Expr::FieldAccess { base, field, .. } = callee.as_ref() else {
                 return FnIdentitySet::Unknown;
             };
+            match method_defs(ctx, scope, base, field) {
+                Some(Err(())) => return FnIdentitySet::Unknown,
+                Some(Ok(defs)) => {
+                    let full: Vec<Expr> = std::iter::once((**base).clone())
+                        .chain(args.iter().cloned())
+                        .collect();
+                    return defs.iter().fold(FnIdentitySet::empty(), |acc, rv| {
+                        acc.union(return_values_identities(
+                            &format!("impl {field}"),
+                            rv,
+                            &full,
+                            scope,
+                            ctx,
+                            depth,
+                        ))
+                    });
+                }
+                None => {}
+            }
             if let Some((param_names, index)) = ctx.method_returns_param.get(field) {
                 if param_names.len() == args.len() + 1 && *index > 0 {
                     if let Some(arg) = args.get(*index - 1) {
@@ -959,6 +2439,7 @@ fn fn_identities_at_path_expr(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     if let Some((root, path)) = flatten_access_path(expr) {
@@ -1008,6 +2489,7 @@ fn fn_identities_at_contract_path(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     if path.is_empty() {
@@ -1091,14 +2573,71 @@ fn fn_identities_at_contract_path(
                 depth + 1,
             ))
         }),
-        Expr::Call { callee, .. } => {
-            if let Some((_, returned)) = ctx.fn_sole_return.get(callee) {
-                return fn_identities_at_contract_path(returned, path, scope, ctx, depth + 1);
+        Expr::Call { callee, args } => {
+            // Every value a multi-return function can return, in the caller's terms.
+            if let Some(rv) = ctx.fn_return_values.get(callee) {
+                if rv.params.len() != args.len() {
+                    return FnIdentitySet::Unknown;
+                }
+                return with_return_values_active(&format!("path {callee}"), || {
+                    rv.values.iter().fold(FnIdentitySet::empty(), |acc, v| {
+                        acc.union(match return_value_in_caller(v, rv, args, ctx) {
+                            Some(inst) => {
+                                fn_identities_at_contract_path(&inst, path, scope, ctx, depth + 1)
+                            }
+                            None => FnIdentitySet::Unknown,
+                        })
+                    })
+                })
+                .unwrap_or(FnIdentitySet::Unknown);
+            }
+            if let Some((pnames, returned)) = ctx.fn_sole_return.get(callee) {
+                // The callee's parameters mean this call's arguments.
+                let returned = if pnames.len() == args.len() {
+                    let sub: BTreeMap<String, Expr> =
+                        pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                    substitute_vars(returned, &sub)
+                } else {
+                    returned.clone()
+                };
+                return fn_identities_at_contract_path(&returned, path, scope, ctx, depth + 1);
             }
             FnIdentitySet::Unknown
         }
-        Expr::CallExpr { callee, .. } => {
-            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+        Expr::CallExpr { callee, args } => {
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                match method_defs(ctx, scope, base, field) {
+                    Some(Err(())) => return FnIdentitySet::Unknown,
+                    Some(Ok(defs)) => {
+                        let full: Vec<Expr> = std::iter::once((**base).clone())
+                            .chain(args.iter().cloned())
+                            .collect();
+                        let key = format!("path impl {field}");
+                        return defs.iter().fold(FnIdentitySet::empty(), |acc, rv| {
+                            if rv.params.len() != full.len() {
+                                return FnIdentitySet::Unknown;
+                            }
+                            acc.union(
+                                with_return_values_active(&key, || {
+                                    rv.values.iter().fold(FnIdentitySet::empty(), |acc, v| {
+                                        acc.union(match return_value_in_caller(v, rv, &full, ctx) {
+                                            Some(inst) => fn_identities_at_contract_path(
+                                                &inst,
+                                                path,
+                                                scope,
+                                                ctx,
+                                                depth + 1,
+                                            ),
+                                            None => FnIdentitySet::Unknown,
+                                        })
+                                    })
+                                })
+                                .unwrap_or(FnIdentitySet::Unknown),
+                            )
+                        });
+                    }
+                    None => {}
+                }
                 if let Some((_, returned)) = ctx.method_sole_return.get(field) {
                     return fn_identities_at_contract_path(returned, path, scope, ctx, depth + 1);
                 }
@@ -1156,6 +2695,7 @@ fn builtin_gate_tags_of_d(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     match expr {
@@ -1275,6 +2815,7 @@ fn builtin_gate_tags_carried_by_value_d(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     let mut observations = vec![builtin_gate_tags_of_d(expr, scope, ctx, depth + 1)];
@@ -1381,6 +2922,7 @@ fn builtin_gate_tags_at_path_expr(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     if let Some((root, path)) = flatten_access_path(expr) {
@@ -1455,6 +2997,7 @@ fn builtin_gate_tags_at_path(
     depth: u32,
 ) -> BuiltinGateTags {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return BuiltinGateTags::Unknown;
     }
     if path.is_empty() {
@@ -1766,6 +3309,7 @@ fn collect_container_builtin_gate_tags_d(
     depth: u32,
 ) {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return;
     }
     let path = |segment: &str| {
@@ -2108,6 +3652,7 @@ fn collect_container_fn_identities_d(
     depth: u32,
 ) {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return;
     }
     let path = |segment: &str| {
@@ -2233,6 +3778,15 @@ fn collect_container_fn_identities_d(
                 | Expr::Match { .. }
         ) {
             collect_container_fn_identities_d(value, &key, scope, ctx, out, depth + 1);
+        } else if let Some(binding) = match value {
+            Expr::Var(name) => scope.get(name),
+            _ => None,
+        } {
+            // An element is in VALUE position, where a local shadows a function of its name at
+            // runtime (`backends/run.rs` `var_as_value`): `let h2 = pr; [h2]` stores `pr`, and
+            // `fn_identities_of_d` reads a name as the user function first (right for a CALL), so
+            // the element was checked against the pure `h2` (SHADOWED-LOCAL-IN-CONTAINER-AS-CALLBACK).
+            out.insert(key, binding.fn_identities.clone());
         } else {
             out.insert(key, fn_identities_of_d(value, scope, ctx, depth + 1));
         }
@@ -2448,6 +4002,10 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                 if let Some(lam) = lam {
                     let entry = scope.entry(name.clone()).or_insert_with(|| {
                         ScopeBinding {
+                            whole_struct: None,
+                            whole_captures: None,
+                            whole_list: false,
+                            whole_map: false,
                             info: BindingInfo {
                                 name: name.clone(),
                                 ty: None,
@@ -2461,6 +4019,7 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                             closure_lambda: None,
                             field_closures: BTreeMap::new(),
                             fn_alias: None,
+                            fn_may: FnMay::default(),
                             fn_identities: FnIdentitySet::Unknown,
                             field_fn_identities: BTreeMap::new(),
                             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -2572,6 +4131,10 @@ fn seed_loop_var_callable(
             probe.insert(
                 tmp.to_string(),
                 ScopeBinding {
+                    whole_struct: None,
+                    whole_captures: None,
+                    whole_list: false,
+                    whole_map: false,
                     info: BindingInfo {
                         name: tmp.to_string(),
                         ty: None,
@@ -2585,6 +4148,7 @@ fn seed_loop_var_callable(
                     closure_lambda: None,
                     field_closures: fc,
                     fn_alias: None,
+                    fn_may: FnMay::default(),
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -2604,6 +4168,10 @@ fn seed_loop_var_callable(
     }
     let b = scope.entry(var.to_string()).or_insert_with(|| {
         ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: var.to_string(),
                 ty: None,
@@ -2617,6 +4185,7 @@ fn seed_loop_var_callable(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -2717,29 +4286,56 @@ const ETA_PARAM_PREFIX: &str = "_eta";
 /// machinery a form it recognises instead of teaching a second code path the same facts. A second
 /// path that must be kept in sync with the first is how this file grew its walker-parity defects.
 ///
-/// Resolves through `fn_alias`, so an alias chain (`let g = key; app(g)`) expands to the same lambda.
-/// Returns `None` for anything that is not a known free function, which can only fail to reject.
+/// Resolves through a binding of that name, so an alias chain (`let g = key; app(g)`) expands to the
+/// same lambda. Returns `None` for anything that is not a known free function, which can only fail to
+/// reject.
+///
+/// A binding that may hold SEVERAL functions expands to a lambda that may apply any of them: an `if`
+/// on an opaque condition, which every closure-body walker takes both ways. It used to expand through
+/// the one preferred `fn_alias`, so once `h1` returned a secret, `Box { g: f }` / `[f]` with
+/// `let f = if c { w } else { .. h1 }` stored `|x| h1(x)` and dropped `w`'s `uses(fs.write)` (a
+/// regression of 9dc7be91). In value position a local shadows a user function of its name at runtime
+/// (`var_as_value`), so a binding of that name counts as well as the function.
 fn eta_expand_fn_ref(
     name: &str,
     scope: &BTreeMap<String, ScopeBinding>,
     fn_params: &BTreeMap<String, Vec<String>>,
 ) -> Option<Expr> {
-    let target = if fn_params.contains_key(name) {
-        name.to_string()
-    } else {
-        scope.get(name).and_then(|b| b.fn_alias.clone())?
-    };
-    let arity = fn_params.get(&target)?.len();
+    let mut targets: BTreeSet<String> = BTreeSet::new();
+    if fn_params.contains_key(name) {
+        targets.insert(name.to_string());
+    }
+    if let Some(b) = scope.get(name) {
+        targets.extend(b.fn_alias.iter().cloned());
+        if let FnIdentitySet::Known(ns) = &b.fn_identities {
+            targets.extend(ns.iter().cloned());
+        }
+        targets.extend(b.fn_may.names.iter().cloned());
+    }
+    let mut calls: Vec<(String, usize)> = targets
+        .into_iter()
+        .filter_map(|t| fn_params.get(&t).map(|ps| (t, ps.len())))
+        .collect();
+    let arity = calls.iter().map(|(_, a)| *a).max()?;
     let params: Vec<String> = (0..arity)
         .map(|i| format!("{ETA_PARAM_PREFIX}{i}"))
         .collect();
-    let args = params.iter().map(|p| Expr::Var(p.clone())).collect();
+    let call = |(callee, a): (String, usize)| Expr::Call {
+        callee,
+        args: params[..a].iter().map(|p| Expr::Var(p.clone())).collect(),
+    };
+    let mut body = call(calls.pop()?);
+    while let Some(c) = calls.pop() {
+        body = Expr::If {
+            cond: Box::new(Expr::Symbolic { ty: "bool".into() }),
+            then: Box::new(call(c)),
+            else_: Box::new(body),
+            span: Span::default(),
+        };
+    }
     Some(Expr::Lambda {
         params,
-        body: Box::new(Expr::Call {
-            callee: target,
-            args,
-        }),
+        body: Box::new(body),
     })
 }
 
@@ -2949,6 +4545,27 @@ impl SemanticContext {
     /// Wired in by the bidirectional inference-core slice: the arm-join conflict and the
     /// `Call`/`Index`/`FieldAccess` check-direction mismatches all route through here with
     /// `shadow_gated=true`.
+    /// Record an enforcing diagnostic. The first one raised after an analysis limit was reached
+    /// marks where the diagnostics computed from fail-closed answers begin (`limit_mark`).
+    fn push_diag(&mut self, diag: SemanticDiagnostic) {
+        if self.limit_mark.is_none() && analysis_limit::exhausted() {
+            self.limit_mark = Some(self.diagnostics.len());
+        }
+        self.diagnostics.push(diag);
+    }
+
+    /// Record an enforcing diagnostic computed from the program's text alone (no walker, no answer
+    /// a limit could have made fail-closed): it is reported even when raised after a limit. Dropped
+    /// with the rest, a duplicate parameter or a `break` outside a loop went unreported beside a
+    /// limit (seventh review of the checker limits, N5).
+    fn push_diag_independent(&mut self, diag: SemanticDiagnostic) {
+        if self.limit_mark.is_some() || analysis_limit::exhausted() {
+            self.independent_after_limit.push(diag);
+        } else {
+            self.diagnostics.push(diag);
+        }
+    }
+
     fn emit(&mut self, diag: SemanticDiagnostic, shadow_gated: bool) {
         if shadow_gated {
             // A shadow-gated (not-yet-promoted) check NEVER enters the enforcing `diagnostics`
@@ -2961,7 +4578,7 @@ impl SemanticContext {
                 self.shadow_diags.push(diag);
             }
         } else {
-            self.diagnostics.push(diag);
+            self.push_diag(diag);
         }
     }
 }
@@ -2969,13 +4586,6 @@ impl SemanticContext {
 /// #76: an impl method's contract — (parameter names with `self` at index 0, `requires`, `ensures`).
 /// Named so `method_contracts` stays readable; the shape mirrors `fn_contracts`' value type.
 type MethodContract = (Vec<String>, Vec<Expr>, Vec<Expr>);
-
-#[derive(Debug, Clone)]
-struct ParamContractApplication {
-    callee: Expr,
-    param_indices: BTreeSet<usize>,
-    args: Vec<Expr>,
-}
 
 #[derive(Debug, Default)]
 struct SemanticContext {
@@ -2986,7 +4596,14 @@ struct SemanticContext {
     constraints: Vec<String>,
     taint_traces: Vec<TaintTrace>,
     solver_obligations: Vec<SolverObligation>,
+    /// Enforcing diagnostics, in the order raised (`push_diag`; nothing removes one before the
+    /// request ends).
     diagnostics: Vec<SemanticDiagnostic>,
+    /// How many diagnostics had been raised when the first one after an analysis limit was: those
+    /// from there on came from fail-closed answers (`typecheck_request` drops them).
+    limit_mark: Option<usize>,
+    /// Diagnostics raised after a limit that do not depend on any analysis ([`Self::push_diag_independent`]).
+    independent_after_limit: Vec<SemanticDiagnostic>,
     /// Application-site witnesses produced by the builtin gate-tag resolver for the function
     /// currently being analyzed. Reset per item; never part of its declared/inferred effect row.
     applied_builtin_leg2: bool,
@@ -3079,9 +4696,21 @@ struct SemanticContext {
     /// postcondition — the composition that makes contracts chain.
     #[allow(clippy::type_complexity)]
     fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
-    /// User function -> (formal names, unconditional applications of function-valued formals).
-    /// This is policy-neutral call-shape data; the contract policy supplies identity and discharge.
-    fn_param_contract_apps: BTreeMap<String, (Vec<String>, Vec<ParamContractApplication>)>,
+    /// User function -> (formal names, every carrier site of its function-valued formals). Call-shape
+    /// data collected once per definition; `discharge_carried_call_requires` resolves and discharges it
+    /// at each call site.
+    fn_carrier_items: BTreeMap<String, (Vec<String>, Vec<contract_carrier::CarrierItem>)>,
+    /// Carrier frames currently being discharged: `(callee|argument identities, generic)`. A key seen
+    /// again runs one generic frame; a key whose generic frame is already on the stack is covered.
+    carrier_stack: Vec<(String, bool)>,
+    /// Carrier frames discharged so far in this program (bounded by `CARRIER_FRAME_BUDGET`).
+    carrier_frames: usize,
+    /// Counter for fresh carrier symbols, so names are deterministic in program order.
+    carrier_fresh: usize,
+    /// Set while discharging carrier sites: the function whose parameter carried the contract. A
+    /// `requires` clause that cannot be encoded in this context becomes an explicit unresolved
+    /// obligation instead of being dropped.
+    carrier_origin: Option<String>,
     /// #76: impl-METHOD contracts, keyed by bare method name with `self` at parameter index 0.
     /// `None` marks an AMBIGUOUS name (declared by more than one impl), where a call site cannot know
     /// statically which contract applies.
@@ -3115,6 +4744,76 @@ struct SemanticContext {
     fn_declared_effects: BTreeMap<String, Vec<String>>,
     /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
     all_fns: BTreeSet<String>,
+    /// Every user-defined free function name in the program, complete before registration starts
+    /// (`all_fns` fills in as registration proceeds). A CALL-position name resolves to one of these
+    /// before any local or parameter of the same name — the native runtime's order
+    /// (`backends/run.rs` `Expr::Call`: user functions, then locals, then builtins).
+    user_fn_names: BTreeSet<String>,
+    /// See `TypedIR::over_approx_obligations`; filled by `mark_over_approx_obligations`.
+    over_approx_obligations: BTreeSet<String>,
+    /// Index into `solver_obligations` up to which `mark_over_approx_obligations` has looked.
+    over_approx_scan: usize,
+    /// SMT names of values an in-body `assert` over which stays runtime-enforced rather than statically
+    /// checked: float/string parameters modeled only for call-site preconditions. Cleared per function.
+    assert_deferred_vars: BTreeSet<String>,
+    /// Every name bound anywhere in the function being analyzed (parameters, `let`s, patterns, loop
+    /// variables, lambda parameters). A call-position name bound locally resolves to the local before a
+    /// builtin at runtime, so `panic`/`exit` are treated as diverging only when not in this set.
+    fn_bound_names: BTreeSet<String>,
+    /// The analysis state immediately BEFORE each statement of the function being analyzed, keyed by
+    /// the statement's address: (assumptions, modeled integer set with markers, path guards). The
+    /// wrap-safety walker runs after the body and must check each statement under the facts that hold
+    /// THERE, not under the end-of-body state (which contains facts established later — a later
+    /// assignment, an early-exit guard, a loop's post-state — and certified wraps that happen).
+    stmt_states: BTreeMap<usize, StmtState>,
+    /// Statements analyzed more than once under different states: no single recorded state is valid for
+    /// all of them, so the walker falls back to the function's entry state.
+    stmt_state_conflicts: BTreeSet<usize>,
+    /// User functions that may end the program instead of returning (they reach `panic`, `exit` or `?`,
+    /// directly or through another such function).
+    may_exit_fns: BTreeSet<String>,
+    /// Functions whose precondition matters at a call through a VALUE — a `requires`, or calls through
+    /// their own formals (carrier sites) — that are ALSO used as a value somewhere in the program (named
+    /// other than as a direct call). When this set is empty, a callee value the checker cannot resolve
+    /// cannot be one of them, and the call needs no precondition check; when it is not, such a call is
+    /// an explicit unresolved refusal, never a silent accept (see `unresolved_callee_value`).
+    escaping_contracted_fns: BTreeSet<String>,
+    /// See `compute_fn_valued_field_names`.
+    fn_valued_field_names: BTreeSet<String>,
+    /// Per function (by name) and method (`impl <name>`, every definition): the expressions that may
+    /// flow into its return values (`return_feeding_exprs`).
+    return_feeding: BTreeMap<String, Vec<Expr>>,
+    /// See `helper_labeled` (computed on first use).
+    /// Keyed by the sizes of `secret_fns` / `tainting_fns` when computed, so a lookup during their
+    /// own fixpoint never freezes a stale answer.
+    helper_labeled_cache: std::cell::RefCell<Option<HelperLabeled>>,
+    /// The formal parameters of the function being analyzed. A call THROUGH a formal is checked by the
+    /// carrier lane at each outer call site, where the actual argument is known.
+    current_fn_formals: BTreeSet<String>,
+    /// Locals of the function being analyzed that are bound by exactly one `let` and never assigned,
+    /// with their initializer — so "could this argument carry a function" can look through a local
+    /// (`let xs = [f]; app(xs)`) instead of treating every unresolved value as a possible carrier.
+    current_fn_let_inits: BTreeMap<String, Expr>,
+    /// Names assigned anywhere in the function being analyzed (`x = …`, `x.f = …`, `x[i] = …`).
+    current_fn_assigned: BTreeSet<String>,
+    /// Names bound again inside the function being analyzed (`let`, `for`, patterns, lambda params).
+    current_fn_rebound: BTreeSet<String>,
+    /// Names bound in the function being analyzed by anything but `let` (see `non_let_bound_names`).
+    current_fn_nonlet_bound: BTreeSet<String>,
+    /// Locals passed to a list-mutating builtin or to a user function in the function being analyzed.
+    current_fn_list_mutated: BTreeSet<String>,
+    /// Every distinct value a multi-return free function can return — early `return`s, one per branch,
+    /// a loop's fall-through value — with its parameters and its let-alias map, so identity and alias
+    /// resolution can name the UNION of what a call may yield. Only ADDS to the tail-based registries
+    /// (`fn_sole_return`, `fn_returns_param`), which name one value and so missed the others.
+    fn_return_values: BTreeMap<String, ReturnValues>,
+    /// Method twin of `fn_return_values`, keyed by bare method name: EVERY definition of the name
+    /// (each impl, including trait defaults injected into an impl), since the receiver's type decides
+    /// which body runs. Consulted when a name has several definitions or several return values.
+    method_return_values: BTreeMap<String, Vec<ReturnValues>>,
+    /// Nesting of closure applications being discharged (`discharge_applied_closure`), bounded so a
+    /// closure that applies itself cannot recurse without end.
+    closure_apply_depth: u32,
     /// Interprocedural taint summary: functions whose RETURN value carries INTERNAL taint (from a
     /// `taint_source()`/`tainted<T>` local, or a return of another such function), computed by a
     /// monotone fixpoint pre-pass before per-function analysis. `expr_taint_source`'s `Call` arm
@@ -3143,6 +4842,11 @@ struct SemanticContext {
     /// fixpoint can chase forwarder CHAINS (`fn f2(g) { return f1(g); }`), which a single pass cannot
     /// see because `f1`'s own forwarder status may not be known yet.
     fn_sole_return: BTreeMap<String, (Vec<String>, Expr)>,
+    /// Expression functions: free, non-generic functions whose ENTIRE body is one `return <expr>` (or a
+    /// tail expression). Such a function means exactly `<expr>` with its parameters substituted, so a
+    /// call-site precondition that calls one (`requires(is_valid(x))`) can be unfolded and discharged
+    /// instead of being refused as unencodable.
+    expr_fns: BTreeMap<String, (Vec<String>, Expr)>,
     /// Container literals appearing anywhere in a RECURSIVE function's body, by function name.
     ///
     /// A recursive accumulator builds its result across calls — `fn go(n, acc) { if n <= 0 { acc }
@@ -3190,6 +4894,31 @@ struct SemanticContext {
     /// sites consult it: a SECRET argument into a summarized-egress param is `ANUBIS_INTERPROC_EXFILTRATION`
     /// when `fn leak(x){ send(x); }`. Monotone fixpoint.
     param_egress: BTreeMap<String, BTreeSet<usize>>,
+    /// Free-function and (bare-named) impl-method bodies, for the whole-struct lane's call-site
+    /// specialization (`whole.rs`). A method name maps to every impl declaring it, `self` first.
+    whole_fns: BTreeMap<String, whole::WholeBody>,
+    whole_methods: BTreeMap<String, Vec<(String, whole::WholeBody)>>,
+    /// The formals each of those declares with a number type, by (impl type or `""`, name), `None`
+    /// for a key two functions share (`whole::numeric_formals`): the runtime checks them at entry.
+    whole_num_formals: whole::NumFormals,
+    /// The functions and `impl`-prefixed methods that may build a struct with a `secret` field, with
+    /// the sources of what they build (`whole::compute_builders`).
+    whole_builders: BTreeMap<String, String>,
+    /// The functions and `impl`-prefixed methods a call of which may return a value with a part of
+    /// another type than its type gives it, by writing into a part (`whole::compute_part_writers`).
+    whole_part_writers: BTreeSet<String>,
+    /// Whole-struct specializations of callees bound to no closure, shared by every query (a
+    /// callee's body reads only its formals): what each returns and where it releases a whole struct.
+    whole_memo: whole::WholeMemo,
+    /// Names the function body being analyzed ever assigns a value not known to stay a list (a
+    /// map): no binding of one is taken to be a list (map) (`whole::assigned_shapes`).
+    whole_not_list: BTreeSet<String>,
+    whole_not_map: BTreeSet<String>,
+    /// What may make a name's declared or inferred struct type stale (`whole::stale_type`): the
+    /// whole-struct lane does not dispatch a method call on such a name by that type.
+    whole_retype: whole::Retype,
+    /// The secret struct types a `declassify` may release whole (`whole::compute_released`).
+    whole_released: BTreeSet<String>,
     /// Interprocedural param→sink / param→egress summaries for IMPL METHODS, keyed by BARE method name
     /// and UNIONED across every impl that declares that name (receiver static type is generally
     /// unrecoverable, so bare-name + union is the fail-closed choice). SEPARATE from `param_sinks`/
@@ -3348,7 +5077,57 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
 
 /// Typecheck with an explicit verification-lane flag (Phase-3 C5). Prefer `typecheck` for the
 /// default lane; pass `verified=true` for `--verified` / fail-closed effect declarations.
+pub use analysis_limit::AnalysisLimit;
+
+/// How the memory-limit refusal begins (its budget in MiB follows).
+pub fn analysis_limit_memory_prefix() -> &'static str {
+    analysis_limit::MEMORY_PREFIX
+}
+
+/// The analysis limit the last check request on this thread reached, if any (`typecheck_ex`).
+/// Whether the last check request on this thread reached a limit and still reported findings made
+/// before it (which hold on any machine).
+pub fn last_analysis_kept_findings() -> bool {
+    analysis_limit::kept()
+}
+
+pub fn last_analysis_limit() -> Option<AnalysisLimit> {
+    analysis_limit::last()
+}
+
+/// Whether the memory limit the last check request on this thread reached was the reserve's (the
+/// memory left to it ran low), not its own budget's.
+pub fn last_analysis_by_reserve() -> bool {
+    analysis_limit::by_reserve()
+}
+
+/// IFC v2's findings alone, as (code, message): a developer measurement of one lane, not a check
+/// (`anubis ifc2-report`; `check` runs every lane). Empty for a program that is not Safe mode.
+pub fn ifc2_findings(ast: &AST, mode: Mode) -> Vec<(String, String)> {
+    if mode != Mode::Safe {
+        return Vec::new();
+    }
+    // One request under the checker's stack and memory guard, like `check`.
+    match analysis_limit::check(|| Ok::<_, String>(ifc2::check(&ast.items))) {
+        Ok(found) => found
+            .into_iter()
+            .map(|f| (f.code.to_string(), f.message))
+            .collect(),
+        Err(limit) => vec![("ANUBIS_ANALYSIS_LIMIT".into(), limit)],
+    }
+}
+
 pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
+    // One request: an analysis limit reached anywhere in it refuses it (`analysis_limit`).
+    analysis_limit::check(|| typecheck_request(ast, mode, verified))
+}
+
+fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
+    // Item-21 D9: give an unannotated free-function parameter the struct type every one of its
+    // (visible, direct) callers passes, so a declared field qualifier read through it is honored
+    // exactly as for the annotated spelling. Analysis copy only: lowering uses its own AST.
+    let mut ast = ast;
+    infer_params::infer_unannotated_struct_params(&mut ast.items);
     let bmode = match mode {
         Mode::Safe => BuildMode::Safe,
         Mode::Research => BuildMode::Research,
@@ -3367,6 +5146,8 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         ctx.declared_method_names
             .extend(impl_methods.into_iter().map(|(name, _, _)| name));
     }
+    ctx.user_fn_names = infer_params::free_fn_names(&ast.items);
+    ctx.may_exit_fns = compute_may_exit_fns(&ast.items);
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
     // Task #48: close `fn_applies_param` under transitive user-fn forwarding (a closure laundered through
@@ -3386,6 +5167,26 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // safe in a way that re-running the whole surface registration (which also emits diagnostics)
     // would not be.
     rescan_applied_param_forwarders(&ast.items, &mut ctx);
+    // A formal that reaches a local, a container, a field or a loop-carried binding the body applies
+    // (or a value a user function applies) is applied too; each such formal can make a forwarder's
+    // formal applied, so the two closures alternate until nothing is added.
+    loop {
+        let size = |ctx: &SemanticContext| {
+            ctx.fn_applies_param.values().map(Vec::len).sum::<usize>()
+                + ctx
+                    .fn_applied_param_paths
+                    .values()
+                    .flat_map(|m| m.values())
+                    .map(BTreeSet::len)
+                    .sum::<usize>()
+        };
+        let before = size(&ctx);
+        compute_escaped_applied_params(&ast.items, &mut ctx);
+        compute_applies_param_fixpoint(&mut ctx);
+        if size(&ctx) == before {
+            break;
+        }
+    }
     // Trait coherence + missing-required-method, over the trait environment captured before
     // `resolve_traits` erased it. Analysis-only: emits (shadow-gated) diagnostics and reads no
     // desugaring output, so it cannot move the fixpoint.
@@ -3428,6 +5229,15 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
             &mut ctx.param_egress,
             &mut ctx.method_param_egress,
         );
+        ctx.whole_fns = free_fns
+            .iter()
+            .map(|(n, ps, b)| (n.clone(), (ps.clone(), b.to_vec())))
+            .collect();
+        collect_impl_methods_typed(&ast.items, &mut ctx.whole_methods);
+        ctx.whole_num_formals = whole::numeric_formals(&ast.items);
+        ctx.whole_builders = whole::compute_builders(&ctx);
+        ctx.whole_part_writers = whole::compute_part_writers(&ctx);
+        ctx.whole_released = whole::compute_released(&ctx);
     }
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
@@ -3444,6 +5254,24 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         effects::compute_fn_effect_rows(&ast.items, &ctx.all_fns, &ctx.fn_declared_effects);
     // Non-exportable sealedness: program summary before per-fn linearity.
     ctx.cap_summary = capability::program_summary(&ast.items);
+    ctx.escaping_contracted_fns = compute_escaping_contracted_fns(&ast.items, &ctx);
+    ctx.fn_valued_field_names = compute_fn_valued_field_names(&ast.items, &ctx);
+    // IFC v2 (`ifc2`): the information-flow interpreter that mirrors the runtime runs beside the
+    // other lanes in every Safe-mode check; a program is refused if any lane finds a flow. Flow
+    // checks are Safe-mode only. Its findings join the enforcing diagnostics after the limit
+    // truncation below (they are independent of the other lanes' analysis limit).
+    let ifc2_found: Vec<SemanticDiagnostic> = if mode == Mode::Safe {
+        ifc2::check(&ast.items)
+            .into_iter()
+            .map(|f| SemanticDiagnostic {
+                code: Some(f.code.into()),
+                message: format!("[ifc2] {}", f.message),
+                span: None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -3462,6 +5290,15 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         }
     }
 
+    // Past an analysis limit, the diagnostics raised after it came from fail-closed answers (the
+    // limit itself is reported by `analysis_limit::check`); those raised before it are findings of a
+    // complete analysis of what it had covered, and are kept. By position, never by text.
+    if let Some(mark) = ctx.limit_mark {
+        ctx.diagnostics.truncate(mark);
+    }
+    let independent = std::mem::take(&mut ctx.independent_after_limit);
+    ctx.diagnostics.extend(independent);
+    ctx.diagnostics.extend(ifc2_found);
     if !ctx.diagnostics.is_empty() {
         let messages = ctx
             .diagnostics
@@ -3511,7 +5348,12 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         mir: ctx.mir,
         symbols: ctx.symbols,
         taint_traces: ctx.taint_traces,
-        solver_obligations: ctx.solver_obligations,
+        solver_obligations: ctx
+            .solver_obligations
+            .into_iter()
+            .filter(|o| !o.name.starts_with(WITHDRAWN_ASSERT_PREFIX))
+            .collect(),
+        over_approx_obligations: ctx.over_approx_obligations,
         diagnostics: vec![],
         warnings: ctx.warnings,
         symbolic_defs: ctx.symbolic_defs,
@@ -3585,12 +5427,86 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 body,
                 ..
             } => {
+                // Only when parameter passing is the identity at runtime: an unsigned parameter is masked
+                // on entry and an `f64` parameter widens an integer argument, so substituting the
+                // argument directly would give the body a value the runtime never computes (and could
+                // PROVE a precondition that fails).
+                let identity_params = params
+                    .iter()
+                    .all(|(_, t)| matches!(t.trim(), "" | "i64" | "int" | "string" | "bool"));
+                // The RETURN must pass through unchanged as well: an `-> f64` function widens an integer
+                // result at runtime (and an unsigned return masks it), so its body is not its value.
+                let identity_ret = matches!(
+                    ret.as_deref().map(str::trim),
+                    None | Some("") | Some("i64") | Some("int") | Some("string") | Some("bool")
+                );
+                if generics.is_empty() && identity_params && identity_ret {
+                    let single = match body.as_slice() {
+                        [Stmt::ExprStmt(Expr::Call { callee, args })]
+                            if callee == "return" && args.len() == 1 =>
+                        {
+                            Some(args[0].clone())
+                        }
+                        [Stmt::ExprStmt(e)] if !matches!(e, Expr::Call { callee, .. } if callee == "return") => {
+                            Some(e.clone())
+                        }
+                        _ => None,
+                    };
+                    // Inside the body a call-position name that is one of its PARAMETERS resolves to the
+                    // parameter's value at runtime (a local wins over a builtin), not to the builtin of
+                    // that name; and a lambda may rebind names. Unfolding cannot represent either, so
+                    // such a body is not registered.
+                    let pnames: BTreeSet<&str> = params.iter().map(|(n, _)| n.as_str()).collect();
+                    let body_ok = single.as_ref().is_some_and(|e| {
+                        // No free variables: every name the body reads is a parameter (otherwise the
+                        // unfolded body would capture whatever the CALLER binds under that name).
+                        let mut free = BTreeSet::new();
+                        collect_expr_vars(e, &mut free);
+                        let mut ok = free.iter().all(|v| pnames.contains(v.as_str()));
+                        visit::each_expr(e, &mut |x| match x {
+                            Expr::Call { callee, .. } if pnames.contains(callee.as_str()) => {
+                                ok = false
+                            }
+                            Expr::CallExpr { .. } | Expr::Lambda { .. } => ok = false,
+                            _ => {}
+                        });
+                        ok
+                    });
+                    if let (Some(e), true) = (single, body_ok) {
+                        ctx.expr_fns.insert(
+                            name.clone(),
+                            (params.iter().map(|(n, _)| n.clone()).collect(), e),
+                        );
+                    }
+                }
                 // Task #48 (FP2): record a function whose SOLE tail value is a lambda literal, so a caller
                 // binding + applying its result can descend into the returned closure (with the callee's
                 // params substituted by the call args). Skip a conditional / multi-value tail.
                 {
                     let mut tv = Vec::new();
                     tail_values(body, true, &mut tv);
+                    // The returned-CLOSURE registry sees every return (joined, see
+                    // `extend_with_early_returns`); the sole-return / forwarder registries below keep
+                    // their tail-based definition, and multi-return identities are added on top of them
+                    // through `fn_return_values`.
+                    let mut tv_lam = tv.clone();
+                    extend_with_early_returns(body, &mut tv_lam);
+                    // Every distinct return value, for `fn_return_values`.
+                    {
+                        let all = all_return_values(body);
+                        ctx.return_feeding
+                            .insert(name.clone(), return_feeding_exprs(body, &all));
+                        if all.len() > 1 {
+                            ctx.fn_return_values.insert(
+                                name.clone(),
+                                ReturnValues::of(
+                                    params.iter().map(|(n, _)| n.clone()).collect(),
+                                    all,
+                                    body,
+                                ),
+                            );
+                        }
+                    }
                     // The candidate returned lambda: the straight-line tail return (above), OR — when the
                     // tail is not a lambda — a `return <lambda>` inside a conditional/block, provided it is
                     // the function's SOLE return (soundness hunt2 [05]: `fn mk(k){ if true { return |x| k;
@@ -3599,8 +5515,16 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     // be one recorded lambda) — a skipped multi-return case under-approximates, never
                     // false-rejects.
                     let cand: Option<Expr> =
-                        if tv.len() == 1 && matches!(&tv[0], Expr::Lambda { .. }) {
-                            Some(tv[0].clone())
+                        if tv_lam.len() == 1 && matches!(&tv_lam[0], Expr::Lambda { .. }) {
+                            Some(tv_lam[0].clone())
+                        } else if let Some(merged) = tv_lam
+                            .first()
+                            .filter(|_| tv_lam.len() == 1)
+                            .and_then(merge_lambda_join)
+                        {
+                            // Several returned closures (early returns): one closure whose body is
+                            // the join of theirs, so every lane that descends into it sees all of them.
+                            Some(merged)
                         } else {
                             let mut rets = Vec::new();
                             for st in body {
@@ -3858,28 +5782,24 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     }
                 }
                 {
+                    // Item 21 Family 1: every site where a function-valued parameter's contract can
+                    // be reached (see `contract_carrier`), discharged at each call site.
                     let param_names: Vec<String> =
                         params.iter().map(|(param, _)| param.clone()).collect();
-                    let param_indices: BTreeMap<String, usize> = param_names
-                        .iter()
-                        .enumerate()
-                        .map(|(index, param)| (param.clone(), index))
-                        .collect();
-                    let shadowed = ctx.fn_param_shadowed.get(name).cloned().unwrap_or_default();
-                    let mut applications =
-                        collect_unconditional_param_contract_applications(body, &param_indices);
-                    applications.retain(|application| {
-                        application
-                            .param_indices
-                            .iter()
-                            .all(|index| !shadowed.contains(index))
-                    });
-                    ctx.fn_param_contract_apps
-                        .insert(name.clone(), (param_names, applications));
+                    let items = contract_carrier::collect_carrier_items(
+                        name,
+                        &param_names,
+                        body,
+                        &ctx.user_fn_names,
+                    );
+                    if !items.is_empty() {
+                        ctx.fn_carrier_items
+                            .insert(name.clone(), (param_names, items));
+                    }
                 }
                 // Flat function namespace: a redefinition is an error.
                 if !ctx.all_fns.insert(name.clone()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_DUPLICATE_FUNCTION".into()),
                         message: format!("function `{}` is defined more than once", name),
                         span: Some((span.start, span.end)),
@@ -3889,8 +5809,16 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     name.clone(),
                     params.iter().map(|(_, ty)| ty.clone()).collect(),
                 );
-                ctx.fn_ret_types
-                    .insert(name.clone(), ret.clone().unwrap_or_default());
+                // Item-21 Family-3 (D10): recover an UNANNOTATED struct-factory's return type so a
+                // `secret`/`tainted` field read off its result (`let a = mk(); a.k`) is looked up,
+                // exactly as a declared `-> S` already is. `infer_returned_struct_name` is
+                // unanimity-gated and struct-literal-only, so it only fills an empty entry and never
+                // overrides a declared `ret`.
+                let ret_ty = ret
+                    .clone()
+                    .or_else(|| infer_returned_struct_name(body))
+                    .unwrap_or_default();
+                ctx.fn_ret_types.insert(name.clone(), ret_ty);
                 if !generics.is_empty() {
                     ctx.fn_generics.insert(name.clone(), generics.clone());
                 }
@@ -3958,16 +5886,40 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         {
                             let mut tv = Vec::new();
                             tail_values(body, true, &mut tv);
+                            let mut tv_lam = tv.clone();
+                            extend_with_early_returns(body, &mut tv_lam);
                             let mut rets = Vec::new();
                             for st in body {
                                 collect_returns_in_stmt(st, &mut rets);
                             }
                             let pnames: Vec<String> =
                                 params.iter().map(|(n, _)| n.clone()).collect();
-                            let cand: Option<Expr> = if tv.len() == 1
-                                && matches!(&tv[0], Expr::Lambda { .. })
                             {
-                                Some(tv[0].clone())
+                                let all = all_return_values(body);
+                                ctx.return_feeding
+                                    .entry(format!("impl {name}"))
+                                    .or_default()
+                                    .extend(return_feeding_exprs(body, &all));
+                            }
+                            // Method twin of `fn_return_values`: every definition of the bare name.
+                            ctx.method_return_values
+                                .entry(name.clone())
+                                .or_default()
+                                .push(ReturnValues::of(
+                                    pnames.clone(),
+                                    all_return_values(body),
+                                    body,
+                                ));
+                            let cand: Option<Expr> = if tv_lam.len() == 1
+                                && matches!(&tv_lam[0], Expr::Lambda { .. })
+                            {
+                                Some(tv_lam[0].clone())
+                            } else if let Some(merged) = tv_lam
+                                .first()
+                                .filter(|_| tv_lam.len() == 1)
+                                .and_then(merge_lambda_join)
+                            {
+                                Some(merged)
                             } else if rets.len() == 1 && matches!(&rets[0], Expr::Lambda { .. }) {
                                 Some(rets[0].clone())
                             } else {
@@ -4866,7 +6818,7 @@ fn check_calls_expr_nc(
                 && !bound.contains(callee)
                 && !crate::backends::run::is_builtin_name(callee)
             {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_UNKNOWN_FUNCTION".into()),
                     message: format!("call to unknown function `{}`", callee),
                     span: None,
@@ -4885,7 +6837,7 @@ fn check_calls_expr_nc(
             // shape of defect closed at four other layers today.
             if crate::backends::run::is_builtin_name(callee) && !fns.contains(callee) {
                 if let Some(msg) = crate::backends::run::builtin_arity_error(callee, args.len()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_ERROR".into()),
                         message: msg,
                         span: None,
@@ -4925,7 +6877,7 @@ fn check_calls_expr_nc(
                 let present: Vec<&Expr> =
                     closure_idxs.iter().filter_map(|&i| args.get(i)).collect();
                 if !present.is_empty() && present.iter().all(|a| not_callable(a)) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_TYPE_ERROR".into()),
                         message: format!(
                             "builtin `{callee}` expects a callable in one of arguments {closure_idxs:?}; none of them can be one"
@@ -4937,7 +6889,7 @@ fn check_calls_expr_nc(
                 for &index in closure_idxs {
                     if let Some(arg) = args.get(index) {
                         if not_callable(arg) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_ERROR".into()),
                                 message: format!(
                                     "builtin `{callee}` argument {index} expects a callable value"
@@ -4996,7 +6948,7 @@ fn check_calls_expr_nc(
             // the call namespace is flat, so neither is valid. Without this check both silently
             // lower to a stringy enum value at runtime instead of trapping.
             match ctx.enum_variants.get(enum_name).cloned() {
-                None => ctx.diagnostics.push(SemanticDiagnostic {
+                None => ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_UNKNOWN_ENUM".into()),
                     message: format!(
                         "`{enum_name}::{variant}` refers to unknown type `{enum_name}` \
@@ -5006,7 +6958,7 @@ fn check_calls_expr_nc(
                     span: None,
                 }),
                 Some(variants) if !variants.contains(variant) => {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_UNKNOWN_VARIANT".into()),
                         message: format!(
                             "enum `{enum_name}` has no variant `{variant}` (known: {})",
@@ -5356,7 +7308,7 @@ fn reject_unknown_attributes(
             })
             .map(|k| format!(" (did you mean `{k}`?)"))
             .unwrap_or_default();
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_UNKNOWN_ATTRIBUTE".into()),
             message: format!(
                 "unknown attribute `{}`{hint}; an unrecognized attribute is rejected rather than \
@@ -5416,7 +7368,7 @@ fn require_research_authorization_metadata(
             .any(|a| a.key == "authorization" && !a.value.is_empty())
     });
     if !has_auth {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_RESEARCH_MISSING_AUTHORIZATION".into()),
             message: "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
                 .to_string(),
@@ -5625,6 +7577,53 @@ fn analyze_function(
     // (which could hold a string/list/bool), or an integer predicate over the second would be "proved"
     // against the first's model. Reset per function. (Obligations/constraints accumulate globally.)
     ctx.solver_int_vars.clear();
+    ctx.assert_deferred_vars.clear();
+    ctx.fn_bound_names = function_bound_names(params, body);
+    ctx.current_fn_formals = params.iter().map(|(n, _)| n.clone()).collect();
+    ctx.current_fn_let_inits = single_let_inits(body);
+    ctx.current_fn_assigned = assigned_roots(body);
+    ctx.current_fn_rebound = function_bound_names(&[], body);
+    reset_return_values_budget();
+    ctx.current_fn_nonlet_bound = non_let_bound_names(body);
+    ctx.current_fn_list_mutated = {
+        let mut out = BTreeSet::new();
+        visit::each_expr_in_stmts(body, &mut |e| {
+            if let Expr::Call { callee, args } = e {
+                // Lists are values: a user function (or `sort` / `reverse`, which return a new
+                // list) cannot change the caller's list; only an in-place builtin can. A user
+                // function named like one shadows it, except `push`: a statement `push(v, x)` is
+                // lowered to the in-place builtin before any user-function lookup (run.rs).
+                let mutating = matches!(
+                    callee.as_str(),
+                    "push"
+                        | "pop"
+                        | "insert"
+                        | "remove"
+                        | "append"
+                        | "extend"
+                        | "clear"
+                        | "set"
+                        | "swap"
+                        | "truncate"
+                        | "shift"
+                        | "unshift"
+                        | "splice"
+                        | "retain"
+                        | "drain"
+                ) && (callee == "push" || !ctx.fn_params.contains_key(callee));
+                if mutating {
+                    for a in args {
+                        if let Expr::Var(v) = a {
+                            out.insert(v.clone());
+                        }
+                    }
+                }
+            }
+        });
+        out
+    };
+    ctx.stmt_states.clear();
+    ctx.stmt_state_conflicts.clear();
     ctx.solver_float_vars.clear();
     ctx.solver_string_vars.clear();
     ctx.active_branch_guards.clear();
@@ -5682,6 +7681,10 @@ fn analyze_function(
                 (
                     n.clone(),
                     ScopeBinding {
+                        whole_struct: None,
+                        whole_captures: None,
+                        whole_list: false,
+                        whole_map: false,
                         info: BindingInfo {
                             name: n.clone(),
                             ty: Some(t.clone()),
@@ -5695,6 +7698,7 @@ fn analyze_function(
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_may: FnMay::default(),
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
                         builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -5722,7 +7726,9 @@ fn analyze_function(
         let opaque = norm == "any" || norm == "unknown";
         if !r.is_empty() && !result_like && !opaque && !ty::is_generic(r) && body_contains_try(body)
         {
-            ctx.diagnostics.push(SemanticDiagnostic {
+            // A syntax walk and the declared type: it needs no analysis, so it is reported after an
+            // analysis limit too (eighth review of the checker limits, E2).
+            ctx.push_diag_independent(SemanticDiagnostic {
                 code: Some("ANUBIS_TRY_OUTSIDE_RESULT".into()),
                 message: format!(
                     "`{name}` uses the `?` operator but declares `-> {r}`; `?` requires the function to return `Option` or `Result`"
@@ -5752,7 +7758,7 @@ fn analyze_function(
     let mut seen_params = BTreeSet::new();
     for (pname, _) in params {
         if !seen_params.insert(pname.clone()) {
-            ctx.diagnostics.push(SemanticDiagnostic {
+            ctx.push_diag_independent(SemanticDiagnostic {
                 code: Some("ANUBIS_DUPLICATE_PARAM".into()),
                 message: format!("duplicate parameter `{}` in function `{}`", pname, name),
                 span: Some((span.start, span.end)),
@@ -5772,7 +7778,7 @@ fn analyze_function(
     // property (there is no loop, and no input makes one appear), and `check` accepting a program
     // that cannot run is the gap this closes.
     for kw in crate::middle::loopctl::unenclosed_loop_control(body) {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag_independent(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP".into()),
             message: format!("`{}` in function `{}` has no enclosing loop", kw, name),
             span: Some((span.start, span.end)),
@@ -5802,11 +7808,16 @@ fn analyze_function(
             scope.insert(
                 name.clone(),
                 ScopeBinding {
+                    whole_struct: None,
+                    whole_captures: None,
+                    whole_list: false,
+                    whole_map: false,
                     info: info.clone(),
                     closure_arity: None,
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
                     fn_alias: None,
+                    fn_may: FnMay::default(),
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -5848,18 +7859,33 @@ fn analyze_function(
     // (conservatively, correctly) rejected — the fix is to state it via `requires`. Float/string in-body
     // asserts stay fail-open (runtime-enforced): this deliberately does NOT reverse the stance for
     // genuinely-unmodelable asserts.
-    let model_int_params = has_contract || body_asserts_over_int_params(body, params);
+    // Also when the body calls a function that has a `requires`: that precondition is discharged at the
+    // call site MODULARLY — for every value the caller's own contract allows — exactly as an in-body
+    // assert over a parameter already is. Without this a caller with no `requires` left its integer
+    // parameters unmodeled, the callee's precondition over them could not be encoded, and it was
+    // dropped: `fn g(x: i64) { f(x) }` with `f` requiring `x > 0` checked clean and `g(-1)` ran `f(-1)`.
+    let calls_contracted = body_calls_contracted_fn(body, ctx);
+    let model_int_params =
+        has_contract || body_asserts_over_int_params(body, params) || calls_contracted;
     // Make integer parameters solver-modelable. NOTE: a `u32`/`u8` annotation is INERT at
     // runtime (a parameter holds any i64; the call boundary applies no width clamp), so we must
     // NOT assume it lies in [0, 2^w-1] — doing so let the solver "prove" `x + 1 > x` while
     // `f(i64::MAX)` wraps and violates it. A contract that needs bounds must state them via
     // `requires`; unbounded i64 arithmetic that can overflow is (correctly) not provable.
+    let only_for_calls = !has_contract && !body_asserts_over_int_params(body, params);
     if model_int_params {
         for (pname, pty) in params {
             // Only INTEGER params are modeled here. A float/string param is contract-only (below): its
             // in-body assert stays runtime-enforced outside a contract, per the middle-option scope.
             if is_integer_ty(pty) {
                 ctx.solver_int_vars.insert(pname.clone());
+                if only_for_calls {
+                    // Modeled only for the callee preconditions: arithmetic over it is not linted and
+                    // an in-body assert over it (or a value defined from it) stays runtime-enforced,
+                    // exactly as when it was unmodeled.
+                    ctx.solver_int_vars.insert(wrapexempt_mark(pname));
+                    ctx.assert_deferred_vars.insert(smt_var(pname));
+                }
                 ctx.symbolic_widths.insert(pname.clone(), 64);
                 // A1 (task #50): a LITERALLY-unsigned fixed-width param (u8/u16/u32) is now masked to
                 // [0, 2^w) at the runtime boundary (`anubis_coerce_uint_param`), so we may SOUNDLY
@@ -5877,6 +7903,23 @@ fn analyze_function(
                     assumptions.push(format!("(bvsge {v} (_ bv0 64))"));
                     assumptions.push(format!("(bvsle {v} (_ bv{hi} 64))"));
                 }
+            }
+        }
+    }
+    if !has_contract && calls_contracted {
+        // The body calls a contracted function, so its float/string parameters are modeled for the
+        // CALL-SITE preconditions (`fn caller(x: string) { if x == "a" { g(x) } }` discharges `g`'s
+        // `requires(s == "a")` under the guard instead of being refused). The documented stance below —
+        // a float/string in-body ASSERT outside a contract stays runtime-enforced — is kept: these
+        // parameters are recorded as assert-deferred, and `mark_over_approx_obligations` withdraws any
+        // `assert:` obligation that mentions them, exactly as when they were unmodeled.
+        for (pname, pty) in params {
+            if is_float_ty(pty) {
+                ctx.solver_float_vars.insert(pname.clone());
+                ctx.assert_deferred_vars.insert(smt_var(pname));
+            } else if pty == "string" {
+                ctx.solver_string_vars.insert(pname.clone());
+                ctx.assert_deferred_vars.insert(smt_var(pname));
             }
         }
     }
@@ -6056,6 +8099,8 @@ fn analyze_function(
     }
     ctx.shadowed_lets.clear();
     collect_shadowed_lets(body, &mut ctx.shadowed_lets);
+    (ctx.whole_not_list, ctx.whole_not_map, ctx.whole_retype) =
+        whole::assigned_shapes(params, body, ctx);
     // (BUILTIN-SHADOW detection — shadowed_string_preds + shadow_builtin_mark sentinels — is computed
     // earlier, right after the solver-set clears, so it precedes requires-seeding; see there.)
 
@@ -6068,6 +8113,7 @@ fn analyze_function(
         &mut assumptions,
         ctx,
     );
+    mark_over_approx_obligations(ctx);
 
     // Implicit-flow: public return value chosen under a secret PC is binary extraction (return dual
     // of public-local assign). Escape: `-> secret<T>` or return a secret-labelled value.
@@ -6116,7 +8162,7 @@ fn analyze_function(
         .filter_map(|e| capability_effect(e))
         .collect();
     if ctx.verified && !caps_used.is_empty() && declared_effects.is_empty() {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
             message: format!(
                 "verification lane: function `{name}` uses capability effect(s) [{}] but declares no `uses(...)` clause",
@@ -6133,7 +8179,7 @@ fn analyze_function(
         let mut seen_undeclared = BTreeSet::new();
         for cap in &caps_used {
             if !declared.contains(cap) && seen_undeclared.insert(cap.clone()) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
                     message: format!(
                         "function `{name}` uses effect `{cap}` but does not declare it in `uses(...)` (declared: {})",
@@ -6388,7 +8434,7 @@ fn analyze_function(
         collect_let_bound(body, &mut rebound);
         for p in ensures_vars.intersection(&param_names) {
             if rebound.contains(p) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
                     message: format!(
                         "cannot verify a postcondition over parameter `{p}`: it is reassigned or \
@@ -6499,7 +8545,7 @@ fn analyze_function(
                 let mut rv = BTreeSet::new();
                 collect_expr_vars(r, &mut rv);
                 if let Some(p) = rv.intersection(&mutated_params).next() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
                         message: format!(
                             "cannot verify a postcondition at an early `return` whose value depends on \
@@ -6565,7 +8611,10 @@ fn analyze_function(
         // fall through, then control reaches the next statement only when the condition was false
         // (whether it fell through, or came via an else that did not diverge). Symmetric for else.
         // `block_diverges` answers `false` whenever it is unsure, so an uncertain arm adds nothing.
-        let mut asm: Vec<String> = assumptions.clone();
+        // Fallback for a statement with no recorded state: the ENTRY state (requires + parameter
+        // modeling), refined below by early-return guards. Never the end-of-body `assumptions`, which
+        // hold facts established after the statement.
+        let mut asm: Vec<String> = precondition_assumptions.clone();
         for s in body {
             collect_wrap_safety_from_stmt(ctx, s, &asm, &mut seen);
             if let Stmt::If { cond, then, else_ } = s {
@@ -6882,6 +8931,37 @@ fn push_wrap_safety_binop(
     {
         return;
     }
+    // A havoced variable (see `havoc_mark`) and a parameter modeled only for call-site preconditions
+    // (see `wrapexempt_mark`) were unmodeled before those precision changes; the lint keeps treating
+    // them — and any value defined from them (`let j = i; j + 1`) — that way, rather than flagging every
+    // counter update as a free-input wrap.
+    {
+        let exempt: BTreeSet<String> = ctx
+            .solver_int_vars
+            .iter()
+            .filter_map(|m| {
+                m.strip_prefix("\u{1}havoc:")
+                    .or_else(|| m.strip_prefix("\u{1}wrapexempt:"))
+                    .map(smt_var)
+            })
+            .collect();
+        if !exempt.is_empty() {
+            let mut operand_vars = BTreeSet::new();
+            collect_expr_vars(lhs, &mut operand_vars);
+            collect_expr_vars(rhs, &mut operand_vars);
+            let operands: Vec<String> = operand_vars.iter().map(|v| smt_var(v)).collect();
+            let probe = format!("(and {})", operands.join(" "));
+            if depends_on_havoc(
+                &probe,
+                assumptions,
+                &ctx.active_branch_guards,
+                &exempt,
+                HavocDependence::Definitional,
+            ) {
+                return;
+            }
+        }
+    }
     let lx = expr_to_smt(lhs, &ctx.symbolic_widths);
     let rx = expr_to_smt(rhs, &ctx.symbolic_widths);
     // Assertion = "this op does NOT signed-wrap" (proved or CEX).
@@ -6925,7 +9005,9 @@ fn push_wrap_safety_binop(
         }
         _ => return,
     };
-    let key = format!("{op}:{lx}:{rx}");
+    // The same expression text can appear under different facts (two statements, two paths); dedup only
+    // an identical check under an identical state, never a later one under weaker facts.
+    let key = format!("{op}:{lx}:{rx}:{}", assumptions.join("\u{1}"));
     if !seen.insert(key) {
         return;
     }
@@ -6986,7 +9068,33 @@ fn wrap_safety_with_path_facts(
     out
 }
 
+/// Check one statement's wrap safety under the analysis state recorded immediately before it (see
+/// `SemanticContext::stmt_states`), or under the caller-supplied state when none was recorded.
 fn collect_wrap_safety_from_stmt(
+    ctx: &mut SemanticContext,
+    s: &Stmt,
+    assumptions: &[String],
+    seen: &mut BTreeSet<String>,
+) {
+    let key = s as *const Stmt as usize;
+    let recorded = if ctx.stmt_state_conflicts.contains(&key) {
+        None
+    } else {
+        ctx.stmt_states.get(&key).cloned()
+    };
+    match recorded {
+        Some((asm, ints, guards)) => {
+            let saved_ints = std::mem::replace(&mut ctx.solver_int_vars, ints);
+            let saved_guards = std::mem::replace(&mut ctx.active_branch_guards, guards);
+            collect_wrap_safety_from_stmt_at(ctx, s, &asm, seen);
+            ctx.solver_int_vars = saved_ints;
+            ctx.active_branch_guards = saved_guards;
+        }
+        None => collect_wrap_safety_from_stmt_at(ctx, s, assumptions, seen),
+    }
+}
+
+fn collect_wrap_safety_from_stmt_at(
     ctx: &mut SemanticContext,
     s: &Stmt,
     assumptions: &[String],
@@ -7238,11 +9346,17 @@ fn merge_taint_over(
         let mut tainted = false;
         let mut source: Option<String> = None;
         let mut secret = false;
+        let mut whole_src: Option<whole::WholeSrc> = None;
+        let mut whole_list = true;
+        let mut whole_map = true;
         for p in paths {
             if let Some(pb) = p.get(&name) {
                 if pb.info.span != outer_span {
                     continue;
                 }
+                whole_src = whole::whole_merge(&whole_src, &pb.whole_struct);
+                whole_list &= pb.whole_list;
+                whole_map &= pb.whole_map;
                 if pb.info.tainted {
                     tainted = true;
                     source = source.or_else(|| pb.info.taint_source.clone());
@@ -7270,6 +9384,43 @@ fn merge_taint_over(
             // Confidentiality is the DUAL: a secret cleared on every path (e.g. declassified in both
             // branches) is precisely un-labelled; secret on any path re-secrets the outer binding.
             b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(secret));
+            // A whole-struct mark set on any path (a `push` in one branch) holds after the join.
+            b.whole_struct = whole::whole_merge(&b.whole_struct, &whole_src);
+            b.whole_list &= whole_list;
+            b.whole_map &= whole_map;
+        }
+    }
+}
+
+/// The whole-struct lane's join (`whole::join_captures`): where a statement's paths meet again, a
+/// binding may be as a function whatever it may be at the end of any path. `restore_block_scope` put
+/// back the binding the statement started with, and `merge_fn_alias_over` keeps a path's function
+/// only in the ordinary lane's terms; what the lane's own interpretation recorded on a path
+/// (`ScopeBinding::whole_captures`: a block's alias, a chooser's binder, `reduce`'s list, a closure
+/// assigned in a branch, a function written in expression position) is carried here. Called with
+/// `scope` as the statement found it (before the other merges), by span identity as they are.
+fn merge_whole_captures_over(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+    ctx: &SemanticContext,
+) {
+    let names: Vec<String> = scope.keys().cloned().collect();
+    for name in names {
+        let Some(outer) = scope.get(&name) else {
+            continue;
+        };
+        let same: Vec<&BTreeMap<String, ScopeBinding>> = paths
+            .iter()
+            .copied()
+            .filter(|p| {
+                p.get(&name)
+                    .is_some_and(|pb| pb.info.span == outer.info.span)
+            })
+            .collect();
+        if let Some(captures) = whole::join_captures(&name, outer, &same, ctx) {
+            if let Some(b) = scope.get_mut(&name) {
+                b.whole_captures = Some(captures);
+            }
         }
     }
 }
@@ -7332,6 +9483,12 @@ fn merge_fn_alias_over(
             .fold(FnIdentitySet::empty(), |set, binding| {
                 set.union(binding.fn_identities.clone())
             });
+        // The may-set ([`FnMay`]) of every path, with each path's single-name alias.
+        let fn_may = effective.iter().fold(FnMay::closed(), |mut may, binding| {
+            may.join(&binding.fn_may);
+            may.names.extend(binding.fn_alias.iter().cloned());
+            may
+        });
         let field_names: BTreeSet<String> = effective
             .iter()
             .flat_map(|binding| binding.field_fn_identities.keys().cloned())
@@ -7372,6 +9529,7 @@ fn merge_fn_alias_over(
         }
         if let Some(binding) = scope.get_mut(&name) {
             binding.fn_identities = identities;
+            binding.fn_may = fn_may;
             binding.field_fn_identities = fields;
             binding.builtin_gate_tags = builtin_gate_tags;
             binding.field_builtin_gate_tags = builtin_fields;
@@ -7451,7 +9609,7 @@ fn discharge_method_requires(
         None => return true, // no contract on this method name — nothing to discharge
     };
     let Some((pnames, creq, cens)) = entry else {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_AMBIGUOUS_METHOD_CONTRACT".into()),
             message: format!(
                 "method `{method}` is declared by more than one impl and at least one declaration \
@@ -7591,6 +9749,41 @@ fn compose_inline_int_call_argument(
     Some((Expr::Var(fresh.clone()), facts, fresh))
 }
 
+/// Bind a callee's formals to call-site arguments exactly as the runtime coerces them on entry: an
+/// integer into a float slot rounds (`anubis_coerce_float_param`, #40) and an unsigned slot masks to
+/// `[0, 2^w)` (A1, task #50). Shared by every discharge that substitutes arguments for formals — a copy
+/// that forgot one coercion certified `requires` against a value the callee never sees.
+///
+/// The caller owns `havoc_names`: the fresh float symbols minted for symbolic-int / overflow float-param
+/// arguments must be removed from `solver_float_vars` once the discharge is done.
+fn coerce_call_args(
+    ctx: &mut SemanticContext,
+    callee: &str,
+    pnames: &[String],
+    args: &[Expr],
+    havoc_names: &mut Vec<String>,
+) -> BTreeMap<String, Expr> {
+    let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
+    let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+    for (i, (pname, arg)) in pnames.iter().zip(args.iter()).enumerate() {
+        // is_float_ty (f32/f64/float) — parity with the runtime `anubis_coerce_float_param`; the literal
+        // "f64" spelling let a `float`/`f32` param bypass the int→f64 arg-coercion model (the #40 twin).
+        let is_float_param = ptypes.get(i).map(|t| is_float_ty(t)).unwrap_or(false);
+        let coerced = if is_float_param {
+            coerce_int_into_float_slot(ctx, arg, &format!("p{i}"), havoc_names)
+        } else if let Some(w) = ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
+            // A1 (task #50): the callee masks a u32 param to [0, 2^w) at runtime, so discharge its
+            // `requires` against the MASKED arg — else `g(3*x)` with `requires(y < 100)` would check
+            // the raw `3*x` while the runtime sees `(3*x) mod 2^32` (a mismatch when the arg overflows).
+            coerce_uint_arg(arg, w, &ctx.solver_int_vars)
+        } else {
+            arg.clone()
+        };
+        sub.insert(pname.clone(), coerced);
+    }
+    sub
+}
+
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -7628,25 +9821,8 @@ fn discharge_call_requires(
     // precondition and trapping a mirroring body `assert` (a check-accept / run-trap false accept). Model
     // the coercion per f64 param via the shared `coerce_int_into_float_slot` (see its doc for the full
     // case table; #41 reuses it on the RETURN side).
-    let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
     let mut havoc_names: Vec<String> = Vec::new();
-    let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
-    for (i, (pname, arg)) in pnames.iter().zip(args.iter()).enumerate() {
-        // is_float_ty (f32/f64/float) — parity with the runtime `anubis_coerce_float_param`; the literal
-        // "f64" spelling let a `float`/`f32` param bypass the int→f64 arg-coercion model (the #40 twin).
-        let is_float_param = ptypes.get(i).map(|t| is_float_ty(t)).unwrap_or(false);
-        let coerced = if is_float_param {
-            coerce_int_into_float_slot(ctx, arg, &format!("p{i}"), &mut havoc_names)
-        } else if let Some(w) = ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
-            // A1 (task #50): the callee masks a u32 param to [0, 2^w) at runtime, so discharge its
-            // `requires` against the MASKED arg — else `g(3*x)` with `requires(y < 100)` would check
-            // the raw `3*x` while the runtime sees `(3*x) mod 2^32` (a mismatch when the arg overflows).
-            coerce_uint_arg(arg, w, &ctx.solver_int_vars)
-        } else {
-            arg.clone()
-        };
-        sub.insert(pname.clone(), coerced);
-    }
+    let sub = coerce_call_args(ctx, callee, &pnames, args, &mut havoc_names);
     // CROSS-CALL shadow scope (review Finding: a caller-local shadow leaking into the callee's requires):
     // the callee's `requires` resolves its builtin tokens (`abs`/`min`/`max`/`len`/`contains`/…) in the
     // CALLEE's scope, not the caller's. A CALLER-LOCAL shadow — a param/`let` named `max` in THIS function —
@@ -7681,6 +9857,10 @@ fn discharge_call_requires(
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
+        // A struct-literal argument makes the clause read a field off a literal (`P { a: "x" }.a ==
+        // "x"`), which no lane encodes; fold it to the field's value so an obviously satisfied call
+        // discharges instead of being refused as unencodable.
+        let concrete = fold_literal_field_reads(&concrete, ctx);
         // Decompose a top-level `&&`: a MIXED-lane conjunction (`s == "ok" && len(s) >= 2`) is neither
         // fully string-eq nor fully strlen modelable, so tested atomically it matched NO lane → skipped
         // (fail-open — a call `gs("no")` certified a runtime-trapping precondition). `A && B` at a call
@@ -7797,9 +9977,16 @@ fn discharge_call_requires(
                     });
                 } else {
                     all_requires_checkable = false;
+                    carrier_unresolved_clause(
+                        ctx,
+                        callee,
+                        clause,
+                        "its string length is not covered",
+                    );
                 }
             } else {
                 all_requires_checkable = false;
+                carrier_unresolved_clause(ctx, callee, clause, "it is not modelable");
             }
         }
     }
@@ -7828,6 +10015,20 @@ fn discharge_call_requires(
     all_requires_checkable
 }
 
+/// Upper bound on carrier frames discharged per program. Fan-out such as `a_k(g){ a_{k-1}(g); a_{k-1}(g) }`
+/// is exponential in call sites; exhausting the budget is reported as unresolved, never as a pass.
+const CARRIER_FRAME_BUDGET: usize = 256;
+
+/// Discharge, at a call site, the `requires` of every function passed as an argument wherever the callee
+/// can reach it (item 21 Family 1). The sites come from `contract_carrier::collect_carrier_items`; this
+/// substitutes the call-site arguments, pushes each site's stable guards as scoped path conditions, and
+/// discharges the resolved function's precondition under the caller's facts. Anything that cannot be
+/// resolved or encoded becomes an explicit `requires-unresolved@…` obligation. Returns false when any
+/// obligation was not encodable.
+///
+/// `depth` is threaded for parity with the resolved-call lane; recursion here is bounded by the
+/// per-program `carrier_frames` budget and the `(callee, identities)` stack, not by `depth`.
+#[allow(clippy::only_used_in_recursion)]
 fn discharge_carried_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -7836,33 +10037,575 @@ fn discharge_carried_call_requires(
     outer_args: &[Expr],
     depth: u32,
 ) -> bool {
-    let Some((formal_names, applications)) = ctx.fn_param_contract_apps.get(outer_callee).cloned()
-    else {
-        return true;
-    };
-    if formal_names.len() != outer_args.len() {
+    if analysis_limit::cut() {
         return true;
     }
-    let substitutions: BTreeMap<String, Expr> = formal_names
-        .into_iter()
-        .zip(outer_args.iter().cloned())
+    let Some((formals, items)) = ctx.fn_carrier_items.get(outer_callee).cloned() else {
+        return true;
+    };
+    if formals.len() != outer_args.len() {
+        return true;
+    }
+    let idents: Vec<FnIdentitySet> = outer_args
+        .iter()
+        .map(|a| carrier_identities(a, scope, ctx))
         .collect();
-    applications.into_iter().fold(true, |all, application| {
-        let concrete_callee = substitute_vars(&application.callee, &substitutions);
-        let concrete_args: Vec<Expr> = application
-            .args
+    // Skip unless some argument could actually carry a function. Every formal is seeded as a
+    // potential carrier at collection time (no types there), so a call passing only plain values —
+    // the overwhelmingly common case, including ordinary stdlib code — would otherwise be walked and
+    // could mis-report a value flow. "Could carry a function" is: a known non-empty identity, an
+    // argument that syntactically names a user function (covers a nested `[f]` / `S { h: f }`), or an
+    // unknown identity that is not a declared scalar. A function hidden behind a LOCAL holding a
+    // container (`let xs = [f]; app(xs)`) whose binding exposes neither is NOT caught here — that is
+    // the container-element-through-a-local residual, tracked with the other SHARED cases.
+    // Fire only when an argument actually carries a KNOWN function identity, or syntactically names a
+    // user function (a nested `[f]` / `S { h: f }`). An `Unknown` value is NOT assumed to be a
+    // contracted function — the same principle the singleton contract policy already applies (item 11:
+    // an unknown value is neither assumed to violate nor to satisfy). Treating every untracked value
+    // (a call result, a cross-function value) as a possible function floods ordinary code with
+    // refusals; a genuinely untrackable function identity is a documented residual, like the item-10
+    // join and the return-out lane.
+    // An argument whose own text names no function may still carry one through a local
+    // (`let xs = [f]; app(xs)`): look through single-assignment locals. Treating EVERY unresolved
+    // value as a possible carrier instead walked so many calls that the carrier budget ran out on
+    // ordinary programs.
+    // An UNKNOWN argument in a position the callee actually calls through (`g(..)`, `gs[0](..)`) may
+    // be a function whose precondition matters once one escapes somewhere: walk it, and the carried
+    // call then refuses rather than assumes. Restricted to called positions so ordinary data
+    // arguments do not flood the carrier budget.
+    let any_escapes = !ctx.escaping_contracted_fns.is_empty();
+    let calls_through = |i: usize| {
+        ctx.fn_applies_param
+            .get(outer_callee)
+            .is_some_and(|v| v.contains(&i))
+            || ctx
+                .fn_applied_param_paths
+                .get(outer_callee)
+                .is_some_and(|m| m.contains_key(&i))
+    };
+    let could_carry = |i: usize, a: &Expr, s: &FnIdentitySet| -> bool {
+        matches!(s, FnIdentitySet::Known(n) if !n.is_empty())
+            || mentions_function_through_locals(a, ctx)
+            || (matches!(s, FnIdentitySet::Unknown) && any_escapes && calls_through(i))
+            || (calls_through(i) && closure_of(ctx, scope, a).is_some())
+    };
+    if !outer_args
+        .iter()
+        .zip(idents.iter())
+        .enumerate()
+        .any(|(i, (a, s))| could_carry(i, a, s))
+    {
+        return true;
+    }
+    // Recursion: keyed by the callee and the identities of EVERY argument, so a frame that shuffles
+    // which formal holds which function is a different key (review R1).
+    let key = format!(
+        "{outer_callee}|{}",
+        idents
             .iter()
-            .map(|arg| substitute_vars(arg, &substitutions))
-            .collect();
-        discharge_resolved_call_requires_d(
+            .map(|s| match s {
+                FnIdentitySet::Known(n) => n.iter().cloned().collect::<Vec<_>>().join("+"),
+                FnIdentitySet::Unknown => "?".into(),
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let generic = match ctx
+        .carrier_stack
+        .iter()
+        .filter(|(k, _)| *k == key)
+        .map(|(_, g)| *g)
+        .collect::<Vec<_>>()
+    {
+        v if v.iter().any(|g| *g) => return true, // covered by the generic frame on the stack
+        v if !v.is_empty() => true,
+        _ => false,
+    };
+    ctx.carrier_frames += 1;
+    if ctx.carrier_frames > CARRIER_FRAME_BUDGET {
+        carrier_unresolved(
             ctx,
-            assumptions,
-            scope,
-            &concrete_callee,
-            &concrete_args,
-            depth + 1,
-        ) && all
-    })
+            outer_callee,
+            "carrier-budget".into(),
+            format!(
+                "the {CARRIER_FRAME_BUDGET}-frame budget for checking preconditions carried through \
+                 function-valued parameters was exhausted at a call to `{outer_callee}`"
+            ),
+        );
+        return false;
+    }
+    ctx.carrier_stack.push((key, generic));
+    let prev_origin = ctx.carrier_origin.replace(outer_callee.to_string());
+
+    // Arguments as the callee sees them.
+    let mut minted_int: Vec<String> = Vec::new();
+    let mut frame_facts: Vec<String> = Vec::new();
+    let mut args: Vec<Expr> = outer_args.to_vec();
+    // N1: an argument that writes a caller variable makes every fact about that variable stale for the
+    // arguments evaluated after it; do not use them.
+    let mut written = BTreeSet::new();
+    for a in &args {
+        expr_assigned_roots(a, &mut written);
+    }
+    if !written.is_empty() {
+        let stale: BTreeMap<String, Expr> = written
+            .iter()
+            .map(|w| {
+                ctx.carrier_fresh += 1;
+                (
+                    w.clone(),
+                    Expr::Var(format!(
+                        "{}stale_{}",
+                        contract_carrier::UNMODELED_PREFIX,
+                        ctx.carrier_fresh
+                    )),
+                )
+            })
+            .collect();
+        args = args.iter().map(|a| substitute_vars(a, &stale)).collect();
+    }
+    for (i, a) in args.iter_mut().enumerate() {
+        // A scalar-typed argument is a value, never a function — even though a plain parameter's
+        // identity set defaults to `Unknown`. An argument that names a function (`Known` non-empty or a
+        // literal function name) or whose identity is genuinely unknown and is NOT scalar-typed is
+        // treated as function-valued and left alone, so a function is never replaced by an integer
+        // symbol (which would drop its carried contract).
+        let scalar_typed = matches!(a, Expr::Var(v)
+            if scope.get(v).and_then(|b| b.info.ty.as_deref()).map(|t| {
+                let t = normalize_ty(t);
+                is_integer_ty(&t) || is_float_ty(&t) || t == "bool" || t == "string"
+            }).unwrap_or(false));
+        let function_valued = !scalar_typed
+            && (!matches!(&idents[i], FnIdentitySet::Known(n) if n.is_empty())
+                || carrier_mentions_function(a, ctx)
+                || closure_of(ctx, scope, a).is_some());
+        if function_valued {
+            continue;
+        }
+        if generic {
+            // Generic frame: every value is arbitrary. Integers become fresh unconstrained symbols;
+            // anything else is not modeled.
+            let sym = carrier_mint(
+                ctx,
+                if is_int_modelable(a, &ctx.solver_int_vars) {
+                    "int"
+                } else {
+                    "unmodeled"
+                },
+            );
+            if !sym.starts_with(contract_carrier::UNMODELED_PREFIX) {
+                ctx.solver_int_vars.insert(sym.clone());
+                ctx.symbolic_widths.insert(sym.clone(), 64);
+                minted_int.push(sym.clone());
+            }
+            *a = Expr::Var(sym);
+            continue;
+        }
+        // Concrete frame. A bare caller VARIABLE that the solver does not already model is an
+        // arbitrary value (a caller input is universally quantified), so a fresh unconstrained symbol
+        // is both sound and lets a guard over it be used — and a counterexample over it is real. A
+        // CALL RESULT or other compound unmodeled term is a specific unknown value: modeling it as
+        // arbitrary would fabricate a counterexample, so it is left unmodeled and its clause becomes
+        // an explicit unresolved (item 11 — an unknown value is neither assumed to violate nor to
+        // satisfy). An already-modelable argument (a literal, or an expression over modeled vars) is
+        // kept as-is so no precision is lost.
+        if is_int_modelable(a, &ctx.solver_int_vars) {
+            continue;
+        }
+        if let Expr::Var(v) = a {
+            if !ctx.solver_int_vars.contains(v) {
+                let ty = scope.get(v).and_then(|b| b.info.ty.clone());
+                // A declared non-integer variable is not modeled in the integer lane; leave it so its
+                // clause (if any) refuses rather than inventing an integer.
+                if ty
+                    .as_deref()
+                    .map(|t| !is_integer_ty(&normalize_ty(t)))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let sym = carrier_mint(ctx, "int");
+                ctx.solver_int_vars.insert(sym.clone());
+                ctx.symbolic_widths.insert(sym.clone(), 64);
+                minted_int.push(sym.clone());
+                if let Some(w) = ty.as_deref().and_then(ty::unsigned_mask_width) {
+                    let sm = smt_var(&sym);
+                    frame_facts.push(format!("(bvsge {sm} (_ bv0 64))"));
+                    if w < 64 {
+                        frame_facts.push(format!("(bvslt {sm} (_ bv{} 64))", 1u128 << w));
+                    }
+                }
+                *a = Expr::Var(sym);
+            }
+        }
+    }
+    let mut havoc_names: Vec<String> = Vec::new();
+    let sub = coerce_call_args(ctx, outer_callee, &formals, &args, &mut havoc_names);
+
+    let mut ok = true;
+    for item in &items {
+        let mut asm: Vec<String> = assumptions.to_vec();
+        asm.extend(frame_facts.iter().cloned());
+        let guard_mark = ctx.active_branch_guards.len();
+        let mut declared: Vec<String> = Vec::new();
+        for fv in &item.for_vars {
+            let start = substitute_vars(&fv.start, &sub);
+            let end = substitute_vars(&fv.end, &sub);
+            if is_int_modelable(&start, &ctx.solver_int_vars)
+                && is_int_modelable(&end, &ctx.solver_int_vars)
+            {
+                ctx.solver_int_vars.insert(fv.sym.clone());
+                ctx.symbolic_widths.insert(fv.sym.clone(), 64);
+                declared.push(fv.sym.clone());
+                let k = Expr::Var(fv.sym.clone());
+                for (op, l, r) in [
+                    ("<=", start.clone(), k.clone()),
+                    ("<", k, end.clone()),
+                    ("<", start, end),
+                ] {
+                    let fact = Expr::Binary {
+                        op: op.into(),
+                        lhs: Box::new(l),
+                        rhs: Box::new(r),
+                    };
+                    push_branch_path_condition(ctx, &mut asm, &fact, false);
+                }
+            }
+        }
+        for g in &item.guards {
+            let ge = substitute_vars(&g.expr, &sub);
+            if contract_carrier::mentions_unmodeled(&ge) {
+                continue;
+            }
+            push_branch_path_condition(ctx, &mut asm, &ge, g.negate);
+        }
+        match &item.kind {
+            contract_carrier::CarrierKind::Apply {
+                callee,
+                args: cargs,
+            } => {
+                let c = substitute_vars(callee, &sub);
+                let a: Vec<Expr> = cargs.iter().map(|x| substitute_vars(x, &sub)).collect();
+                // A closure argument is checked by applying it: its body's calls, with its parameters
+                // replaced by what the callee passes (`app(|x| f(s))` calling `g(0)`).
+                let applied = discharge_applied_closure(ctx, &asm, scope, &c, &a);
+                let closure = applied.is_some();
+                ok &= applied.unwrap_or(true);
+                match carrier_identities(&c, scope, ctx) {
+                    FnIdentitySet::Known(names) if !names.is_empty() => {
+                        for f in names {
+                            ok &= discharge_call_requires(ctx, &asm, &f, &a);
+                            ok &= discharge_carried_call_requires(
+                                ctx,
+                                &asm,
+                                scope,
+                                &f,
+                                &a,
+                                depth + 1,
+                            );
+                        }
+                    }
+                    FnIdentitySet::Known(_) => {
+                        // Resolved to no function. Only a data access over a value that holds a
+                        // function (`S { h: f }.h`) can still be a call of one (review N2), or a
+                        // closure the resolver could not instantiate.
+                        let own_formal = derives_from_own_formal(&c, ctx);
+                        if (matches!(c, Expr::FieldAccess { .. } | Expr::Index { .. })
+                            && mentions_function_through_locals(&c, ctx))
+                            || (!closure
+                                && !own_formal
+                                && !ctx.escaping_contracted_fns.is_empty()
+                                && !callee_is_builtin(ctx, scope, &c))
+                        {
+                            ok = false;
+                            carrier_unresolved_expr(
+                                ctx,
+                                outer_callee,
+                                &c,
+                                "is called but cannot be resolved to a function",
+                            );
+                        }
+                    }
+                    FnIdentitySet::Unknown => {
+                        // An unknown callee may be a function whose precondition matters when one
+                        // escapes as a value somewhere; then it is refused, never assumed safe. A
+                        // formal of the function being analyzed is exempt: the carrier walk at each
+                        // outer call site, where the actual argument is known, checks it.
+                        let own_formal = derives_from_own_formal(&c, ctx);
+                        if !ctx.escaping_contracted_fns.is_empty() && !own_formal && !closure {
+                            ok = false;
+                            carrier_unresolved_expr(
+                                ctx,
+                                outer_callee,
+                                &c,
+                                "is called but cannot be resolved to a function",
+                            );
+                        }
+                    }
+                }
+            }
+            contract_carrier::CarrierKind::CallNamed {
+                callee,
+                args: cargs,
+            } => {
+                let a: Vec<Expr> = cargs.iter().map(|x| substitute_vars(x, &sub)).collect();
+                if ctx.fn_params.contains_key(callee) {
+                    ok &= discharge_carried_call_requires(ctx, &asm, scope, callee, &a, depth + 1);
+                } else if crate::backends::run::is_builtin_name(callee) {
+                    // A carried function handed to a higher-order builtin (`apply(g, ..)`,
+                    // `map([..], g)`): discharge its `requires` against what the builtin applies it to,
+                    // the same as a direct HOF call, now that the formal is substituted to the actual.
+                    // Any argument that is ITSELF a carried function still escapes.
+                    discharge_builtin_hof_requires(ctx, &asm, scope, callee, &a);
+                    let closure_pos = effects::higher_order_closure_args(callee);
+                    for (i, x) in a.iter().enumerate() {
+                        if !closure_pos.contains(&i) {
+                            ok &= carrier_escape(
+                                ctx,
+                                scope,
+                                outer_callee,
+                                x,
+                                "is passed to a builtin",
+                            );
+                        }
+                    }
+                } else {
+                    for x in &a {
+                        ok &= carrier_escape(ctx, scope, outer_callee, x, "is passed to a builtin");
+                    }
+                }
+            }
+            contract_carrier::CarrierKind::Escape { value, reason } => {
+                let v = substitute_vars(value, &sub);
+                ok &= carrier_escape(ctx, scope, outer_callee, &v, reason);
+            }
+            contract_carrier::CarrierKind::Return { value } => {
+                // The caller side resolves the identity a param forwarder or a sole-return function
+                // hands back; any other return of a function value is not followed.
+                if !(ctx.fn_returns_param.contains_key(outer_callee)
+                    || ctx.fn_sole_return.contains_key(outer_callee))
+                {
+                    let v = substitute_vars(value, &sub);
+                    ok &= carrier_escape(
+                        ctx,
+                        scope,
+                        outer_callee,
+                        &v,
+                        "is returned where the caller cannot follow it",
+                    );
+                }
+            }
+        }
+        ctx.active_branch_guards.truncate(guard_mark);
+        for d in declared {
+            ctx.solver_int_vars.remove(&d);
+            ctx.symbolic_widths.remove(&d);
+        }
+    }
+    for hv in havoc_names {
+        ctx.solver_float_vars.remove(&hv);
+    }
+    for m in minted_int {
+        ctx.solver_int_vars.remove(&m);
+        ctx.symbolic_widths.remove(&m);
+    }
+    ctx.carrier_origin = prev_origin;
+    ctx.carrier_stack.pop();
+    ok
+}
+
+/// A fresh carrier symbol, deterministic in program order. `kind == "unmodeled"` yields a placeholder the
+/// solver never models.
+fn carrier_mint(ctx: &mut SemanticContext, kind: &str) -> String {
+    ctx.carrier_fresh += 1;
+    if kind == "unmodeled" {
+        format!(
+            "{}arg_{}",
+            contract_carrier::UNMODELED_PREFIX,
+            ctx.carrier_fresh
+        )
+    } else {
+        format!("anubis_carrier_{kind}_{}", ctx.carrier_fresh)
+    }
+}
+
+/// Function identities of a call-site value, resolving a plain name from the CALLER's scope before the
+/// global function table (a local `let safe = f` must mean `f`, not the global `safe` — review N5). A
+/// compound expression that mentions such a shadowed name cannot be resolved correctly by
+/// `fn_identities_of`, which looks globals up first, so it is `Unknown`. Carrier placeholders and symbols
+/// are values, except the alias placeholder, which stands for an unexpressible function value.
+fn carrier_identities(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> FnIdentitySet {
+    if let Expr::Var(n) = e {
+        if n.starts_with(contract_carrier::UNMODELED_PREFIX) {
+            return if n.contains("_alias_") {
+                FnIdentitySet::Unknown
+            } else {
+                FnIdentitySet::empty()
+            };
+        }
+        if n.starts_with(contract_carrier::FOR_VAR_PREFIX) || n.starts_with("anubis_carrier_") {
+            return FnIdentitySet::empty();
+        }
+        if let Some(b) = scope.get(n) {
+            return b.fn_identities.clone();
+        }
+        return fn_identities_of(e, scope, ctx);
+    }
+    // Resolve a function nested in a literal the collector substituted inline: `[f][0]`, `S { h: f }.h`.
+    // `fn_identities_of` reads these through a scope binding, not a raw literal, so do it here.
+    if let Expr::Index { base, index } = e {
+        if let (Expr::ArrayLiteral { elements }, Expr::Literal(i)) = (base.as_ref(), index.as_ref())
+        {
+            if let Ok(i) = i.parse::<usize>() {
+                if let Some(el) = elements.get(i) {
+                    return carrier_identities(el, scope, ctx);
+                }
+            }
+        }
+    }
+    if let Expr::FieldAccess { base, field, .. } = e {
+        if let Expr::StructLiteral { fields, .. } = base.as_ref() {
+            if let Some((_, v)) = fields.iter().find(|(k, _)| k == field) {
+                return carrier_identities(v, scope, ctx);
+            }
+        }
+    }
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    if vars
+        .iter()
+        .any(|v| ctx.fn_params.contains_key(v) && scope.contains_key(v))
+    {
+        return FnIdentitySet::Unknown;
+    }
+    if vars
+        .iter()
+        .any(|v| v.starts_with(contract_carrier::UNMODELED_PREFIX) && v.contains("_alias_"))
+    {
+        return FnIdentitySet::Unknown;
+    }
+    fn_identities_of(e, scope, ctx)
+}
+
+/// Whether `e` names a user function anywhere.
+fn carrier_mentions_function(e: &Expr, ctx: &SemanticContext) -> bool {
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    vars.iter().any(|v| ctx.fn_params.contains_key(v))
+}
+
+/// A formal-derived value that reaches a place the analysis cannot follow. Unresolved when it may hold
+/// a function whose contract matters: a known function with a `requires` or carrier sites of its own, or
+/// an unknown value that is not declared scalar.
+fn carrier_escape(
+    ctx: &mut SemanticContext,
+    scope: &BTreeMap<String, ScopeBinding>,
+    origin: &str,
+    value: &Expr,
+    reason: &str,
+) -> bool {
+    let relevant = match carrier_identities(value, scope, ctx) {
+        FnIdentitySet::Known(names) => names.iter().any(|f| {
+            ctx.fn_contracts
+                .get(f)
+                .is_some_and(|(_, req, _)| !req.is_empty())
+                || ctx.fn_carrier_items.contains_key(f)
+        }),
+        // Item 11: an unknown value is not assumed to be a contracted function that escapes.
+        FnIdentitySet::Unknown => false,
+    };
+    if relevant {
+        carrier_unresolved_expr(ctx, origin, value, reason);
+        return false;
+    }
+    true
+}
+
+/// Render an expression for a user-facing carrier diagnostic, rewriting the analysis's internal
+/// placeholder symbols (`__anubis_carrier_*`, `anubis_carrier_*`) to a readable `<unmodeled value>`
+/// token so no sentinel name leaks into an obligation name, message, or the evidence bundle.
+fn carrier_display(e: &Expr) -> String {
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    let map: BTreeMap<String, Expr> = vars
+        .into_iter()
+        .filter(|n| {
+            n.starts_with(contract_carrier::UNMODELED_PREFIX)
+                || n.starts_with(contract_carrier::FOR_VAR_PREFIX)
+                || n.starts_with("anubis_carrier_")
+        })
+        .map(|n| (n, Expr::Var("<unmodeled value>".to_string())))
+        .collect();
+    let shown = if map.is_empty() {
+        e.clone()
+    } else {
+        substitute_vars(e, &map)
+    };
+    crate::fmt::fmt_expr(&shown)
+}
+
+fn carrier_unresolved_expr(ctx: &mut SemanticContext, origin: &str, e: &Expr, what: &str) {
+    let shown = carrier_display(e);
+    carrier_unresolved(
+        ctx,
+        origin,
+        format!("{shown} {what}"),
+        format!(
+            "`{shown}`, derived from a function-valued parameter of `{origin}`, {what}; its \
+             precondition cannot be checked where it runs"
+        ),
+    );
+}
+
+/// A `requires` clause reached through a function-valued parameter that could not be encoded.
+fn carrier_unresolved_clause(ctx: &mut SemanticContext, callee: &str, clause: &Expr, why: &str) {
+    let Some(origin) = ctx.carrier_origin.clone() else {
+        // A DIRECT call: the precondition could not be encoded here either (an argument or clause is
+        // outside every modeled lane). It used to be dropped with no obligation and no diagnostic, so
+        // the call site claimed nothing it could not check and still checked clean. It is now an explicit
+        // unresolved obligation — no solver runs, and it can never be reported as proved.
+        let shown = carrier_display(clause);
+        let caller = ctx.current_fn.clone().unwrap_or_default();
+        carrier_unresolved(
+            ctx,
+            callee,
+            format!("{shown} in {caller}"),
+            format!(
+                "precondition `{shown}` of `{callee}`, called from `{caller}`, could not be encoded \
+                 because {why}"
+            ),
+        );
+        return;
+    };
+    let shown = carrier_display(clause);
+    carrier_unresolved(
+        ctx,
+        callee,
+        format!("{shown} via {origin}"),
+        format!(
+            "precondition `{shown}` of `{callee}`, passed as a function-valued argument to \
+             `{origin}`, could not be encoded because {why}"
+        ),
+    );
+}
+
+fn carrier_unresolved(ctx: &mut SemanticContext, subject: &str, key: String, statement: String) {
+    let name = format!("{UNRESOLVED_REQUIRES_PREFIX}{subject}:{key}");
+    if ctx.solver_obligations.iter().any(|o| o.name == name) {
+        return;
+    }
+    ctx.solver_obligations.push(SolverObligation {
+        name,
+        assumptions: Vec::new(),
+        assertion: statement,
+        vars: Vec::new(),
+        strings: false,
+        guard_assumptions: Vec::new(),
+    });
 }
 
 fn discharge_resolved_call_requires(
@@ -7883,11 +10626,52 @@ fn discharge_resolved_call_requires_d(
     args: &[Expr],
     depth: u32,
 ) -> bool {
-    if depth > FN_ALIAS_MAX_DEPTH {
+    if depth > FN_ALIAS_MAX_DEPTH || analysis_limit::cut() {
+        note_return_values_trip();
         return true;
     }
-    let Some(candidate) = fn_identities_of(callee, scope, ctx).into_singleton() else {
-        return true;
+    // A higher-order BUILTIN (map/apply/...) applies a function this resolver would otherwise ignore
+    // (the builtin has no user contract). Discharge the applied function's `requires` against the
+    // values the builtin applies it to. Every discharge path reaches here, so the direct lane, a
+    // `let r = map(..)` initializer, and the carrier lane all get it.
+    if let Expr::Var(name) = callee {
+        if crate::backends::run::is_builtin_name(name) {
+            discharge_builtin_hof_requires(ctx, assumptions, scope, name, args);
+        }
+    }
+    // A callee that is a CLOSURE value: its body runs with these arguments, so the calls inside it are
+    // checked here like any other call. The contract lane never looked inside a closure it applied, so
+    // `let g = || f(-1); g()` — and a closure returned by a function — reached `f` unchecked.
+    let applied = discharge_applied_closure(ctx, assumptions, scope, callee, args);
+    let closure_ok = applied.unwrap_or(true);
+    let candidate = match fn_identities_of(callee, scope, ctx) {
+        FnIdentitySet::Known(names) if names.len() == 1 => names.into_iter().next().unwrap(),
+        // Several possible callees (a join): whichever runs must have its precondition met, so each
+        // is checked. Discharging only a singleton let `let h = if c { f } else { g }; h(-1)` through.
+        FnIdentitySet::Known(names) if names.len() > 1 => {
+            let mut ok = true;
+            for name in names {
+                ok &= discharge_call_requires(ctx, assumptions, &name, args);
+                ok &= discharge_carried_call_requires(ctx, assumptions, scope, &name, args, depth);
+            }
+            return ok;
+        }
+        // No named function. That is proven harmless only for a closure applied above or a builtin;
+        // any other callee holding no NAMED function may still hold a closure the resolver could not
+        // instantiate (`closure_of` gives up on a shadowed capture), which is not "calls nothing".
+        FnIdentitySet::Known(_) => {
+            if applied.is_some() || callee_is_builtin(ctx, scope, callee) {
+                return closure_ok;
+            }
+            return unresolved_callee_value(ctx, callee);
+        }
+        FnIdentitySet::Unknown => {
+            // A closure resolved and checked above is not an unresolved callee.
+            if applied.is_some() {
+                return closure_ok;
+            }
+            return unresolved_callee_value(ctx, callee);
+        }
     };
     let direct = discharge_call_requires(ctx, assumptions, &candidate, args);
     let carried = discharge_carried_call_requires(ctx, assumptions, scope, &candidate, args, depth);
@@ -7931,6 +10715,44 @@ fn match_arm_pattern_fact(scrutinee: &Expr, pattern: &crate::frontend::Pattern) 
         }
         _ => None,
     }
+}
+
+/// After analyzing a statement-position `match`/`if let` arm — a position where an arm-body `assert`
+/// is deliberately deferred to runtime rather than solver-proved — keep the CALL-PRECONDITION
+/// obligations the arm pushed and drop the rest.
+///
+/// A call inside an arm really executes when that arm is taken, so its callee's `requires` is a real
+/// obligation and must not vanish; the previous blanket `truncate(obl_mark)` discarded those
+/// `requires@` / `requires-unresolved@` obligations along with the arm-body `assert:`/`ensures:` ones,
+/// which silently accepted a violated precondition inside a match/if-let arm (e.g.
+/// `match 1 { 1 => { f(-1); } _ => {} }` with `f` requiring `x > 0`).
+///
+/// An obligation that mentions a pattern binder is still dropped: the binder's value is not modeled
+/// outside the arm, so keeping it could be unsound or spurious. That stays deferred exactly as before
+/// — a narrower residual than dropping everything. The caller pushes the arm's pattern fact (via
+/// `match_arm_pattern_fact`) before analysis so a call whose precondition the arm's own literal guard
+/// establishes still proves rather than being over-rejected.
+fn retain_arm_call_preconditions(
+    ctx: &mut SemanticContext,
+    obl_mark: usize,
+    binder_names: &BTreeSet<String>,
+) {
+    if ctx.solver_obligations.len() <= obl_mark {
+        return;
+    }
+    let binder_smt: BTreeSet<String> = binder_names.iter().map(|n| smt_var(n)).collect();
+    let pushed = ctx.solver_obligations.split_off(obl_mark);
+    for o in pushed {
+        let is_precondition =
+            o.name.starts_with("requires@") || o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX);
+        let mentions_binder = o.vars.iter().any(|v| binder_smt.contains(v));
+        if is_precondition && !mentions_binder {
+            ctx.solver_obligations.push(o);
+        }
+    }
+    // The vector may have shrunk below the over-approximation scan position; later obligations must
+    // still be scanned (those kept here were already scanned inside the arms).
+    ctx.over_approx_scan = ctx.over_approx_scan.min(ctx.solver_obligations.len());
 }
 
 /// Process-unique counter for minting fresh SMT symbols for whole-value match bindings (see the
@@ -8088,12 +10910,141 @@ fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
 /// STILL DEFERRED (the residual): `if let`/block/lambda bodies, and a `match` arm whose bound sub-values
 /// (enum/struct/list pattern) would constrain the call — those are unmodeled. Every discharged call is as
 /// sound as a direct call: the same `assumptions` (including the pushed path condition) are in scope.
+/// Discharge the `requires` of a contracted function that a higher-order BUILTIN applies, against the
+/// values the builtin applies it to. A builtin has no user contract of its own, so nothing discharged
+/// the function it runs: `apply(f, -1)` and `map([1, -2], f)` with `f` requiring `x > 0` both checked
+/// clean. `apply`/`call` apply the function to the remaining arguments; the element-wise list builtins
+/// apply it to each element, which is discharged precisely when the collection is a literal.
+///
+/// An UNKNOWN collection (`map(xs, f)` with `xs` not a literal) is out of scope for this pass: proving
+/// `f`'s precondition for an arbitrary element needs element-type reasoning, so it stays a recorded
+/// residual rather than a silent accept-or a blanket over-rejection. A function with no `requires`
+/// produces nothing, so ordinary data processing (`map(xs, plain)`) is unaffected. `reduce`/`compose`/
+/// `fold` (accumulator/binary application) are likewise deferred.
+fn discharge_builtin_hof_requires(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &str,
+    args: &[Expr],
+) {
+    let mut asm: Vec<String> = assumptions.to_vec();
+    let mut minted: Vec<String> = Vec::new();
+    let guard_mark = ctx.active_branch_guards.len();
+    let applications: Vec<(usize, Vec<Expr>)> = match callee {
+        "apply" | "call" if !args.is_empty() => vec![(0, args[1..].to_vec())],
+        "map" | "filter" | "each" | "find" | "any" | "all" | "count" | "sort_by" | "flat_map"
+        | "take_while" | "drop_while" | "position" | "min_by" | "max_by" | "partition"
+        | "map_values"
+            if args.len() >= 2 =>
+        {
+            // The collection's elements: a literal, a stable local bound to one, or else an unknown
+            // element (a caller-invisible value, so a precondition over it is refused, never
+            // assumed: `let ys = [-1]; map(ys, f)` used to go unchecked).
+            let literal = match &args[0] {
+                Expr::ArrayLiteral { elements } => Some(elements.clone()),
+                Expr::Var(v) => match ctx.current_fn_let_inits.get(v) {
+                    Some(Expr::ArrayLiteral { elements })
+                        if !scope_rebinds(ctx, v)
+                            && !list_local_may_change(ctx, v)
+                            && elements.iter().all(|e| names_stable(ctx, e)) =>
+                    {
+                        Some(elements.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            // A stable local bound to `range(..)` is that range, when its bounds are not written.
+            let coll: Expr = match &args[0] {
+                Expr::Var(v) if !scope_rebinds(ctx, v) && !list_local_may_change(ctx, v) => {
+                    match ctx.current_fn_let_inits.get(v) {
+                        Some(init @ Expr::Call { callee, args: ra })
+                            if callee == "range" && ra.iter().all(|x| names_stable(ctx, x)) =>
+                        {
+                            init.clone()
+                        }
+                        _ => args[0].clone(),
+                    }
+                }
+                other => other.clone(),
+            };
+            match (literal, &coll) {
+                (Some(elements), _) => elements.into_iter().map(|e| (1usize, vec![e])).collect(),
+                // `range(a, b)`: an element is some integer with `a <= e < b`.
+                (
+                    None,
+                    Expr::Call {
+                        callee: r,
+                        args: ra,
+                    },
+                ) if r == "range"
+                    && !ctx.fn_params.contains_key("range")
+                    && !scope.contains_key("range")
+                    && !ctx.current_fn_rebound.contains("range")
+                    && !ctx.current_fn_formals.contains("range")
+                    && ra.len() == 2
+                    && ra.iter().all(|x| is_int_modelable(x, &ctx.solver_int_vars)) =>
+                {
+                    let sym = carrier_mint(ctx, "int");
+                    ctx.solver_int_vars.insert(sym.clone());
+                    ctx.symbolic_widths.insert(sym.clone(), 64);
+                    minted.push(sym.clone());
+                    let e = Expr::Var(sym);
+                    for (op, l, r) in [
+                        ("<=", ra[0].clone(), e.clone()),
+                        ("<", e.clone(), ra[1].clone()),
+                    ] {
+                        let fact = Expr::Binary {
+                            op: op.into(),
+                            lhs: Box::new(l),
+                            rhs: Box::new(r),
+                        };
+                        push_branch_path_condition(ctx, &mut asm, &fact, false);
+                    }
+                    vec![(1usize, vec![e])]
+                }
+                _ => vec![(1usize, vec![Expr::Var("anubis collection element".into())])],
+            }
+        }
+        _ => return,
+    };
+    for (fn_pos, call_args) in applications {
+        let Some(fn_arg) = args.get(fn_pos) else {
+            continue;
+        };
+        // A closure argument runs its body on each application.
+        let _ = discharge_applied_closure(ctx, &asm, scope, fn_arg, &call_args);
+        if let FnIdentitySet::Known(names) = fn_identities_of(fn_arg, scope, ctx) {
+            for name in names {
+                let has_requires = ctx
+                    .fn_contracts
+                    .get(&name)
+                    .map(|(_, req, _)| !req.is_empty())
+                    .unwrap_or(false);
+                if has_requires {
+                    discharge_call_requires(ctx, &asm, &name, &call_args);
+                }
+            }
+        }
+    }
+    ctx.active_branch_guards.truncate(guard_mark);
+    for sym in minted {
+        ctx.solver_int_vars.remove(&sym);
+        ctx.symbolic_widths.remove(&sym);
+    }
+}
+
 fn discharge_calls_in_expr(
     ctx: &mut SemanticContext,
     assumptions: &mut Vec<String>,
     scope: &BTreeMap<String, ScopeBinding>,
     expr: &Expr,
 ) {
+    // Out of stack or memory: the request is refused (`analysis_limit`).
+    if analysis_limit::cut() {
+        return;
+    }
     match expr {
         Expr::Call { callee, args } => {
             discharge_resolved_call_requires(
@@ -8113,6 +11064,37 @@ fn discharge_calls_in_expr(
             // expression. FieldAccess remains the existing method-call syntax and is handled below.
             if !matches!(callee.as_ref(), Expr::FieldAccess { .. }) {
                 discharge_resolved_call_requires(ctx, assumptions, scope, callee, args);
+            }
+            // `obj.h(args)` where no impl defines a method `h`: the runtime reads the field (or map
+            // entry) `h` and calls the closure it holds (run.rs, `Expr::CallExpr`), so it is a call
+            // through that VALUE and is checked like one.
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                // Also when `h` IS a method of some type: the runtime dispatches on the receiver's
+                // type and falls back to the field's value when that type lacks the method. A
+                // receiver whose struct declares a field `h`, or whose `h` provably holds a named
+                // function, is such a value call.
+                let struct_has_field = place_struct_type(base, scope, &ctx.place_types())
+                    .and_then(|t| ctx.struct_fields.get(t.trim()))
+                    .is_some_and(|fs| fs.contains_key(field));
+                let ids = fn_identities_of(callee, scope, ctx);
+                let holds_function = matches!(&ids, FnIdentitySet::Known(n) if !n.is_empty());
+                // A receiver of unknown type may be a struct of a type that declares a field `h`
+                // (`mk(1).h(-1)` with a join of struct types): a value call, refused when a
+                // contracted function escapes (its identity there is not proven).
+                let receiver_type_known = place_struct_type(base, scope, &ctx.place_types())
+                    .is_some_and(|t| ctx.struct_fields.contains_key(t.trim()));
+                let maybe_field_value = !receiver_type_known
+                    && !holds_function
+                    && !ctx.escaping_contracted_fns.is_empty()
+                    && (ctx.fn_valued_field_names.contains(field)
+                        || ctx.fn_valued_field_names.contains("*"));
+                if !ctx.method_arities.contains_key(field)
+                    || struct_has_field
+                    || holds_function
+                    || maybe_field_value
+                {
+                    discharge_resolved_call_requires(ctx, assumptions, scope, callee, args);
+                }
             }
             discharge_calls_in_expr(ctx, assumptions, scope, callee);
             for a in args {
@@ -8421,6 +11403,73 @@ fn discharge_calls_in_expr(
                     || ctx.symbolic_widths.contains_key(n)
             });
             if shadows_existing {
+                // The block's facts cannot be modeled without conflating the re-bound name with the
+                // outer one, so its calls cannot be checked here. Skipping them was a silent accept
+                // (`let s = 1; if c { let s = 5; f(-1) }` never checked `f`): every call in the block
+                // whose precondition could matter is refused instead.
+                let mut refused: Vec<String> = Vec::new();
+                visit::each_expr(expr, &mut |x| match x {
+                    Expr::Call { callee, args } => {
+                        let contracted = ctx
+                            .fn_contracts
+                            .get(callee)
+                            .is_some_and(|(_, req, _)| !req.is_empty());
+                        let through_value = !ctx.fn_params.contains_key(callee)
+                            && !crate::backends::run::is_builtin_name(callee)
+                            && !ctx.escaping_contracted_fns.is_empty();
+                        if (contracted || through_value) && !refused.contains(callee) {
+                            refused.push(callee.clone());
+                        }
+                        // A function handed to a higher-order builtin (`map(ys, f)`) runs too.
+                        if crate::backends::run::is_builtin_name(callee) {
+                            let fn_pos = effects::higher_order_closure_args(callee);
+                            for (i, a) in args.iter().enumerate() {
+                                if !fn_pos.contains(&i) {
+                                    continue;
+                                }
+                                let matters = match a {
+                                    Expr::Var(v) if ctx.fn_params.contains_key(v) => ctx
+                                        .fn_contracts
+                                        .get(v)
+                                        .is_some_and(|(_, req, _)| !req.is_empty()),
+                                    Expr::Var(v) if crate::backends::run::is_builtin_name(v) => {
+                                        false
+                                    }
+                                    Expr::Lambda { body, .. } => closure_body_matters(ctx, body, 0),
+                                    _ => !ctx.escaping_contracted_fns.is_empty(),
+                                };
+                                let name = match a {
+                                    Expr::Var(v) => v.clone(),
+                                    _ => "a function value".to_string(),
+                                };
+                                if matters && !refused.contains(&name) {
+                                    refused.push(name);
+                                }
+                            }
+                        }
+                    }
+                    Expr::CallExpr { .. }
+                        if !ctx.escaping_contracted_fns.is_empty()
+                            && !refused.iter().any(|r| r == "a function value") =>
+                    {
+                        refused.push("a function value".into());
+                    }
+                    _ => {}
+                });
+                let origin = ctx.current_fn.clone().unwrap_or_default();
+                let names: Vec<String> = bound.iter().cloned().collect();
+                for callee in refused {
+                    carrier_unresolved(
+                        ctx,
+                        &origin,
+                        format!("call to {callee} in a block re-binding {}", names.join(", ")),
+                        format!(
+                            "a call to `{callee}` inside a block that re-binds `{}` cannot be checked: \
+                             the block's bindings cannot be modeled apart from the outer ones",
+                            names.join("`, `")
+                        ),
+                    );
+                }
                 return;
             }
             // Scope every fact + solver-var/width entry we add to this block: restored on exit so nothing
@@ -8446,6 +11495,11 @@ fn discharge_calls_in_expr(
                         if ctx.reassigned_roots.contains(name) || ctx.shadowed_lets.contains(name) {
                             continue;
                         }
+                        // Resolve `P { f: v }.f` with `f`'s DECLARED type before modeling (see
+                        // `fold_literal_field_reads`): the runtime coerces `P { x: 7 }.x` to 7.0 for an
+                        // `f64` field, which the integer lane must never model as 7.
+                        let init_folded = fold_struct_literal_reads(init, ctx);
+                        let init = &init_folded;
                         let genuinely_float = !is_int_modelable(init, &ctx.solver_int_vars)
                             && is_float_modelable(init, &ctx.solver_float_vars);
                         let genuinely_string = !is_int_modelable(init, &ctx.solver_int_vars)
@@ -8608,6 +11662,31 @@ fn push_branch_path_condition(
     cond: &Expr,
     negate: bool,
 ) {
+    let Some(smt) = path_condition_smt(ctx, cond) else {
+        // A conjunction the solver cannot encode as a whole may still have encodable conjuncts. Inside the
+        // branch every conjunct holds, so each encodable one is a sound fact on its own
+        // (`if r.ok && n >= 0 { f(n) }` relieves `f`'s `requires(n >= 0)` though `r.ok` is a field read).
+        // The negation `!(a && b)` is a disjunction and is only usable when the whole is encodable.
+        if !negate {
+            let conjuncts = split_top_level_conjuncts(cond);
+            if conjuncts.len() > 1 {
+                for c in conjuncts {
+                    if let Some(smt) = path_condition_smt(ctx, c) {
+                        assumptions.push(smt.clone());
+                        ctx.active_branch_guards.push(smt);
+                    }
+                }
+            }
+        }
+        return;
+    };
+    let fact = if negate { format!("(not {smt})") } else { smt };
+    assumptions.push(fact.clone());
+    ctx.active_branch_guards.push(fact);
+}
+
+/// The SMT encoding of a branch condition in whichever lane models it, or `None` when none does.
+fn path_condition_smt(ctx: &SemanticContext, cond: &Expr) -> Option<String> {
     let smt = if is_bool_modelable(cond, &ctx.solver_int_vars) {
         expr_to_smt(cond, &ctx.symbolic_widths)
     } else if is_bool_modelable_float(cond, &ctx.solver_float_vars) {
@@ -8618,11 +11697,9 @@ fn push_branch_path_condition(
         // Phase-3 str.len: a string-LENGTH branch guard (`if len(s) >= 3 { … }`) is a scoped path condition.
         strlen_bool_to_smt(cond, &ctx.solver_string_vars)
     } else {
-        return;
+        return None;
     };
-    let fact = if negate { format!("(not {smt})") } else { smt };
-    assumptions.push(fact.clone());
-    ctx.active_branch_guards.push(fact);
+    Some(smt)
 }
 
 /// Resolve a (possibly NESTED) field-access place to its canonical solver symbol: `p` → `p`, `p.a` →
@@ -8736,16 +11813,31 @@ fn place_struct_type(
         // perform rather than adding a second one. Without this, R1's declared-field-qualifier lookup
         // stopped at the call and a `secret` field read straight off a factory result went unlabelled
         // — runtime-proven, it printed the value.
+        //
+        // Every function the call may run ([`call_targets`]; a user function before a local of its
+        // name, `fn_ret` holding an entry for each), and they must agree: typed by the one preferred
+        // alias, `let g = if c { mk_t } else { mk_s }; g().k` read `T`'s public `k` while the
+        // runtime ran `mk_s` (STRUCT-TYPE-SINGLE-ALIAS-AT-JOIN). Candidates that disagree, one with
+        // no declared type, or a binding that may hold a function no name covers leave the type
+        // unknown, so a field read off it counts every declaration (`FieldAccess`'s fallback).
         Expr::Call { callee, .. } => {
-            let target = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
-            struct_fields
-                .fn_ret
-                .get(target)
-                .filter(|t| !t.is_empty())
-                .cloned()
+            let user_fn = struct_fields.fn_ret.contains_key(callee.as_str());
+            if !user_fn
+                && scope.get(callee).is_some_and(|b| {
+                    b.fn_may.open || matches!(b.fn_identities, FnIdentitySet::Unknown)
+                })
+            {
+                return None;
+            }
+            let mut ty: Option<&String> = None;
+            for t in call_targets(callee, scope, user_fn) {
+                let r = struct_fields.fn_ret.get(&t).filter(|r| !r.is_empty())?;
+                if ty.is_some_and(|prev| prev != r) {
+                    return None;
+                }
+                ty = Some(r);
+            }
+            ty.cloned()
         }
         // D2: the impl-method twin — `v.make().k`. Bare-name keyed like every other method registry,
         // and an empty entry means unknown or ambiguous across impls, which stays fail-open rather
@@ -9029,6 +12121,10 @@ fn labelled_param_binding(
         security_label::SecurityLabel::from_legacy_taint(tainted, taint_source.clone());
     let secret_label = security_label::SecurityLabel::from_legacy_secret(secret);
     ScopeBinding {
+        whole_struct: None,
+        whole_captures: None,
+        whole_list: false,
+        whole_map: false,
         info: BindingInfo {
             name: name.to_string(),
             ty: None,
@@ -9042,6 +12138,7 @@ fn labelled_param_binding(
         closure_lambda: None,
         field_closures: BTreeMap::new(),
         fn_alias: None,
+        fn_may: FnMay::default(),
         fn_identities: FnIdentitySet::Unknown,
         field_fn_identities: BTreeMap::new(),
         builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -9068,14 +12165,186 @@ fn analyze_value_block(
     assumptions: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    // A value position (an arm body, a block's tail) executes its calls exactly like a statement
+    // does, so their preconditions are discharged too. Only statements were: a bare arm body
+    // `_ => print(f(-1))` and a tail `{ …; f(-1) }` were analyzed for effects alone, a silent accept.
     match body {
         Expr::Block { stmts, tail } => {
+            // Without an explicit tail, a bare call as the block's last statement is its value (the
+            // runtime's `split_tail_expr`): an ordinary call, so a user function named `push` there
+            // is not an in-place write (round 32, D5); the builtin still is, and
+            // `seed_value_nested_labels` labels its container. A `return` or a statement-only sink
+            // stays a statement; every other statement kind is analyzed as one, where its writes are
+            // tracked.
+            let (stmts, tail): (&[Stmt], Option<&Expr>) = match (stmts.split_last(), tail) {
+                (Some((Stmt::ExprStmt(e @ Expr::Call { callee, .. }), head)), None)
+                    if callee != "return" && !whole::is_statement_sink(callee) =>
+                {
+                    (head, Some(e))
+                }
+                _ => (stmts, tail.as_deref()),
+            };
             analyze_stmts(stmts, mode, scope, fn_symbols, effects, assumptions, ctx);
             if let Some(t) = tail {
+                // The tail runs after the statements: a write nested in it reaches the scope too.
+                seed_value_nested_labels(&[t], scope, ctx);
                 analyze_expr_effect(t, mode, scope, effects, ctx);
+                discharge_calls_in_expr(ctx, assumptions, scope, t);
             }
         }
-        other => analyze_expr_effect(other, mode, scope, effects, ctx),
+        other => {
+            seed_value_nested_labels(&[other], scope, ctx);
+            analyze_expr_effect(other, mode, scope, effects, ctx);
+            discharge_calls_in_expr(ctx, assumptions, scope, other);
+        }
+    }
+}
+
+/// The whole-struct lane: the writes a statement's own expressions make to variables as they run —
+/// an in-place `push` in an argument, an assignment inside a value block or a `match` arm — marked
+/// on the variables (monotone; see `ScopeBinding::whole_struct`). Nested statement bodies are
+/// analyzed as statements.
+fn whole_expression_writes(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    let exprs: Vec<&Expr> = match stmt {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => vec![init],
+        Stmt::Assign { target, value } => vec![target, value],
+        Stmt::ExprStmt(e) => vec![e],
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } => vec![cond],
+        Stmt::WhileLet { expr, .. } => vec![expr],
+        Stmt::For { source, .. } => match source {
+            crate::frontend::ForSource::Collection { expr } => vec![expr],
+            crate::frontend::ForSource::Range { start, end } => vec![start, end],
+        },
+        Stmt::Loop { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::ResearchBlock { .. }
+        | Stmt::ExploitBlock { .. }
+        | Stmt::HybridBlock { .. }
+        | Stmt::SpecBlock { .. } => Vec::new(),
+    };
+    for e in exprs {
+        apply_whole_writes(scope, whole::expr_writes(e, scope, ctx));
+    }
+}
+
+/// Apply writes the whole-struct lane's interpretation found (`whole::expr_writes`,
+/// `whole::stmt_writes`, a loop's exits): the monotone mark of what each name may hold, whether it
+/// is still a list and a map, and — when a function or closure is written (`g = id1` in an arm) —
+/// every one the name may be now (the ordinary lane's `fn_alias` / identities do not see such a
+/// write).
+fn apply_whole_writes(scope: &mut BTreeMap<String, ScopeBinding>, writes: Vec<whole::ExprWrite>) {
+    for (root, src, list, map, captures) in writes {
+        if let Some(b) = scope.get_mut(&root) {
+            if let Some(src) = src {
+                whole::whole_mark(&mut b.whole_struct, src);
+            }
+            b.whole_list &= list;
+            b.whole_map &= map;
+            if captures.is_some() {
+                b.whole_captures = captures;
+            }
+        }
+    }
+}
+
+/// `writes` with only their marks: the functions they carry reach the binding through a join
+/// (`merge_whole_captures_over`), which a later write of the captures would undo.
+fn without_captures(writes: Vec<whole::ExprWrite>) -> Vec<whole::ExprWrite> {
+    writes
+        .into_iter()
+        .map(|(root, src, list, map, _)| (root, src, list, map, None))
+        .collect()
+}
+
+/// `scope` with `writes` applied: one more path of a join (the lane's interpretation of the
+/// statement, from the scope the statement started with).
+fn whole_write_path(
+    before: &BTreeMap<String, ScopeBinding>,
+    writes: &[whole::ExprWrite],
+) -> BTreeMap<String, ScopeBinding> {
+    let mut path = before.clone();
+    apply_whole_writes(&mut path, writes.to_vec());
+    path
+}
+
+/// A loop body is analyzed once: give the names the loop writes what they may hold at the head of
+/// any iteration (the whole-struct lane iterates the loop to a fixpoint: `whole::loop_carried`), and
+/// what they may then be as a function when a later iteration adds to it (a function a body writes
+/// after a call reads the name). Returns what the loop leaves in the names it writes, from its
+/// `break`s and its exit, for the join after it: the body's end state is not every state the loop
+/// leaves with (`if c { g = h; break; } g = zero;`, R39C-1).
+fn seed_loop_carried_whole(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Vec<whole::ExprWrite> {
+    let (heads, exits) = whole::loop_carried(stmt, scope, ctx);
+    for (n, src, captures) in heads {
+        if let Some(b) = scope.get_mut(&n) {
+            if let Some(src) = src {
+                whole::whole_mark(&mut b.whole_struct, src);
+            }
+            if captures.is_some() {
+                b.whole_captures = captures;
+            }
+        }
+    }
+    exits
+}
+
+/// The whole-struct lane's twin of [`relabel_shadowing_join`]: a path that shadowed an outer name
+/// after assigning it (`if c { g = h; let g = zero; }`) reached the join without the outer binding,
+/// and the joins, which keep a path by span, dropped what it assigned (R39C-2). The lane's
+/// interpretation of the statement from `before` restores a shadowed name where its block ends
+/// ([`whole::stmt_writes`]): what it leaves in the shadowed names. `None` when no path shadowed one.
+fn whole_shadow_writes(
+    stmt: &Stmt,
+    before: &BTreeMap<String, ScopeBinding>,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+    ctx: &SemanticContext,
+) -> Option<Vec<whole::ExprWrite>> {
+    let shadowed: BTreeSet<&String> = before
+        .iter()
+        .filter(|(name, outer)| {
+            paths.iter().any(|path| {
+                path.get(*name)
+                    .is_some_and(|b| b.info.span != outer.info.span)
+            })
+        })
+        .map(|(name, _)| name)
+        .collect();
+    if shadowed.is_empty() {
+        return None;
+    }
+    let writes: Vec<whole::ExprWrite> = whole::stmt_writes(stmt, before, ctx)
+        .into_iter()
+        .filter(|w| shadowed.contains(&w.0))
+        .collect();
+    (!writes.is_empty()).then_some(writes)
+}
+
+/// What a closure stored by `let` or assignment closes over (see `ScopeBinding::whole_captures`): a
+/// lambda's, taken now; an alias's, the aliased closure's; and, for any other value
+/// (`whole::value_captures`), what the closure it chooses closes over when the binding holds one
+/// (`closure`: a branch, arm or block choosing a lambda, a helper returning or forwarding one) —
+/// otherwise the closure's names would be read where it is called, after a later `let` of one — and
+/// what the whole-struct lane's own interpretation of the value finds it may be as a function: every
+/// candidate, over the names bound where it is made, not only the one this lane binds.
+fn whole_captures_of(
+    value: &Expr,
+    closure: bool,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<whole::Captures> {
+    match value {
+        Expr::Lambda { .. } => Some(whole::closure_captures(value, scope, ctx)),
+        Expr::Var(v) => scope.get(v).and_then(|b| b.whole_captures.clone()),
+        _ => whole::value_captures(value, closure, scope, ctx),
     }
 }
 
@@ -9088,7 +12357,45 @@ fn analyze_stmts(
     assumptions: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    if analysis_limit::cut() {
+        note_return_values_trip();
+        return;
+    }
+    // Once a statement that always exits has run, the rest of this block cannot execute: its
+    // obligations hold vacuously (`return; f(-1);` is not a violation). Everything is still analyzed
+    // for the other lanes.
+    let mut prev_exits = false;
+    let mut marked_unreachable = false;
     for stmt in stmts {
+        mark_over_approx_obligations(ctx);
+        if prev_exits && !marked_unreachable {
+            push_unreachable(ctx, assumptions);
+            marked_unreachable = true;
+        }
+        {
+            let key = stmt as *const Stmt as usize;
+            let state: StmtState = (
+                assumptions.clone(),
+                ctx.solver_int_vars.clone(),
+                ctx.active_branch_guards.clone(),
+            );
+            match ctx.stmt_states.get(&key) {
+                Some(prev) if *prev != state => {
+                    ctx.stmt_state_conflicts.insert(key);
+                }
+                Some(_) => {}
+                None => {
+                    ctx.stmt_states.insert(key, state);
+                }
+            }
+        }
+        prev_exits = stmt_always_exits(stmt, ctx);
+        whole_expression_writes(stmt, scope, ctx);
+        // Function identities first: the label closure below resolves calls through them.
+        join_nested_fn_writes(stmt, scope, ctx);
+        // The label lanes' twin: a write inside the statement's own expressions (a value block, an
+        // expression-position arm) reaches the outer binding before the statement's own effect.
+        seed_expression_nested_labels(stmt, scope, ctx);
         match stmt {
             Stmt::Let {
                 name,
@@ -9097,7 +12404,7 @@ fn analyze_stmts(
                 span,
             } => {
                 if mode == Mode::Safe && type_has_raw_pointer(ty.as_deref()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_RAW_POINTER_IN_SAFE".into()),
                         message: format!(
                             "safe mode raw pointer binding `{}` requires a research/exploit boundary",
@@ -9121,7 +12428,7 @@ fn analyze_stmts(
                         && !ctx.all_fns.contains(v)
                         && !crate::backends::run::is_builtin_name(v)
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_UNKNOWN_VARIABLE".into()),
                             message: format!("unknown variable `{}`", v),
                             span: None,
@@ -9162,6 +12469,12 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     SourceLane::Secret,
                 );
+                // See `ScopeBinding::whole_struct`.
+                let init_whole = whole::whole_value_source(init, scope, ctx);
+                let init_list =
+                    whole::is_list_expr(init, scope, ctx) && !ctx.whole_not_list.contains(name);
+                let init_map =
+                    whole::is_map_expr(init, scope, ctx) && !ctx.whole_not_map.contains(name);
                 let declass_source = declassify_source(
                     init,
                     scope,
@@ -9197,7 +12510,7 @@ fn analyze_stmts(
                 if let Some(t) = ty.as_deref() {
                     if let Some(got) = infer_expr_type_scoped(init, scope) {
                         if !types_assignable(t, &got) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                 message: format!("type mismatch: expected `{}`, got `{}`", t, got),
                                 span: Some((span.start, span.end)),
@@ -9218,7 +12531,7 @@ fn analyze_stmts(
                         // return-position (`ANUBIS_RETURN_TYPE_MISMATCH`) and argument-position checks.
                         // Accept-biased: an unknown callee / `Any` / assignable type yields `None`.
                         if let Some(got) = check_mismatch_scoped(init, t, scope, ctx) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                 message: format!("type mismatch: expected `{}`, got `{}`", t, got),
                                 span: Some((span.start, span.end)),
@@ -9250,7 +12563,7 @@ fn analyze_stmts(
                     && init_secret.is_some()
                     && ty.as_deref().is_some_and(|t| !is_secret_type(Some(t)))
                 {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                         message: format!(
                             "`{name}` is annotated with a public type but initialized from a secret value — confidentiality labels must not be dropped by annotation. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -9356,6 +12669,8 @@ fn analyze_stmts(
                 // secret/tainted-capturing closure binds `g` to a capturing element (fail-closed).
                 // Covers flat `arr[i]`, nested `outer[i][0]`, and `b.fs[i]` bind twins of direct apply.
                 let cl = cl.or_else(|| symbolic_index_capturing_closure(init, scope, ctx));
+                // See `ScopeBinding::whole_captures`: what the closure bound here closes over.
+                let init_captures = whole_captures_of(init, cl.is_some(), scope, ctx);
                 // Task #48: closures stored in this binding's STRUCT FIELDS / LIST / MAP, keyed by
                 // dotted access path. Alias `let b2 = b` inherits b's paths.
                 // Sub-container bind residual close (2026-07-25): `let mid = outer[0]` must re-key
@@ -9444,8 +12759,14 @@ fn analyze_stmts(
                         fclos.insert(format!("{ALT_CLOSURE_PREFIX}{n}"), lam);
                     }
                 }
+                // A closure a weak write left in the container may be the one read out
+                // ([`weak_field_closures`]): an alternative of the binding.
+                for (n, lam) in weak_field_closures(init, scope).into_iter().enumerate() {
+                    fclos.insert(format!("{ALT_CLOSURE_PREFIX}w{n}"), lam);
+                }
                 let fal = fn_alias_of(init, scope, ctx);
                 let fn_identities = fn_identities_of(init, scope, ctx);
+                let fn_may = fn_may_of(init, scope, ctx);
                 let builtin_gate_tags = builtin_gate_tags_of(init, scope, ctx);
                 let field_fn_identities = match init {
                     Expr::Var(source) => scope
@@ -9465,6 +12786,40 @@ fn analyze_stmts(
                     // fixpoint over the return value and is left open deliberately rather than
                     // half-resolved: under-approximating here misses a leak, and pretending to
                     // resolve it would be worse.
+                    // A multi-return function's containers: every returned value, in the caller's
+                    // terms, merged path by path. A value that cannot be rewritten into the caller's
+                    // terms makes every path (and the wildcard) Unknown.
+                    Expr::Call { callee, args } if ctx.fn_return_values.contains_key(callee) => {
+                        let rv = ctx.fn_return_values[callee].clone();
+                        let mut identities: BTreeMap<String, FnIdentitySet> = BTreeMap::new();
+                        let mut unresolved = rv.params.len() != args.len();
+                        for v in &rv.values {
+                            if unresolved {
+                                break;
+                            }
+                            let Some(inst) = return_value_in_caller(v, &rv, args, ctx) else {
+                                unresolved = true;
+                                break;
+                            };
+                            let mut one = BTreeMap::new();
+                            collect_container_fn_identities(&inst, "", scope, ctx, &mut one);
+                            for (k, ids) in one {
+                                identities
+                                    .entry(k)
+                                    .and_modify(|cur: &mut FnIdentitySet| {
+                                        *cur = cur.clone().union(ids.clone())
+                                    })
+                                    .or_insert(ids);
+                            }
+                        }
+                        if unresolved {
+                            for ids in identities.values_mut() {
+                                *ids = FnIdentitySet::Unknown;
+                            }
+                            identities.insert("*".into(), FnIdentitySet::Unknown);
+                        }
+                        identities
+                    }
                     Expr::Call { callee, args } if ctx.fn_sole_return.contains_key(callee) => {
                         let mut identities = BTreeMap::new();
                         if let Some((pnames, ret)) = ctx.fn_sole_return.get(callee) {
@@ -9503,12 +12858,17 @@ fn analyze_stmts(
                 scope.insert(
                     name.clone(),
                     ScopeBinding {
+                        whole_struct: init_whole,
+                        whole_captures: init_captures,
+                        whole_list: init_list,
+                        whole_map: init_map,
                         info: info.clone(),
                         closure_arity: ca,
                         closure_lambda: cl,
                         field_closures: fclos,
                         fn_alias: fal,
                         fn_identities,
+                        fn_may,
                         field_fn_identities,
                         builtin_gate_tags,
                         field_builtin_gate_tags,
@@ -9569,6 +12929,12 @@ fn analyze_stmts(
                 // modeled (is_string_modelable has a Binary `+` arm) — via `string_expr_to_smt`'s
                 // `(str.++ …)` on the String-sorted symbols, NOT a bit-vector; this eviction is exactly what
                 // keeps the concat def-fact in the String lane.
+                // Resolve `P { f: v }.f` with `f`'s DECLARED type before modeling (see
+                // `fold_literal_field_reads`): the runtime coerces `P { x: 7 }.x` to 7.0 for an `f64`
+                // field, which the integer lane must never model as the integer 7. Folding replaces the
+                // read by exactly the runtime value, so every use below may see the folded form.
+                let init_folded = fold_struct_literal_reads(init, ctx);
+                let init = &init_folded;
                 let genuinely_string = !is_int_modelable(init, &ctx.solver_int_vars)
                     && is_string_modelable(init, &ctx.solver_string_vars);
                 if genuinely_string {
@@ -9585,6 +12951,28 @@ fn analyze_stmts(
                     || is_int_modelable(init, &ctx.solver_int_vars)
                 {
                     ctx.solver_int_vars.insert(name.clone());
+                } else if !genuinely_string {
+                    // A value-position `if` / `match` whose every value-producing arm is an integer
+                    // expression: the binding equals ONE of those values (`let t = match k { A => 0,
+                    // B => 12 }` gives `t == 0 || t == 12`). Without this the binding was unmodeled and
+                    // every precondition over it unresolvable, even behind a guard that bounds it.
+                    if let Some(values) = int_arm_values(init, ctx) {
+                        let x = smt_var(name);
+                        let alts: Vec<String> = values
+                            .iter()
+                            .filter_map(|v| expr_to_smt_value(v, &ctx.symbolic_widths))
+                            .map(|v| format!("(= {x} {v})"))
+                            .collect();
+                        if !alts.is_empty() && alts.len() == values.len() {
+                            ctx.solver_int_vars.insert(name.clone());
+                            let fact = if alts.len() == 1 {
+                                alts[0].clone()
+                            } else {
+                                format!("(or {})", alts.join(" "))
+                            };
+                            assumptions.push(fact);
+                        }
+                    }
                 }
 
                 // Phase-4 A2: a list literal of int-modelable elements is a *bounded* sequence —
@@ -9863,6 +13251,8 @@ fn analyze_stmts(
                     SourceLane::Secret,
                 )
                 .is_some();
+                let pattern_whole = whole::whole_value_source(init, scope, ctx);
+                let binder_closures = pattern_closures(scope, init, pattern, ctx);
                 seed_effect_pattern(
                     scope,
                     pattern,
@@ -9872,6 +13262,14 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
+                apply_pattern_closures(scope, binder_closures);
+                // Each binder holds what its position of the value holds (`let [q] = xs`, a pair slot,
+                // a record field `let T { a, b } = t`).
+                for (n, src) in whole::pattern_binders(pattern, &pattern_whole, ctx) {
+                    if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
                 // Patch each bound name's span to the real `let`-pattern span. `seed_effect_pattern`
                 // inserts `span: None`, but `merge_taint_over` disambiguates a branch SHADOW from a
                 // reassignment by span identity — so without a real, distinct span a statement-position
@@ -9918,11 +13316,34 @@ fn analyze_stmts(
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 effects.push("hybrid".into());
+                // The backend picks which lanes run and in what order: each lane is analyzed from what
+                // any lane may have written (the label walk's fixpoint over the lanes, seeded like a
+                // loop's head), and the state after the block joins every lane. The lanes' writes used
+                // to be dropped with their `let`s, so a secret assigned in a lane reached a later sink
+                // unlabelled (IFC-JOIN-BREAK-SHADOW).
+                let snap_scope = scope.clone();
+                let lane_exits = seed_loop_carried_labels(
+                    stmt,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                    &ctx.place_types(),
+                );
+                let seeded = scope.clone();
+                let mut lane_scopes = Vec::new();
                 for block in [gpu, cpu, prove].into_iter().flatten() {
-                    let snap_scope = scope.clone();
                     analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx);
-                    restore_block_scope(scope, &snap_scope);
+                    lane_scopes.push(scope.clone());
+                    restore_block_scope(scope, &seeded);
                 }
+                restore_block_scope(scope, &snap_scope);
+                let mut paths = vec![&snap_scope];
+                paths.extend(&lane_scopes);
+                paths.extend(&lane_exits);
+                merge_taint_over(scope, &paths);
             }
             Stmt::ExprStmt(Expr::Assume(expr)) => {
                 // A contracted call inside the assumed expression (`assume(g(x) == 0)`) is evaluated —
@@ -10168,23 +13589,34 @@ fn analyze_stmts(
                 // `qfs_binding_shadow` test locks it in); the scope-level taint/secret/fn_alias tracking we
                 // DO keep (that is the leak fix).
                 let obl_mark = ctx.solver_obligations.len();
+                let before = scope.clone();
+                // Arms are tried in order: a guard that runs and fails leaves what it wrote to the
+                // arms after it.
+                let mut tried = scope.clone();
                 let mut arm_scopes = Vec::new();
-                for arm in arms {
-                    let mut arm_scope = scope.clone();
+                // An or-pattern arm one alternative at a time ([`sub_arms`]).
+                for (arm, pattern) in sub_arms(arms) {
+                    let mut arm_scope = tried.clone();
                     seed_effect_pattern(
                         &mut arm_scope,
-                        &arm.pattern,
+                        pattern,
                         scrutinee,
                         &st,
                         ss,
                         &ctx.place_types(),
                         ctx,
                     );
-                    propagate_pattern_closures(&mut arm_scope, scrutinee, &arm.pattern);
+                    propagate_pattern_closures(&mut arm_scope, scrutinee, pattern, ctx);
+                    let scrut_whole = whole::whole_value_source(scrutinee, scope, ctx);
+                    for (n, src) in whole::pattern_binders(pattern, &scrut_whole, ctx) {
+                        if let (Some(b), Some(src)) = (arm_scope.get_mut(&n), src) {
+                            whole::whole_mark(&mut b.whole_struct, src);
+                        }
+                    }
                     // The arm's pattern binds names (`Shape::Box { center, .. }`) that the arm body reads;
                     // seed them so `analyze_stmts`' unknown-variable check does not false-fire on a valid
                     // destructured binding.
-                    for n in arm.pattern.bound_names() {
+                    for n in pattern.bound_names() {
                         ctx.known_bindings.insert(n);
                     }
                     if let Some(guard) = &arm.guard {
@@ -10198,9 +13630,34 @@ fn analyze_stmts(
                             scope,
                             ctx,
                         );
+                        if expr_nests_stmts(guard) || holds_builtin_push(&[guard], ctx) {
+                            seed_value_nested_labels(&[guard], &mut arm_scope, ctx);
+                            // What the failed guard wrote reaches the arms after it, but a binder
+                            // is not the outer binding of its name: joined by name, the arm binder
+                            // `x` (seeded from a secret scrutinee) labelled a public outer `x` the
+                            // guard never touched (OR-FAILED-GUARD-BINDER-JOIN).
+                            let binders: BTreeSet<String> =
+                                pattern.bound_names().into_iter().collect();
+                            let failed: BTreeMap<String, ScopeBinding> = arm_scope
+                                .iter()
+                                .filter(|(n, _)| !binders.contains(*n))
+                                .map(|(n, b)| (n.clone(), b.clone()))
+                                .collect();
+                            for domain in enforcing_label_domains(ctx) {
+                                label_join(domain, &mut tried, &failed);
+                            }
+                        }
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
                     }
                     let mut arm_asm = snap_asm.clone();
+                    // The arm runs only when the scrutinee matches this pattern; for a literal pattern
+                    // that is a modelable equality, so a call whose precondition the guard establishes
+                    // (`match x { 1 => { f(x) } .. }`, `f` requiring `x > 0`) proves rather than being
+                    // over-rejected once we stop discarding its obligation below.
+                    let g0 = ctx.active_branch_guards.len();
+                    if let Some(fact) = match_arm_pattern_fact(scrutinee, &arm.pattern) {
+                        push_branch_path_condition(ctx, &mut arm_asm, &fact, false);
+                    }
                     analyze_value_block(
                         &arm.body,
                         mode,
@@ -10210,13 +13667,19 @@ fn analyze_stmts(
                         &mut arm_asm,
                         ctx,
                     );
+                    ctx.active_branch_guards.truncate(g0);
                     arm_scopes.push(arm_scope);
                 }
                 *assumptions = snap_asm;
-                ctx.solver_obligations.truncate(obl_mark);
+                let arm_binders: BTreeSet<String> =
+                    arms.iter().flat_map(|a| a.pattern.bound_names()).collect();
+                retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
+                // What the lane's own interpretation found a binding may be as a function, on any path.
+                merge_whole_captures_over(scope, &refs, ctx);
                 merge_taint_over(scope, &refs);
                 merge_fn_alias_over(scope, &refs, &ctx.param_egress, &ctx.param_sinks);
+                relabel_shadowing_join(stmt, &before, &refs, scope, ctx);
                 // A variable REASSIGNED in an arm body (`match c { 0 => { y = 100; } }`) must invalidate its
                 // stale solver fact — else `y`'s pre-match `let y = 2` survives and a `result == 2`
                 // postcondition is falsely PROVED (this is exactly what the generic `ExprStmt` path did via
@@ -10266,6 +13729,7 @@ fn analyze_stmts(
                 }
                 let snap_asm = assumptions.clone();
                 let obl_mark = ctx.solver_obligations.len();
+                let before = scope.clone();
                 let mut then_scope = scope.clone();
                 seed_effect_pattern(
                     &mut then_scope,
@@ -10276,11 +13740,21 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
-                propagate_pattern_closures(&mut then_scope, scrutinee, pattern);
+                propagate_pattern_closures(&mut then_scope, scrutinee, pattern, ctx);
+                let scrut_whole = whole::whole_value_source(scrutinee, scope, ctx);
+                for (n, src) in whole::pattern_binders(pattern, &scrut_whole, ctx) {
+                    if let (Some(b), Some(src)) = (then_scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
                 }
                 let mut then_asm = snap_asm.clone();
+                let g0 = ctx.active_branch_guards.len();
+                if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                    push_branch_path_condition(ctx, &mut then_asm, &fact, false);
+                }
                 analyze_value_block(
                     then,
                     mode,
@@ -10290,6 +13764,7 @@ fn analyze_stmts(
                     &mut then_asm,
                     ctx,
                 );
+                ctx.active_branch_guards.truncate(g0);
                 let mut else_scope = scope.clone();
                 let mut else_asm = snap_asm.clone();
                 analyze_value_block(
@@ -10302,7 +13777,10 @@ fn analyze_stmts(
                     ctx,
                 );
                 *assumptions = snap_asm;
-                ctx.solver_obligations.truncate(obl_mark);
+                let arm_binders: BTreeSet<String> = pattern.bound_names().into_iter().collect();
+                retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
+                // What the lane's own interpretation found a binding may be as a function, on any path.
+                merge_whole_captures_over(scope, &[&then_scope, &else_scope], ctx);
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
                 merge_fn_alias_over(
                     scope,
@@ -10310,6 +13788,7 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
+                relabel_shadowing_join(stmt, &before, &[&then_scope, &else_scope], scope, ctx);
                 invalidate_embedded_writes(ctx, assumptions, iflet_expr);
                 check_expr_semantics(iflet_expr, scope, ctx);
             }
@@ -10334,6 +13813,22 @@ fn analyze_stmts(
                     ctx,
                 );
                 check_expr_semantics(expr, scope, ctx);
+                // `push(xs, p)` (and the other in-place list writes) stores into `xs`; a position
+                // computed from a whole struct decides where the elements sit.
+                if let Expr::Call { callee, args } = expr {
+                    if let Some((root, src, shifts)) =
+                        whole::in_place_mark_in(callee, args, true, scope, ctx)
+                    {
+                        if let Some(b) = scope.get_mut(&root) {
+                            if shifts {
+                                whole::whole_unpos(&mut b.whole_struct);
+                            }
+                            if let Some(src) = src {
+                                whole::whole_mark(&mut b.whole_struct, src);
+                            }
+                        }
+                    }
+                }
                 // A bare `match`/`if`-expression statement (or a `return <expr>` — parsed as
                 // `ExprStmt(Call{"return", …})`) can hide a write to an outer variable in an arm/branch
                 // body. That write is invisible to the statement-level frame sweep, so invalidate the
@@ -10349,6 +13844,23 @@ fn analyze_stmts(
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
+                // A whole struct with a `secret` field (or a value computed from one) stored into a
+                // variable or one of its fields / entries / elements (`q = p`, `t.a = str(p)`,
+                // `m["a"] = p`, `xs[i] = p`): the root now holds it there, and a key or position
+                // computed from one decides where (monotone; see `ScopeBinding::whole_struct`).
+                if let Some((root, src)) = whole::assign_mark_in(target, value, scope, ctx) {
+                    if let Some(b) = scope.get_mut(&root) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
+                if let Expr::Var(root) = target {
+                    let list = whole::is_list_expr(value, scope, ctx);
+                    let map = whole::is_map_expr(value, scope, ctx);
+                    if let Some(b) = scope.get_mut(root) {
+                        b.whole_list &= list;
+                        b.whole_map &= map;
+                    }
+                }
                 // A contracted call in ASSIGN-value position (`y = g(x);`, `y = h(g(x));`) — discharge its
                 // precondition under the pre-assignment assumptions (with any branch guard in scope). The
                 // TARGET place-expression is also evaluated (`arr[g(i)] = x;` computes the index/base), so
@@ -10364,6 +13876,34 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     SourceLane::Taint,
                 );
+                // A labelled KEY or INDEX of the place decides where the value lands
+                // (`m["${p.k}"] = 1` stores the secret as a key of `m`), so it labels the root the
+                // way the value does ([`place_key_exprs`]).
+                let mut place_keys = Vec::new();
+                place_key_exprs(target, &mut place_keys);
+                let place_key_taint = place_keys.iter().find_map(|k| {
+                    expr_source(
+                        k,
+                        scope,
+                        &ctx.tainting_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_tainting_fns,
+                        &ctx.place_types(),
+                        SourceLane::Taint,
+                    )
+                });
+                let place_key_secret = place_keys.iter().any(|k| {
+                    expr_source(
+                        k,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                        &ctx.place_types(),
+                        SourceLane::Secret,
+                    )
+                    .is_some()
+                });
                 if let (Some(source), Expr::Var(name)) = (&value_taint, target) {
                     ctx.taint_traces.push(TaintTrace {
                         source: source.clone(),
@@ -10389,7 +13929,10 @@ fn analyze_stmts(
                         b.fn_identities = reassigned_ids;
                         b.field_fn_identities = reassigned_fields;
                     }
-                } else if let (Some(src), Some(root)) = (&value_taint, assign_target_root(target)) {
+                } else if let (Some(src), Some(root)) = (
+                    value_taint.as_ref().or(place_key_taint.as_ref()),
+                    assign_target_root(target),
+                ) {
                     // A non-`Var` place-assignment (`buf[0] = k`, `obj.f = k`) is a MAY-update of the ROOT
                     // container binding: with whole-binding taint granularity, writing a tainted value
                     // into ANY element/field taints the container (SET-only — never CLEAR, since the
@@ -10427,7 +13970,7 @@ fn analyze_stmts(
                             .and_then(|b| b.info.ty.as_deref())
                             .is_some_and(|t| !is_secret_type(Some(t)))
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                             message: format!(
                                 "`{name}` is a public-typed binding assigned a secret value — confidentiality labels must not be dropped by assignment. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -10465,7 +14008,7 @@ fn analyze_stmts(
                             .and_then(|b| b.info.ty.as_deref())
                             .is_some_and(|t| !is_secret_type(Some(t)))
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                             message: format!(
                                 "`{root}` is a public-typed binding written with a secret value through a field/index place — confidentiality labels must not be dropped by place assignment. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -10473,7 +14016,7 @@ fn analyze_stmts(
                             span: None,
                         });
                     }
-                    if value_secret {
+                    if value_secret || place_key_secret {
                         if let Some(b) = scope.get_mut(root) {
                             b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(
                                 true,
@@ -10526,6 +14069,16 @@ fn analyze_stmts(
                     );
                     let assigned_path = flatten_access_path(target).map(|(_, path)| path);
                     let assigned_identity = fn_identities_of(value, scope, ctx);
+                    // The CLOSURE the write stores, if any: a lambda literal, or a local that holds
+                    // one. The field-closure map is what an apply site (`b.f(x)`) consults for the
+                    // closure's parameter-to-sink flow; a place write that only updated the identity
+                    // set dropped it, so `b.f = |x| shell(x); b.f(input())` reached the sink unchecked
+                    // while the literal `Box { f: g }` was rejected.
+                    let assigned_lambda: Option<Box<Expr>> = match value {
+                        Expr::Lambda { .. } => Some(Box::new(value.clone())),
+                        Expr::Var(n) => scope.get(n).and_then(|bb| bb.closure_lambda.clone()),
+                        _ => None,
+                    };
                     // A DYNAMIC index (`xs[i] = v`) resolves to the wildcard segment `*` — see
                     // `flatten_access_path`'s Index arm — meaning "some position, not provably
                     // this one". Treating that like a CONCRETE path (exact overwrite at key `*`,
@@ -10616,12 +14169,26 @@ fn analyze_stmts(
                                         || key.starts_with(&format!("{path}."))
                                         || path.starts_with(&format!("{key}.")))
                                 });
+                                if let Some(lam) = &assigned_lambda {
+                                    b.field_closures.insert(path.clone(), lam.clone());
+                                }
                                 b.field_fn_identities.insert(path, assigned_identity);
                             }
                             Some(path) => {
                                 for identities in b.field_fn_identities.values_mut() {
                                     *identities =
                                         identities.clone().union(assigned_identity.clone());
+                                }
+                                // Weak write: keep every existing closure (any may still be there)
+                                // and add this one; an exact-key read falls back to scanning all
+                                // stored closures, so it is found.
+                                if let Some(lam) = &assigned_lambda {
+                                    let key = if b.field_closures.contains_key(&path) {
+                                        format!("_p{}", b.field_closures.len())
+                                    } else {
+                                        path.clone()
+                                    };
+                                    b.field_closures.insert(key, lam.clone());
                                 }
                                 let existing_wildcard = b.field_fn_identities.get(&path).cloned();
                                 let widened = assigned_identity
@@ -10633,6 +14200,10 @@ fn analyze_stmts(
                                 for identities in b.field_fn_identities.values_mut() {
                                     *identities =
                                         identities.clone().union(assigned_identity.clone());
+                                }
+                                if let Some(lam) = &assigned_lambda {
+                                    let key = format!("_p{}", b.field_closures.len());
+                                    b.field_closures.insert(key, lam.clone());
                                 }
                                 if b.field_fn_identities.is_empty()
                                     && !matches!(&assigned_identity, FnIdentitySet::Known(found) if found.is_empty())
@@ -10902,6 +14473,7 @@ fn analyze_stmts(
                         // reassignment resolves through the CURRENT target — no stale-alias false reject.
                         let fal = fn_alias_of(value, scope, ctx);
                         let fn_identities = fn_identities_of(value, scope, ctx);
+                        let fn_may = fn_may_of(value, scope, ctx);
                         let builtin_gate_tags = builtin_gate_tags_of(value, scope, ctx);
                         // Refresh the container-closure paths so a reassignment `b = Box { f: h }`
                         // (h capturing a secret) is tracked — otherwise the stale field-closure of the
@@ -10948,11 +14520,14 @@ fn analyze_stmts(
                                 tags
                             }
                         };
+                        let captures = whole_captures_of(value, cl.is_some(), scope, ctx);
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
                             b.closure_lambda = cl;
+                            b.whole_captures = captures;
                             b.fn_alias = fal;
                             b.fn_identities = fn_identities;
+                            b.fn_may = fn_may;
                             b.field_closures = new_fclos;
                             b.field_fn_identities = new_field_fn_identities;
                             b.builtin_gate_tags = builtin_gate_tags;
@@ -10979,7 +14554,7 @@ fn analyze_stmts(
                             got.as_ref(),
                         ) {
                             if !types_assignable(&expected, got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch on assign to `{}`: expected `{}`, got `{}`",
@@ -11045,11 +14620,41 @@ fn analyze_stmts(
                 // stay on their own snapshot path below; this only restores BindingInfo scope.
                 let snapshot = assumptions.clone();
                 let guard_snapshot = ctx.active_branch_guards.clone();
+                let guard_snapshot_pre = guard_snapshot.clone();
                 let snap_scope = scope.clone();
+                let else_slice_pre: &[Stmt] = else_.as_deref().unwrap_or(&[]);
+                let then_exits = block_always_exits(then, ctx);
+                let else_exits = else_.is_some() && block_always_exits(else_slice_pre, ctx);
+                // Only a branch that can FALL THROUGH reaches the code after the `if`, so only its writes
+                // are dropped at the join; an exiting branch's writes never reach it.
+                let mut reaching: Vec<&[Stmt]> = Vec::new();
+                if !then_exits {
+                    reaching.push(then);
+                }
+                if !else_exits {
+                    reaching.push(else_slice_pre);
+                }
+                let keep = keepable_written_ints(ctx, &reaching);
+                // Encoded BEFORE the branches run: analyzing them changes what is modeled.
+                let cond_smt_pre = path_condition_smt(ctx, cond);
+                // What is MODELED before the branches. A branch can change it (a write `x = 3` makes `x`
+                // integer-modeled; a branch-local `let` adds a name), and none of that may survive the
+                // join by itself: an exiting branch never reaches the code after the `if`, and a
+                // reaching branch's writes are decided by the keep/drop below. Restored before the join.
+                let model_snap = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 // The guard holds inside `then` — push it as a scoped path condition.
                 push_branch_path_condition(ctx, assumptions, cond, false);
                 analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
+                let then_asm = assumptions.clone();
+                let then_guards = ctx.active_branch_guards.clone();
                 let then_scope = scope.clone();
+                let mut else_asm: Option<Vec<String>> = None;
+                let mut else_guards: Vec<String> = Vec::new();
                 let else_scope = if let Some(else_body) = else_ {
                     *assumptions = snapshot.clone();
                     ctx.active_branch_guards = guard_snapshot.clone();
@@ -11065,16 +14670,34 @@ fn analyze_stmts(
                         assumptions,
                         ctx,
                     );
+                    else_asm = Some(assumptions.clone());
+                    else_guards = ctx.active_branch_guards.clone();
                     scope.clone()
                 } else {
                     // No `else`: the alternative path leaves outer bindings at their pre-`if` state.
                     snap_scope.clone()
                 };
                 restore_block_scope(scope, &snap_scope);
+                // A branch that shadowed a name after assigning it: the lane's interpretation of the
+                // `if` is one more path (R39C-2).
+                let shadow_writes =
+                    whole_shadow_writes(stmt, &snap_scope, &[&then_scope, &else_scope], ctx);
+                let shadow_path = shadow_writes
+                    .as_deref()
+                    .map(|w| whole_write_path(&snap_scope, w));
+                let mut whole_paths = vec![&then_scope, &else_scope];
+                whole_paths.extend(shadow_path.as_ref());
+                // What the lane's own interpretation found a binding may be as a function, on any path.
+                merge_whole_captures_over(scope, &whole_paths, ctx);
                 // Control-flow-merge for taint (may-taint): a reassignment to a tainted value in
                 // EITHER branch survives so a later sink sees it — closing the branch reassignment
                 // fail-open a bare restore left open.
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
+                // The shadowing path's whole-struct marks, which that merge keeps by span too
+                // (`if c { q = p; let q = 0; } print(q)`); its functions joined above.
+                if let Some(writes) = shadow_writes {
+                    apply_whole_writes(scope, without_captures(writes));
+                }
                 // Fn-value-alias branch-merge (soundness hunt2 [08]): a reassignment `f = leak` inside
                 // a branch set `f`'s `fn_alias` on that branch's scope, which `restore_block_scope`
                 // discarded — so `let f = safe; if c { f = leak; } f(k)` resolved `f` to `safe` and
@@ -11086,16 +14709,180 @@ fn analyze_stmts(
                     &ctx.param_egress,
                     &ctx.param_sinks,
                 );
-                let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
-                drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
+                // A branch that shadowed an outer name after assigning it (IFC-JOIN-BREAK-SHADOW).
+                relabel_shadowing_join(stmt, &snap_scope, &[&then_scope, &else_scope], scope, ctx);
+                let snapshot_facts = snapshot.clone();
+                ctx.solver_int_vars = model_snap.0;
+                ctx.solver_float_vars = model_snap.1;
+                ctx.solver_string_vars = model_snap.2;
+                ctx.symbolic_widths = model_snap.3;
+                drop_written_after_scope_keep(ctx, assumptions, snapshot, &reaching, &keep);
                 // Path conditions are scoped to the branches: restore the pre-`if` guard stack.
                 ctx.active_branch_guards = guard_snapshot;
+                // Early exit: the code after the `if` runs only on a path through a branch that falls
+                // through, so it runs under that branch's condition. `if c { return; } f(x)` checks
+                // `f`'s precondition under `!c`. The fact is over the values `cond` read, which the join
+                // left in place (an exiting branch's writes are not dropped here, and a later write to a
+                // variable in `cond` removes every fact mentioning it). Both branches exiting makes the
+                // rest of the block unreachable, which the statement loop records.
+                // The join: the code after the `if` runs on one of the branches that fall through, so
+                // what holds here is (facts at the end of `then`) OR (facts at the end of `else`). This
+                // keeps `let mut b = 20; if c { b = 10; }` as `b == 10 || b == 20` instead of an
+                // arbitrary `b`, and — when only one branch falls through — is exactly that branch's
+                // facts, which carries the early-exit guard (`if c { return; } f(x)` runs under `!c`).
+                // Variables the join dropped from the model (written in a reaching branch, not kept):
+                // no disjunct may mention them.
+                let dropped_smt: BTreeSet<String> = {
+                    let mut written = BTreeSet::new();
+                    for b in &reaching {
+                        collect_assigned_roots(b, &mut written);
+                    }
+                    written
+                        .iter()
+                        .filter(|v| !keep.contains(*v))
+                        .flat_map(|v| [smt_var(v), seq_arr_smt(v), seq_len_smt(v)])
+                        .collect()
+                };
+                let forbidden_for = |body: &[Stmt]| -> BTreeSet<String> {
+                    // A name the branch binds locally: its solver symbol would alias an outer binding of
+                    // the same name after the join.
+                    let mut forbidden: BTreeSet<String> = dropped_smt.clone();
+                    visit::each_stmt(body, &mut |st, _| {
+                        let names: Vec<String> = match st {
+                            Stmt::Let { name, .. } => vec![name.clone()],
+                            Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+                                pattern.bound_names()
+                            }
+                            Stmt::For { var, .. } => vec![var.clone()],
+                            _ => Vec::new(),
+                        };
+                        for n in names {
+                            forbidden.insert(smt_var(&n));
+                            forbidden.insert(seq_arr_smt(&n));
+                            forbidden.insert(seq_len_smt(&n));
+                        }
+                    });
+                    forbidden
+                };
+                let branch_new = |branch: &[String], body: &[Stmt]| -> Vec<String> {
+                    let forbidden = forbidden_for(body);
+                    // Everything true at the end of the branch that the join does not already know —
+                    // including pre-`if` facts about a variable only the OTHER branch writes, which the
+                    // drop removed but which still hold on this path.
+                    branch
+                        .iter()
+                        .filter(|f| !assumptions.contains(f))
+                        .filter(|f| {
+                            let mut vs = BTreeSet::new();
+                            collect_vars_from_smt(f, &mut vs);
+                            vs.is_disjoint(&forbidden)
+                        })
+                        .cloned()
+                        .collect()
+                };
+                let then_facts = (!then_exits).then(|| branch_new(&then_asm, then));
+                let else_facts = if else_exits {
+                    None
+                } else if let Some(e) = &else_asm {
+                    Some(branch_new(e, else_slice_pre))
+                } else {
+                    // No `else`: that path ends with the pre-`if` state plus `!cond`.
+                    let mut fallthrough = snapshot_facts.clone();
+                    if let Some(c) = &cond_smt_pre {
+                        fallthrough.push(format!("(not {c})"));
+                    }
+                    Some(branch_new(&fallthrough, &[]))
+                };
+                let conj = |fs: &[String]| -> Option<String> {
+                    match fs.len() {
+                        0 => None,
+                        1 => Some(fs[0].clone()),
+                        _ => Some(format!("(and {})", fs.join(" "))),
+                    }
+                };
+                let join: Vec<String> = match (then_facts, else_facts) {
+                    (Some(t), None) => t,
+                    (None, Some(e)) => e,
+                    (Some(t), Some(e)) => match (conj(&t), conj(&e)) {
+                        (Some(a), Some(b)) => vec![format!("(or {a} {b})")],
+                        // One side established nothing: the disjunction is trivially true.
+                        _ => Vec::new(),
+                    },
+                    (None, None) => Vec::new(),
+                };
+                for fact in join {
+                    assumptions.push(fact.clone());
+                    // Path-derived facts: excluded from the vacuity check like any path condition.
+                    ctx.active_branch_guards.push(fact);
+                }
+                // A kept variable is over-approximated only if the join lost its value. When EVERY
+                // branch that reaches here ends with an exact definition of it (`(= anb_v e)` with `e`
+                // over non-havoced values), the disjunction pins it, so it is not havoced any more:
+                // a counterexample over it is a real one.
+                // Only for an ENCODABLE condition: when the solver cannot see which branch runs, a value
+                // pinned in each branch is still unknown, and stays over-approximated.
+                // Path guards are excluded from the exact definitions: `if v == n` restricts which paths run,
+                // it does not compute `v`.
+                let reaching_ends: Vec<(Vec<String>, BTreeSet<String>)> = {
+                    let mut ends = Vec::new();
+                    let no_guards = |facts: &[String], guards: &[String]| -> Vec<String> {
+                        facts
+                            .iter()
+                            .filter(|f| !guards.contains(f))
+                            .cloned()
+                            .collect()
+                    };
+                    if cond_smt_pre.is_some() {
+                        if !then_exits {
+                            ends.push((no_guards(&then_asm, &then_guards), forbidden_for(then)));
+                        }
+                        if !else_exits {
+                            ends.push(match &else_asm {
+                                Some(e) => {
+                                    (no_guards(e, &else_guards), forbidden_for(else_slice_pre))
+                                }
+                                None => (
+                                    no_guards(&snapshot_facts, &guard_snapshot_pre),
+                                    dropped_smt.clone(),
+                                ),
+                            });
+                        }
+                    }
+                    ends
+                };
+                let havoced_now: BTreeSet<String> = ctx
+                    .solver_int_vars
+                    .iter()
+                    .filter_map(|m| m.strip_prefix("\u{1}havoc:").map(smt_var))
+                    .collect();
+                for v in &keep {
+                    let sv = smt_var(v);
+                    let pinned = !reaching_ends.is_empty()
+                        && reaching_ends.iter().all(|(facts, forbidden)| {
+                            facts.iter().any(|f| {
+                                let prefix = format!("(= {sv} ");
+                                if !f.starts_with(&prefix) {
+                                    return false;
+                                }
+                                let mut vs = BTreeSet::new();
+                                collect_vars_from_smt(&f[prefix.len()..], &mut vs);
+                                !vs.contains(&sv)
+                                    && vs.is_disjoint(&havoced_now)
+                                    && vs.is_disjoint(forbidden)
+                            })
+                        });
+                    if pinned {
+                        ctx.solver_int_vars.remove(&havoc_mark(v));
+                    }
+                }
             }
             Stmt::While {
                 cond,
                 body,
                 invariant,
             } => {
+                // Seeded before the condition, which runs at every iteration.
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 // Implicit-flow: secret while-condition + public assign = same binary-extraction as `if`.
                 {
                     let mut assigned = BTreeSet::new();
@@ -11108,7 +14895,9 @@ fn analyze_stmts(
                         ctx,
                     );
                 }
-                analyze_expr_effect(cond, mode, scope, effects, ctx);
+                // The condition runs at every head: its calls are checked below, once the labels the
+                // loop carries there are seeded. Its effects keep their place in the row.
+                let cond_effects_at = effects.len();
                 if expr_taint_source(
                     cond,
                     scope,
@@ -11142,10 +14931,24 @@ fn analyze_stmts(
                 // discharged against a stale pre-loop value the loop mutates each iteration.
                 // Same for taint scope: a loop-body `let` is block-scoped and must not escape.
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 let snap_scope = scope.clone();
-                havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(
-                    body,
+                let keep = keepable_written_ints(ctx, &[body]);
+                havoc_loop_written_keep(ctx, assumptions, body, &keep);
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -11154,21 +14957,45 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
                 );
+                // The condition at the seeded head. Checked before the seeding, a sink in it never saw
+                // what the body leaves for the next test: `while show(x) && i < 2 { x = p.k; .. }`
+                // printed the secret.
+                let later_effects = effects.split_off(cond_effects_at);
+                analyze_expr_effect(cond, mode, scope, effects, ctx);
+                effects.extend(later_effects);
+                // The body runs only when `cond` holds. It is re-evaluated at every iteration over the
+                // CURRENT (havoced) values, so it is a sound path condition at the start of the body; a
+                // write in the body to a variable it mentions removes the fact from that point on.
+                let guard_snapshot = ctx.active_branch_guards.clone();
+                push_branch_path_condition(ctx, assumptions, cond, false);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(scope, &[&snap_scope, &body_scope, &whole_exit], ctx);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
-                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
+                drop_written_after_scope_keep(ctx, assumptions, snapshot, &[body], &keep);
                 if let Some((post, _written, readmit)) = admit {
                     // A VERIFIED invariant DOES hold after the loop: re-model the tracked variables
                     // (constrained by the proved invariants ∧ ¬cond) so a later `ensures`/`assert` can
@@ -11179,6 +15006,9 @@ fn analyze_stmts(
                     // is corpus-inert; an integer loop keeps its exact prior behavior below).
                     let is_float = post.iter().any(|a| smt_uses_floats(a));
                     for v in &readmit {
+                        // Re-modeled from the VERIFIED invariant: it has facts again, so it is no longer
+                        // a havoc (an assert over it must be checked against those facts, not deferred).
+                        ctx.solver_int_vars.remove(&havoc_mark(v));
                         if is_float {
                             ctx.solver_float_vars.insert(v.clone());
                         } else {
@@ -11200,6 +15030,8 @@ fn analyze_stmts(
                 body,
                 ..
             } => {
+                // Seeded before the scrutinee is read: its binders see every iteration.
+                seed_loop_carried_whole(stmt, scope, ctx);
                 // Implicit-flow: secret scrutinee + public assign in body (PC from secret match).
                 {
                     let mut assigned = BTreeSet::new();
@@ -11212,7 +15044,9 @@ fn analyze_stmts(
                         ctx,
                     );
                 }
-                analyze_expr_effect(expr, mode, scope, effects, ctx);
+                // The scrutinee runs at every head: its calls are checked below, once the labels the
+                // loop carries there are seeded. Its effects keep their place in the row.
+                let scrut_effects_at = effects.len();
                 effects.push("loop".into());
                 // Invalidate any write embedded in the `while let` scrutinee (see the `if` handler).
                 invalidate_embedded_writes(ctx, assumptions, expr);
@@ -11262,6 +15096,12 @@ fn analyze_stmts(
                     &ctx.place_types(),
                     ctx,
                 );
+                let wl_whole = whole::whole_value_source(expr, &snap_scope, ctx);
+                for (n, src) in whole::pattern_binders(pattern, &wl_whole, ctx) {
+                    if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
                 }
@@ -11280,12 +15120,30 @@ fn analyze_stmts(
                     })
                     .collect();
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 for (n, _) in &saved_models {
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(
-                    body,
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
+                // The head of an iteration: what the lane's interpretation of the loop found the
+                // names it writes may be there (a path of the join below: `snap_scope` is taken
+                // before it).
+                let head_scope = scope.clone();
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -11294,20 +15152,61 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
                 );
+                // The scrutinee at the seeded head. Checked before the seeding, a sink in it never saw
+                // what the body leaves for the next test (`while let Some(z) = showo(x)` printed the
+                // secret the body set `x` to). The binders are not bound where it runs: a name it
+                // reads is the outer binding. The body cannot write one a binder shadows; a write in
+                // the scrutinee itself can, and the seeding joined what it carries into the binder,
+                // so then the binder's labels are kept too (fail-closed).
+                let mut head = scope.clone();
+                for n in pattern.bound_names() {
+                    match snap_scope.get(&n) {
+                        Some(outer) => {
+                            head.insert(n, outer.clone());
+                        }
+                        None => {
+                            head.remove(&n);
+                        }
+                    }
+                }
+                if expr_nests_writes(expr) {
+                    for domain in enforcing_label_domains(ctx) {
+                        label_join(domain, &mut head, scope);
+                    }
+                }
+                let later_effects = effects.split_off(scrut_effects_at);
+                analyze_expr_effect(expr, mode, &head, effects, ctx);
+                effects.extend(later_effects);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(
+                    scope,
+                    &[&snap_scope, &head_scope, &body_scope, &whole_exit],
+                    ctx,
+                );
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 for (n, m) in saved_models {
                     restore_binding_membership(ctx, &n, m);
@@ -11316,7 +15215,7 @@ fn analyze_stmts(
             Stmt::Loop { body, invariant } => {
                 effects.push("loop".into());
                 if !invariant.is_empty() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                         message: "an unbounded `loop` has no exit condition to assume, so an \
                              invariant cannot be discharged inductively — use a `while` loop with an \
@@ -11326,10 +15225,28 @@ fn analyze_stmts(
                     });
                 }
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(
-                    body,
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
+                // The head of an iteration: what the lane's interpretation of the loop found the
+                // names it writes may be there (a path of the join below: `snap_scope` is taken
+                // before it).
+                let head_scope = scope.clone();
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -11341,17 +15258,33 @@ fn analyze_stmts(
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(
+                    scope,
+                    &[&snap_scope, &head_scope, &body_scope, &whole_exit],
+                    ctx,
+                );
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::For {
@@ -11435,7 +15368,7 @@ fn analyze_stmts(
                     if !(is_int_modelable(start, &ctx.solver_int_vars)
                         && is_int_modelable(end, &ctx.solver_int_vars))
                     {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` invariant is verified only over an integer RANGE with \
                                  modelable bounds (`for i in a..b`); this range bound is not an integer \
@@ -11449,7 +15382,7 @@ fn analyze_stmts(
                         // iteration (it yields start, start+1, …; a body `i = …` is discarded next
                         // iteration), but the while-desugaring's `i = i + 1` would COMPOUND the body write
                         // into a divergent transition. Reject (fail-closed) rather than model it wrong.
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` loop that reassigns its own counter inside the body cannot \
                                  carry a verified invariant (the counter is rebound from the range each \
@@ -11459,7 +15392,7 @@ fn analyze_stmts(
                         });
                         None
                     } else if bound_mutated {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` loop whose range bound is mutated inside the body cannot \
                                  carry a verified invariant (the runtime freezes the range at loop entry \
@@ -11561,7 +15494,7 @@ fn analyze_stmts(
                             augmented.extend(invariant.iter().cloned());
                             verify_while_invariants(ctx, &cond, &augmented, &body2, &outer)
                         } else {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                                 message:
                                     "a `for` invariant over a collection is verified only for a \
@@ -11573,7 +15506,7 @@ fn analyze_stmts(
                             None
                         }
                     } else {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
                             message: "a `for` invariant over a collection is verified only for a bounded \
                                  sequence VARIABLE; bind the collection to a `let` first"
@@ -11671,14 +15604,22 @@ fn analyze_stmts(
                     declassified: false,
                     span: None,
                 };
+                // An element of a collection holding a struct with a secret field is one; a range bound
+                // computed from one makes the counter computed from it.
+                let for_whole = whole::for_var_source(source, scope, ctx);
                 scope.insert(
                     var.clone(),
                     ScopeBinding {
+                        whole_struct: for_whole,
+                        whole_captures: None,
+                        whole_list: false,
+                        whole_map: false,
                         info: info.clone(),
                         closure_arity: None,
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_may: FnMay::default(),
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
                         builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -11701,10 +15642,29 @@ fn analyze_stmts(
                 // post-loop contract over the outer binding still discharges (review caught the over-reject).
                 let saved_var_model = capture_binding_membership(ctx, var);
                 let snapshot = assumptions.clone();
+                // What is MODELED before the loop: restored before the post-loop drop/keep, so nothing the
+                // body did to modeling (a body-local `let x = 3` making an outer float `x` integer-modeled)
+                // survives the loop except what the drop/keep below decides.
+                let model_snap_loop = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                );
                 invalidate_binding_facts(ctx, assumptions, var);
-                havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(
-                    body,
+                let keep = keepable_written_ints(ctx, &[body]);
+                havoc_loop_written_keep(ctx, assumptions, body, &keep);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
+                // The head of an iteration: what the lane's interpretation of the loop found the
+                // names it writes may be there (a path of the join below: `snap_scope` is taken
+                // before it).
+                let head_scope = scope.clone();
+                // A function value a later write in the body stores reaches the next iteration's
+                // calls, and the loop may leave from a `break`/`continue` holding it. Seeded BEFORE
+                // the labels: their fixpoint resolves `x = g()` through the identities it leaves.
+                let carried_fns = seed_loop_carried_fn_values(body, scope, ctx);
+                let loop_exits = seed_loop_carried_labels(
+                    stmt,
                     scope,
                     &ctx.tainting_fns,
                     &ctx.secret_fns,
@@ -11720,21 +15680,169 @@ fn analyze_stmts(
                 // walker and `walk_block_effects`; seeding one and not the other is the exact
                 // walker-parity disease behind most of this file's false accepts.
                 seed_loop_var_callable(var, source, scope, ctx);
+                // A range loop's body runs only when `start < end`. The bounds are evaluated ONCE, at
+                // entry, so the fact is sound only while their variables still denote the entry values:
+                // push it only when no bound variable is written in the body (a havoced bound would
+                // otherwise be constrained as if it were its entry value).
+                let guard_snapshot = ctx.active_branch_guards.clone();
+                if let crate::frontend::ForSource::Range { start, end } = source {
+                    let mut body_written = BTreeSet::new();
+                    collect_assigned_roots(body, &mut body_written);
+                    let mut bound_vars = BTreeSet::new();
+                    collect_expr_vars(start, &mut bound_vars);
+                    collect_expr_vars(end, &mut bound_vars);
+                    if bound_vars.is_disjoint(&body_written) && !bound_vars.contains(var) {
+                        let nonempty = Expr::Binary {
+                            op: "<".into(),
+                            lhs: Box::new(start.clone()),
+                            rhs: Box::new(end.clone()),
+                        };
+                        push_branch_path_condition(ctx, assumptions, &nonempty, false);
+                        // The loop variable ranges over `start <= var < end` (bounds fixed at entry, not
+                        // written here), so model it with exactly that, instead of leaving it unmodeled and
+                        // every precondition over it (`for i in 0..n { f(i) }`) unresolved. If the body can
+                        // leave early, not every value is necessarily reached, so a counterexample over it
+                        // is marked over-approximated (reported undecided, never as a disproof).
+                        // A `let`/pattern in the body that re-binds a bound's NAME makes its symbol denote the
+                        // inner binding there, which strips `var < end` exactly where it is needed; the loop
+                        // variable is then left unmodeled (refused as unresolved) rather than modeled with a
+                        // lost bound.
+                        let body_rebinds_bound = {
+                            let mut rebinds = false;
+                            visit::each_stmt(body, &mut |st, _| {
+                                let names: Vec<String> = match st {
+                                    Stmt::Let { name, .. } => vec![name.clone()],
+                                    Stmt::LetPattern { pattern, .. }
+                                    | Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+                                    Stmt::For { var: v, .. } => vec![v.clone()],
+                                    _ => Vec::new(),
+                                };
+                                if names.iter().any(|n| bound_vars.contains(n)) {
+                                    rebinds = true;
+                                }
+                            });
+                            visit::each_expr_in_stmts(body, &mut |e| match e {
+                                Expr::Lambda { params, .. }
+                                    if params.iter().any(|n| bound_vars.contains(n)) =>
+                                {
+                                    rebinds = true;
+                                }
+                                Expr::Match { arms, .. }
+                                    if arms.iter().any(|arm| {
+                                        arm.pattern
+                                            .bound_names()
+                                            .iter()
+                                            .any(|n| bound_vars.contains(n))
+                                    }) =>
+                                {
+                                    rebinds = true;
+                                }
+                                Expr::IfLet { pattern, .. }
+                                    if pattern
+                                        .bound_names()
+                                        .iter()
+                                        .any(|n| bound_vars.contains(n)) =>
+                                {
+                                    rebinds = true;
+                                }
+                                _ => {}
+                            });
+                            rebinds
+                        };
+                        if !body_written.contains(var)
+                            && !body_rebinds_bound
+                            && is_int_modelable(start, &ctx.solver_int_vars)
+                            && is_int_modelable(end, &ctx.solver_int_vars)
+                        {
+                            ctx.solver_int_vars.insert(var.clone());
+                            ctx.symbolic_widths.insert(var.clone(), 64);
+                            let mut exits_early = false;
+                            visit::each_stmt(body, &mut |st, in_lambda| {
+                                if !in_lambda {
+                                    match st {
+                                        Stmt::Break => exits_early = true,
+                                        Stmt::ExprStmt(Expr::Call { callee, .. })
+                                            if matches!(
+                                                callee.as_str(),
+                                                "return" | "break" | "panic" | "exit"
+                                            ) =>
+                                        {
+                                            exits_early = true
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            });
+                            visit::each_expr_in_stmts(body, &mut |e| match e {
+                                Expr::Call { callee, .. } => {
+                                    if matches!(
+                                        callee.as_str(),
+                                        "return" | "break" | "panic" | "exit"
+                                    ) || ctx.may_exit_fns.contains(callee)
+                                    {
+                                        exits_early = true;
+                                    }
+                                }
+                                // `?` returns early on an error.
+                                Expr::Try(_) => exits_early = true,
+                                _ => {}
+                            });
+                            if exits_early {
+                                ctx.solver_int_vars.insert(havoc_mark(var));
+                            }
+                            let lo = Expr::Binary {
+                                op: ">=".into(),
+                                lhs: Box::new(Expr::Var(var.clone())),
+                                rhs: Box::new(start.clone()),
+                            };
+                            let hi = Expr::Binary {
+                                op: "<".into(),
+                                lhs: Box::new(Expr::Var(var.clone())),
+                                rhs: Box::new(end.clone()),
+                            };
+                            push_branch_path_condition(ctx, assumptions, &lo, false);
+                            push_branch_path_condition(ctx, assumptions, &hi, false);
+                        }
+                    }
+                }
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
-                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
-                merge_taint_over(scope, &[&snap_scope, &body_scope]);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(
+                    scope,
+                    &[&snap_scope, &head_scope, &body_scope, &whole_exit],
+                    ctx,
+                );
+                // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
+                // through a `break` with what the label walk found there (`loop_exits`: a label live
+                // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
+                // a body reassignment to a tainted value survives (may-taint).
+                let mut exit_paths = vec![&snap_scope, &body_scope];
+                exit_paths.extend(&loop_exits);
+                merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(
-                    scope,
-                    &[&snap_scope, &body_scope],
-                    &ctx.param_egress,
-                    &ctx.param_sinks,
-                );
-                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
+                // A body that can leave early also leaves with what it held at a `break`/`continue`.
+                let mut fn_paths: Vec<&BTreeMap<String, ScopeBinding>> =
+                    vec![&snap_scope, &body_scope];
+                fn_paths.extend(carried_fns.as_ref());
+                merge_fn_alias_over(scope, &fn_paths, &ctx.param_egress, &ctx.param_sinks);
+                ctx.solver_int_vars = model_snap_loop.0;
+                ctx.solver_float_vars = model_snap_loop.1;
+                ctx.solver_string_vars = model_snap_loop.2;
+                ctx.symbolic_widths = model_snap_loop.3;
+                drop_written_after_scope_keep(ctx, assumptions, snapshot, &[body], &keep);
+                // The loop variable is scoped to the body: drop whatever modeling the body gave it (the
+                // range model, a havoc mark) before restoring the outer binding's own membership.
+                clear_binding_modelability(&mut ctx.solver_int_vars, var);
+                ctx.solver_float_vars.remove(var);
+                ctx.solver_string_vars.remove(var);
+                ctx.symbolic_widths.remove(var);
                 restore_binding_membership(ctx, var, saved_var_model);
                 // A VERIFIED for-range invariant holds after the loop: re-model the tracked variables
                 // (constrained by the proved invariants ∧ ¬cond) and admit the post facts, exactly as the
@@ -11752,6 +15860,8 @@ fn analyze_stmts(
                         if v == var || is_seq_var(v, &ctx.solver_int_vars) {
                             continue;
                         }
+                        // Re-modeled from the verified invariant: no longer a havoc.
+                        ctx.solver_int_vars.remove(&havoc_mark(v));
                         if is_float {
                             ctx.solver_float_vars.insert(v.clone());
                         } else {
@@ -11771,6 +15881,9 @@ fn analyze_stmts(
             Stmt::SpecBlock { .. } => effects.push("spec".into()),
         }
     }
+    // The last statement's obligations, classified under this block's own final state — before an
+    // enclosing loop or join re-havocs the variables they mention.
+    mark_over_approx_obligations(ctx);
 }
 
 /// RWC Ch3: comparing HMAC tags with `==` (early-exit) enables timing attacks.
@@ -12119,10 +16232,18 @@ fn resolve_closure_value(
             // g(|x| print(k))(0)` looked up the registries under the raw AST text `"g"`, missed, and
             // laundered the forwarded closure — while calling `fwd` directly was correctly rejected.
             // Same walker-desync class as #74: one lane learned to resolve aliases, its sibling did not.
-            let callee: &str = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
+            // A user function of this name runs before a local of the same name (the runtime's call
+            // order), so its own registry entry wins over the local's alias.
+            let callee: &str = if fn_returns_lambda.contains_key(callee.as_str())
+                || fn_returns_param.contains_key(callee.as_str())
+            {
+                callee.as_str()
+            } else {
+                scope
+                    .get(callee)
+                    .and_then(|b| b.fn_alias.as_deref())
+                    .unwrap_or(callee.as_str())
+            };
             if let Some((pnames, Expr::Lambda { params, body })) = fn_returns_lambda.get(callee) {
                 if pnames.len() == args.len() {
                     let mut sub: BTreeMap<String, Expr> =
@@ -12485,6 +16606,10 @@ fn scope_with_closure_params(
         local.insert(
             p.clone(),
             ScopeBinding {
+                whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: p.clone(),
                     ty: None,
@@ -12498,6 +16623,7 @@ fn scope_with_closure_params(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -12512,6 +16638,49 @@ fn scope_with_closure_params(
     local
 }
 
+/// Enter a closure body for analysis, or `None` once `analysis_limit` refuses the request. The cut-off
+/// is noted, so nothing computed around it is memoized.
+fn closure_frame() -> Option<analysis_limit::Frame> {
+    let frame = analysis_limit::Frame::enter();
+    if frame.is_none() {
+        note_return_values_trip();
+    }
+    frame
+}
+
+/// What `expr_source` answers past an analysis limit: the value may hold anything.
+const ANALYSIS_LIMIT_SOURCE: &str = "a value past the analysis limit";
+
+/// A scope key no identifier can spell, present only in a return-summary scope
+/// (`fn_returns_secret` / `fn_returns_taint`): there `expr_source` reads an unbound function name as
+/// that function's return (its `Var` arm). Every scope a summary derives (a branch, a closure body,
+/// a value block, the nested may-scope) is a copy of it, so it carries the key.
+const RETURN_SUMMARY_SCOPE: &str = "\u{0}return summary";
+
+/// `analyze_expr_effect` on a closure body, bounded by `analysis_limit`.
+fn analyze_closure_body_effect(
+    body: &Expr,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    if let Some(_frame) = closure_frame() {
+        analyze_expr_effect(body, mode, scope, effects, ctx);
+    }
+}
+
+/// How a diagnostic names what a call calls (`None`: `expr` is not a call). Kept out of
+/// `analyze_expr_effect`, whose arms must each walk every field of a call (the walker-completeness
+/// gate).
+fn called_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Call { callee, .. } => Some(format!("`{callee}`")),
+        Expr::CallExpr { .. } => Some("the called method or value".to_string()),
+        _ => None,
+    }
+}
+
 fn analyze_expr_effect(
     expr: &Expr,
     mode: Mode,
@@ -12519,10 +16688,31 @@ fn analyze_expr_effect(
     effects: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    if analysis_limit::cut() {
+        note_return_values_trip();
+        return;
+    }
+    // The whole-struct lane at a call: a user function or method (its body specialized to these
+    // arguments), a closure, or a builtin applying a callback, that makes a whole struct with a
+    // `secret` field — or a value computed from one — reach an egress sink inside it.
+    if let Some(callee) = called_name(expr).filter(|_| mode == Mode::Safe) {
+        if let Some(source) = whole::call_egress(expr, scope, ctx) {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                    message: format!(
+                        "safe mode confidentiality violation: secret `{source}` reaches an egress inside {callee} without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program"
+                    ),
+                    span: None,
+                },
+                false,
+            );
+        }
+    }
     match expr {
         Expr::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
             if expr_is_hmac_tag_call(lhs) || expr_is_hmac_tag_call(rhs) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CRYPTO_MISUSE".into()),
                     message: "comparing an HMAC tag with `==`/`!=` is not constant-time and is \
                          vulnerable to timing attacks (RWC Ch3). Use `hmac_sha256_verify(key, msg, tag)` \
@@ -12532,7 +16722,7 @@ fn analyze_expr_effect(
                 });
             }
             if expr_is_password_secret_call(lhs) || expr_is_password_secret_call(rhs) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CRYPTO_MISUSE".into()),
                     message: "comparing a password hash/KDF output with `==`/`!=` is not constant-time \
                          (RWC Ch8). Use `password_verify(password, encoding)` or `std.crypto::password_verify`"
@@ -12548,7 +16738,7 @@ fn analyze_expr_effect(
             if is_aead_key_consumer(callee)
                 && args.first().map(expr_is_raw_ecdh_shared).unwrap_or(false)
             {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_CRYPTO_MISUSE".into()),
                     message: "using raw `x25519_shared` / `ecdh_shared` as an AEAD key is forbidden \
                          (RWC Ch5). Derive with `hkdf_sha256` / `crypto::kdf_hkdf_sha256`, or use \
@@ -12560,7 +16750,7 @@ fn analyze_expr_effect(
             // A+ call-site type checks for user functions (not builtins).
             if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
                 if args.len() != param_tys.len() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_MISMATCH".into()),
                         message: format!(
                             "function `{}` expects {} argument(s), got {}",
@@ -12574,7 +16764,7 @@ fn analyze_expr_effect(
                     for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                         if let Some(got) = infer_expr_type_scoped(arg, scope) {
                             if !types_assignable(expected, &got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch: argument {} of `{}` expects `{}`, got `{}`",
@@ -12603,7 +16793,7 @@ fn analyze_expr_effect(
                             )
                             .is_some()
                         {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                                 message: format!(
                                     "secret value passed as argument {i} of `{callee}` into public formal type `{expected}` — confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -12623,11 +16813,20 @@ fn analyze_expr_effect(
             // no `uses(shell)` while the identical `shell("id");` was correctly rejected
             // ANUBIS_EFFECT_FORBIDDEN_IN_MODE (confirmed false accept, probe `H_cap_alias_launder`,
             // 2026-07-26). The same held for a user function carrying a `uses` clause. Non-alias calls
-            // are unaffected — `sink_callee == callee`.
-            let sink_callee: &str = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
+            // are unaffected — `sink_callee == callee`. A user function of this name is what runs,
+            // whatever a local of the same name holds ([`call_targets`]).
+            let user_fn = ctx.user_fn_names.contains(callee.as_str());
+            let sink_callee: &str = if user_fn {
+                callee.as_str()
+            } else {
+                scope
+                    .get(callee)
+                    .and_then(|b| b.fn_alias.as_deref())
+                    .unwrap_or(callee.as_str())
+            };
+            // Every user function the call may run: the summaries and the inherited `uses(...)`
+            // below are the union over them.
+            let targets = call_targets(callee, scope, user_fn);
             // A local callable binding may carry builtin gate tags even when it has no user-function
             // alias. Charge only that stored, concrete value; direct builtin names continue through the
             // existing name-keyed arms below and are not double-counted.
@@ -12646,7 +16845,7 @@ fn analyze_expr_effect(
                 // Safe: forbidden unless `uses(shell)` (or uses(exec)/proc.exec) declared.
                 // `target_run` is the PoC process harness — same capability gate as shell/exec.
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "shell") {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                         message: "safe mode shell/exec/target_run effect is forbidden without `uses(shell)` (or use @research/@poc with authorization)".to_string(),
                         span: None,
@@ -12667,7 +16866,7 @@ fn analyze_expr_effect(
                 // Safe: authorized when `uses(fs.write)` is declared on this function.
                 // delete_file/remove_file share fs.write (unlink is a write-class mutation of the FS).
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                         message: "safe mode file_write forbidden without `uses(fs.write)`"
                             .to_string(),
@@ -12684,7 +16883,7 @@ fn analyze_expr_effect(
                 effects.push("network".to_string());
                 // Safe: authorized when `uses(net.send)` (or net.connect) is declared.
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "net.send") {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                         message: "safe mode network effect forbidden without `uses(net.send)`"
                             .to_string(),
@@ -12704,10 +16903,14 @@ fn analyze_expr_effect(
             // the *caller* never saw the capability. Fail-closed: same Safe/verified gates as a
             // direct builtin of that capability.
             // #74: keyed on the ALIAS-RESOLVED name, so `let g = privileged; g();` inherits the
-            // callee's declared `uses(...)` instead of laundering it.
-            if let Some(caps) = ctx.fn_declared_effects.get(sink_callee).cloned() {
-                for raw in caps {
-                    apply_inherited_capability(raw, mode, effects, ctx);
+            // callee's declared `uses(...)` instead of laundering it. Every target, not the one
+            // preferred alias: `let f = if c { w } else { h1 }` preferred a secret-returning `h1`
+            // and dropped `w`'s `uses(fs.write)` (ALIAS-REGRESSION-UNKNOWN-SET-CAPABILITY).
+            for t in &targets {
+                if let Some(caps) = ctx.fn_declared_effects.get(t).cloned() {
+                    for raw in caps {
+                        apply_inherited_capability(raw, mode, effects, ctx);
+                    }
                 }
             }
             // A local callable extracted from a container (`let f = xs[0]; f(...)`) carries the
@@ -12755,8 +16958,9 @@ fn analyze_expr_effect(
             // Context-sensitive capability propagation for a container passed to a formal that the
             // callee applies. Project the argument's callable identities and inherit only the
             // candidate's declared capabilities at this call site; a pure container therefore stays
-            // accepted, while `app([leak])` charges the caller for `leak`'s fs.write.
-            if let Some(applied_params) = ctx.param_sinks.get(sink_callee).cloned() {
+            // accepted, while `app([leak])` charges the caller for `leak`'s fs.write. A call through
+            // a join applies the formals of every function it may be ([`call_targets`]).
+            if let Some(applied_params) = union_over_targets(&ctx.param_sinks, &targets) {
                 for i in applied_params {
                     if let Some(arg) = args.get(i) {
                         let mut projected = BTreeMap::new();
@@ -12799,7 +17003,7 @@ fn analyze_expr_effect(
                             declassified,
                         });
                         if mode == Mode::Safe && !declassified {
-                            ctx.diagnostics.push(SemanticDiagnostic {
+                            ctx.push_diag(SemanticDiagnostic {
                                 code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
                                 message: format!(
                                     "safe mode tainted flow from `{}` to sink `{}` requires declassify() or research boundary",
@@ -12851,7 +17055,9 @@ fn analyze_expr_effect(
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
                         SourceLane::Secret,
-                    ) {
+                    )
+                    .or_else(|| whole::whole_value_source(arg, scope, ctx).map(|w| w.text()))
+                    {
                         ctx.emit(
                             SemanticDiagnostic {
                                 code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
@@ -12889,13 +17095,11 @@ fn analyze_expr_effect(
             // `ANUBIS_INTERPROC_SINK` (the leak is at the call boundary, not a local sink name).
             // Resolve a function-value alias so a call THROUGH `let f = leak; f(k)` consults `leak`'s
             // interproc summary, not the (absent) summary of the local var `f`. Direct calls are
-            // unaffected (no alias ⇒ `resolved_callee == callee`). Soundness hunt 2026-07-19: the alias
-            // laundered a secret/tainted argument past ANUBIS_INTERPROC_EXFILTRATION / _SINK.
-            let resolved_callee: &str = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
-            if let Some(sink_params) = ctx.param_sinks.get(resolved_callee).cloned() {
+            // unaffected (no binding ⇒ the target is `callee`). Soundness hunt 2026-07-19: the alias
+            // laundered a secret/tainted argument past ANUBIS_INTERPROC_EXFILTRATION / _SINK. A
+            // binding that may hold several functions (a join) takes the union of their summaries
+            // (`targets`, above): one preferred name dropped the others' sinks and egress.
+            if let Some(sink_params) = union_over_targets(&ctx.param_sinks, &targets) {
                 for i in sink_params {
                     if let Some(arg) = args.get(i) {
                         let builtin_source = builtin_gate_tags_of(arg, scope, ctx)
@@ -12923,7 +17127,7 @@ fn analyze_expr_effect(
                                 declassified,
                             });
                             if mode == Mode::Safe && !declassified {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_INTERPROC_SINK".into()),
                                     message: format!(
                                         "safe mode tainted flow from `{}` into parameter {} of `{}`, which reaches a sink without declassify",
@@ -12967,7 +17171,7 @@ fn analyze_expr_effect(
                                     declassified,
                                 });
                                 if mode == Mode::Safe && !declassified {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!(
                                             "safe mode tainted flow: a closure capturing `{}` is passed into parameter {} of `{}`, which applies it and reaches a sink without declassify",
@@ -12998,7 +17202,7 @@ fn analyze_expr_effect(
                                     .is_some_and(|row| row.effects.iter().any(|e| is_sink(e)))
                             }) && mode == Mode::Safe
                             {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!("safe mode callable container passed into parameter {} of `{}` reaches a sink", i, callee),
                                         span: None,
@@ -13016,7 +17220,7 @@ fn analyze_expr_effect(
             // itself be a secret-returning helper). Egress-only, so a secret into a LOCAL write is not
             // flagged. A well-formed declassify releases (via `expr_secret_source` → None). Safe-mode.
             if mode == Mode::Safe {
-                if let Some(egress_params) = ctx.param_egress.get(resolved_callee).cloned() {
+                if let Some(egress_params) = union_over_targets(&ctx.param_egress, &targets) {
                     for i in egress_params {
                         if let Some(arg) = args.get(i) {
                             // An argument whose FUNCTION IDENTITY resolves to a secret-returning
@@ -13111,11 +17315,33 @@ fn analyze_expr_effect(
             // The generic `args` walk above hit the `Expr::Lambda` catch-all (opaque), so this is the
             // only visit of the body — no double-emit. Guarded to fire ONLY when `callee` resolves to the
             // real builtin (not a local binding and not a user fn — which is analyzed on its own).
-            if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
-                for &i in effects::higher_order_closure_args(callee) {
+            //
+            // A local holding a higher-order builtin (`let m = apply; m(pr, k)`) applies its callback
+            // exactly as the builtin does: its may-set names the builtin ([`fn_may_of`]), and each such
+            // builtin gets the same descent (BUILTIN-HOF-VIA-LOCAL-ALIAS). A user function of the
+            // callee's name runs instead in call position, so it has none.
+            let hof_names: Vec<String> =
+                if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
+                    vec![callee.clone()]
+                } else if !user_fn {
+                    targets
+                        .iter()
+                        .filter(|t| {
+                            !ctx.all_fns.contains(t.as_str())
+                                && !effects::higher_order_closure_args(t).is_empty()
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            for hof in &hof_names {
+                let hof = hof.as_str();
+                for &i in effects::higher_order_closure_args(hof) {
                     if let Some(arg) = args.get(i) {
                         let tags = builtin_gate_tags_of(arg, scope, ctx);
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+                        charge_applied_callback_capabilities(arg, mode, scope, effects, ctx);
                     }
                     // The closure param(s) stand for the COLLECTION ELEMENT the builtin binds to them
                     // (`each([input()], |x| shell(x))` runs with x = the tainted element). Compute the
@@ -13124,6 +17350,9 @@ fn analyze_expr_effect(
                     let mut elem_taint: Option<String> = None;
                     let mut elem_secret = false;
                     let mut elem_callable_ids = FnIdentitySet::empty();
+                    // What the element may be as a FUNCTION: `call(|g| g(k), pr)` binds `g` to `pr`
+                    // itself, `each([pr], |g| g(k))` to an element, so both what an operand may be
+                    // and what it carries count (HOF-LAMBDA-PARAM-BOUND-TO-FN-ARG).
                     for (j, a) in args.iter().enumerate() {
                         if j == i {
                             continue;
@@ -13156,16 +17385,30 @@ fn analyze_expr_effect(
                         }
                     }
                     // Task #47: the closure arg is either an INLINE lambda (`each([1], |x| ...)`, the #65
-                    // case) or a VAR bound to a lambda (`let g = |x| ...; each([1], g)`) — resolve both so a
-                    // var-bound closure's body is enforced too (it otherwise laundered its taint/effect).
-                    let resolved: Option<&Expr> = match args.get(i) {
-                        Some(l @ Expr::Lambda { .. }) => Some(l),
-                        Some(Expr::Var(g)) => {
-                            scope.get(g).and_then(|b| b.closure_lambda.as_deref())
+                    // case) or a value holding closures — a local (every closure it may hold, not only
+                    // the primary one), an element or field (`each(xs, fs[0])`), a call returning one
+                    // (`each(xs, mk())`) — resolve them all so the body is enforced wherever it came
+                    // from (CONTAINER-LAMBDA-AS-HOF-CALLBACK, HELPER-RETURNED-CLOSURE-INLINE).
+                    let inline = matches!(args.get(i), Some(Expr::Lambda { .. }));
+                    let resolved: Vec<Box<Expr>> = args
+                        .get(i)
+                        .map(|a| callback_closure_candidates(a, scope, ctx))
+                        .unwrap_or_default();
+                    let mut elem_fn_names: BTreeSet<String> = BTreeSet::new();
+                    let mut elem_closures: Vec<Box<Expr>> = Vec::new();
+                    if !resolved.is_empty() {
+                        for (j, a) in args.iter().enumerate() {
+                            if j != i {
+                                elem_fn_names.extend(fn_may_of(a, scope, ctx).names);
+                                fn_may_carried(a, scope, ctx, 0, &mut elem_fn_names);
+                                elem_closures.extend(carried_closure_candidates(a, scope, ctx));
+                            }
                         }
-                        _ => None,
-                    };
-                    if let Some(Expr::Lambda { params, body }) = resolved {
+                    }
+                    for lam in &resolved {
+                        let Expr::Lambda { params, body } = lam.as_ref() else {
+                            continue;
+                        };
                         let mut local = scope.clone();
                         for p in params {
                             let mut binding = labelled_param_binding(
@@ -13175,59 +17418,61 @@ fn analyze_expr_effect(
                                 elem_secret,
                             );
                             binding.fn_identities = elem_callable_ids.clone();
+                            binding.fn_may.names.extend(elem_fn_names.iter().cloned());
+                            for c in &elem_closures {
+                                add_closure_candidate(&mut binding, c.clone());
+                            }
                             local.insert(p.clone(), binding);
                         }
-                        analyze_expr_effect(body, mode, &local, effects, ctx);
-                    } else if let Some(Expr::Var(fname)) = args.get(i) {
-                        // The closure arg is a NAMED function / builtin (`each(xs, shell)`, `apply(store, t)`,
-                        // `map(xs, snd)`) — the builtin applies it to each element, so the ELEMENT flows to
-                        // `fname`'s parameter. This is the named-fn analog of the lambda descent (convergence
-                        // hunt `wf_095bd48b`: `each([input()], shell)` was command injection accepted). Only
-                        // fires when `fname` is NOT a local binding (a real named fn / builtin — a local
-                        // closure var was resolved above). Fail-closed over-approximation: if `fname` sinks or
-                        // egresses ANY parameter and the element is labelled, the element may reach it.
-                        if !scope.contains_key(fname.as_str()) {
-                            if mode == Mode::Safe && is_egress_sink(fname) && elem_secret {
-                                ctx.emit(
-                                    SemanticDiagnostic {
-                                        code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
-                                        message: format!("safe mode confidentiality violation: a secret element flows through `{callee}` into egress `{fname}` without declassify"),
-                                        span: None,
-                                    },
-                                    false,
-                                );
-                            }
-                            if mode == Mode::Safe && is_sink(fname) {
-                                if let Some(src) = &elem_taint {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
-                                        code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
-                                        message: format!("safe mode tainted flow from `{src}` through `{callee}` into sink `{fname}` without declassify"),
-                                        span: None,
-                                    });
-                                }
-                            }
-                            if mode == Mode::Safe
-                                && elem_secret
-                                && ctx.param_egress.get(fname).is_some_and(|s| !s.is_empty())
-                            {
-                                ctx.emit(
-                                    SemanticDiagnostic {
-                                        code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
-                                        message: format!("safe mode confidentiality violation: a secret element flows through `{callee}` into `{fname}`, which reaches an egress without declassify"),
-                                        span: None,
-                                    },
-                                    false,
-                                );
-                            }
-                            if mode == Mode::Safe
-                                && ctx.param_sinks.get(fname).is_some_and(|s| !s.is_empty())
-                            {
-                                if let Some(src) = &elem_taint {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
-                                        code: Some("ANUBIS_INTERPROC_SINK".into()),
-                                        message: format!("safe mode tainted flow from `{src}` through `{callee}` into `{fname}`, which reaches a sink without declassify"),
-                                        span: None,
-                                    });
+                        if inline {
+                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                        } else {
+                            analyze_closure_body_effect(body, mode, &local, effects, ctx);
+                        }
+                    }
+                    // The closure arg is a NAMED function / builtin (`each(xs, shell)`, `apply(store, t)`,
+                    // `map(xs, snd)`) — the builtin applies it to each element, so the ELEMENT flows to its
+                    // parameter. This is the named-fn analog of the lambda descent (convergence hunt
+                    // `wf_095bd48b`: `each([input()], shell)` was command injection accepted). It is checked
+                    // for every function the argument may be, not only a bare name no local holds: a local
+                    // alias or join (`let f = if c { h2 } else { h1 }; each([k], f)`), a join written in
+                    // place, an element or a call returning a function reached the same parameter unchecked
+                    // (review ordret1 HOF-BUILTIN-LOCAL-FN-BINDING). A lambda, or a local holding only one,
+                    // names no function here; its body was descended above. Fail-closed over-approximation:
+                    // if a candidate sinks or egresses ANY parameter and the element is labelled, the element
+                    // may reach it.
+                    if let Some(arg) = args.get(i) {
+                        check_applied_callback(
+                            arg,
+                            hof,
+                            elem_taint.as_deref(),
+                            elem_secret,
+                            mode,
+                            scope,
+                            ctx,
+                        );
+                        // A callback that is itself a user function applying one of ITS formals
+                        // (`apply(app, [pr, k])`, `call(app, pr, k)` with `fn app(g, x) { g(x) }`)
+                        // applies a function the builtin hands it to the rest of what it is handed.
+                        // Its own summaries cannot say which, so every function an operand may be or
+                        // carry is checked as a callback applied to the operands' labels
+                        // (BUILTIN-HOF-APPLIES-USER-HOF).
+                        if applied_callback_targets(arg, scope, ctx)
+                            .iter()
+                            .any(|t| ctx.fn_applies_param.get(t).is_some_and(|v| !v.is_empty()))
+                        {
+                            for (j, a) in args.iter().enumerate() {
+                                if j != i {
+                                    check_forwarded_callbacks(
+                                        a,
+                                        hof,
+                                        elem_taint.as_deref(),
+                                        elem_secret,
+                                        mode,
+                                        scope,
+                                        effects,
+                                        ctx,
+                                    );
                                 }
                             }
                         }
@@ -13277,7 +17522,7 @@ fn analyze_expr_effect(
                         };
                         local.insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                     }
-                    analyze_expr_effect(body, mode, &local, effects, ctx);
+                    analyze_closure_body_effect(body, mode, &local, effects, ctx);
                 }
             }
             // Task #48-A: a closure passed to a USER FN that APPLIES that param position
@@ -13289,184 +17534,205 @@ fn analyze_expr_effect(
             // dynamic extent through the callee. Only param positions the callee applies-and-never-
             // shadows are enforced (`fn_applies_param`), so a non-applied/shadowed closure arg is never
             // spuriously charged (no false reject). Cloned out of `ctx` first to free the borrow.
-            if let Some(applied) = ctx.fn_applies_param.get(callee).cloned() {
-                let applied_paths = ctx.fn_applied_param_paths.get(callee).cloned();
-                for i in applied {
-                    if let Some(arg) = args.get(i) {
-                        let tags = applied_paths
-                            .as_ref()
-                            .and_then(|by_param| by_param.get(&i))
-                            .map(|paths| {
-                                BuiltinGateTags::union_concrete(paths.iter().map(|path| {
-                                    if path.is_empty() {
-                                        builtin_gate_tags_of(arg, scope, ctx)
-                                    } else if path == "*" {
-                                        builtin_gate_tags_carried_by_value_d(arg, scope, ctx, 0)
-                                    } else {
-                                        builtin_gate_tags_at_path(arg, path, scope, ctx, 0)
-                                    }
-                                }))
-                            })
-                            .unwrap_or_else(|| builtin_gate_tags_of(arg, scope, ctx));
-                        charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
-                        if let Some(paths) =
-                            applied_paths.as_ref().and_then(|by_param| by_param.get(&i))
-                        {
-                            if paths.iter().any(|path| !path.is_empty()) {
-                                let mut closures = BTreeMap::new();
-                                collect_container_closures(arg, "", scope, ctx, &mut closures);
-                                let selected = closures
-                                    .into_iter()
-                                    .filter(|(path, _)| paths.contains("*") || paths.contains(path))
-                                    .map(|(_, closure)| closure);
-                                for closure in selected {
-                                    if let Expr::Lambda { params, body } = closure.as_ref() {
-                                        let mut local = scope.clone();
-                                        for p in params {
-                                            local.insert(
-                                                p.clone(),
-                                                labelled_param_binding(p, false, None, false),
-                                            );
-                                        }
-                                        analyze_expr_effect(body, mode, &local, effects, ctx);
-                                    }
-                                }
-                            }
-                            for path in paths {
-                                let ids = if path.is_empty() {
-                                    fn_identities_of(arg, scope, ctx)
-                                } else if path == "*" {
-                                    fn_identities_carried_by_value(arg, scope, ctx)
-                                } else {
-                                    fn_identities_at_contract_path(arg, path, scope, ctx, 0)
-                                };
-                                if let FnIdentitySet::Known(names) = ids {
-                                    for name in names {
-                                        if let Some(caps) =
-                                            ctx.fn_declared_effects.get(&name).cloned()
-                                        {
-                                            for raw in caps {
-                                                apply_inherited_capability(raw, mode, effects, ctx);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // The parameter is applied AT THE FORMAL ITSELF — no path — so there is
-                            // no entry in `fn_applied_param_paths` and the whole charge above is
-                            // skipped.
-                            //
-                            // `fn app(f) { let g = f; g(...) }` recorded `applies = true` with an
-                            // empty path set, correctly: `g` IS the formal, not a field of it. The
-                            // consumer then found no paths and charged nothing, so the simplest
-                            // alias in the language — bind a callable formal to a local, apply the
-                            // local — passed `check` and wrote the file at runtime.
-                            //
-                            // Producer and consumer disagreeing on what "no path" MEANS: the
-                            // producer said "the formal itself", the consumer read "nothing to
-                            // charge". This is the same shape as every carrier defect in this file,
-                            // in the one place that decides the verdict.
-                            let ids = fn_identities_of(arg, scope, ctx);
-                            if let FnIdentitySet::Known(names) = ids {
-                                for name in names {
-                                    if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned()
-                                    {
-                                        for raw in caps {
-                                            apply_inherited_capability(raw, mode, effects, ctx);
-                                        }
-                                    }
-                                }
+            // A call through a local holding a user HOF (`let a = app; a(pr, k)`) applies what every
+            // function it may run applies ([`call_targets`]): the positions and paths are the union
+            // over them, where the lookup by the raw callee found none (USER-HOF-VIA-LOCAL-ALIAS). A
+            // formal a target applies AT THE FORMAL ITSELF has no recorded path; it is path "" here,
+            // which every consumer below reads as the argument itself.
+            //
+            // `fn app(f) { let g = f; g(...) }` recorded `applies = true` with an empty path set,
+            // correctly: `g` IS the formal, not a field of it. The consumer once found no paths and
+            // charged nothing, so the simplest alias in the language — bind a callable formal to a
+            // local, apply the local — passed `check` and wrote the file at runtime.
+            let mut applied_paths: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+            for t in &targets {
+                if let Some(applied) = ctx.fn_applies_param.get(t) {
+                    let by_param = ctx.fn_applied_param_paths.get(t);
+                    for &i in applied {
+                        let entry = applied_paths.entry(i).or_default();
+                        match by_param.and_then(|m| m.get(&i)) {
+                            Some(paths) => entry.extend(paths.iter().cloned()),
+                            None => {
+                                entry.insert(String::new());
                             }
                         }
                     }
-                    let resolved = args.get(i).and_then(|arg| {
-                        resolve_closure_value(
-                            arg,
+                }
+            }
+            for (i, paths) in applied_paths {
+                // The callee applies this formal to ITS OWN parameters, which are bound to the
+                // caller's OTHER arguments — so what it applies receives those arguments' labels.
+                // Binding a closure's params unlabelled meant `apply(f, v) { f(v); }` called as
+                // `apply(|v| shell(v), input())` charged NOTHING: command injection through a
+                // higher-order function, while the direct `g(input())` was correctly rejected. Same
+                // hole in the secret lane (GROK-SEKHMET round 9), and for a closure stored in a
+                // container formal the callee applies (`runall([|x| pr(x)], k)`).
+                //
+                // Conservative JOIN over the other arguments rather than tracking which one the
+                // callee forwards: that would need a param→param application summary, and
+                // over-approximating here can only over-charge a callback whose sibling argument is
+                // labelled — the fail-closed direction, matching this file's convention for
+                // summaries. What those arguments may be as FUNCTIONS binds a closure's params too:
+                // `app(|g| g(k), pr)` applies `pr` (HOF-LAMBDA-PARAM-BOUND-TO-FN-ARG).
+                let mut arg_taint: Option<String> = None;
+                let mut arg_secret = false;
+                for (j, a) in args.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    if arg_taint.is_none() {
+                        arg_taint = expr_source(
+                            a,
                             scope,
-                            &ctx.fn_returns_lambda,
-                            &ctx.fn_returns_param,
-                            &ctx.method_returns_lambda,
-                            &ctx.method_returns_param,
-                            0,
+                            &ctx.tainting_fns,
+                            &ctx.param_return_taint,
+                            &ctx.method_tainting_fns,
+                            &ctx.place_types(),
+                            SourceLane::Taint,
+                        );
+                    }
+                    arg_secret = arg_secret
+                        || expr_source(
+                            a,
+                            scope,
+                            &ctx.secret_fns,
+                            &ctx.param_return_taint,
+                            &ctx.method_secret_fns,
+                            &ctx.place_types(),
+                            SourceLane::Secret,
                         )
-                    });
-                    if let Some(boxed) = resolved {
-                        let Expr::Lambda { params, body } = boxed.as_ref() else {
-                            continue;
-                        };
-                        // The callee applies this closure to ITS OWN parameters, which are bound to
-                        // the caller's OTHER arguments — so the closure's params must carry those
-                        // arguments' labels. Binding them unlabelled (as this did) meant
-                        // `apply(f, v) { f(v); }` called as `apply(|v| shell(v), input())` charged
-                        // NOTHING: command injection through a higher-order function, while the
-                        // direct `g(input())` was correctly rejected. Same hole in the secret lane.
-                        // GROK-SEKHMET round 9 surfaced this via an enum payload; it is general.
-                        //
-                        // Conservative JOIN over the other arguments rather than tracking which one
-                        // the callee forwards: that would need a param→param application summary,
-                        // and over-approximating here can only over-charge a closure whose sibling
-                        // argument is labelled — the fail-closed direction, matching this file's
-                        // convention for summaries.
-                        let mut arg_taint: Option<String> = None;
-                        let mut arg_secret = false;
-                        for (j, a) in args.iter().enumerate() {
-                            if j == i {
-                                continue;
-                            }
-                            if arg_taint.is_none() {
-                                arg_taint = expr_source(
-                                    a,
-                                    scope,
-                                    &ctx.tainting_fns,
-                                    &ctx.param_return_taint,
-                                    &ctx.method_tainting_fns,
-                                    &ctx.place_types(),
-                                    SourceLane::Taint,
+                        .is_some();
+                }
+                let Some(arg) = args.get(i) else {
+                    continue;
+                };
+                let tags = BuiltinGateTags::union_concrete(paths.iter().map(|path| {
+                    if path.is_empty() {
+                        builtin_gate_tags_of(arg, scope, ctx)
+                    } else if path == "*" {
+                        builtin_gate_tags_carried_by_value_d(arg, scope, ctx, 0)
+                    } else {
+                        builtin_gate_tags_at_path(arg, path, scope, ctx, 0)
+                    }
+                }));
+                charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+                if paths.iter().any(|path| !path.is_empty()) {
+                    let mut closures = BTreeMap::new();
+                    collect_container_closures(arg, "", scope, ctx, &mut closures);
+                    let selected = closures
+                        .into_iter()
+                        .filter(|(path, _)| paths.contains("*") || paths.contains(path))
+                        .map(|(_, closure)| closure);
+                    for closure in selected {
+                        if let Expr::Lambda { params, body } = closure.as_ref() {
+                            let mut local = scope.clone();
+                            for p in params {
+                                local.insert(
+                                    p.clone(),
+                                    labelled_param_binding(
+                                        p,
+                                        arg_taint.is_some(),
+                                        arg_taint.clone(),
+                                        arg_secret,
+                                    ),
                                 );
                             }
-                            arg_secret = arg_secret
-                                || expr_source(
-                                    a,
-                                    scope,
-                                    &ctx.secret_fns,
-                                    &ctx.param_return_taint,
-                                    &ctx.method_secret_fns,
-                                    &ctx.place_types(),
-                                    SourceLane::Secret,
-                                )
-                                .is_some();
+                            analyze_closure_body_effect(body, mode, &local, effects, ctx);
                         }
-                        let mut local = scope.clone();
-                        for pp in params {
-                            local.insert(
-                                pp.clone(),
-                                ScopeBinding {
-                                    info: BindingInfo {
-                                        name: pp.clone(),
-                                        ty: None,
-                                        mode: String::new(),
-                                        tainted: arg_taint.is_some(),
-                                        taint_source: arg_taint.clone(),
-                                        declassified: false,
-                                        span: None,
-                                    },
-                                    closure_arity: None,
-                                    closure_lambda: None,
-                                    field_closures: BTreeMap::new(),
-                                    fn_alias: None,
-                                    fn_identities: FnIdentitySet::Unknown,
-                                    field_fn_identities: BTreeMap::new(),
-                                    builtin_gate_tags: BuiltinGateTags::Unknown,
-                                    field_builtin_gate_tags: BTreeMap::new(),
-                                    taint_label: security_label::SecurityLabel::default(),
-                                    secret_label: security_label::SecurityLabel::default(),
-                                    secret: arg_secret,
-                                }
-                                .with_labels(),
-                            );
+                    }
+                }
+                // Every function the applied value may be: the argument itself ([`FnMay`], not only
+                // a Known identity set, which one unresolvable branch erased), or what it carries at
+                // an applied path (an element of a callback list the callee iterates).
+                let mut path_names: BTreeSet<String> = BTreeSet::new();
+                for path in &paths {
+                    if path.is_empty() {
+                        path_names.extend(fn_may_of(arg, scope, ctx).names);
+                    } else {
+                        let ids = if path == "*" {
+                            fn_identities_carried_by_value(arg, scope, ctx)
+                        } else {
+                            fn_identities_at_contract_path(arg, path, scope, ctx, 0)
+                        };
+                        if let FnIdentitySet::Known(names) = ids {
+                            path_names.extend(names);
                         }
+                        if path == "*" {
+                            fn_may_carried(arg, scope, ctx, 0, &mut path_names);
+                        }
+                    }
+                }
+                for name in &path_names {
+                    if let Some(caps) = ctx.fn_declared_effects.get(name).cloned() {
+                        for raw in caps {
+                            apply_inherited_capability(raw, mode, effects, ctx);
+                        }
+                    }
+                }
+                // A NAMED function passed here — or a local, a join, an element or a call that holds
+                // one, or one a callback list carries at an applied path — is applied to those
+                // arguments exactly as a lambda is: `app(h2, k)` with `fn app(g, x) { g(x) }` runs
+                // `h2(k)`. Only a lambda was descended (below), so the eta-equivalent
+                // `app(|x| h2(x), k)` was rejected while the name, an alias and a join printed the
+                // secret (review ordret1 USER-HOF-NAMED-FN-ARG), and `runall([pr], k)` with
+                // `for g in gs { g(x) }` still did (USER-HOF-OVER-CALLBACK-LIST).
+                let mut cb_targets = applied_callback_targets(arg, scope, ctx);
+                cb_targets.extend(path_names);
+                let cb_tags = BuiltinGateTags::union_concrete([
+                    builtin_gate_tags_of(arg, scope, ctx),
+                    tags.clone(),
+                ]);
+                let shown = match arg {
+                    Expr::Var(n) => n.clone(),
+                    _ => "a callback".to_string(),
+                };
+                check_applied_callback_targets(
+                    &cb_targets,
+                    &cb_tags,
+                    &shown,
+                    callee,
+                    arg_taint.as_deref(),
+                    arg_secret,
+                    mode,
+                    ctx,
+                );
+                // Every closure the argument may be (a local's alternatives, an element, a call
+                // returning one), descended with its params bound to the other arguments.
+                let inline = matches!(arg, Expr::Lambda { .. });
+                let resolved = callback_closure_candidates(arg, scope, ctx);
+                let mut arg_fn_names: BTreeSet<String> = BTreeSet::new();
+                let mut arg_closures: Vec<Box<Expr>> = Vec::new();
+                if !resolved.is_empty() {
+                    for (j, a) in args.iter().enumerate() {
+                        if j != i {
+                            arg_fn_names.extend(fn_may_of(a, scope, ctx).names);
+                            fn_may_carried(a, scope, ctx, 0, &mut arg_fn_names);
+                            arg_closures.extend(carried_closure_candidates(a, scope, ctx));
+                        }
+                    }
+                }
+                for lam in resolved {
+                    let Expr::Lambda { params, body } = lam.as_ref() else {
+                        continue;
+                    };
+                    let mut local = scope.clone();
+                    for pp in params {
+                        let mut binding = labelled_param_binding(
+                            pp,
+                            arg_taint.is_some(),
+                            arg_taint.clone(),
+                            arg_secret,
+                        );
+                        binding.fn_may.names.extend(arg_fn_names.iter().cloned());
+                        for c in &arg_closures {
+                            add_closure_candidate(&mut binding, c.clone());
+                        }
+                        local.insert(pp.clone(), binding);
+                    }
+                    if inline {
                         analyze_expr_effect(body, mode, &local, effects, ctx);
+                    } else {
+                        analyze_closure_body_effect(body, mode, &local, effects, ctx);
                     }
                 }
             }
@@ -13499,7 +17765,7 @@ fn analyze_expr_effect(
                 });
                 effects.push("declassify".into());
                 if mode == Mode::Safe && !has_policy {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_DECLASSIFY_MISSING_POLICY_REASON".into()),
                         message: "declassify in safe mode requires policy and reason: declassify(value, policy: \"...\", reason: \"...\")".into(),
                         span: None,
@@ -13576,18 +17842,19 @@ fn analyze_expr_effect(
                     ctx,
                 );
             }
-            for arm in arms {
+            // An or-pattern arm one alternative at a time ([`sub_arms`]).
+            for (arm, pattern) in sub_arms(arms) {
                 let mut local = scope.clone();
                 seed_effect_pattern(
                     &mut local,
-                    &arm.pattern,
+                    pattern,
                     scrutinee,
                     &st,
                     ss,
                     &ctx.place_types(),
                     ctx,
                 );
-                propagate_pattern_closures(&mut local, scrutinee, &arm.pattern);
+                propagate_pattern_closures(&mut local, scrutinee, pattern, ctx);
                 // A LAMBDA arm value is opaque at its definition, and this file's own justification
                 // for that is "safe only if EVERY application site descends". A closure built in an
                 // arm and returned OUT of the match breaks that premise: the arm's bindings are gone
@@ -13667,7 +17934,7 @@ fn analyze_expr_effect(
                 &ctx.place_types(),
                 ctx,
             );
-            propagate_pattern_closures(&mut local, scrutinee, pattern);
+            propagate_pattern_closures(&mut local, scrutinee, pattern, ctx);
             analyze_expr_effect(then, mode, &local, effects, ctx);
             analyze_expr_effect(else_, mode, scope, effects, ctx);
         }
@@ -13767,7 +18034,7 @@ fn analyze_expr_effect(
                             ) {
                                 let declassified = expr_is_declassified(arg, scope);
                                 if mode == Mode::Safe && !declassified {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!(
                                             "safe mode tainted flow from `{source}` into parameter {i} of `{fname}` (a function stored in a container), which reaches a sink without declassify"
@@ -13805,7 +18072,13 @@ fn analyze_expr_effect(
                         );
                     }
                 }
-                if let Some(lam) = resolve_applied_container_lambda(callee, scope, ctx) {
+                // A closure a weak write left in the container may be at this slot too
+                // ([`weak_field_closures`]).
+                let stored: Vec<Box<Expr>> = resolve_applied_container_lambda(callee, scope, ctx)
+                    .into_iter()
+                    .chain(weak_field_closures(callee, scope))
+                    .collect();
+                for lam in stored {
                     if let Expr::Lambda { params, body } = lam.as_ref() {
                         let mut local = scope.clone();
                         // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
@@ -13839,7 +18112,73 @@ fn analyze_expr_effect(
                             local
                                 .insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                         }
-                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                        analyze_closure_body_effect(body, mode, &local, effects, ctx);
+                    }
+                }
+            } else {
+                // A value applied in place — a call's result (`mk()(k)`), a join
+                // (`(if c { f } else { g })(k)`), a block — reached neither the stored-closure
+                // descent above nor the direct-call checks: `mk()(k)` with `fn mk() { return |x|
+                // print(x); }` printed the secret while `let g = mk(); g(k)` was rejected
+                // (HELPER-RETURNED-CLOSURE-INLINE). Every closure it may be is descended with its
+                // params bound to the arguments' labels, and every function it may be is checked as a
+                // direct call of it (a user function by name; a builtin only where no local of its name
+                // is in scope, so the call resolves to it).
+                let arg_labels: Vec<(Option<String>, bool)> = args
+                    .iter()
+                    .map(|a| {
+                        (
+                            expr_source(
+                                a,
+                                scope,
+                                &ctx.tainting_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_tainting_fns,
+                                &ctx.place_types(),
+                                SourceLane::Taint,
+                            ),
+                            expr_source(
+                                a,
+                                scope,
+                                &ctx.secret_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_secret_fns,
+                                &ctx.place_types(),
+                                SourceLane::Secret,
+                            )
+                            .is_some(),
+                        )
+                    })
+                    .collect();
+                for lam in callback_closure_candidates(callee, scope, ctx) {
+                    if let Expr::Lambda { params, body } = lam.as_ref() {
+                        let mut local = scope.clone();
+                        for (j, p) in params.iter().enumerate() {
+                            let (pt, ps) = arg_labels.get(j).cloned().unwrap_or((None, false));
+                            local
+                                .insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
+                        }
+                        analyze_closure_body_effect(body, mode, &local, effects, ctx);
+                    }
+                }
+                let mut names = fn_may_of(callee, scope, ctx).names;
+                if let FnIdentitySet::Known(ns) = fn_identities_of(callee, scope, ctx) {
+                    names.extend(ns);
+                }
+                for n in names {
+                    if ctx.fn_params.contains_key(&n)
+                        || (!scope.contains_key(&n) && crate::backends::run::is_builtin_name(&n))
+                    {
+                        analyze_expr_effect(
+                            &Expr::Call {
+                                callee: n,
+                                args: args.clone(),
+                            },
+                            mode,
+                            scope,
+                            effects,
+                            ctx,
+                        );
                     }
                 }
             }
@@ -13933,7 +18272,7 @@ fn analyze_expr_effect(
                                 )
                                 .is_some()
                             {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
                                     message: format!(
                                         "secret value passed as argument {i} of method `{field}` into public formal type `{expected}` — confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason)."
@@ -13992,7 +18331,7 @@ fn analyze_expr_effect(
                                     labelled_param_binding(p, pt.is_some(), pt, ps),
                                 );
                             }
-                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                            analyze_closure_body_effect(body, mode, &local, effects, ctx);
                         }
                     }
                 }
@@ -14028,7 +18367,7 @@ fn analyze_expr_effect(
                                     declassified,
                                 });
                                 if mode == Mode::Safe && !declassified {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                    ctx.push_diag(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!(
                                             "safe mode tainted flow from `{}` into parameter {} of method `{}`, which reaches a sink without declassify",
@@ -14197,7 +18536,7 @@ fn analyze_expr_effect(
                 }
             }
             for (sname, fname, field_ty, got) in kind_mismatches {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                     message: format!(
                         "struct `{sname}` field `{fname}` expects `{field_ty}`, got `{got}`"
@@ -14412,6 +18751,7 @@ fn fn_identities_carried_by_value_d(
     depth: u32,
 ) -> FnIdentitySet {
     if depth > FN_ALIAS_MAX_DEPTH {
+        note_return_values_trip();
         return FnIdentitySet::Unknown;
     }
     match value {
@@ -14487,6 +18827,10 @@ fn fn_identities_carried_by_value_d(
 /// snapshot/restore (no cross-body merge — a loop-carried label escaping to the block tail is a named
 /// fail-open residual, unchanged from the pre-slice opaque behavior). `Assume`-inner, non-`Var`
 /// assign LHS, and research/exploit/spec blocks (mode-elevated) are left to their existing handling.
+/// The whole-struct lane is kept as `analyze_stmts` keeps it: a statement's own expressions' writes
+/// (`whole_expression_writes`), an assignment's marks and functions, and after a nested statement
+/// what the lane's interpretation of it leaves (`whole::stmt_writes`, a loop's exits) — its
+/// restore dropped them (R39C-3, R39C-4).
 fn walk_block_effects(
     stmts: &[Stmt],
     tail: Option<&Expr>,
@@ -14495,10 +18839,30 @@ fn walk_block_effects(
     effects: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
-    for stmt in stmts {
+    for (i, stmt) in stmts.iter().enumerate() {
+        whole_expression_writes(stmt, scope, ctx);
+        // No join below keeps a nested write; the functions it may assign are kept here.
+        join_nested_fn_writes(stmt, scope, ctx);
+        // Without an explicit tail, the block's last statement is its value (the runtime's
+        // `split_tail_expr`): a `push` there is an ordinary call, not an in-place write.
+        let valued = tail.is_none()
+            && i + 1 == stmts.len()
+            && !matches!(stmt, Stmt::ExprStmt(Expr::Call { callee, .. })
+                if callee == "return" || whole::is_statement_sink(callee));
         match stmt {
             Stmt::Let { name, ty, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
+                // The function a block-local binding holds, as the statement `let` records it: a
+                // call through `let f = h2; f(k)` inside a value block checked nothing.
+                let fal = fn_alias_of(init, scope, ctx);
+                let fn_may = fn_may_of(init, scope, ctx);
+                let init_whole = whole::whole_value_source(init, scope, ctx);
+                let init_list =
+                    whole::is_list_expr(init, scope, ctx) && !ctx.whole_not_list.contains(name);
+                let init_map =
+                    whole::is_map_expr(init, scope, ctx) && !ctx.whole_not_map.contains(name);
+                // Only a lambda or an alias binds a closure here (`cl` below).
+                let init_captures = whole_captures_of(init, false, scope, ctx);
                 seed_effect_let(
                     name,
                     ty.as_deref(),
@@ -14524,6 +18888,14 @@ fn walk_block_effects(
                         b.closure_lambda = cl;
                     }
                 }
+                if let Some(b) = scope.get_mut(name) {
+                    b.whole_struct = init_whole;
+                    b.whole_captures = init_captures;
+                    b.whole_list = init_list;
+                    b.whole_map = init_map;
+                    b.fn_alias = fal;
+                    b.fn_may = fn_may;
+                }
             }
             Stmt::LetPattern { pattern, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
@@ -14546,10 +18918,18 @@ fn walk_block_effects(
                     SourceLane::Secret,
                 )
                 .is_some();
+                let pattern_whole = whole::whole_value_source(init, scope, ctx);
+                let binder_closures = pattern_closures(scope, init, pattern, ctx);
                 seed_effect_pattern(scope, pattern, init, &t, s, &ctx.place_types(), ctx);
+                apply_pattern_closures(scope, binder_closures);
+                for (n, src) in whole::pattern_binders(pattern, &pattern_whole, ctx) {
+                    if let (Some(b), Some(src)) = (scope.get_mut(&n), src) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
             }
             Stmt::Assign {
-                target: Expr::Var(name),
+                target: target @ Expr::Var(name),
                 value,
             } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
@@ -14572,22 +18952,69 @@ fn walk_block_effects(
                     SourceLane::Secret,
                 )
                 .is_some();
+                let fal = fn_alias_of(value, scope, ctx);
+                let fn_may = fn_may_of(value, scope, ctx);
+                // The whole-struct lane, as the statement assignment keeps it: the mark of what the
+                // name now holds, whether it is still a list and a map, and the closure and functions
+                // it stands for (R39C-3: `let q = 0; q = p; print(q)` in a value block).
+                let mark = whole::assign_mark_in(target, value, scope, ctx);
+                let list = whole::is_list_expr(value, scope, ctx);
+                let map = whole::is_map_expr(value, scope, ctx);
+                let arity = closure_arity_of(value, scope, ctx);
+                let cl: Option<Box<Expr>> = match value {
+                    Expr::Lambda { .. } => Some(Box::new(value.clone())),
+                    Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                    _ => None,
+                };
+                let captures = whole_captures_of(value, cl.is_some(), scope, ctx);
                 if let Some(b) = scope.get_mut(name) {
                     b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
                         t.is_some(),
                         t,
                     ));
                     b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(s));
+                    b.fn_alias = fal;
+                    b.fn_may = fn_may;
+                    if let Some((_, src)) = mark {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                    b.whole_list &= list;
+                    b.whole_map &= map;
+                    b.closure_arity = arity;
+                    b.closure_lambda = cl;
+                    b.whole_captures = captures;
                 }
             }
-            Stmt::Assign { value, .. } => {
-                // Non-`Var` LHS: still walk the value for buried effects; the binding is untracked.
+            Stmt::Assign { target, value } => {
+                // Non-`Var` LHS: still walk the value for buried effects; the binding is untracked
+                // except for the whole-struct lane's mark on its root.
                 analyze_expr_effect(value, mode, scope, effects, ctx);
+                if let Some((root, src)) = whole::assign_mark_in(target, value, scope, ctx) {
+                    if let Some(b) = scope.get_mut(&root) {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                }
             }
             Stmt::ExprStmt(Expr::Assert(inner)) => {
                 analyze_expr_effect(inner, mode, scope, effects, ctx);
             }
-            Stmt::ExprStmt(e) => analyze_expr_effect(e, mode, scope, effects, ctx),
+            Stmt::ExprStmt(e) => {
+                analyze_expr_effect(e, mode, scope, effects, ctx);
+                if let Expr::Call { callee, args } = e {
+                    if let Some((root, src, shifts)) =
+                        whole::in_place_mark_in(callee, args, !valued, scope, ctx)
+                    {
+                        if let Some(b) = scope.get_mut(&root) {
+                            if shifts {
+                                whole::whole_unpos(&mut b.whole_struct);
+                            }
+                            if let Some(src) = src {
+                                whole::whole_mark(&mut b.whole_struct, src);
+                            }
+                        }
+                    }
+                }
+            }
             Stmt::If { cond, then, else_ } => {
                 // Implicit-flow REJECT inside descended closure bodies (mirrors analyze_stmts).
                 {
@@ -14612,8 +19039,13 @@ fn walk_block_effects(
                     walk_block_effects(else_body, None, mode, scope, effects, ctx);
                 }
                 *scope = snap;
+                // What the branches leave (the restore joined nothing).
+                let writes = whole::stmt_writes(stmt, scope, ctx);
+                apply_whole_writes(scope, writes);
             }
             Stmt::While { cond, body, .. } => {
+                // Seeded before the condition, which runs at every iteration.
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(body, &mut assigned);
@@ -14627,8 +19059,11 @@ fn walk_block_effects(
                 }
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 let snap = scope.clone();
+                seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                // What the loop leaves, from its `break`s and its exit (the restore joined nothing).
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::WhileLet { expr, body, .. } => {
                 {
@@ -14644,13 +19079,19 @@ fn walk_block_effects(
                 }
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 let snap = scope.clone();
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
+                seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::Loop { body, .. } => {
                 let snap = scope.clone();
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
+                seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::For {
                 var, source, body, ..
@@ -14686,10 +19127,13 @@ fn walk_block_effects(
                     }
                 }
                 let snap = scope.clone();
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
+                seed_loop_carried_fn_values(body, scope, ctx);
                 // M1: see `seed_loop_var_callable` — seeded in this walker AND in `analyze_stmts`.
                 seed_loop_var_callable(var, source, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
@@ -14697,6 +19141,8 @@ fn walk_block_effects(
                     walk_block_effects(b, None, mode, scope, effects, ctx);
                     *scope = snap;
                 }
+                let writes = whole::stmt_writes(stmt, scope, ctx);
+                apply_whole_writes(scope, writes);
             }
             _ => {}
         }
@@ -14739,7 +19185,7 @@ impl TaintPass {
     }
 }
 
-/// Whether an obligation whose solver verdict is `unknown` (UNDECIDED within the z3 time budget — not
+/// Whether an obligation whose solver verdict is `unknown` (UNDECIDED within the z3 work budget — not
 /// disproved, no counterexample) must fail closed. Every proof-carrying contract obligation qualifies:
 /// an `ensures`, a `requires@` call-site precondition, an `assert`, AND BOTH loop-invariant obligations —
 /// the base case AND the preservation STEP. The step is deliberately excluded from the separate VACUITY
@@ -14772,19 +19218,57 @@ impl SymbolicEngine {
             return vec![SolverCheck {
                 name: "solver:no-obligations".into(),
                 status: "PASS".into(),
-                detail: "no assertions to discharge".into(),
+                detail: NO_OBLIGATIONS_DETAIL.into(),
                 model: None,
                 smt: "(check-sat)".into(),
             }];
         }
 
+        let overapprox = |check: SolverCheck| -> SolverCheck {
+            if check.status == "FAIL"
+                && check.model.is_some()
+                && ir.over_approx_obligations.contains(&check.name)
+            {
+                SolverCheck {
+                    detail: OVERAPPROX_UNDECIDED_DETAIL.into(),
+                    model: None,
+                    ..check
+                }
+            } else {
+                check
+            }
+        };
         ir.solver_obligations
             .iter()
             .map(|obl| {
+                // An obligation the checker could not encode is refused as undecided here, before any
+                // SMT is built, so neither z3 nor the native lane decides it and the two cannot
+                // disagree about it. The prefix lists below (`is_contract`,
+                // `obligation_undecided_is_unsound`) never see it for the same reason.
+                if obl.name.starts_with(UNRESOLVED_REQUIRES_PREFIX) {
+                    return SolverCheck {
+                        name: obl.name.clone(),
+                        status: "FAIL".into(),
+                        detail: UNRESOLVED_PRECONDITION_DETAIL.into(),
+                        model: None,
+                        smt: unresolved_obligation_smt_comment(obl),
+                    };
+                }
                 // Faithful complete smt with defs from ir + obligation
                 let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
                 let mut body = String::new();
-                for a in &obl.assumptions {
+                // A FLOAT obligation carries only the facts relevant to its assertion (see
+                // `relevant_assumptions`): every float fact rides every float obligation, so one
+                // unrelated definition outside the native fragment (`y = x * 1e20`, an `fp.mul`) would
+                // otherwise hand every float obligation in the function to z3, uncertified.
+                let is_float_obligation = smt_uses_floats(&obl.assertion)
+                    || obl.assumptions.iter().any(|a| smt_uses_floats(a));
+                let kept: Vec<&String> = if is_float_obligation {
+                    relevant_assumptions(&obl.assumptions, &obl.assertion, &vars)
+                } else {
+                    obl.assumptions.iter().collect()
+                };
+                for a in kept {
                     body.push_str(&format!("(assert {})\n", a));
                 }
                 body.push_str(&format!("(assert (not {}))\n", obl.assertion));
@@ -14834,19 +19318,30 @@ impl SymbolicEngine {
                     || obl.name.starts_with("loop-invariant-base:")
                     || obl.name.starts_with("assert:");
                 if check.status == "PASS" && is_contract && !obl.assumptions.is_empty() {
-                    if let Some(false) = assumptions_satisfiable(obl) {
-                        check.status = "FAIL".into();
-                        check.detail = "vacuous proof: the contract's assumptions are \
-                             self-contradictory (unsatisfiable), so the postcondition is not really \
-                             established — check for a `requires`/`assume` that cannot hold"
-                            .into();
+                    match assumptions_satisfiable(obl) {
+                        Vacuity::Contradictory => {
+                            check.status = "FAIL".into();
+                            check.detail = "vacuous proof: the contract's assumptions are \
+                                 self-contradictory (unsatisfiable), so the postcondition is not really \
+                                 established — check for a `requires`/`assume` that cannot hold"
+                                .into();
+                        }
+                        // A solver alarm is reported AS one (compiler locus): calling it a
+                        // self-contradictory contract would send whoever reads it to edit a correct
+                        // program and destroy the evidence of the disagreement.
+                        Vacuity::SolverAlarm(detail) => {
+                            check.status = "FAIL".into();
+                            check.detail = detail;
+                            check.model = None;
+                        }
+                        Vacuity::Satisfiable | Vacuity::Unknown => {}
                     }
                 }
                 // A contract obligation the solver could not DECIDE (z3 `unknown`, e.g. a per-query
                 // timeout on a hard symbolic division/remainder — see `Z3_ARGS`) is NOT proven. The
                 // proof-carrying gate fails closed on it rather than accept an unverified postcondition.
                 // It was not disproved (no counterexample), only undecided within budget — say so, and
-                // clear any model. This branch became reachable once queries got a time budget.
+                // clear any model. This branch became reachable once queries got a bounded budget.
                 // NOTE the predicate is BROADER than the vacuity `is_contract` above: a loop-invariant
                 // PRESERVATION step is (correctly) NOT vacuity-checked, but an UNDECIDED step is still not
                 // a proof — an `unknown` preservation must fail closed exactly like an `ensures`, else a
@@ -14854,30 +19349,113 @@ impl SymbolicEngine {
                 // certifies a false postcondition (a fail-OPEN gap the step's vacuity exclusion left open).
                 if check.status == "UNKNOWN" && obligation_undecided_is_unsound(&obl.name) {
                     check.status = "FAIL".into();
-                    check.detail = "solver could not decide this contract within its time budget (z3 \
-                         returned `unknown`, typically a hard symbolic division/remainder); failing \
-                         closed — an undecided postcondition is not a proof. Restate it as a simpler \
-                         or better-bounded obligation"
-                        .into();
+                    check.detail = UNDECIDED_DETAIL.into();
                     check.model = None;
                 }
                 check
             })
+            .map(overapprox)
             .collect()
     }
 }
 
+/// How z3 is invoked for every obligation outside the native proven fragment.
+///
+/// The bound is `rlimit`, z3's DETERMINISTIC resource counter, not a wall clock.
+/// A verdict that changes with machine load is not evidence, and the previous
+/// `-t:10000 -T:20` made it do exactly that.
+///
+/// Measured on this tree, which also explains the flapping float fixture:
+///
+/// | obligation                          | resource units | wall  |
+/// |-------------------------------------|---------------:|------:|
+/// | ordinary integer contract           |        4–1,280 | <0.01s|
+/// | hard nonlinear `bvsdiv`             |      1,533,709 | 0.35s |
+/// | QF_FP `x*x < x` for 0 < x < 1       |     91,502,028 | 8.18s |
+///
+/// The float obligation needs 8.18 s of CPU against a 10 s soft timeout — a
+/// margin of 1.2x. On an idle machine it proved; under parallel load the same
+/// obligation crossed 10 s and came back `unknown`, silently degrading a
+/// provable contract to UNDECIDED. That is the mechanism behind fixtures in
+/// this repository failing a different subset on each run.
+///
+/// 200,000,000 is roughly 2.2x the hardest obligation measured and, at the
+/// observed ~11M units/second, bounds a runaway obligation near 18 s. Exceeding
+/// it yields `unknown`, which this compiler already treats as UNDECIDED and
+/// refuses — now the same refusal, every time, on every machine.
+///
+/// This is a declared implementation-defined parameter, not a tuning knob for
+/// making a red fixture green: it is sized so obligations that were decidable
+/// stay decidable while the load dependence is removed. Raising it buys more
+/// provable obligations at the cost of a slower worst case; it never changes a
+/// verdict from refused to accepted for an obligation that is genuinely false.
+///
+/// `-T` remains only as a hang guard against a z3 that stops making progress in
+/// a region rlimit does not count. It must never be the thing that decides a
+/// verdict; if it ever fires, that is an anomaly to investigate rather than a
+/// normal UNDECIDED.
+///
+/// Its value obeys an ORDERING that matters more than the number itself:
+///
+/// ```text
+///     rlimit (binds normally)  <  -T (hang guard)  <  harness timeout
+/// ```
+///
+/// This was `-T:600`, which inverted the right-hand side. The repository's own
+/// gates wrap `anubis check` in `timeout`, and a per-query guard an order of
+/// magnitude larger than the harness budget means the harness kills the process
+/// first. A harness kill returns rc 124 carrying no diagnostic, and the
+/// native-authoritative gate read that as a verdict mismatch: a timing artifact
+/// reported as a soundness alarm on the flagship gate. A guard that fires after
+/// the thing it is guarding is not a guard.
+///
+/// `-memory:2048` bounds SPACE, which neither of the other two does.
+///
+/// Found the hard way on 2026-09-21: a single obligation in the test suite grew
+/// z3 to **19.9 GiB of RSS in 73 seconds** and drove a 31 GiB machine to zero
+/// available memory. `rlimit` counts solver work and `-T` counts seconds;
+/// neither counts bytes, so a query that allocates fast is bounded by nothing
+/// but the machine. Raising `-T` from 20 s to 120 s multiplied the window such
+/// a query has to allocate in — at the observed ~220 MiB/s, a 20 s guard capped
+/// it near 4 GiB and a 120 s guard near 26 GiB. The time bound and the space
+/// bound are not substitutes.
+///
+/// A memory cap keeps the determinism property that the wall clock broke: the
+/// same query allocates the same bytes on any machine under any load, so this
+/// is a bound of the same kind as `rlimit`, not a return to machine-dependent
+/// verdicts. Exceeding it makes z3 report `unknown`, which this compiler
+/// already treats as UNDECIDED and refuses.
+///
+/// Sized by outcome rather than introspection: 2048 MiB is orders of magnitude
+/// above any ordinary obligation, and the full 937-file corpus was re-run under
+/// it with zero verdict flips against `main`. Four test threads at this bound
+/// cannot exhaust the machine, which was the concrete failure.
+///
+/// Note the limit of any per-query bound. A check issues many obligations, so
+/// its wall time is a sum and nothing here bounds it. Measured 2026-09-21,
+/// `examples/programs/snake/snake.anb` takes 46.2 s across its obligations
+/// while no single query comes close. Bounding the check is the harness
+/// budget's job, sized from measurement in `run_native_authoritative_gate.sh`.
+const Z3_ARGS: [&str; 5] = ["-in", "-smt2", "rlimit=200000000", "-T:120", "-memory:2048"];
+
 /// Whether a contract obligation's assumptions are jointly satisfiable. `Some(true)`/`Some(false)`
 /// from z3; `None` if the solver did not cleanly decide (in which case the caller keeps the original
 /// verdict rather than fabricating a vacuity failure).
-/// z3 CLI args for every obligation query. `-t` is a per-check SOFT timeout (ms) and `-T` a HARD
-/// wall-clock backstop (s): a query z3 cannot decide in budget returns `unknown` (or the process is
-/// killed and yields empty output) instead of hanging the checker indefinitely. Bit-blasting a
-/// symbolic `bvsdiv`/`bvsrem` over two free 64-bit operands can otherwise blow up unpredictably.
-/// Both timeout outcomes are handled FAIL-CLOSED downstream (UNKNOWN / None — never a proof).
-const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "-t:10000", "-T:20"];
+/// What the vacuity query established about a contract's premises.
+enum Vacuity {
+    /// Satisfiable: the proof is not vacuous.
+    Satisfiable,
+    /// Unsatisfiable: the premises contradict each other — a program defect (a `requires`/`assume`
+    /// that cannot hold).
+    Contradictory,
+    /// The solvers could not be trusted on this query: z3 rejected it as malformed, or the native
+    /// solver and z3 disagreed. A compiler soundness alarm, never a program defect.
+    SolverAlarm(String),
+    /// Undecided.
+    Unknown,
+}
 
-fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
+fn assumptions_satisfiable(obl: &SolverObligation) -> Vacuity {
     let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
     let mut body = String::new();
     // The vacuity check asks "are the CONTRACT PREMISES self-contradictory?" — a branch PATH CONDITION is
@@ -14926,6 +19504,18 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     if native_authoritative() {
         if let Some(nat) = anubis_solver::native_check_sat_authoritative(&smt) {
             if let Some(z) = z3_spawn_first_line(&smt) {
+                if z3_rejected_query(&z) {
+                    eprintln!(
+                        "ANUBIS_NATIVE_DISAGREE(vacuity): native decided, z3 rejected the query \
+                         (`{}`) — failing closed; smt=<<{}>>",
+                        z,
+                        smt.replace('\n', " ")
+                    );
+                    return Vacuity::SolverAlarm(format!(
+                        "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; \
+                         failing closed — a malformed premise query establishes nothing"
+                    ));
+                }
                 let zb = match z.as_str() {
                     "sat" => Some(true),
                     "unsat" => Some(false),
@@ -14934,25 +19524,40 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
                 if let Some(zb) = zb {
                     if zb != nat {
                         eprintln!(
-                            "ANUBIS_NATIVE_DISAGREE(vacuity): native={} z3={} — failing closed \
-                             (reporting the premises as vacuous); smt=<<{}>>",
+                            "ANUBIS_NATIVE_DISAGREE(vacuity): native={} z3={} — failing closed; \
+                             smt=<<{}>>",
                             if nat { "sat" } else { "unsat" },
                             if zb { "sat" } else { "unsat" },
                             smt.replace('\n', " ")
                         );
-                        return Some(false);
+                        return Vacuity::SolverAlarm(
+                            "ANUBIS_NATIVE_DISAGREEMENT: the native solver and z3 disagree on whether \
+                             this contract's premises are satisfiable — cross-check soundness alarm; \
+                             failing closed"
+                                .into(),
+                        );
                     }
                 }
             }
-            return Some(nat);
+            return if nat {
+                Vacuity::Satisfiable
+            } else {
+                Vacuity::Contradictory
+            };
         }
     }
     let ans = z3_spawn_first_line(&smt);
     native_shadow_compare(&smt, ans.as_deref());
     match ans.as_deref() {
-        Some("sat") => Some(true),
-        Some("unsat") => Some(false),
-        _ => None,
+        Some("sat") => Vacuity::Satisfiable,
+        Some("unsat") => Vacuity::Contradictory,
+        // z3 alone, and it rejected the premise query: the contract's "proof" rests on a query nobody
+        // accepted. Fail closed (before, this fell through to "unknown" and the PASS stood).
+        Some(z) if z3_rejected_query(z) => Vacuity::SolverAlarm(format!(
+            "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; failing \
+             closed — a malformed premise query establishes nothing"
+        )),
+        _ => Vacuity::Unknown,
     }
 }
 
@@ -14986,6 +19591,25 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
                 if let Some(z) = z3_spawn_first_line(&smt) {
+                    if z3_rejected_query(&z) {
+                        eprintln!(
+                            "ANUBIS_NATIVE_DISAGREE(primary): native=unsat z3 rejected the query \
+                             (`{}`) — failing closed; smt=<<{}>>",
+                            z,
+                            smt.replace('\n', " ")
+                        );
+                        return SolverCheck {
+                            name: obligation.name.clone(),
+                            status: "FAIL".into(),
+                            detail: format!(
+                                "solver rejected the emitted SMT (z3: `{z}`) although the native \
+                                 solver decided it; failing closed — a certificate for a malformed \
+                                 obligation is not a proof"
+                            ),
+                            model: None,
+                            smt,
+                        };
+                    }
                     if z == "sat" {
                         eprintln!(
                             "ANUBIS_NATIVE_DISAGREE(primary): native=unsat z3=sat — failing \
@@ -15007,9 +19631,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                 return SolverCheck {
                     name: obligation.name.clone(),
                     status: "PASS".into(),
-                    detail: "assertion proved: assumptions imply assertion (native QF_BV solver; \
-                             machine-checked bit-blaster)"
-                        .into(),
+                    detail: PROVED_DETAIL_CERTIFIED.into(),
                     model: None,
                     smt,
                 };
@@ -15050,9 +19672,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                     return SolverCheck {
                         name: obligation.name.clone(),
                         status: "FAIL".into(),
-                        detail: "counterexample satisfies assumptions and negates assertion \
-                                 (native model, independently re-evaluated)"
-                            .into(),
+                        detail: DISPROVED_DETAIL_NATIVE.into(),
                         model: Some(rendered),
                         smt,
                     };
@@ -15139,7 +19759,10 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let first = stdout.lines().next().unwrap_or("").trim();
+    // The ANSWER line, not merely the first: an `(error …)` before the verdict is a rejection even when
+    // a warning precedes it or z3 answers what was left of the query (see `z3_answer_line`).
+    let answer = z3_answer_line(&stdout).unwrap_or_default();
+    let first = answer.as_str();
     // Shadow the PRIMARY obligation stream too (not just the replay/raw queries): under
     // `ANUBIS_NATIVE_SHADOW=1` the native verdict is compared against z3's right here, where the
     // real proof/counterexample decisions are made. z3's verdict below is returned unchanged.
@@ -15154,7 +19777,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         "unsat" => SolverCheck {
             name: obligation.name.clone(),
             status: "PASS".into(),
-            detail: "assertion proved: assumptions imply assertion".into(),
+            detail: PROVED_DETAIL_SOLVER_ONLY.into(),
             model: None,
             smt,
         },
@@ -15177,11 +19800,24 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                 SolverCheck {
                     name: obligation.name.clone(),
                     status: "FAIL".into(),
-                    detail: "counterexample satisfies assumptions and negates assertion (replayed)"
-                        .into(),
+                    detail: DISPROVED_DETAIL_Z3.into(),
                     model: Some(model),
                     smt,
                 }
+            }
+        }
+        // z3 refusing for want of memory is a RESOURCE limit, not a malformed query. It became
+        // reachable the moment `Z3_ARGS` gained `-memory:`, and the generic `(error …)` arm below
+        // would report it as "the SMT we emitted is malformed" — blaming this compiler for an
+        // obligation that is merely too big, and sending whoever reads it to hunt a bug that does
+        // not exist. It is UNDECIDED: fail closed, and name the bound that actually bit.
+        other if other == Z3_OUT_OF_MEMORY || stderr.contains("out of memory") => {
+            SolverCheck {
+                name: obligation.name.clone(),
+                status: "FAIL".into(),
+                detail: UNDECIDED_MEMORY_DETAIL.into(),
+                model: None,
+                smt,
             }
         }
         // A z3 parse/sort ERROR means the SMT WE emitted is malformed (e.g. an undeclared symbol).
@@ -15289,6 +19925,94 @@ fn native_authoritative() -> bool {
     }
 }
 
+/// The assumptions RELEVANT to `assertion`, in two sound steps:
+///
+/// 1. Connectivity: keep the facts connected to the assertion through shared declared variables,
+///    transitively. A dropped fact shares no variable with anything kept, so it cannot constrain the
+///    assertion; the only thing it could still do is be unsatisfiable on its own, which would make the
+///    full obligation VACUOUSLY true — and the vacuity check (which keeps every premise) still sees that.
+/// 2. Dangling definitions: drop a kept DEFINITION `(= v t)` whose variable `v` occurs nowhere else
+///    (not in the assertion, not in any other kept fact, not in `t`). `∃v. v = t` holds for every
+///    value of `t`'s variables (every term is total), so removing it preserves satisfiability exactly.
+///    Repeated until nothing changes, so a chain of unused definitions goes too.
+///
+/// Connectivity uses DECLARED variables only: the SMT scraper also returns operator tokens (`RNE`,
+/// `to_fp`), which would otherwise link every float fact to every other.
+fn relevant_assumptions<'a>(
+    assumptions: &'a [String],
+    assertion: &str,
+    declared: &BTreeSet<String>,
+) -> Vec<&'a String> {
+    let vars_of = |smt: &str| -> BTreeSet<String> {
+        let mut vs = BTreeSet::new();
+        collect_vars_from_smt(smt, &mut vs);
+        vs.retain(|v| declared.contains(v));
+        vs
+    };
+    let fact_vars: Vec<BTreeSet<String>> = assumptions.iter().map(|a| vars_of(a)).collect();
+    let mut reached = vars_of(assertion);
+    let mut keep = vec![false; assumptions.len()];
+    loop {
+        let mut grew = false;
+        for (i, vs) in fact_vars.iter().enumerate() {
+            if !keep[i] && !vs.is_disjoint(&reached) {
+                keep[i] = true;
+                reached.extend(vs.iter().cloned());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // Step 2: drop dangling definitions, to a fixpoint.
+    let assertion_vars = vars_of(assertion);
+    let definition_of = |a: &str| -> Option<String> {
+        let rest = a.strip_prefix("(= ")?;
+        let (v, t) = rest.split_once(char::is_whitespace)?;
+        (declared.contains(v) && !vars_of(t).contains(v)).then(|| v.to_string())
+    };
+    loop {
+        let mut dropped = false;
+        for i in 0..assumptions.len() {
+            if !keep[i] {
+                continue;
+            }
+            let Some(v) = definition_of(&assumptions[i]) else {
+                continue;
+            };
+            let used_elsewhere = assertion_vars.contains(&v)
+                || (0..assumptions.len()).any(|j| j != i && keep[j] && fact_vars[j].contains(&v));
+            if !used_elsewhere {
+                keep[i] = false;
+                dropped = true;
+            }
+        }
+        if !dropped {
+            break;
+        }
+    }
+    assumptions
+        .iter()
+        .zip(keep)
+        .filter_map(|(a, k)| k.then_some(a))
+        .collect()
+}
+
+/// Whether z3's first output line says it REJECTED the query as malformed (a sort error, an undeclared
+/// symbol) rather than answering it. Running out of memory is a resource limit, not a malformed query.
+/// A native verdict on a query z3 rejects is a verdict on an encoding that does not mean what the SMT
+/// says (P-SORT-1), so every native-authoritative cross-check fails closed on it.
+fn z3_rejected_query(first_line: &str) -> bool {
+    // EXACT match for the resource limit: z3 copies symbols and string-literal arguments into its
+    // sort-error messages, so a substring test let a rejection that merely MENTIONS "out of memory"
+    // (a string literal in the query) pass as a resource limit — and the native verdict stand.
+    first_line.starts_with("(error") && first_line != Z3_OUT_OF_MEMORY
+}
+
+/// z3's whole answer when `-memory:` bounds it (observed with z3 4.16, exit status 101).
+const Z3_OUT_OF_MEMORY: &str = "(error \"out of memory\")";
+
 /// Bare z3 spawn returning the trimmed first line of stdout (`sat`/`unsat`/`unknown`/`(error…`), or
 /// `None` if z3 could not be spawned or read. No native-solver logic here — this is both the z3 leg
 /// of `z3_check_sat_raw` and the cross-check partner inside the native-authoritative paths.
@@ -15300,12 +20024,30 @@ fn z3_spawn_first_line(smt: &str) -> Option<String> {
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
-    child.stdin.as_mut()?.write_all(smt.as_bytes()).ok()?;
+    // A write error is NOT "z3 unavailable": z3 may have rejected the query and exited before reading
+    // all of it (a query larger than the pipe buffer then gets EPIPE). Its answer is still on stdout,
+    // so read it; treating the write error as "no z3" would let a native verdict stand unchecked.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(smt.as_bytes());
+    }
     let output = child.wait_with_output().ok()?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .map(|l| l.trim().to_string())
+    z3_answer_line(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The line of z3's output that answers the query: an `(error …)` raised BEFORE the verdict (the query
+/// was rejected, even if z3 went on to answer what was left of it), else the verdict itself
+/// (`sat`/`unsat`/`unknown`). Blank and informational lines (`WARNING: …`) are skipped rather than taken
+/// as the answer. An `(error …)` AFTER the verdict belongs to a later command (`get-model` after `unsat`
+/// always errors) and is ignored.
+fn z3_answer_line(stdout: &str) -> Option<String> {
+    let mut first = None;
+    for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        first.get_or_insert_with(|| line.to_string());
+        if line.starts_with("(error") || matches!(line, "sat" | "unsat" | "unknown") {
+            return Some(line.to_string());
+        }
+    }
+    first
 }
 
 /// Runs `smt` and returns the first verdict line (`sat`/`unsat`/`unknown`), or `None` if no solver
@@ -15321,6 +20063,16 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
         if let Some(nat) = anubis_solver::native_check_sat_authoritative(smt) {
             let nat_str = if nat { "sat" } else { "unsat" };
             if let Some(z) = z3_spawn_first_line(smt) {
+                if z3_rejected_query(&z) {
+                    eprintln!(
+                        "ANUBIS_NATIVE_DISAGREE(authoritative): native={} z3 rejected the query \
+                         (`{}`) — failing closed; smt=<<{}>>",
+                        nat_str,
+                        z,
+                        smt.replace('\n', " ")
+                    );
+                    return Some("native-z3-disagreement".to_string());
+                }
                 if (z == "sat" || z == "unsat") && z != nat_str {
                     eprintln!(
                         "ANUBIS_NATIVE_DISAGREE(authoritative): native={} z3={} — failing closed; \
@@ -15430,8 +20182,20 @@ fn native_shadow_compare(smt: &str, z3_ans: Option<&str>) {
         Some("unsat") => Some(false),
         _ => None,
     };
+    let rejected = z3_ans.is_some_and(z3_rejected_query);
     let outcome = match (native, z) {
         (None, _) => "DEFER",
+        // Native decided a query z3 rejects as malformed: the shadow gate exists to catch exactly
+        // this (P-SORT-1), so it is a disagreement, not native-only coverage.
+        (Some(n), None) if rejected => {
+            eprintln!(
+                "ANUBIS_NATIVE_DISAGREE native={} z3-rejected={} smt=<<{}>>",
+                n,
+                z3_ans.unwrap_or_default(),
+                smt.replace('\n', " ")
+            );
+            "DISAGREE"
+        }
         (Some(_), None) => "NATIVE_ONLY",
         (Some(n), Some(zz)) if n == zz => "AGREE",
         (Some(n), Some(zz)) => {
@@ -15468,23 +20232,94 @@ fn native_shadow_compare(smt: &str, z3_ans: Option<&str>) {
 /// doesn't actually satisfy the assumptions, or doesn't actually violate the assertion — makes the
 /// ground formula `unsat`, and this returns `false`. Unlike the model text, this does not depend on
 /// variable names or on any pre-known "bad" values; it re-derives the answer from the query itself.
+/// Names of the constants `smt` declares with an SMT `Array` sort.
+fn array_constants(smt: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for head in ["(declare-const ", "(declare-fun "] {
+        for (i, _) in smt.match_indices(head) {
+            let tail = &smt[i + head.len()..];
+            let name: String = tail
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '(' && *c != ')')
+                .collect();
+            let line_end = tail.find('\n').unwrap_or(tail.len());
+            if tail[..line_end].contains("(Array ") && !name.is_empty() {
+                out.insert(name);
+            }
+        }
+    }
+    out
+}
+
+/// Whether `smt` declares a constant whose sort is not an SMT `Array`.
+fn declares_non_array_constant(smt: &str) -> bool {
+    for head in ["(declare-const ", "(declare-fun "] {
+        let mut rest = smt;
+        while let Some(i) = rest.find(head) {
+            let tail = &rest[i..];
+            // The declaration's own s-expression, up to its matching close paren.
+            let mut depth = 0usize;
+            let mut end = tail.len();
+            for (j, ch) in tail.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = j + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !tail[..end].contains("(Array ") {
+                return true;
+            }
+            rest = &tail[end.min(tail.len())..];
+            if end == 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn replay_counterexample(smt: &str, model: &str) -> bool {
-    let bv_bindings = parse_z3_model(model);
-    // FloatingPoint witnesses must pin too — BitVec-only parse used to leave FP models empty,
-    // fail closed as "unparseable", and falsely fire ANUBIS_REPLAY_MISMATCH on real float CEX.
-    let fp_bindings = parse_fp_model_entries(model);
     let base = match smt.find("(check-sat)") {
         Some(idx) => &smt[..idx],
         None => smt,
     };
+    // An ARRAY-sorted constant is never pinned: the scalar parsers read the element inside its
+    // `((as const (Array …)) #x…)` value as a bit-vector binding, and `(= arr #x…)` is ill-sorted,
+    // so z3 rejected the replay and every counterexample over a container read as a mismatch.
+    let arrays = array_constants(base);
+    let mut bv_bindings = parse_z3_model(model);
+    bv_bindings.retain(|name, _| !arrays.contains(name.as_str()));
+    // FloatingPoint witnesses must pin too — BitVec-only parse used to leave FP models empty,
+    // fail closed as "unparseable", and falsely fire ANUBIS_REPLAY_MISMATCH on real float CEX.
+    let mut fp_bindings = parse_fp_model_entries(model);
+    fp_bindings.retain(|name, _| !arrays.contains(name.as_str()));
     // Ground formulas (no free constants) decide `sat` with an empty model `()`. That is a real
     // counterexample: re-check the base query alone. Open formulas must produce parseable
     // BitVec and/or FloatingPoint bindings — without them we cannot pin a witness and fail closed
     // (a bare re-check of an open formula would stay `sat` even when the model text was garbage).
     if bv_bindings.is_empty() && fp_bindings.is_empty() {
-        let has_declare = base.contains("declare-const") || base.contains("declare-fun");
-        if has_declare {
+        // Only ARRAY-sorted constants (a container's backing array) may stay unpinned: the model
+        // gives them as array values this replay does not parse, and no scalar witness exists to
+        // pin. Any other declaration without a parsed binding fails closed, as before.
+        if declares_non_array_constant(base) {
             return false;
+        }
+        if base.contains("declare-const") || base.contains("declare-fun") {
+            // Array constants only: their witness is existential either way, so the replay is the
+            // base query re-decided by z3.
+            if !model.contains("sat") {
+                return false;
+            }
+            let mut replay_smt = base.to_string();
+            replay_smt.push_str("(check-sat)\n");
+            return matches!(z3_check_sat_raw(&replay_smt).as_deref(), Some("sat"));
         }
         // Refuse garbage model text: only z3's empty-model shape (typically `sat` + `()`) qualifies.
         let looks_empty_model = !model.contains("define-fun")
@@ -15534,13 +20369,303 @@ pub enum AssertionFailKind {
     Other,
 }
 
+/// Detail for a run with no obligations to discharge. A synthetic PASS, and
+/// deliberately NOT a certified one: nothing was proved, so nothing was
+/// witnessed, and counting it would inflate coverage with empty programs.
+pub const NO_OBLIGATIONS_DETAIL: &str = "no assertions to discharge";
+
+/// Detail for an obligation proved by the native solver.
+///
+/// Reaching this requires all of: the proven fragment gate, a CDCL root
+/// refutation, and an independent `lrat::check_proof` accept. So this string is
+/// not a description of how the answer was reached — it is the record that a
+/// machine-checkable witness EXISTS for it.
+pub const PROVED_DETAIL_CERTIFIED: &str =
+    "assertion proved: assumptions imply assertion (native QF_BV solver; machine-checked \
+     bit-blaster)";
+
+/// Detail for an obligation the native lane declined and z3 proved alone.
+///
+/// True as far as it goes, and backed by no witness anyone can re-check. This
+/// is the REG-002 residual: out-of-fragment operations (`bvsdiv`, `bvurem`,
+/// `bvsrem`, `bvudiv`, `bvashr`, `sign_extend`) have no machine-checked
+/// bit-blast, so the native lane declines and the verdict rests on z3's word.
+pub const PROVED_DETAIL_SOLVER_ONLY: &str = "assertion proved: assumptions imply assertion";
+
+/// Whether a discharged obligation carries a witness a stranger could re-check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateStatus {
+    /// A machine-checked refutation exists for it.
+    Certified,
+    /// Proved, but on the solver's word alone. No witness to re-check.
+    TrustedToSolver,
+    /// Not a discharged obligation: a failure, or a run with nothing to prove.
+    NotApplicable,
+}
+
+/// Classify one check by whether its verdict is witnessed.
+///
+/// Exact equality against the constants above, never a prefix test: the
+/// certified detail *begins with* the solver-only detail, so `starts_with`
+/// would silently report every z3-only obligation as certified — the single
+/// worst error this function could make, since it would inflate the coverage
+/// number in exactly the direction that flatters the compiler.
+///
+/// An unrecognised detail is `NotApplicable`, never `Certified`. Coverage may
+/// understate itself; it may never overstate.
+pub fn certificate_status(check: &SolverCheck) -> CertificateStatus {
+    if check.status != "PASS" {
+        return CertificateStatus::NotApplicable;
+    }
+    match check.detail.as_str() {
+        PROVED_DETAIL_CERTIFIED => CertificateStatus::Certified,
+        PROVED_DETAIL_SOLVER_ONLY => CertificateStatus::TrustedToSolver,
+        _ => CertificateStatus::NotApplicable,
+    }
+}
+
+/// How much of a verdict rests on a witness, and how much on the solver's word.
+///
+/// This is the number the roadmap's thesis turns on: every discharged
+/// obligation carries either a machine-checkable witness or a named and counted
+/// admission that it has none. Without it, a `PASS` says the same thing whether
+/// every obligation was witnessed or none was.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CertificateCoverage {
+    /// Obligations for which the native lane accepted a machine-checked
+    /// refutation DURING THIS RUN.
+    ///
+    /// Read that literally. It does not mean an artifact exists: on a plain
+    /// `anubis check` the refutation is built, handed to `lrat::check_proof`,
+    /// and dropped. Only `--evidence` retains it, and `witnesses_retained`
+    /// says which happened.
+    pub certified: usize,
+    pub trusted_to_solver: usize,
+    /// `certified + trusted_to_solver`. Not the number of checks.
+    pub discharged: usize,
+    /// The obligations resting on the solver's word, named so the admission is
+    /// specific rather than a count. These are the REG-002 residual.
+    pub uncertified: Vec<String>,
+    /// Checks that reached neither a recognised discharge nor a failure.
+    ///
+    /// An `UNKNOWN` wrap-safety obligation is the live case:
+    /// `obligation_undecided_is_unsound` deliberately excludes `wrap-safety:`
+    /// from the fail-closed set, so such a check passes the run without ever
+    /// being decided. Counting only the discharged ones would print
+    /// "3/3 obligations" for a run where a fourth was never decided at all,
+    /// which is the denominator quietly shrinking to fit the numerator.
+    pub not_discharged: usize,
+    /// Whether the refutations behind `certified` were written somewhere a
+    /// third party can re-check them. False on a plain `check`.
+    pub witnesses_retained: bool,
+}
+
+/// Tally certificate coverage over a completed check.
+pub fn certificate_coverage(checks: &[SolverCheck]) -> CertificateCoverage {
+    let mut c = CertificateCoverage::default();
+    for check in checks {
+        match certificate_status(check) {
+            CertificateStatus::Certified => c.certified += 1,
+            CertificateStatus::TrustedToSolver => {
+                c.trusted_to_solver += 1;
+                c.uncertified.push(check.name.clone());
+            }
+            CertificateStatus::NotApplicable => {
+                // A failure is reported by the refusal path and a run with no
+                // obligations has nothing to count, but anything else that
+                // reaches here was neither discharged nor refused, and the
+                // verdict must not silently omit it.
+                if check.status != "FAIL" && check.detail != NO_OBLIGATIONS_DETAIL {
+                    c.not_discharged += 1;
+                }
+            }
+        }
+    }
+    c.discharged = c.certified + c.trusted_to_solver;
+    c
+}
+
+impl CertificateCoverage {
+    /// One line for the verdict, or `None` when nothing was discharged.
+    ///
+    /// It never says "fully verified" or similar. `4/4` states what was
+    /// measured; a phrase like that would claim the correspondence chain the
+    /// compiler does not have (`docs/PROOF_CORRESPONDENCE.md`).
+    pub fn verdict_line(&self) -> Option<String> {
+        if self.discharged == 0 && self.not_discharged == 0 {
+            return None;
+        }
+        // "discharged by a machine-checked refutation", never "carries a
+        // re-checkable witness". The earlier wording said an artifact existed
+        // that a stranger could re-check, on a command that writes no artifact
+        // at all: the refutation is verified in-process and dropped. Upgrading
+        // a discarded in-process check into a durable third-party-verifiable
+        // one is exactly the overclaim `docs/CLAIMS.md` exists to catch.
+        let mut line = format!(
+            "certificates: {}/{} obligations discharged by a machine-checked refutation",
+            self.certified, self.discharged
+        );
+        if self.trusted_to_solver > 0 {
+            line.push_str(&format!(
+                "; {} trusted to the solver with none",
+                self.trusted_to_solver
+            ));
+        }
+        if self.not_discharged > 0 {
+            line.push_str(&format!("; {} never decided", self.not_discharged));
+        }
+        line.push_str(if self.witnesses_retained {
+            " (refutations retained in the evidence bundle)"
+        } else {
+            " (checked in this run and not retained; --evidence writes them)"
+        });
+        Some(line)
+    }
+}
+
+/// Detail for a z3 counterexample that re-verified under model-substitution replay.
+pub const DISPROVED_DETAIL_Z3: &str =
+    "counterexample satisfies assumptions and negates assertion (replayed)";
+
+/// Detail for a native-solver counterexample, independently re-evaluated by the
+/// checker rather than taken on the solver's word.
+pub const DISPROVED_DETAIL_NATIVE: &str =
+    "counterexample satisfies assumptions and negates assertion (native model, independently \
+     re-evaluated)";
+
+/// Whether this counterexample was independently verified before being reported.
+///
+/// The single authority on the question, so the human printer and the JSON
+/// diagnostic cannot disagree about whether a model can be repaired against.
+///
+/// It compares against the named constants rather than sniffing for a word.
+/// Sniffing for `"replayed"` looked equivalent and was not: the native lane's
+/// model IS independently re-evaluated but says so in different words, so a
+/// substring test reported a sound counterexample as untrustworthy — the safe
+/// direction, but still wrong, and it made the native lane look weaker than the
+/// z3 lane for no reason but its prose.
+///
+/// Unknown detail text answers `false`. A counterexample whose provenance this
+/// function does not recognise is one nothing should be repaired against.
+pub fn counterexample_was_replayed(check: &SolverCheck) -> bool {
+    check.detail == DISPROVED_DETAIL_Z3 || check.detail == DISPROVED_DETAIL_NATIVE
+}
+
+/// The exact text an obligation reports when it exhausts the declared memory bound.
+///
+/// Worded so [`classify_assertion_fail`] reads it as UNDECIDED rather than as a
+/// compiler defect: it says "could not decide", and it deliberately does NOT
+/// contain "solver rejected the emitted SMT", which is the marker
+/// [`refusal_locus`] uses for a query this compiler malformed.
+pub const UNDECIDED_MEMORY_DETAIL: &str = "solver could not decide this contract within its \
+     declared memory bound (z3 exhausted the `-memory` cap); failing closed — an undecided \
+     postcondition is not a proof. Restate it as a simpler or better-bounded obligation, or raise \
+     the declared bound if the obligation is genuinely this large";
+
+/// Source-level bindings from a solver counterexample, for machine-readable output.
+///
+/// The two lane-specific parsers stay private because each one anchors on its
+/// own fixed return-type tag and neither is a general SMT-LIB reader. This is
+/// the single public door onto both, so the JSON diagnostic and the CLI
+/// pretty-printer cannot disagree about what a model said.
+///
+/// Bit-vector entries win a name collision: a model cannot legitimately bind
+/// one variable at two sorts, and preferring the lane that is actually
+/// replayed keeps the trusted reading on top if one ever does.
+pub fn counterexample_bindings(model: &str) -> BTreeMap<String, String> {
+    let mut bindings = parse_z3_model(model);
+    for (name, value) in parse_fp_model_entries(model) {
+        bindings.entry(name).or_insert(value);
+    }
+    bindings
+}
+
+/// The exact text an undecided contract obligation reports.
+///
+/// Named rather than inlined because [`classify_assertion_fail`] recognises an
+/// undecided verdict by reading this prose, so a test that hand-copied the
+/// string would keep passing after production drifted away from it — which is
+/// precisely how a fail-closed refusal decays into an unclassified one. Every
+/// site uses this constant, and `undecided_detail_classifies_as_undecided`
+/// reads it from here rather than restating it.
+///
+/// It says **work budget**, not *timeout*. Since the determinism change the
+/// binding bound is z3's `rlimit` resource counter rather than a clock (see
+/// `Z3_ARGS`); the wall-clock argument that remains is a hang backstop three
+/// orders of magnitude away from where any real obligation lands. Calling this
+/// a timeout would tell a reader — or an agent reading the machine-readable
+/// diagnostic — to retry on a quieter machine, when the verdict is a
+/// deterministic function of the query and will not change.
+pub const UNDECIDED_DETAIL: &str = "solver could not decide this contract within its declared work \
+     budget (z3 returned `unknown` under the deterministic `rlimit` bound, typically a hard symbolic \
+     division/remainder); failing closed — an undecided postcondition is not a proof. Restate it as a \
+     simpler or better-bounded obligation";
+
+/// Name prefix of an obligation the checker knows it must discharge but could not ENCODE: a
+/// precondition carried through a function-valued parameter whose argument or clause is not
+/// modelable, or whose function value escapes to a place this analysis cannot follow.
+///
+/// It used to be dropped silently — `discharge_call_requires` cleared a boolean and emitted nothing,
+/// so the verdict was indistinguishable from a proof. An obligation with this prefix is never handed to
+/// z3 or the native solver: `check_obligations` turns it straight into an undecided refusal carrying
+/// [`UNRESOLVED_PRECONDITION_DETAIL`]. Its `assertion` field holds a human-readable statement of what
+/// could not be encoded, not SMT.
+pub const UNRESOLVED_REQUIRES_PREFIX: &str = "requires-unresolved@";
+
+/// Detail for an obligation that was never encoded (see [`UNRESOLVED_REQUIRES_PREFIX`]). Distinct from
+/// [`UNDECIDED_DETAIL`], which reports that z3 ran and returned `unknown`: no solver ran here, so no work
+/// budget is involved and raising one cannot help. Classified by exact equality, never by prose.
+/// Detail for an obligation the solver refuted, but only over a value the analysis over-approximates
+/// (see `TypedIR::over_approx_obligations`): the solver's model satisfies the ENCODED query, yet the
+/// encoding admits values execution may never produce, so this is not a checked counterexample. It is
+/// reported as undecided. Classified by exact equality, never by prose.
+pub const OVERAPPROX_UNDECIDED_DETAIL: &str = "undecided: the solver found a candidate counterexample, \
+     but only over a value the analysis over-approximates (a variable changed by a loop or a branch join \
+     is modeled as an arbitrary integer there), so it may not be reachable and is not a disproof. State \
+     a loop invariant, guard the use, or narrow the value explicitly";
+
+pub const UNRESOLVED_PRECONDITION_DETAIL: &str = "undecided without a solver: this precondition could \
+     not be encoded (an argument or clause is not modelable, or the function value escapes where the \
+     checker cannot follow it), so it was neither proved nor disproved; failing closed rather than \
+     assuming it holds. Make the argument modelable, guard the call, or state the precondition on the \
+     enclosing function";
+
+/// The `.smt` recorded for an unencoded obligation: comment lines only, so no consumer can mistake it
+/// for a query (it contains no `check-sat`), and the evidence bundle can still publish what was not
+/// encoded, and why.
+fn unresolved_obligation_smt_comment(obl: &SolverObligation) -> String {
+    let mut out =
+        String::from("; not encoded: precondition refused as undecided without a solver\n");
+    for line in format!("{}\n{}", obl.name, obl.assertion).lines() {
+        out.push_str("; ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// Classify one failed `SolverCheck` without guessing from free-form prose alone.
+/// Every FAIL detail for a query z3 rejected as malformed begins with this; classification and the
+/// refusal locus key on it (never on z3's own words).
+pub const Z3_REJECTED_DETAIL_PREFIX: &str = "solver rejected the emitted SMT";
+
 pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     if check.status != "FAIL" {
         return AssertionFailKind::Other;
     }
+    // Exact equality, not a substring: an unencoded obligation is undecided by construction.
+    if check.detail == UNRESOLVED_PRECONDITION_DETAIL || check.detail == OVERAPPROX_UNDECIDED_DETAIL
+    {
+        return AssertionFailKind::Undecided;
+    }
     if check.detail.contains("ANUBIS_REPLAY_MISMATCH") {
         return AssertionFailKind::ReplayMismatch;
+    }
+    // A rejected query embeds z3's message verbatim, and z3 copies program symbols and string literals
+    // into it: a rejection mentioning `undecided` must not be read as a budget limit below. Keyed on the
+    // fixed prefix this compiler writes, never on z3's text.
+    if check.detail.starts_with(Z3_REJECTED_DETAIL_PREFIX) {
+        return AssertionFailKind::Other;
     }
     // Wrap-safety obligations are named `wrap-safety:…` (see `push_wrap_safety_obligations`).
     if check.name.starts_with("wrap-safety:") {
@@ -15553,7 +20678,11 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     if check.model.is_some() {
         return AssertionFailKind::Disproved;
     }
+    // `time budget` is the pre-determinism wording. It is kept so an archived
+    // evidence bundle deserialized today still classifies as undecided rather
+    // than falling through to `Other`; nothing emits it any more.
     if check.detail.contains("time budget")
+        || check.detail.contains("work budget")
         || check.detail.contains("could not decide")
         || check.detail.contains("undecided")
         || check.detail.contains("returned `unknown`")
@@ -15561,6 +20690,66 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
         return AssertionFailKind::Undecided;
     }
     AssertionFailKind::Other
+}
+
+/// Where the defect behind a refusal actually lives.
+///
+/// [`AssertionFailKind`] answers "what did the solver establish"; this answers
+/// "who should change something", and they are not the same question. The
+/// residual bucket `AssertionFailKind::Other` collects refusals with wildly
+/// different owners: a native-versus-z3 cross-check alarm, a vacuous contract,
+/// a missing z3, and a malformed query this compiler emitted. Mapping that
+/// whole bucket onto one action told an agent to restate the obligation or
+/// raise the budget in response to a SOUNDNESS ALARM — the precise move
+/// `docs/language/DIAGNOSTICS_JSON.md` forbids, delivered through the channel
+/// an agent actually reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalLocus {
+    /// The program is wrong. Repair it.
+    Program,
+    /// This compiler or its solver is wrong. Do NOT edit the program: doing so
+    /// destroys the evidence of the disagreement.
+    Compiler,
+    /// The toolchain is missing or broken. Not a program defect and not a
+    /// capability limit; no contract edit can fix it.
+    Environment,
+    /// Beyond what this compiler can decide. Restate, or raise the declared
+    /// budget.
+    Capability,
+}
+
+/// Classify a refusal by who owns the defect.
+///
+/// Named markers are matched before the generic kinds, because the generic
+/// kinds are what lose the distinction.
+pub fn refusal_locus(check: &SolverCheck) -> RefusalLocus {
+    let d = &check.detail;
+    // Soundness alarms. The compiler contradicted itself or its cross-check.
+    if d.contains("ANUBIS_REPLAY_MISMATCH")
+        || d.contains("ANUBIS_NATIVE_DISAGREEMENT")
+        || d.contains("ANUBIS_Z3_ONLY_UNTRUSTED")
+        || d.contains("solver rejected the emitted SMT")
+    {
+        return RefusalLocus::Compiler;
+    }
+    // The solver could not be run at all. Telling anyone to restate a contract
+    // because z3 is not installed is worse than saying nothing.
+    if d.starts_with("z3 unavailable")
+        || d.starts_with("z3 stdin failed")
+        || d.starts_with("z3 execution failed")
+    {
+        return RefusalLocus::Environment;
+    }
+    // A contract whose own premises cannot hold is a program defect, not a
+    // limit of the checker.
+    if d.contains("self-contradictory") {
+        return RefusalLocus::Program;
+    }
+    match classify_assertion_fail(check) {
+        AssertionFailKind::Disproved | AssertionFailKind::WrapRisk => RefusalLocus::Program,
+        AssertionFailKind::ReplayMismatch => RefusalLocus::Compiler,
+        AssertionFailKind::Undecided | AssertionFailKind::Other => RefusalLocus::Capability,
+    }
 }
 
 /// Parse `(_ bvN 64)` or decimal from a wrap-safety obligation fragment.
@@ -16036,11 +21225,20 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
             format!("{n} obligation(s) failed (contract disproof and/or wrap risk):"),
         )
     } else if all_undecided {
+        // "within solver budget" is only true when a solver ran; an unencoded obligation never
+        // reached one.
+        let any_unencoded = fails.iter().any(|c| {
+            c.detail == UNRESOLVED_PRECONDITION_DETAIL || c.detail == OVERAPPROX_UNDECIDED_DETAIL
+        });
         (
             "ANUBIS_ASSERTION_UNDECIDED",
-            format!(
-                "{n} assertion(s) undecided within solver budget (not a proof, not a counterexample):"
-            ),
+            if any_unencoded {
+                format!("{n} assertion(s) undecided (not a proof, not a counterexample):")
+            } else {
+                format!(
+                    "{n} assertion(s) undecided within solver budget (not a proof, not a counterexample):"
+                )
+            },
         )
     } else if any_replay
         && kinds.iter().all(|k| {
@@ -16090,8 +21288,25 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                     }
                 }
             }
+            AssertionFailKind::Undecided if c.detail == OVERAPPROX_UNDECIDED_DETAIL => {
+                out.push_str(
+                    "\n    (a candidate counterexample exists only over an over-approximated value — not a disproof)",
+                );
+                out.push_str(&format!("\n    detail: {}", c.detail));
+            }
+            AssertionFailKind::Undecided if c.detail == UNRESOLVED_PRECONDITION_DETAIL => {
+                out.push_str("\n    (not encoded — no solver ran; neither proved nor disproved)");
+                if !c.smt.is_empty() {
+                    for line in c.smt.lines().skip(1) {
+                        out.push_str(&format!("\n    {}", line.trim_start_matches("; ")));
+                    }
+                }
+                out.push_str(&format!("\n    detail: {}", c.detail));
+            }
             AssertionFailKind::Undecided => {
-                out.push_str("\n    (solver returned unknown / hit time budget)");
+                out.push_str(
+                    "\n    (solver returned unknown — undecided within the declared work budget)",
+                );
                 if !c.detail.is_empty() {
                     out.push_str(&format!("\n    detail: {}", c.detail));
                 }
@@ -16121,19 +21336,28 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
 }
 
 /// Build-path variant: same classification, with an explicit "refusing to build" lead-in.
+///
+/// This refusal deliberately does NOT name the flag that would bypass it.
+///
+/// It used to: every build-path contract refusal ended with "or re-run with
+/// `--no-verify` to build anyway". For a human that reads as a caveat. For an
+/// agent optimising to make the check pass it reads as the answer, and it is
+/// the cheapest edit available — strictly cheaper than understanding the
+/// counterexample. A refusal that ships its own bypass is not a refusal, and
+/// once the refusal is machine-readable it becomes the statistically dominant
+/// repair.
+///
+/// The flag still exists and is still documented in `--help`. What changed is
+/// that the compiler no longer recommends it at the moment of refusing.
+/// `diagnostics_never_advertise_their_own_bypass` in `compiler/src/lib.rs`
+/// enforces this over the emitted text rather than by review, because the line
+/// this comment replaces is itself the evidence that review does not hold.
 pub fn format_build_check_failures(fails: &[SolverCheck]) -> String {
     let body = format_check_failures(fails);
-    // Insert refuse note after the code prefix.
     if let Some((code, rest)) = body.split_once(": ") {
-        format!(
-            "{code}: refusing to build — {rest}\n  Fix the contract, or re-run with `--no-verify` \
-             to build anyway (the program's proof surface will be unverified)."
-        )
+        format!("{code}: refusing to build — {rest}")
     } else {
-        format!(
-            "{body}\n  Fix the contract, or re-run with `--no-verify` to build anyway \
-             (the program's proof surface will be unverified)."
-        )
+        body
     }
 }
 
@@ -16167,6 +21391,565 @@ fn is_nonzero_int_literal(e: &Expr) -> bool {
 /// variable and stays inert in the SMT (nothing references it); it only gates variable-divisor modeling.
 fn nzdiv_mark(v: &str) -> String {
     format!("\u{1}nzdiv:{v}")
+}
+
+/// The integer values a value-position `if` / `match` / tail-only block may produce, or `None` when any
+/// value-producing arm is not an integer-modelable expression. An arm that diverges (`return`, `break`,
+/// `continue`) produces no value and is skipped. A `match` / `if let` arm whose value mentions one of its
+/// own pattern binders is refused: the binder is not modeled, and an outer modeled variable of the same
+/// name would be mistaken for it. A block with statements is refused (they may shadow names).
+fn int_arm_values(e: &Expr, ctx: &SemanticContext) -> Option<Vec<Expr>> {
+    fn collect(e: &Expr, ctx: &SemanticContext, out: &mut Vec<Expr>, depth: u32) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        match e {
+            Expr::Call { callee, .. }
+                if matches!(callee.as_str(), "return" | "break" | "continue") =>
+            {
+                true
+            }
+            Expr::If { then, else_, .. } => {
+                collect(then, ctx, out, depth + 1) && collect(else_, ctx, out, depth + 1)
+            }
+            Expr::Block { stmts, tail } => match (stmts.is_empty(), tail) {
+                (true, Some(t)) => collect(t, ctx, out, depth + 1),
+                _ => false,
+            },
+            Expr::Match { arms, .. } => arms.iter().all(|arm| {
+                let mut used = BTreeSet::new();
+                collect_expr_vars(&arm.body, &mut used);
+                let binders: BTreeSet<String> = arm.pattern.bound_names().into_iter().collect();
+                used.is_disjoint(&binders) && collect(&arm.body, ctx, out, depth + 1)
+            }),
+            Expr::IfLet {
+                pattern,
+                then,
+                else_,
+                ..
+            } => {
+                let mut used = BTreeSet::new();
+                collect_expr_vars(then, &mut used);
+                let binders: BTreeSet<String> = pattern.bound_names().into_iter().collect();
+                used.is_disjoint(&binders)
+                    && collect(then, ctx, out, depth + 1)
+                    && collect(else_, ctx, out, depth + 1)
+            }
+            other => {
+                if is_int_modelable(other, &ctx.solver_int_vars) {
+                    out.push(other.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+    if !matches!(
+        e,
+        Expr::If { .. } | Expr::Match { .. } | Expr::IfLet { .. } | Expr::Block { .. }
+    ) {
+        return None;
+    }
+    let mut out = Vec::new();
+    (collect(e, ctx, &mut out, 0) && !out.is_empty()).then_some(out)
+}
+
+/// Rewrite every field read off a struct LITERAL (`P { a: e }.a`) to the field's value `e`, applying the
+/// runtime's coercion for the field's declared type. Folds only when that coercion is known: the value's
+/// kind already matches the field, an integer literal into a float field (which the runtime widens:
+/// `7` becomes `7.0`), or a non-negative integer literal that fits an unsigned field. Anything else is
+/// left as it was, so it stays unencodable (and therefore unresolved), never modeled wrongly.
+fn fold_literal_field_reads(e: &Expr, ctx: &SemanticContext) -> Expr {
+    let rec = |x: &Expr| Box::new(fold_literal_field_reads(x, ctx));
+    match e {
+        Expr::FieldAccess { base, field, span } => {
+            let base_f = fold_literal_field_reads(base, ctx);
+            if let Expr::StructLiteral { name, fields, .. } = &base_f {
+                let declared = ctx
+                    .struct_fields
+                    .get(name)
+                    .and_then(|fs| fs.get(field))
+                    .cloned();
+                if let (Some(value), Some(ty)) = (
+                    fields
+                        .iter()
+                        .find(|(f, _)| f == field)
+                        .map(|(_, v)| (**v).clone()),
+                    declared,
+                ) {
+                    if let Some(folded) = coerce_literal_into_field(&value, &ty) {
+                        return folded;
+                    }
+                }
+            }
+            Expr::FieldAccess {
+                base: Box::new(base_f),
+                field: field.clone(),
+                span: *span,
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: rec(lhs),
+            rhs: rec(rhs),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: op.clone(),
+            expr: rec(expr),
+        },
+        Expr::Call { callee, args } => {
+            let args: Vec<Expr> = args
+                .iter()
+                .map(|a| fold_literal_field_reads(a, ctx))
+                .collect();
+            unfold_expr_fn(callee, &args, ctx, 0).unwrap_or(Expr::Call {
+                callee: callee.clone(),
+                args,
+            })
+        }
+        other => other.clone(),
+    }
+}
+
+/// `P { f: v }.f` resolved with `f`'s DECLARED type (`coerce_literal_into_field`), everywhere in `e`, and
+/// NOTHING else: unlike `fold_literal_field_reads` it never unfolds an expression-function call. That
+/// unfolding is right inside a `requires` clause, but in a `let` initializer it erases the call itself —
+/// `let z = g(P { v: 0 }.v)` became `100 / 0`, so `g`'s precondition was never discharged (a false
+/// accept). Folding a field read replaces it by exactly the value the runtime computes, so every later
+/// use of the folded expression means the same thing.
+fn fold_struct_literal_reads(e: &Expr, ctx: &SemanticContext) -> Expr {
+    let rec = |x: &Expr| Box::new(fold_struct_literal_reads(x, ctx));
+    match e {
+        Expr::FieldAccess { base, field, span } => {
+            let base_f = fold_struct_literal_reads(base, ctx);
+            if let Expr::StructLiteral { name, fields, .. } = &base_f {
+                let declared = ctx
+                    .struct_fields
+                    .get(name)
+                    .and_then(|fs| fs.get(field))
+                    .cloned();
+                if let (Some(value), Some(ty)) = (
+                    fields
+                        .iter()
+                        .find(|(f, _)| f == field)
+                        .map(|(_, v)| (**v).clone()),
+                    declared,
+                ) {
+                    if let Some(folded) = coerce_literal_into_field(&value, &ty) {
+                        return folded;
+                    }
+                }
+            }
+            Expr::FieldAccess {
+                base: Box::new(base_f),
+                field: field.clone(),
+                span: *span,
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: rec(lhs),
+            rhs: rec(rhs),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: op.clone(),
+            expr: rec(expr),
+        },
+        Expr::Call { callee, args } => Expr::Call {
+            callee: callee.clone(),
+            args: args
+                .iter()
+                .map(|a| fold_struct_literal_reads(a, ctx))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// Unfold a call to an expression function (`SemanticContext::expr_fns`) into its body with the
+/// parameters replaced by the arguments, recursively up to a small depth; `None` when `callee` is not
+/// one or the depth is exhausted. A call-position name resolves to a user function first, as at
+/// runtime, so a local of the same name cannot be meant here.
+fn unfold_expr_fn(callee: &str, args: &[Expr], ctx: &SemanticContext, depth: u32) -> Option<Expr> {
+    if depth > 4 {
+        return None;
+    }
+    let (params, body) = ctx.expr_fns.get(callee)?;
+    if params.len() != args.len() {
+        return None;
+    }
+    let sub: BTreeMap<String, Expr> = params.iter().cloned().zip(args.iter().cloned()).collect();
+    let inst = substitute_vars(body, &sub);
+    // Unfold nested expression-function calls in the instantiated body — never the function itself,
+    // so a recursive definition stays an (unencodable) call rather than looping.
+    fn go(e: &Expr, ctx: &SemanticContext, depth: u32, this: &str) -> Expr {
+        match e {
+            Expr::Call { callee, args } => {
+                let args: Vec<Expr> = args.iter().map(|a| go(a, ctx, depth, this)).collect();
+                if callee != this {
+                    if let Some(u) = unfold_expr_fn(callee, &args, ctx, depth + 1) {
+                        return u;
+                    }
+                }
+                Expr::Call {
+                    callee: callee.clone(),
+                    args,
+                }
+            }
+            Expr::Binary { op, lhs, rhs } => Expr::Binary {
+                op: op.clone(),
+                lhs: Box::new(go(lhs, ctx, depth, this)),
+                rhs: Box::new(go(rhs, ctx, depth, this)),
+            },
+            Expr::Unary { op, expr } => Expr::Unary {
+                op: op.clone(),
+                expr: Box::new(go(expr, ctx, depth, this)),
+            },
+            other => other.clone(),
+        }
+    }
+    Some(go(&inst, ctx, depth, callee))
+}
+
+/// The value a struct field of declared type `ty` holds when initialized with `value`, when that is
+/// known statically without evaluating anything; `None` otherwise.
+fn coerce_literal_into_field(value: &Expr, ty: &str) -> Option<Expr> {
+    let ty = ty.trim();
+    match value {
+        Expr::StrLiteral(_) if ty == "string" => Some(value.clone()),
+        Expr::Literal(l) if l == "true" || l == "false" => (ty == "bool").then(|| value.clone()),
+        Expr::Literal(l) => {
+            let is_int = l.parse::<i64>().is_ok();
+            let is_float = !is_int && l.parse::<f64>().is_ok_and(|f| f.is_finite());
+            if is_float_ty(ty) {
+                if is_int {
+                    Some(Expr::Literal(format!("{l}.0")))
+                } else if is_float {
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            } else if is_integer_ty(ty) && is_int {
+                match ty::unsigned_mask_width(ty) {
+                    Some(w) => {
+                        let v: i64 = l.parse().ok()?;
+                        (v >= 0 && (w >= 63 || v < (1i64 << w))).then(|| value.clone())
+                    }
+                    None => Some(value.clone()),
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether `body` directly calls a user function that declares a `requires`.
+fn body_calls_contracted_fn(body: &[Stmt], ctx: &SemanticContext) -> bool {
+    let mut hit = false;
+    visit::each_expr_in_stmts(body, &mut |e| {
+        if let Expr::Call { callee, .. } = e {
+            if ctx
+                .fn_contracts
+                .get(callee)
+                .is_some_and(|(_, requires, _)| !requires.is_empty())
+            {
+                hit = true;
+            }
+        }
+    });
+    hit
+}
+
+/// Record, by name, every obligation built since the last scan whose assertion or assumptions mention a
+/// currently havoced variable (see `havoc_mark`). Called at every statement boundary of
+/// `analyze_stmts` and after each function body, so the havoc state it reads is the one the obligation
+/// was built under (or a later, more havoced one — which only makes it more conservative).
+fn mark_over_approx_obligations(ctx: &mut SemanticContext) {
+    let start = ctx.over_approx_scan.min(ctx.solver_obligations.len());
+    let havoced: BTreeSet<String> = ctx
+        .solver_int_vars
+        .iter()
+        .filter_map(|m| m.strip_prefix("\u{1}havoc:").map(smt_var))
+        .collect();
+    if havoced.is_empty() && ctx.assert_deferred_vars.is_empty() {
+        ctx.over_approx_scan = ctx.solver_obligations.len();
+        return;
+    }
+    // An in-body `assert` is enforced at runtime. Before havoc kept loop/join-written integers modeled
+    // (and before call-site preconditions modeled float/string parameters), an assert over such a value
+    // was never emitted and was left to the runtime; withdrawing it here keeps exactly that behavior,
+    // rather than refusing a program whose assert holds at runtime. Contract obligations (`requires`,
+    // `ensures`) are not runtime-enforced, so they stay, marked over-approximated.
+    //
+    // Withdrawn by renaming IN PLACE (filtered out once, when the typed IR is built): other code holds
+    // index marks into `solver_obligations` across nested analysis, so this must never shift indices.
+    let deferred: BTreeSet<String> = havoced.union(&ctx.assert_deferred_vars).cloned().collect();
+    let len = ctx.solver_obligations.len();
+    let mut over = Vec::new();
+    for obl in &mut ctx.solver_obligations[start..len] {
+        if obl.name.starts_with("assert:")
+            && depends_on_havoc(
+                &obl.assertion,
+                &obl.assumptions,
+                &obl.guard_assumptions,
+                &deferred,
+                HavocDependence::Definitional,
+            )
+        {
+            obl.name = format!("{WITHDRAWN_ASSERT_PREFIX}{}", obl.name);
+            continue;
+        }
+        // A loop-invariant STEP obligation is about an arbitrary state satisfying the invariant by
+        // construction: its counterexample refutes inductiveness itself. The BASE case runs on the real
+        // entry state, which may hold over-approximated values, so it is labeled like anything else.
+        if !obl.name.starts_with("loop-invariant-step")
+            && depends_on_havoc(
+                &obl.assertion,
+                &obl.assumptions,
+                &obl.guard_assumptions,
+                &havoced,
+                HavocDependence::Closure,
+            )
+        {
+            over.push(obl.name.clone());
+        }
+    }
+    ctx.over_approx_obligations.extend(over);
+    ctx.over_approx_scan = len;
+}
+
+/// See `SemanticContext::helper_labeled_cache`: (secret_fns size, tainting_fns size, helper → the
+/// secret or tainting function value it hands back).
+type HelperLabeled = (usize, usize, BTreeMap<String, String>);
+
+/// See `SemanticContext::fn_return_values`.
+#[derive(Clone, Debug)]
+struct ReturnValues {
+    /// Formal names (a method's include `self` at index 0).
+    params: Vec<String>,
+    /// Every distinct return value, flattened to tail leaves.
+    values: Vec<Expr>,
+    /// `identity_let_alias_map` of the body.
+    alias: BTreeMap<String, String>,
+    /// Stable locals (one `let`, never assigned, not re-bound otherwise) and their initializers, which
+    /// a return value may be rewritten through (`let t = [g]; … return t[0]`).
+    locals: BTreeMap<String, Expr>,
+    /// Every name the body binds or assigns (locals, re-bound or assigned formals): such a name in a
+    /// return value means the callee's binding, not a caller's or a global.
+    bound: BTreeSet<String>,
+    /// Every expression the body evaluates as an assigned value or a call (for the over-approximating
+    /// scan when recursion stops expansion; see `return_values_alias`).
+    evaluated: Vec<Expr>,
+}
+
+impl ReturnValues {
+    fn of(params: Vec<String>, values: Vec<Expr>, body: &[Stmt]) -> Self {
+        let mut bound = function_bound_names(&[], body);
+        bound.extend(assigned_roots(body));
+        let non_let = non_let_bound_names(body);
+        let mut locals = single_let_inits(body);
+        locals.retain(|n, _| !non_let.contains(n) && !params.contains(n));
+        let mut evaluated = Vec::new();
+        visit::each_stmt(body, &mut |st, _| match st {
+            Stmt::Assign { value, .. } => evaluated.push(value.clone()),
+            Stmt::Let { init, .. } => evaluated.push(init.clone()),
+            _ => {}
+        });
+        visit::each_expr_in_stmts(body, &mut |e| {
+            if matches!(e, Expr::Call { .. }) {
+                evaluated.push(e.clone());
+            }
+        });
+        ReturnValues {
+            params,
+            values,
+            alias: identity_let_alias_map(body),
+            locals,
+            bound,
+            evaluated,
+        }
+    }
+}
+
+/// Every distinct return value of `body`: tail values and explicit returns, flattened to tail leaves
+/// (`match c { _ => g }` → `g`), so a parameter in an arm is substituted instead of left inside a
+/// binding form.
+fn all_return_values(body: &[Stmt]) -> Vec<Expr> {
+    let mut all = Vec::new();
+    tail_values(body, true, &mut all);
+    for st in body {
+        collect_returns_in_stmt(st, &mut all);
+    }
+    let mut leaves: Vec<Expr> = Vec::new();
+    for v in &all {
+        let mut out = Vec::new();
+        expr_tail_values(v, &mut out);
+        for l in out {
+            let key = format!("{l:?}");
+            if !leaves.iter().any(|t| format!("{t:?}") == key) {
+                leaves.push(l);
+            }
+        }
+    }
+    leaves
+}
+
+/// Free names of `e` (values and callees), with correct scoping — the runtime's own capture analysis.
+fn free_names(e: &Expr) -> BTreeSet<String> {
+    let mut vars = BTreeSet::new();
+    let mut callees = BTreeSet::new();
+    crate::backends::run::collect_free_expr(e, &BTreeSet::new(), &mut vars, &mut callees);
+    vars.extend(callees);
+    vars
+}
+
+/// See `SemanticContext::stmt_states`.
+type StmtState = (Vec<String>, BTreeSet<String>, Vec<String>);
+
+/// An exact definition `(= anb_v e)`: the defined variable and the variables of `e`.
+type SmtDefinition = (String, BTreeSet<String>);
+
+/// How `depends_on_havoc` follows facts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HavocDependence {
+    /// Only through exact definitions (`y = x + 1` depends on `x`). Used where MORE dependence means
+    /// LESS checking — withdrawing an assert to the runtime, exempting an operand from the wrap lint —
+    /// so a merely shared fact (a loop guard `i < p` over a parameter) must not count.
+    Definitional,
+    /// Also through co-occurrence in any fact whose variables are not pinned. Used to LABEL a failure
+    /// undecided rather than disproved: erring toward "may depend" only weakens the label.
+    Closure,
+}
+
+/// Whether the truth of `assertion` under `assumptions` may depend on the value of a variable in `seeds`
+/// (havoced — an arbitrary stand-in for an unknown value).
+///
+/// Exact definitions come only from facts that are NOT path guards (`guards`): `if i == n` restricts
+/// which paths run, it does not compute `i`, so it must not be read as `i := n`.
+///
+/// `D` is the seeds closed under exact definitions: `(= anb_v e)` with `e` mentioning a `D` variable puts
+/// `v` in `D`. A seed that is itself defined exactly over non-seed values (a stale mark) is not a seed.
+/// In `Definitional` mode the answer is whether the assertion's own variables meet `D`. In `Closure`
+/// mode a variable defined exactly over values outside `D` is PINNED (fixed whatever the seeds are), and
+/// the closure from the assertion's variables expands through any fact mentioning an unpinned variable;
+/// the answer is whether that closure meets `D`.
+fn depends_on_havoc(
+    assertion: &str,
+    assumptions: &[String],
+    guards: &[String],
+    seeds: &BTreeSet<String>,
+    mode: HavocDependence,
+) -> bool {
+    let facts: Vec<(BTreeSet<String>, Option<SmtDefinition>)> = assumptions
+        .iter()
+        .map(|a| {
+            let mut vs = BTreeSet::new();
+            collect_vars_from_smt(a, &mut vs);
+            let def = if guards.contains(a) {
+                None
+            } else {
+                a.strip_prefix("(= ").and_then(|rest| {
+                    let (lhs, rhs) = rest.split_once(' ')?;
+                    if !lhs.starts_with("anb_") {
+                        return None;
+                    }
+                    let mut rv = BTreeSet::new();
+                    collect_vars_from_smt(rhs, &mut rv);
+                    (!rv.contains(lhs)).then(|| (lhs.to_string(), rv))
+                })
+            };
+            (vs, def)
+        })
+        .collect();
+    let pinned_over = |v: &str, excluded: &BTreeSet<String>| {
+        facts.iter().any(|(_, def)| {
+            def.as_ref()
+                .is_some_and(|(lhs, rv)| lhs == v && rv.is_disjoint(excluded))
+        })
+    };
+    let seeds: BTreeSet<String> = seeds
+        .iter()
+        .filter(|s| !pinned_over(s, seeds))
+        .cloned()
+        .collect();
+    if seeds.is_empty() {
+        return false;
+    }
+    let mut dep = seeds.clone();
+    loop {
+        let before = dep.len();
+        for (_, def) in &facts {
+            if let Some((lhs, rv)) = def {
+                if !rv.is_disjoint(&dep) {
+                    dep.insert(lhs.clone());
+                }
+            }
+        }
+        if dep.len() == before {
+            break;
+        }
+    }
+    let mut own = BTreeSet::new();
+    collect_vars_from_smt(assertion, &mut own);
+    if mode == HavocDependence::Definitional {
+        return !own.is_disjoint(&dep);
+    }
+    // Whether the obligation's PATH can be reached depends on an arbitrary value when a path guard
+    // mentions one (`if j == i + 1 { h(j) }` with `i` havoced): a counterexample may sit on a path that
+    // never runs, even when the asserted value itself is pinned.
+    let guard_dep = guards.iter().any(|g| {
+        let mut vs = BTreeSet::new();
+        collect_vars_from_smt(g, &mut vs);
+        !vs.is_disjoint(&dep)
+    });
+    if guard_dep {
+        return true;
+    }
+    let pinned: BTreeSet<String> = facts
+        .iter()
+        .filter_map(|(_, def)| def.as_ref())
+        .filter(|(lhs, rv)| !dep.contains(lhs) && rv.is_disjoint(&dep))
+        .map(|(lhs, _)| lhs.clone())
+        .collect();
+    let mut closure = own;
+    loop {
+        let before = closure.len();
+        for (vs, _) in &facts {
+            if vs
+                .iter()
+                .any(|v| closure.contains(v) && !pinned.contains(v))
+            {
+                closure.extend(vs.iter().cloned());
+            }
+        }
+        if closure.len() == before {
+            break;
+        }
+    }
+    !closure.is_disjoint(&dep)
+}
+
+/// Name prefix of an `assert:` obligation withdrawn to the runtime by `mark_over_approx_obligations`.
+/// Such obligations are removed when the typed IR is built and never reach a solver.
+const WITHDRAWN_ASSERT_PREFIX: &str = "\u{1}withdrawn-assert:";
+
+/// Marker: integer parameter `v` is modeled only because the body calls a contracted function (not
+/// because of a contract or an in-body assert of its own). Such a parameter was unmodeled before, so the
+/// wrap-risk lint keeps ignoring arithmetic over it, as for a havoc.
+fn wrapexempt_mark(v: &str) -> String {
+    format!("\u{1}wrapexempt:{v}")
+}
+
+/// Marker: `v` is integer-modeled only as a HAVOC — an unconstrained value kept across a loop or branch
+/// join by `keepable_written_ints` — and has had no definition since. Such a variable was unmodeled
+/// before that precision change, so the wrap-risk lint (which runs over modeled operands) skips it to
+/// keep its previous behavior; contract obligations still see it. Cleared with the rest of the binding's
+/// model, so a later definition (`x = 5`) makes it an ordinary modeled variable again.
+fn havoc_mark(v: &str) -> String {
+    format!("\u{1}havoc:{v}")
 }
 
 /// Parameter/var proven non-negative by `requires` (sound pow2 `/` → `bvlshr`).
@@ -16208,6 +21991,8 @@ fn seq_fixed_len(v: &str, int_vars: &BTreeSet<String>) -> Option<u64> {
 /// Drop every solver fact / modelability mark for a binding (int, nzdiv, seq, seqlen).
 fn clear_binding_modelability(int_vars: &mut BTreeSet<String>, name: &str) {
     int_vars.remove(name);
+    int_vars.remove(&havoc_mark(name));
+    int_vars.remove(&wrapexempt_mark(name));
     int_vars.remove(&nzdiv_mark(name));
     int_vars.remove(&nonneg_mark(name));
     int_vars.remove(&seq_mark(name));
@@ -16246,6 +22031,8 @@ fn invalidate_binding_facts(ctx: &mut SemanticContext, assumptions: &mut Vec<Str
 /// plain `let` / `LetPattern` shadow is PERMANENT and needs no restore.
 struct BindingMembership {
     int: bool,
+    havoc: bool,
+    wrapexempt: bool,
     nzdiv: bool,
     seq: bool,
     seqlen: Vec<String>,
@@ -16258,6 +22045,8 @@ fn capture_binding_membership(ctx: &SemanticContext, name: &str) -> BindingMembe
     let seqlen_prefix = format!("\u{1}seqlen:{name}:");
     BindingMembership {
         int: ctx.solver_int_vars.contains(name),
+        havoc: ctx.solver_int_vars.contains(&havoc_mark(name)),
+        wrapexempt: ctx.solver_int_vars.contains(&wrapexempt_mark(name)),
         nzdiv: ctx.solver_int_vars.contains(&nzdiv_mark(name)),
         seq: ctx.solver_int_vars.contains(&seq_mark(name)),
         seqlen: ctx
@@ -16275,6 +22064,12 @@ fn capture_binding_membership(ctx: &SemanticContext, name: &str) -> BindingMembe
 fn restore_binding_membership(ctx: &mut SemanticContext, name: &str, m: BindingMembership) {
     if m.int {
         ctx.solver_int_vars.insert(name.to_string());
+    }
+    if m.havoc {
+        ctx.solver_int_vars.insert(havoc_mark(name));
+    }
+    if m.wrapexempt {
+        ctx.solver_int_vars.insert(wrapexempt_mark(name));
     }
     if m.nzdiv {
         ctx.solver_int_vars.insert(nzdiv_mark(name));
@@ -16582,11 +22377,15 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // per-field facts need their own symbols + reassignment invalidation (a documented residual).
         // NOTE the walker coupling (see substitute_vars): every shape admitted here MUST be substituted
         // and var-collected — FieldAccess/StructLiteral arms exist in substitute_vars/collect_expr_vars.
+        //
+        // NOT modeled here any more (2026-09-23): this predicate cannot see the struct's DECLARED field
+        // types, and the runtime coerces a struct-literal field to its declared type — `P { x: 7 }.x`
+        // is 7.0 for `x: f64`, so `let r = P { x: 7 }.x / 2` is 3.5 at runtime, while this arm modeled
+        // the integer 7 and certified `r == 3`. Such reads are resolved WITH the declared type by
+        // `fold_literal_field_reads` (at call sites and `let` initializers) before modeling; one that
+        // reaches here unfolded is unmodeled, fail-closed.
         Expr::FieldAccess { base, field, .. } => match base.as_ref() {
-            Expr::StructLiteral { fields, .. } => {
-                fields.iter().any(|(n, _)| n == field)
-                    && fields.iter().all(|(_, v)| is_int_modelable(v, int_vars))
-            }
+            Expr::StructLiteral { .. } => false,
             // A field read `p.field` off a struct VAR is modelable IFF that (base, field) has a
             // registered symbol — i.e. `p` is a struct param whose integer field `field` is constrained
             // by a `requires` (see the has_contract registration). An unregistered field is unmodeled
@@ -16710,19 +22509,17 @@ fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
 }
 
 /// Phase-3 QF_FP: is `e` a modelable FLOAT arithmetic term — a float var, a FINITE decimal-representable
-/// f64 literal, or `+ - *` (and unary `-`) over those? `/` `%`, casts, and non-finite / scientific-
-/// notation literals are excluded (fail-closed). Mirrors `is_int_modelable`, over `solver_float_vars`.
+/// f64 literal, or `+ - *` (and unary `-`) over those? `/` `%`, casts, and non-finite literals are
+/// excluded (fail-closed). Mirrors `is_int_modelable`, over `solver_float_vars`.
 fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => float_vars.contains(v),
-        // A finite f64 literal that has a plain decimal form: `"NaN"`/`"inf"` both `.parse::<f64>()` OK in
-        // Rust (a non-finite literal would break the NaN/inf reasoning), and a very large/small value
-        // formats to scientific notation (`1e20`) which is NOT a valid SMT-LIB Real — reject both.
+        // A finite f64 literal: `"NaN"`/`"inf"` both `.parse::<f64>()` OK in Rust (a non-finite literal
+        // would break the NaN/inf reasoning) — reject those. A very large/small value is fine: the
+        // encoder prints it with `smt_decimal`, never in scientific notation (`1e20`), which is not an
+        // SMT-LIB Real.
         Expr::Literal(l) => {
-            let plain_finite = l
-                .parse::<f64>()
-                .map(|v| v.is_finite() && !format!("{v:?}").contains(['e', 'E']))
-                .unwrap_or(false);
+            let plain_finite = l.parse::<f64>().map(|v| v.is_finite()).unwrap_or(false);
             // CRITICAL (final hunt a2c88967): an INTEGER-FORM literal beyond f64's exact-integer range
             // (2^53) is kept EXACTLY as i64 at runtime when it flows through an ALL-INTEGER subexpr —
             // `9007199254740993 % 2 = 1` — but the float encoder rounds it via `to_fp` (2^53+1 → the even
@@ -16730,9 +22527,15 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
             // rounds, whereas `/`'s divergence is truncation (gated separately in the `/` arm). Reject an
             // int-form literal with |n| > 2^53 from the float lane. A float-FORM literal (has a `.`) rounds
             // IDENTICALLY at parse-time on both sides (runtime and `to_fp`), so it stays admissible.
+            //
+            // A literal that is NOT an i64 but IS a u64 (`18446744073709551615`, `9223372036854775808`) is
+            // a WRAPPED integer at runtime — `literal_to_anubis_value` makes it `Int(u as i64)`, so the
+            // first is -1 — never the float ~1.8e19 that `to_fp` would model. Reject it. (Until
+            // 2026-09-23 this was excluded only by accident: every such value's `{:?}` form has an
+            // exponent, and the scientific-notation gate rejected it.)
             let int_form_exact = match l.parse::<i64>() {
                 Ok(n) => n.unsigned_abs() <= (1u64 << 53),
-                Err(_) => true,
+                Err(_) => l.parse::<u64>().is_err(),
             };
             plain_finite && int_form_exact
         }
@@ -16780,7 +22583,16 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
                 && is_float_modelable(rhs, float_vars)
                 && (is_genuinely_float(lhs, float_vars) || is_genuinely_float(rhs, float_vars))
         }
-        Expr::Unary { op, expr } if op == "-" => is_float_modelable(expr, float_vars),
+        // Unary `-` has the SAME sign-of-zero hazard as the `+ - * %` arm above: over an ALL-INTEGER
+        // operand the runtime negates an `Int` (`-0` is `Int(0)`, coerced to +0.0), while `fp.neg` of the
+        // encoded +0.0 is -0.0 — and `1.0 / (x * -0)` then proves a sign the runtime never produces. So an
+        // integer-kinded operand must fold exactly to a NON-ZERO value; a genuinely float operand is
+        // negated in f64 at runtime too, where `fp.neg` is exact (including -0.0 for +0.0).
+        Expr::Unary { op, expr } if op == "-" => {
+            is_float_modelable(expr, float_vars)
+                && (is_genuinely_float(expr, float_vars)
+                    || int_chain_exact(e).is_some_and(|v| v != 0))
+        }
         Expr::Declassify { inner, .. } => is_float_modelable(inner, float_vars),
         // A float field `p.field` off a struct VAR — modelable IFF registered (a struct param's float
         // field constrained by a `requires`). Mirrors the int/string field arms.
@@ -16793,8 +22605,8 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     }
 }
 
-/// True when `e` is GENUINELY a float at runtime — a float-form literal (`7.0`, has a `.`; an `e`/`E`
-/// literal is already rejected by `is_float_modelable`), a registered float variable/field, or an
+/// True when `e` is GENUINELY a float at runtime — a float-form literal (`7.0`, has a `.`), a
+/// registered float variable/field, or an
 /// arithmetic term one of whose operands is genuinely float (runtime type promotion). This is STRICTER
 /// than `is_float_modelable`, which admits a bare integer literal `"7"` as a float via `.parse::<f64>()`.
 /// It is the gate that keeps an all-integer `/` (integer truncating division at runtime) out of the QF_FP
@@ -16903,22 +22715,30 @@ fn coerce_int_into_float_slot(
     if is_int_modelable(arg, &ctx.solver_int_vars) {
         if let Some(v) = const_fold_i64(arg) {
             if v.unsigned_abs() <= (1u64 << 53) {
-                return arg.clone(); // exact coercion (`v as f64 == v`) — the int-lane model is sound
+                // The coerced VALUE is exact (`v as f64 == v`), but the argument must still be a FLOAT
+                // in the clause: arithmetic on the parameter is float arithmetic at runtime. Keeping the
+                // integer literal let the clause fall into the integer lane, so `requires(n / 2 == 3)` on
+                // an `f64` parameter was PROVED for `f(7)` (integer 7 / 2 == 3) while the runtime computes
+                // 7.0 / 2 == 3.5.
+                let lit = Expr::Literal(format!("{:.1}", v as f64));
+                if is_float_modelable(&lit, &ctx.solver_float_vars) {
+                    return lit;
+                }
             }
             // |v| > 2^53: model the EXACT coerced double `v as f64` (round-to-even) as a FLOAT-FORM literal.
             // A float-form render (not an i64 literal) is load-bearing: the rounded value is itself > 2^53,
             // and `is_float_modelable`'s int-form gate (#39) REJECTS an int-form literal > 2^53 → the clause
             // would silently DEFER → a false accept (hunt FA D-class). `{:.1}` is fixed-point (always a `.`,
             // never scientific) and `v as f64` is integer-valued, so it renders the double exactly. Use it
-            // only when `is_float_modelable` admits it (a scientific-magnitude double, ~>= 1e16, is rejected
-            // by the encoder's own scientific-notation gate) — otherwise fall through to the havoc.
+            // only when `is_float_modelable` admits it — otherwise fall through to the havoc. (Large
+            // magnitudes are admitted: the encoder prints them with `smt_decimal`, never as `1e16`.)
             let lit = Expr::Literal(format!("{:.1}", v as f64));
             if is_float_modelable(&lit, &ctx.solver_float_vars) {
                 return lit;
             }
         }
         // A symbolic / unfoldable integer expression, or a const-fold whose coerced double is not
-        // float-modelable (scientific magnitude) — fail closed with a fresh unconstrained FLOAT var.
+        // float-modelable — fail closed with a fresh unconstrained FLOAT var.
         let hv = format!("anb_c40h_{tag}");
         ctx.solver_float_vars.insert(hv.clone());
         havoc_out.push(hv.clone());
@@ -16954,8 +22774,9 @@ fn coerce_uint_arg(arg: &Expr, width: u32, int_vars: &BTreeSet<String>) -> Expr 
 fn is_genuinely_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => float_vars.contains(v),
-        // A float LITERAL is written with a decimal point (an `e`/`E` form is rejected upstream). A bare
-        // integer literal `"7"` is NOT genuinely float — that is exactly the value this gate excludes.
+        // A float LITERAL written with a decimal point. A bare integer literal `"7"` is NOT genuinely float —
+        // that is exactly the value this gate excludes. An exponent-form literal (`1e5`, a Float at runtime)
+        // is conservatively NOT counted, so a `/` whose only float operand is one defers.
         Expr::Literal(l) => l.contains('.'),
         Expr::Binary { lhs, rhs, .. } => {
             is_genuinely_float(lhs, float_vars) || is_genuinely_float(rhs, float_vars)
@@ -16989,6 +22810,19 @@ fn is_bool_modelable_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
     }
 }
 
+/// A finite non-negative f64 as an SMT-LIB decimal literal (`7.0`, `0.0000001`,
+/// `100000000000000000000.0`). SMT-LIB decimals have no exponent: `{:?}` prints `1e20`, which z3 rejects
+/// (`unknown constant e20`). `Display` never uses exponent notation and prints the shortest digits that
+/// round-trip, so the literal denotes exactly `v`.
+fn smt_decimal(v: f64) -> String {
+    let s = format!("{v}");
+    if s.contains('.') {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
 /// Phase-3 QF_FP: encode a float ARITHMETIC term to SMT Float64 `(_ FloatingPoint 11 53)`. Invoked ONLY
 /// on `is_float_modelable` exprs, so every reachable case is total. `+ - *` use round-to-nearest-even
 /// (RNE), matching the runtime's native f64 ops (run.rs anubis_add/sub/mul); a finite literal is a Real
@@ -16999,9 +22833,9 @@ fn float_expr_to_smt(e: &Expr) -> String {
         Expr::Literal(l) => {
             let v: f64 = l.parse().unwrap_or(0.0);
             if v.is_sign_negative() {
-                format!("((_ to_fp 11 53) RNE (- {:?}))", -v)
+                format!("((_ to_fp 11 53) RNE (- {}))", smt_decimal(-v))
             } else {
-                format!("((_ to_fp 11 53) RNE {v:?})")
+                format!("((_ to_fp 11 53) RNE {})", smt_decimal(v))
             }
         }
         Expr::Binary { op, lhs, rhs } => {
@@ -18016,7 +23850,12 @@ fn declare_smt_var_maybe_float(v: &str, is_string: bool, is_float: bool) -> Stri
 /// Whether an obligation's SMT body is a QF_FP (float) query — detected by the float operators the float
 /// encoder emits (`fp.` / `to_fp`), mirroring how `smt_uses_arrays` detects the array sort from the body.
 fn smt_uses_floats(smt_body: &str) -> bool {
-    smt_body.contains("fp.") || smt_body.contains("to_fp")
+    // Match the float encoder's TOKENS, not substrings: every float operator it emits is an application
+    // `(fp.<op> …` or `((_ to_fp 11 53) …`. A bare substring test routed any integer obligation whose
+    // mangled symbol merely CONTAINS `to_fp` / `fp.` (`anb_crypto_fp`, `anb_proto_fps`) to QF_FP and
+    // declared every variable Float64 — an ill-sorted query that z3 rejects and that fails a valid
+    // program closed. A symbol is `anb_…`, so it can never begin with `(fp.` or `(_ to_fp `.
+    smt_body.contains("(fp.") || smt_body.contains("(_ to_fp ")
 }
 
 /// Whether a fact/assumption in the shared `assumptions` channel is a FLOAT fact — it mentions at least
@@ -18387,6 +24226,37 @@ fn substitute_vars(e: &Expr, map: &BTreeMap<String, Expr>) -> Expr {
         },
         Expr::Assume(inner) => Expr::Assume(Box::new(substitute_vars(inner, map))),
         Expr::Assert(inner) => Expr::Assert(Box::new(substitute_vars(inner, map))),
+        // A value-position `if` binds nothing, so it is substituted throughout. Without this arm a
+        // parameter inside a returned join (`if c { g } else { pub1 }`) or a closure body stayed free
+        // and resolved in the CALLER's scope.
+        Expr::If {
+            cond,
+            then,
+            else_,
+            span,
+        } => Expr::If {
+            cond: Box::new(substitute_vars(cond, map)),
+            then: Box::new(substitute_vars(then, map)),
+            else_: Box::new(substitute_vars(else_, map)),
+            span: *span,
+        },
+        Expr::CallExpr { callee, args } => Expr::CallExpr {
+            callee: Box::new(substitute_vars(callee, map)),
+            args: args.iter().map(|a| substitute_vars(a, map)).collect(),
+        },
+        // A lambda's own parameters shadow the substitution inside its body.
+        Expr::Lambda { params, body } => {
+            let mut inner = map.clone();
+            for p in params {
+                inner.remove(p);
+            }
+            Expr::Lambda {
+                params: params.clone(),
+                body: Box::new(substitute_vars(body, &inner)),
+            }
+        }
+        // Binding forms (`match`, `if let`, blocks) are left as they are: a name they bind would need
+        // shadow-aware substitution. Callers that need COMPLETE substitution check for free leftovers.
         other => other.clone(),
     }
 }
@@ -18396,239 +24266,6 @@ fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
     let mut m = BTreeMap::new();
     m.insert("result".to_string(), repl.clone());
     substitute_vars(e, &m)
-}
-
-fn contract_application_param_indices(
-    callee: &Expr,
-    params: &BTreeMap<String, usize>,
-) -> BTreeSet<usize> {
-    let mut names = BTreeSet::new();
-    collect_expr_vars(callee, &mut names);
-    names
-        .into_iter()
-        .filter_map(|name| params.get(&name).copied())
-        .collect()
-}
-
-/// Collect applications of function-valued formals that execute whenever the enclosing function
-/// executes. Conditional branches, short-circuit RHS expressions, and loop bodies are intentionally
-/// omitted: charging a contract from a path that may not run would be an over-rejection.
-fn collect_unconditional_param_contract_applications(
-    body: &[Stmt],
-    params: &BTreeMap<String, usize>,
-) -> Vec<ParamContractApplication> {
-    let mut out = Vec::new();
-    collect_unconditional_param_contract_stmts(body, params, &mut out);
-    out
-}
-
-fn collect_unconditional_param_contract_stmts(
-    body: &[Stmt],
-    params: &BTreeMap<String, usize>,
-    out: &mut Vec<ParamContractApplication>,
-) {
-    use crate::frontend::ForSource;
-    for stmt in body {
-        match stmt {
-            Stmt::Let {
-                name: _,
-                ty: _,
-                init,
-                span: _,
-            }
-            | Stmt::LetPattern {
-                pattern: _,
-                init,
-                span: _,
-            } => collect_unconditional_param_contract_expr(init, params, out),
-            Stmt::WhileLet {
-                pattern: _,
-                expr,
-                body: _,
-            } => collect_unconditional_param_contract_expr(expr, params, out),
-            Stmt::Assign { target, value } => {
-                collect_unconditional_param_contract_expr(target, params, out);
-                collect_unconditional_param_contract_expr(value, params, out);
-            }
-            Stmt::If {
-                cond,
-                then: _,
-                else_: _,
-            }
-            | Stmt::While {
-                cond,
-                body: _,
-                invariant: _,
-            } => collect_unconditional_param_contract_expr(cond, params, out),
-            Stmt::For {
-                var: _,
-                source,
-                body: _,
-                invariant: _,
-            } => match source {
-                ForSource::Range { start, end } => {
-                    collect_unconditional_param_contract_expr(start, params, out);
-                    collect_unconditional_param_contract_expr(end, params, out);
-                }
-                ForSource::Collection { expr } => {
-                    collect_unconditional_param_contract_expr(expr, params, out)
-                }
-            },
-            Stmt::ExprStmt(expr) => {
-                collect_unconditional_param_contract_expr(expr, params, out);
-                if matches!(expr, Expr::Call { callee, .. } if callee == "return") {
-                    break;
-                }
-            }
-            Stmt::Loop {
-                body: _,
-                invariant: _,
-            }
-            | Stmt::ResearchBlock { intent: _, body: _ }
-            | Stmt::ExploitBlock { intent: _, body: _ }
-            | Stmt::HybridBlock {
-                gpu: _,
-                cpu: _,
-                prove: _,
-            }
-            | Stmt::SpecBlock { forall: _ } => {}
-            Stmt::Break | Stmt::Continue => break,
-        }
-    }
-}
-
-fn collect_unconditional_param_contract_expr(
-    expr: &Expr,
-    params: &BTreeMap<String, usize>,
-    out: &mut Vec<ParamContractApplication>,
-) {
-    match expr {
-        Expr::Call { callee, args } => {
-            let callee_expr = Expr::Var(callee.clone());
-            let param_indices = contract_application_param_indices(&callee_expr, params);
-            if !param_indices.is_empty() {
-                out.push(ParamContractApplication {
-                    callee: callee_expr,
-                    param_indices,
-                    args: args.clone(),
-                });
-            }
-            for arg in args {
-                collect_unconditional_param_contract_expr(arg, params, out);
-            }
-        }
-        Expr::CallExpr { callee, args } => {
-            // `recv.method(args)` is method dispatch, not application of the receiver as a
-            // function-valued parameter. Method contracts stay in their separate namespace and
-            // are discharged by `discharge_method_requires`; recording `recv` here made every
-            // method call through a formal look like an unresolved free-function application.
-            if !matches!(callee.as_ref(), Expr::FieldAccess { .. }) {
-                let param_indices = contract_application_param_indices(callee, params);
-                if !param_indices.is_empty() {
-                    out.push(ParamContractApplication {
-                        callee: callee.as_ref().clone(),
-                        param_indices,
-                        args: args.clone(),
-                    });
-                }
-            }
-            collect_unconditional_param_contract_expr(callee, params, out);
-            for arg in args {
-                collect_unconditional_param_contract_expr(arg, params, out);
-            }
-        }
-        Expr::Binary { op, lhs, rhs } => {
-            collect_unconditional_param_contract_expr(lhs, params, out);
-            if op != "&&" && op != "||" {
-                collect_unconditional_param_contract_expr(rhs, params, out);
-            }
-        }
-        Expr::Unary { op: _, expr } | Expr::Cast { expr, ty: _ } => {
-            collect_unconditional_param_contract_expr(expr, params, out)
-        }
-        Expr::Tainted { ty: _, inner }
-        | Expr::Declassify {
-            inner,
-            policy: _,
-            reason: _,
-        }
-        | Expr::Assume(inner)
-        | Expr::Assert(inner)
-        | Expr::Try(inner) => collect_unconditional_param_contract_expr(inner, params, out),
-        Expr::ArrayLiteral { elements } => {
-            for element in elements {
-                collect_unconditional_param_contract_expr(element, params, out);
-            }
-        }
-        Expr::Index { base, index } => {
-            collect_unconditional_param_contract_expr(base, params, out);
-            collect_unconditional_param_contract_expr(index, params, out);
-        }
-        Expr::StructLiteral {
-            name: _,
-            fields,
-            span: _,
-        } => {
-            for (_, value) in fields {
-                collect_unconditional_param_contract_expr(value, params, out);
-            }
-        }
-        Expr::FieldAccess {
-            base,
-            field: _,
-            span: _,
-        } => collect_unconditional_param_contract_expr(base, params, out),
-        Expr::EnumConstruct {
-            enum_name: _,
-            variant: _,
-            fields,
-            field_names: _,
-            span: _,
-        } => {
-            for field in fields {
-                collect_unconditional_param_contract_expr(field, params, out);
-            }
-        }
-        Expr::MapLiteral { entries, span: _ } => {
-            for (key, value) in entries {
-                collect_unconditional_param_contract_expr(key, params, out);
-                collect_unconditional_param_contract_expr(value, params, out);
-            }
-        }
-        Expr::Match {
-            scrutinee,
-            arms: _,
-            span: _,
-        }
-        | Expr::If {
-            cond: scrutinee,
-            then: _,
-            else_: _,
-            span: _,
-        }
-        | Expr::IfLet {
-            pattern: _,
-            scrutinee,
-            then: _,
-            else_: _,
-            span: _,
-        } => collect_unconditional_param_contract_expr(scrutinee, params, out),
-        Expr::Block { stmts, tail } => {
-            collect_unconditional_param_contract_stmts(stmts, params, out);
-            if let Some(tail) = tail {
-                collect_unconditional_param_contract_expr(tail, params, out);
-            }
-        }
-        Expr::Lambda { params: _, body: _ }
-        | Expr::Var(_)
-        | Expr::Literal(_)
-        | Expr::StrLiteral(_)
-        | Expr::Symbolic { ty: _ }
-        | Expr::TaintSource { label: _ }
-        | Expr::UnifiedBuffer { ty: _ }
-        | Expr::RawPtr { mutable: _ }
-        | Expr::Other(_) => {}
-    }
 }
 
 /// Task #48-A: scan a function body at its OWN execution level for (a) a direct application `p(...)`
@@ -18722,7 +24359,7 @@ fn scan_applied_param_stmts(
                     ForSource::Collection { expr } => {
                         if (matches!(expr, Expr::Var(root) if root == p)
                             || matches!(expr, Expr::Call { callee, args } if matches!(callee.as_str(), "values" | "entries" | "map_values") && args.iter().any(|a| matches!(a, Expr::Var(root) if root == p))))
-                            && body_has_direct_callee(body, var)
+                            && body_applies_name(body, var)
                         {
                             *applies = true;
                             paths.insert("*".to_string());
@@ -18759,25 +24396,33 @@ fn scan_applied_param_stmts(
     }
 }
 
-fn body_has_direct_callee(body: &[Stmt], name: &str) -> bool {
-    body.iter().any(|stmt| match stmt {
-        Stmt::ExprStmt(Expr::Call { callee, .. }) => callee == name,
-        Stmt::ExprStmt(Expr::CallExpr { callee, .. }) => {
-            matches!(callee.as_ref(), Expr::Var(v) if v == name)
+/// Whether `name` is applied anywhere in `body`: called (`name(..)`, in a `let`, an argument, a value
+/// block or a lambda as much as in a statement of its own), called as a value, or handed to a
+/// higher-order builtin's closure position. Over-approximated (a shadow of `name` counts too): the
+/// loop binder of a callback list is applied however the body spells the call, and
+/// `for g in gs { let r = g(x); }` was not counted (USER-HOF-OVER-CALLBACK-LIST).
+fn body_applies_name(body: &[Stmt], name: &str) -> bool {
+    let mut hit = false;
+    visit::each_expr_in_stmts(body, &mut |e| hit |= node_applies_name(e, name));
+    hit
+}
+
+/// Whether the node `e` itself applies `name` ([`body_applies_name`]).
+fn node_applies_name(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Call { callee, args } => {
+            callee == name
+                || effects::higher_order_closure_args(callee)
+                    .iter()
+                    .any(|&j| matches!(args.get(j), Some(Expr::Var(v)) if v == name))
         }
-        Stmt::If { then, else_, .. } => {
-            body_has_direct_callee(then, name)
-                || else_
-                    .as_deref()
-                    .is_some_and(|b| body_has_direct_callee(b, name))
-        }
-        Stmt::While { body, .. }
-        | Stmt::WhileLet { body, .. }
-        | Stmt::Loop { body, .. }
-        | Stmt::ResearchBlock { body, .. }
-        | Stmt::ExploitBlock { body, .. } => body_has_direct_callee(body, name),
+        Expr::CallExpr { callee, .. } => matches!(callee.as_ref(), Expr::Var(v) if v == name),
         _ => false,
-    })
+    }
+}
+
+fn body_has_direct_callee(body: &[Stmt], name: &str) -> bool {
+    body_applies_name(body, name)
 }
 
 /// Expression half of `scan_applied_param_stmts`. A nested `Lambda` is a HARD STOP (deferred body).
@@ -18978,17 +24623,9 @@ fn scan_applied_param_expr(
 }
 
 fn body_has_direct_callee_expr(expr: &Expr, name: &str) -> bool {
-    match expr {
-        Expr::Call { callee, .. } => callee == name,
-        Expr::CallExpr { callee, .. } => matches!(callee.as_ref(), Expr::Var(v) if v == name),
-        Expr::Block { stmts, tail } => {
-            body_has_direct_callee(stmts, name)
-                || tail
-                    .as_deref()
-                    .is_some_and(|t| body_has_direct_callee_expr(t, name))
-        }
-        _ => false,
-    }
+    let mut hit = false;
+    visit::each_expr(expr, &mut |e| hit |= node_applies_name(e, name));
+    hit
 }
 
 /// Task #48 (transitive closure forwarding): collect forward edges `(callee, arg_pos, param_idx)` — a
@@ -19160,6 +24797,216 @@ fn scan_forward_edges_expr(
     }
 }
 
+/// Every free function (in modules too) with its formals and body.
+fn collect_free_fn_bodies<'a>(
+    items: &'a [Item],
+    out: &mut Vec<(&'a str, Vec<String>, &'a [Stmt])>,
+) {
+    for item in items {
+        match item {
+            Item::Module { items, .. } => collect_free_fn_bodies(items, out),
+            Item::Fn {
+                name, params, body, ..
+            } => out.push((
+                name.as_str(),
+                params.iter().map(|(n, _)| n.clone()).collect(),
+                body.as_slice(),
+            )),
+            _ => {}
+        }
+    }
+}
+
+/// A formal that reaches something the body applies beyond what the syntactic scan reads off it
+/// (`scan_applied_param_stmts`, `scan_applied_param_local_aliases`): taken as
+/// applied at the formal itself and at anything it carries (paths `""` and `"*"`), so a callback
+/// passed there is checked and charged at the call site like any applied formal. The scan follows a
+/// formal through a direct call, a HOF position, an index or field of the formal and a plain local
+/// alias; `let fs = [g]; let h = fs[0]; h(x)`, `let b = B { g: g }; b.g(x)`,
+/// `while .. { h(x); h = g; }` and `app1([g], x)` (with `app1` applying its first formal) applied
+/// `g` unseen and printed the secret (USER-HOF-APPLIES-FORMAL-VIA-CONTAINER-OR-LOOP). A formal the
+/// scan found applied at a path gains these paths too when it also escapes. A formal the body shadows
+/// keeps the scan's verdict (`fn_param_shadowed`).
+fn compute_escaped_applied_params(items: &[Item], ctx: &mut SemanticContext) {
+    let mut fns = Vec::new();
+    collect_free_fn_bodies(items, &mut fns);
+    for (name, params, body) in fns {
+        let shadowed = ctx.fn_param_shadowed.get(name).cloned().unwrap_or_default();
+        for (i, p) in params.iter().enumerate() {
+            if shadowed.contains(&i) {
+                continue;
+            }
+            let add = formal_reaches_application(body, p, ctx);
+            if add.is_empty() {
+                continue;
+            }
+            let applied = ctx.fn_applies_param.entry(name.to_string()).or_default();
+            if !applied.contains(&i) {
+                applied.push(i);
+            }
+            ctx.fn_applied_param_paths
+                .entry(name.to_string())
+                .or_default()
+                .entry(i)
+                .or_default()
+                .extend(add);
+        }
+    }
+}
+
+/// The paths at which formal `p` of `body` may be applied beyond what the syntactic scan reads off the
+/// formal itself ([`compute_escaped_applied_params`]); empty when none. Order-free and name-keyed:
+/// every name bound or assigned from a value that mentions the formal, or a name already reached (as
+/// a value, or as a function a closure calls), is reached — through a container, a field, a join, a
+/// loop-carried assignment, a pattern or loop binder, a `push`. A plain alias of the formal or of a
+/// path of it (`let f = gs[0]`) applied anywhere (`return f(x)`, inside an argument or a lambda,
+/// where the scan reads only a statement `f(x);` or `let r = f(x)`) is applied at that path; any
+/// other reached name applied (called, called through an element or field, handed to a HOF callback
+/// position), or a value mentioning one — or holding the formal inside it — passed at a position a
+/// user function applies, applies the formal at `""` and at every element `"*"`. Lambda bodies count
+/// wherever they sit (over-approximated).
+fn formal_reaches_application(body: &[Stmt], p: &str, ctx: &SemanticContext) -> BTreeSet<String> {
+    use crate::frontend::ForSource;
+    let mentions = |e: &Expr, names: &BTreeSet<String>| {
+        let mut hit = false;
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Var(n) | Expr::Call { callee: n, .. } if names.contains(n) => hit = true,
+            _ => {}
+        });
+        hit
+    };
+    let mut writes: Vec<(Vec<String>, &Expr)> = Vec::new();
+    visit::each_stmt(body, &mut |s, _| match s {
+        Stmt::Let { name, init, .. } => writes.push((vec![name.clone()], init)),
+        Stmt::Assign { target, value } => {
+            if let Some(root) = assign_target_root(target) {
+                writes.push((vec![root.to_string()], value));
+            }
+        }
+        Stmt::LetPattern { pattern, init, .. } => writes.push((pattern.bound_names(), init)),
+        Stmt::WhileLet { pattern, expr, .. } => writes.push((pattern.bound_names(), expr)),
+        Stmt::For {
+            var,
+            source: ForSource::Collection { expr },
+            ..
+        } => writes.push((vec![var.clone()], expr)),
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| {
+        match e {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                for arm in arms {
+                    writes.push((arm.pattern.bound_names(), scrutinee));
+                }
+            }
+            Expr::IfLet {
+                pattern, scrutinee, ..
+            } => writes.push((pattern.bound_names(), scrutinee)),
+            _ => {}
+        }
+        if let Some((root, values)) = in_place_container_write(e) {
+            for v in values {
+                writes.push((vec![root.clone()], v));
+            }
+        }
+    });
+    let formal = BTreeSet::from([p.to_string()]);
+    let mut reached = formal.clone();
+    loop {
+        let mut changed = false;
+        for (targets, v) in &writes {
+            if mentions(v, &reached) {
+                for t in targets {
+                    changed |= reached.insert(t.clone());
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    reached.remove(p);
+    // A plain alias: a single-name binding every write of which is the formal or an access path of
+    // it, with the paths it stands for.
+    let mut alias_paths: BTreeMap<&String, BTreeSet<String>> = BTreeMap::new();
+    for n in &reached {
+        let mut paths = BTreeSet::new();
+        let plain = writes
+            .iter()
+            .filter(|(targets, _)| targets.contains(n))
+            .all(|(targets, v)| {
+                let path = match v {
+                    Expr::Var(m) if m == p => Some(String::new()),
+                    _ => flatten_access_path(v)
+                        .filter(|(root, _)| root == p)
+                        .map(|(_, path)| path)
+                        .or_else(|| {
+                            (access_chain_root(v).as_deref() == Some(p)).then(|| "*".into())
+                        }),
+                };
+                match path {
+                    Some(path) if targets.len() == 1 => {
+                        paths.insert(path);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+        if plain && !paths.is_empty() {
+            alias_paths.insert(n, paths);
+        }
+    }
+    // A value that is the formal itself, or an access rooted at it, is the scan's business; one that
+    // holds it deeper (`[g]`, `B { g: g }`) or mentions a reached name is not.
+    let carries = |a: &Expr| {
+        mentions(a, &reached)
+            || (!matches!(a, Expr::Var(v) if v == p)
+                && access_chain_root(a).as_deref() != Some(p)
+                && mentions(a, &formal))
+    };
+    let whole: BTreeSet<String> = BTreeSet::from([String::new(), "*".to_string()]);
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    // An applied value: a plain alias applies its own paths, anything else carrying the formal
+    // applies it whole.
+    let applied_value = |a: &Expr, out: &mut BTreeSet<String>| {
+        if let Expr::Var(v) = a {
+            if let Some(paths) = alias_paths.get(v) {
+                out.extend(paths.iter().cloned());
+                return;
+            }
+        }
+        if carries(a) {
+            out.extend(whole.iter().cloned());
+        }
+    };
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Call { callee, args } => {
+            if let Some(paths) = alias_paths.get(callee) {
+                out.extend(paths.iter().cloned());
+            } else if reached.contains(callee) {
+                out.extend(whole.iter().cloned());
+            }
+            for &j in effects::higher_order_closure_args(callee) {
+                if let Some(a) = args.get(j) {
+                    applied_value(a, &mut out);
+                }
+            }
+            if let Some(applied) = ctx.fn_applies_param.get(callee) {
+                for &k in applied {
+                    if let Some(a) = args.get(k) {
+                        applied_value(a, &mut out);
+                    }
+                }
+            }
+        }
+        Expr::CallExpr { callee, .. } if carries(callee) => out.extend(whole.iter().cloned()),
+        _ => {}
+    });
+    out
+}
+
 /// Task #48: close `fn_applies_param` under transitive forwarding. Direct/HOF applies are the seed; a
 /// forward edge `(H, k, i)` promotes param `i` of the forwarding fn to "applied" once `H` applies its
 /// position `k` — a closure laundered through two+ user fns (`fn a(g){ b(g) } fn b(g){ g(0) } … a(leak)`)
@@ -19244,7 +25091,11 @@ fn push_ensures_obligations(
     span: Span,
 ) {
     for ens in ensures {
-        let concrete = substitute_result(ens, ret_expr);
+        // Returning a struct literal makes the clause read a field off it (`ensures(result.status == 1)`
+        // with `return R { status: 0 }`): resolve that read with the field's DECLARED type
+        // (`fold_struct_literal_reads`), since the integer lane no longer models struct-literal reads it
+        // cannot type (an `f64` field is coerced at runtime).
+        let concrete = fold_struct_literal_reads(&substitute_result(ens, ret_expr), ctx);
         if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
             let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
             // Sort-partition (mirror the assert handler): an integer postcondition assumes only integer
@@ -19430,7 +25281,7 @@ fn push_ensures_obligations(
                     }
                 }
             };
-            ctx.diagnostics.push(SemanticDiagnostic {
+            ctx.push_diag(SemanticDiagnostic {
                 code: Some(code.into()),
                 message,
                 span: Some((span.start, span.end)),
@@ -19770,7 +25621,7 @@ fn reject_secret_pc_public_return(
             return;
         }
         *flagged = true;
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_IMPLICIT_FLOW".into()),
             message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
                 .into(),
@@ -19782,7 +25633,7 @@ fn reject_secret_pc_public_return(
             return;
         }
         *flagged = true;
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
             message: "a secret value is returned through a public return type — confidentiality labels must not be dropped at the return boundary. Declare `-> secret<T>`, or interpose declassify(value, policy, reason)."
                 .into(),
@@ -19790,10 +25641,10 @@ fn reject_secret_pc_public_return(
         });
     };
 
-    // Explicit `return` under secret if/while path conditions.
+    // Explicit `return` (and `?`) under secret if/while path conditions.
     let mut rets = Vec::new();
     for st in body {
-        collect_returns_guarded(st, &[], &mut rets);
+        collect_exits_guarded(st, &[], true, &mut rets);
     }
     for (val, guards) in &rets {
         if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope) {
@@ -19912,7 +25763,7 @@ fn reject_secret_scrutinee_returns_in_expr(
             return;
         }
         *flagged = true;
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_IMPLICIT_FLOW".into()),
             message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
                 .into(),
@@ -19954,6 +25805,7 @@ fn reject_secret_scrutinee_returns_in_expr(
                 if secret_scrut {
                     let mut rs = Vec::new();
                     expr_returns(&arm.body, &mut rs);
+                    try_exits_in_expr(&arm.body, &mut rs);
                     for r in rs {
                         if !val_is_secret(&r) {
                             emit(ctx, flagged);
@@ -19965,6 +25817,7 @@ fn reject_secret_scrutinee_returns_in_expr(
                     if expr_is_secret_pc(g, scope, ctx) {
                         let mut rs = Vec::new();
                         expr_returns(&arm.body, &mut rs);
+                        try_exits_in_expr(&arm.body, &mut rs);
                         for r in rs {
                             if !val_is_secret(&r) {
                                 emit(ctx, flagged);
@@ -19988,6 +25841,8 @@ fn reject_secret_scrutinee_returns_in_expr(
                 let mut rs = Vec::new();
                 expr_returns(then, &mut rs);
                 expr_returns(else_, &mut rs);
+                try_exits_in_expr(then, &mut rs);
+                try_exits_in_expr(else_, &mut rs);
                 for r in rs {
                     if !val_is_secret(&r) {
                         emit(ctx, flagged);
@@ -20048,7 +25903,7 @@ fn reject_implicit_flow_under_secret_pc(
     }
     for v in assigned {
         if !scope.get(v.as_str()).map(|b| b.secret).unwrap_or(false) {
-            ctx.diagnostics.push(SemanticDiagnostic {
+            ctx.push_diag(SemanticDiagnostic {
                 code: Some("ANUBIS_IMPLICIT_FLOW".into()),
                 message: format!(
                     "`{v}` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
@@ -20593,6 +26448,20 @@ fn drop_written_after_scope(
     snapshot: Vec<String>,
     bodies: &[&[Stmt]],
 ) {
+    drop_written_after_scope_keep(ctx, assumptions, snapshot, bodies, &BTreeSet::new());
+}
+
+/// `drop_written_after_scope`, except that each variable in `keep` stays INTEGER-MODELED after its facts
+/// are dropped: it becomes an unconstrained value (a havoc) instead of an unmodeled one, so later guards
+/// over it still give relief. `keep` must come from `keepable_written_ints`, computed BEFORE the construct
+/// ran, which admits a variable only when every write to it assigns an integer.
+fn drop_written_after_scope_keep(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    snapshot: Vec<String>,
+    bodies: &[&[Stmt]],
+    keep: &BTreeSet<String>,
+) {
     *assumptions = snapshot;
     let mut written = BTreeSet::new();
     for b in bodies {
@@ -20611,6 +26480,11 @@ fn drop_written_after_scope(
     });
     for v in &written {
         clear_binding_modelability(&mut ctx.solver_int_vars, v);
+        if keep.contains(v) {
+            ctx.solver_int_vars.insert(v.clone());
+            ctx.solver_int_vars.insert(havoc_mark(v));
+            ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+        }
     }
 }
 
@@ -20653,6 +26527,17 @@ fn invalidate_embedded_writes(
 /// After havoc, an in-body assertion over a loop-written variable is left to the runtime (which does
 /// enforce `assert`), rather than "proved" from a value the loop has moved past.
 fn havoc_loop_written(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, body: &[Stmt]) {
+    havoc_loop_written_keep(ctx, assumptions, body, &BTreeSet::new());
+}
+
+/// `havoc_loop_written`, keeping each variable in `keep` integer-modeled as an unconstrained value (see
+/// `drop_written_after_scope_keep`).
+fn havoc_loop_written_keep(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    body: &[Stmt],
+    keep: &BTreeSet<String>,
+) {
     let mut written = BTreeSet::new();
     collect_assigned_roots(body, &mut written);
     let mut mangled: BTreeSet<String> = BTreeSet::new();
@@ -20663,12 +26548,1572 @@ fn havoc_loop_written(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, 
     }
     for v in &written {
         clear_binding_modelability(&mut ctx.solver_int_vars, v);
+        if keep.contains(v) {
+            ctx.solver_int_vars.insert(v.clone());
+            ctx.solver_int_vars.insert(havoc_mark(v));
+            ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+        }
     }
     assumptions.retain(|a| {
         let mut vs = BTreeSet::new();
         collect_vars_from_smt(a, &mut vs);
         vs.is_disjoint(&mangled)
     });
+}
+
+/// Variables written inside `bodies` that may stay integer-modeled, as unconstrained values, across the
+/// construct instead of being dropped from the model.
+///
+/// Dropping is sound but loses every later fact about the variable: after `let mut x = 3; while x > 0
+/// { x = x - 1; }` a guard `if x < 10 { f(x) }` could not relieve `f`'s precondition, because `x` was no
+/// longer modeled at all. Keeping it as a fresh value is equally sound (no fact about its old value
+/// survives) and keeps guards useful. It is admitted only when that fresh value is certainly an INTEGER:
+/// - the variable is integer-modeled when the construct starts;
+/// - every write to it anywhere inside is a plain `v = rhs` statement, not inside a lambda (which runs
+///   at an unknown time), and it is not re-bound by a `let`, pattern or loop variable inside;
+/// - every such `rhs` is an integer-modelable expression over variables that are themselves still
+///   integer-modeled (a fixpoint), or a direct call to a user function with a declared integer return
+///   type.
+///
+/// Must be computed BEFORE the construct is analyzed: analysis of the body changes the modeled set.
+fn keepable_written_ints(ctx: &SemanticContext, bodies: &[&[Stmt]]) -> BTreeSet<String> {
+    let mut written = BTreeSet::new();
+    for b in bodies {
+        collect_assigned_roots(b, &mut written);
+    }
+    let mut rhs: BTreeMap<String, Vec<Expr>> = BTreeMap::new();
+    let mut disqualified: BTreeSet<String> = BTreeSet::new();
+    for b in bodies {
+        visit::each_stmt(b, &mut |st, in_lambda| match st {
+            Stmt::Assign {
+                target: Expr::Var(v),
+                value,
+            } => {
+                if in_lambda {
+                    disqualified.insert(v.clone());
+                } else {
+                    rhs.entry(v.clone()).or_default().push(value.clone());
+                }
+            }
+            Stmt::Assign { target, .. } => {
+                let mut roots = BTreeSet::new();
+                collect_expr_vars(target, &mut roots);
+                disqualified.extend(roots);
+            }
+            Stmt::Let { name, .. } => {
+                disqualified.insert(name.clone());
+            }
+            Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+                disqualified.extend(pattern.bound_names());
+            }
+            Stmt::For { var, .. } => {
+                disqualified.insert(var.clone());
+            }
+            _ => {}
+        });
+    }
+    let mut keep: BTreeSet<String> = written
+        .iter()
+        .filter(|v| {
+            ctx.solver_int_vars.contains(*v) && !disqualified.contains(*v) && rhs.contains_key(*v)
+        })
+        .cloned()
+        .collect();
+    loop {
+        let mut modelable: BTreeSet<String> = ctx
+            .solver_int_vars
+            .iter()
+            .filter(|m| !written.contains(*m))
+            .cloned()
+            .collect();
+        modelable.extend(keep.iter().cloned());
+        let before = keep.len();
+        keep.retain(|v| {
+            rhs.get(v).is_some_and(|vals| {
+                vals.iter().all(|e| {
+                    is_int_modelable(e, &modelable) || is_integer_returning_user_call(e, ctx)
+                })
+            })
+        });
+        if keep.len() == before {
+            return keep;
+        }
+    }
+}
+
+/// See `SemanticContext::escaping_contracted_fns`. A function "escapes" when its name appears as an
+/// expression (`Expr::Var`) anywhere — an argument, a list element, a struct field, a `let`, a return —
+/// rather than only as the callee of a direct call. Conservative: a local that merely shares the name
+/// also counts, which can only add refusals.
+fn compute_escaping_contracted_fns(items: &[Item], ctx: &SemanticContext) -> BTreeSet<String> {
+    // Only a function with a `requires` can be the danger. A function that merely calls through its
+    // own formals matters only when a contracted function is passed to it, and that function then
+    // appears as a value itself (or is called in a lambda) — so it is already counted. (Counting every
+    // function with formals flooded ordinary higher-order code with refusals.)
+    let relevant = |f: &str| {
+        ctx.fn_contracts
+            .get(f)
+            .is_some_and(|(_, req, _)| !req.is_empty())
+    };
+    let mut out = BTreeSet::new();
+    visit::each_expr_in_items(items, &mut |e| match e {
+        Expr::Var(name) if relevant(name) => {
+            out.insert(name.clone());
+        }
+        // A lambda is itself a function value: one whose body calls a function whose precondition
+        // matters can reach an unresolved call site (`if c { return |x| f(x); } return |x| x;`)
+        // with no value use of `f` anywhere.
+        Expr::Lambda { body, .. } => {
+            visit::each_expr(body, &mut |inner| match inner {
+                Expr::Call { callee, .. } if relevant(callee) => {
+                    out.insert(format!("a closure calling `{callee}`"));
+                }
+                // A method call `recv.m(x)` inside the closure: `m`'s precondition matters too.
+                Expr::CallExpr { callee, .. } => {
+                    if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                        let contracted = ctx
+                            .method_contracts
+                            .get(field)
+                            .is_some_and(|c| c.as_ref().is_none_or(|(_, req, _)| !req.is_empty()));
+                        if contracted {
+                            out.insert(format!("a closure calling method `{field}`"));
+                        }
+                    }
+                }
+                _ => {}
+            });
+        }
+        _ => {}
+    });
+    out
+}
+
+/// What the "may this value be a function" tests know about the program (see
+/// `compute_fn_valued_field_names`).
+struct CallableFacts<'a> {
+    ctx: &'a SemanticContext,
+    /// Field / map-key names some write may give a function (or a container holding one); `*` =
+    /// any name.
+    fn_fields: &'a BTreeSet<String>,
+}
+
+impl CallableFacts<'_> {
+    fn field_may_carry(&self, name: &str) -> bool {
+        self.fn_fields.contains(name) || self.fn_fields.contains("*")
+    }
+
+    /// Only integer and float return types are ENFORCED by the runtime (a `-> bool` or `-> string`
+    /// function may return a closure; struct field types are not enforced at all).
+    fn enforced_scalar(t: &str) -> bool {
+        let t = normalize_ty(t);
+        is_integer_ty(&t) || is_float_ty(&t)
+    }
+
+    /// The recorded return values of a user function or method call; `None` when the callee is not
+    /// a user function or method; `Some(empty)` when nothing is recorded.
+    fn call_returns(&self, e: &Expr) -> Option<(bool, Vec<&Expr>)> {
+        let ctx = self.ctx;
+        match e {
+            Expr::Call { callee, .. } if ctx.fn_params.contains_key(callee) => {
+                let scalar = ctx
+                    .fn_ret_types
+                    .get(callee)
+                    .is_some_and(|t| Self::enforced_scalar(t));
+                let mut v: Vec<&Expr> = Vec::new();
+                if let Some(rv) = ctx.fn_return_values.get(callee) {
+                    v.extend(rv.values.iter());
+                } else if let Some((_, r)) = ctx.fn_sole_return.get(callee) {
+                    v.push(r);
+                }
+                Some((scalar, v))
+            }
+            Expr::CallExpr { callee, .. } => match callee.as_ref() {
+                Expr::FieldAccess { field, .. } => {
+                    let scalar = ctx
+                        .method_ret_types
+                        .get(field)
+                        .is_some_and(|t| !t.is_empty() && Self::enforced_scalar(t));
+                    let mut v: Vec<&Expr> = Vec::new();
+                    if let Some(defs) = ctx.method_return_values.get(field) {
+                        for d in defs {
+                            v.extend(d.values.iter());
+                        }
+                    } else if let Some((_, r)) = ctx.method_sole_return.get(field) {
+                        v.push(r);
+                    }
+                    Some((scalar, v))
+                }
+                _ => Some((false, Vec::new())),
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether `v` may evaluate to a FUNCTION value.
+    fn may_be(&self, v: &Expr, locals: &BTreeMap<String, Expr>, depth: u32) -> bool {
+        if depth > 6 {
+            return true;
+        }
+        match v {
+            Expr::Literal(_)
+            | Expr::StrLiteral(_)
+            | Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::Cast { .. }
+            | Expr::ArrayLiteral { .. }
+            | Expr::StructLiteral { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::EnumConstruct { .. } => false,
+            Expr::Var(n) => {
+                if self.ctx.fn_params.contains_key(n) {
+                    return true;
+                }
+                match locals.get(n) {
+                    Some(init) => self.may_be(init, locals, depth + 1),
+                    None => true,
+                }
+            }
+            Expr::If { then, else_, .. } => {
+                self.may_be(then, locals, depth + 1) || self.may_be(else_, locals, depth + 1)
+            }
+            // An element may be a function only if the container may hold one.
+            Expr::Index { base, .. } => self.may_carry(base, locals, depth + 1),
+            // A field (or map entry read by dot) holds only what some write gave it, and every write
+            // is enumerated by the fixpoint (`fn_fields`).
+            Expr::FieldAccess { field, .. } => self.field_may_carry(field),
+            Expr::Call { args, .. } | Expr::CallExpr { args, .. } => {
+                match self.call_returns(v) {
+                    Some((true, _)) => false,
+                    Some((false, vals)) => {
+                        let none = BTreeMap::new();
+                        vals.is_empty() || vals.iter().any(|x| self.may_be(x, &none, depth + 1))
+                    }
+                    // A builtin hands back a function only by passing one through, possibly out of a
+                    // container (`first(xs)`, `get(m, k, d)`).
+                    None => args.iter().any(|a| self.may_carry(a, locals, depth + 1)),
+                }
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether a callback handed to a builtin may RETURN a function (a closure whose body may be one,
+    /// or a function whose recorded return values may be one).
+    fn callback_may_return(&self, cb: &Expr, locals: &BTreeMap<String, Expr>) -> bool {
+        match cb {
+            Expr::Lambda { body, .. } => self.may_be(body, locals, 1),
+            Expr::Var(n) if self.ctx.fn_params.contains_key(n) => self.may_be(
+                &Expr::Call {
+                    callee: n.clone(),
+                    args: Vec::new(),
+                },
+                locals,
+                1,
+            ),
+            _ => true,
+        }
+    }
+
+    /// Whether `v` may be, or may CONTAIN, a function value.
+    fn may_carry(&self, v: &Expr, locals: &BTreeMap<String, Expr>, depth: u32) -> bool {
+        if depth > 6 {
+            return true;
+        }
+        match v {
+            Expr::ArrayLiteral { elements } => elements
+                .iter()
+                .any(|x| self.may_carry(x, locals, depth + 1)),
+            Expr::MapLiteral { entries, .. } => entries
+                .iter()
+                .any(|(_, x)| self.may_carry(x, locals, depth + 1)),
+            Expr::StructLiteral { fields, .. } => fields
+                .iter()
+                .any(|(_, x)| self.may_carry(x, locals, depth + 1)),
+            Expr::EnumConstruct { fields, .. } => {
+                fields.iter().any(|x| self.may_carry(x, locals, depth + 1))
+            }
+            Expr::Var(n) if !self.ctx.fn_params.contains_key(n) => match locals.get(n) {
+                Some(init) => self.may_carry(init, locals, depth + 1),
+                None => true,
+            },
+            Expr::Call { args, .. } | Expr::CallExpr { args, .. } => match self.call_returns(v) {
+                Some((true, _)) => false,
+                Some((false, vals)) => {
+                    let none = BTreeMap::new();
+                    vals.is_empty() || vals.iter().any(|x| self.may_carry(x, &none, depth + 1))
+                }
+                None => args.iter().any(|a| self.may_carry(a, locals, depth + 1)),
+            },
+            other => self.may_be(other, locals, depth + 1),
+        }
+    }
+}
+
+/// Builtins that store a value under a key of a map (`insert(m, "h", f)`); the key is argument 1.
+fn is_map_writing_builtin(callee: &str) -> bool {
+    matches!(callee, "insert" | "set" | "put")
+}
+
+/// Builtins that change their first argument in place.
+fn is_in_place_list_builtin(callee: &str) -> bool {
+    matches!(
+        callee,
+        "push"
+            | "pop"
+            | "insert"
+            | "remove"
+            | "append"
+            | "extend"
+            | "clear"
+            | "set"
+            | "swap"
+            | "truncate"
+            | "shift"
+            | "unshift"
+            | "splice"
+            | "retain"
+            | "drain"
+    )
+}
+
+/// Field (and map-key) names that some write gives a value that MAY be or contain a function: a
+/// struct literal field, a map literal entry, `x.h = v`, `m[k] = v`, or a map-writing builtin. A
+/// dynamic key records the wildcard `*`. A LEAST fixpoint: a field read counts as possibly a
+/// function only once some write to that name does (field types are not enforced, and a struct or
+/// map field can only get a value through such a write). Only such a name can be a field-value call
+/// when it is also a method name (`obj.h(..)`, see `discharge_calls_in_expr`).
+fn compute_fn_valued_field_names(items: &[Item], ctx: &SemanticContext) -> BTreeSet<String> {
+    let key_name = |k: &Expr| match k {
+        Expr::StrLiteral(n) => n.clone(),
+        _ => "*".to_string(),
+    };
+    // Per function: its trusted locals (single `let`, never re-bound, never changed in place).
+    let mut bodies: Vec<(&[Stmt], BTreeMap<String, Expr>)> = Vec::new();
+    visit::each_fn_item(items, &mut |item| {
+        let Item::Fn { body, .. } = item else {
+            return;
+        };
+        let mut locals = single_let_inits(body);
+        let non_let = non_let_bound_names(body);
+        let mut mutated: BTreeSet<String> = BTreeSet::new();
+        visit::each_expr_in_stmts(body, &mut |e| {
+            if let Expr::Call { callee, args } = e {
+                if is_in_place_list_builtin(callee) {
+                    if let Some(Expr::Var(v)) = args.first() {
+                        mutated.insert(v.clone());
+                    }
+                }
+            }
+        });
+        locals.retain(|n, _| !non_let.contains(n) && !mutated.contains(n));
+        bodies.push((body.as_slice(), locals));
+    });
+    let mut fn_fields: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let facts = CallableFacts {
+            ctx,
+            fn_fields: &fn_fields,
+        };
+        let mut out: BTreeSet<String> = fn_fields.clone();
+        for (body, locals) in &bodies {
+            let carry = |v: &Expr| facts.may_carry(v, locals, 0);
+            visit::each_expr_in_stmts(body, &mut |e| match e {
+                Expr::StructLiteral { fields, .. } => {
+                    for (n, v) in fields {
+                        if carry(v) {
+                            out.insert(n.clone());
+                        }
+                    }
+                }
+                Expr::MapLiteral { entries, .. } => {
+                    for (k, v) in entries {
+                        if carry(v) {
+                            out.insert(key_name(k));
+                        }
+                    }
+                }
+                Expr::Call { callee, args }
+                    if is_map_writing_builtin(callee) && args.iter().skip(2).any(carry) =>
+                {
+                    out.insert(args.get(1).map(key_name).unwrap_or_else(|| "*".into()));
+                }
+                // `map_values(m, cb)` stores `cb`'s result under every key of `m`: a write the
+                // program never spells out (review L29–L32).
+                Expr::Call { callee, args }
+                    if callee == "map_values"
+                        && args
+                            .get(1)
+                            .is_none_or(|cb| facts.callback_may_return(cb, locals)) =>
+                {
+                    match args.first() {
+                        Some(Expr::MapLiteral { entries, .. }) => {
+                            for (k, _) in entries {
+                                out.insert(key_name(k));
+                            }
+                        }
+                        _ => {
+                            out.insert("*".to_string());
+                        }
+                    }
+                }
+                _ => {}
+            });
+            visit::each_stmt(body, &mut |st, _| {
+                if let Stmt::Assign { target, value } = st {
+                    if !carry(value) {
+                        return;
+                    }
+                    match target {
+                        Expr::FieldAccess { field, .. } => {
+                            out.insert(field.clone());
+                        }
+                        Expr::Index { index, .. } => {
+                            out.insert(key_name(index));
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+        if out == fn_fields {
+            return out;
+        }
+        fn_fields = out;
+    }
+}
+
+/// Every expression whose value may flow into one of `values` (a function's return values) within
+/// `body`: the values themselves, the initializer of a local they name, what is assigned, pushed
+/// or index-written into such a local, and the collection a `for` variable they name iterates —
+/// closed under the locals those expressions name in turn.
+fn return_feeding_exprs(body: &[Stmt], values: &[Expr]) -> Vec<Expr> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for v in values {
+        names.extend(free_names(v));
+    }
+    let mut out: Vec<Expr> = values.to_vec();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let before = names.len();
+        let mut add: Vec<Expr> = Vec::new();
+        visit::each_stmt(body, &mut |st, _| match st {
+            Stmt::Let { name, init, .. } if names.contains(name) => add.push(init.clone()),
+            Stmt::Assign { target, value } => {
+                let mut root = target;
+                while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = root {
+                    root = base;
+                }
+                if matches!(root, Expr::Var(r) if names.contains(r)) {
+                    add.push(value.clone());
+                }
+            }
+            Stmt::For {
+                var,
+                source: crate::frontend::ForSource::Collection { expr },
+                ..
+            } if names.contains(var) => add.push(expr.clone()),
+            _ => {}
+        });
+        visit::each_expr_in_stmts(body, &mut |e| {
+            if let Expr::Call { callee, args } = e {
+                if (is_in_place_list_builtin(callee) || is_map_writing_builtin(callee))
+                    && matches!(args.first(), Some(Expr::Var(v)) if names.contains(v))
+                {
+                    add.extend(args.iter().skip(1).cloned());
+                }
+            }
+        });
+        for e in add {
+            let key = format!("{e:?}");
+            if seen.insert(key) {
+                names.extend(free_names(&e));
+                out.push(e);
+            }
+        }
+        if names.len() == before {
+            return out;
+        }
+    }
+}
+
+/// See `SemanticContext::current_fn_let_inits`: locals with exactly one `let` (lambda bodies
+/// included, so a shadowing inner `let` disqualifies the name) and no assignment anywhere.
+fn single_let_inits(body: &[Stmt]) -> BTreeMap<String, Expr> {
+    let mut count: BTreeMap<String, usize> = BTreeMap::new();
+    let mut inits: BTreeMap<String, Expr> = BTreeMap::new();
+    let mut assigned: BTreeSet<String> = BTreeSet::new();
+    visit::each_stmt(body, &mut |st, _| match st {
+        Stmt::Let { name, init, .. } => {
+            *count.entry(name.clone()).or_default() += 1;
+            inits.insert(name.clone(), init.clone());
+        }
+        Stmt::Assign { target, .. } => {
+            let mut root = target;
+            while let Expr::FieldAccess { base, .. } | Expr::Index { base, .. } = root {
+                root = base;
+            }
+            if let Expr::Var(v) = root {
+                assigned.insert(v.clone());
+            }
+        }
+        _ => {}
+    });
+    inits.retain(|n, _| count.get(n) == Some(&1) && !assigned.contains(n));
+    inits
+}
+
+/// Root names written by an assignment anywhere in `body` (lambda bodies included).
+fn assigned_roots(body: &[Stmt]) -> BTreeSet<String> {
+    let mut assigned = BTreeSet::new();
+    visit::each_stmt(body, &mut |st, _| {
+        if let Stmt::Assign { target, .. } = st {
+            let mut root = target;
+            while let Expr::FieldAccess { base, .. } | Expr::Index { base, .. } = root {
+                root = base;
+            }
+            if let Expr::Var(v) = root {
+                assigned.insert(v.clone());
+            }
+        }
+    });
+    assigned
+}
+
+/// A return value of a callee, rewritten into the CALLER's terms: a callee let-alias followed to its
+/// root, parameters replaced by the call's arguments. `None` when the value still mentions a callee
+/// local (it cannot be resolved in the caller's scope, where that name means something else).
+fn return_value_in_caller(
+    v: &Expr,
+    rv: &ReturnValues,
+    args: &[Expr],
+    ctx: &SemanticContext,
+) -> Option<Expr> {
+    if rv.params.len() != args.len() {
+        return None;
+    }
+    let mut v = match v {
+        Expr::Var(n) => Expr::Var(rv.alias.get(n).cloned().unwrap_or_else(|| n.clone())),
+        other => other.clone(),
+    };
+    if args
+        .iter()
+        .any(|a| expr_node_count(a) > REWRITTEN_VALUE_NODE_LIMIT)
+    {
+        return None;
+    }
+    // Rewrite through the callee's stable locals (`let t = [g]; … return t[0]`), bounded.
+    for _ in 0..4 {
+        let sub: BTreeMap<String, Expr> = free_names(&v)
+            .into_iter()
+            .filter_map(|n| rv.locals.get(&n).map(|init| (n, init.clone())))
+            .collect();
+        if sub.is_empty()
+            || !sub
+                .keys()
+                .all(|n| substitution_complete(&v, std::slice::from_ref(n)))
+        {
+            break;
+        }
+        v = substitute_vars(&v, &sub);
+        if expr_node_count(&v) > REWRITTEN_VALUE_NODE_LIMIT {
+            return None;
+        }
+    }
+    if !substitution_complete(&v, &rv.params) {
+        return None;
+    }
+    // Closed in the callee's terms: every free name is an unmodified formal, or a global function /
+    // builtin / sink the callee does not shadow. Anything else is a callee local.
+    let closed = free_names(&v).iter().all(|n| {
+        if rv.bound.contains(n) {
+            return false;
+        }
+        rv.params.contains(n)
+            || ctx.fn_params.contains_key(n)
+            || crate::backends::run::is_builtin_name(n)
+            || is_sink(n)
+            || is_egress_sink(n)
+    });
+    if !closed {
+        return None;
+    }
+    let sub: BTreeMap<String, Expr> = rv
+        .params
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    let out = substitute_vars(&v, &sub);
+    // On recursive fan-out, inlined locals and substituted arguments nest calls inside calls and the
+    // rewritten value grows with every level (PERF-FANOUT). A value past a fixed size is not
+    // rewritten: the caller treats it as unknown (identity Unknown, alias lane over-approximated).
+    if expr_node_count(&out) > REWRITTEN_VALUE_NODE_LIMIT {
+        return None;
+    }
+    Some(out)
+}
+
+/// See `return_value_in_caller` (PERF-FANOUT).
+const REWRITTEN_VALUE_NODE_LIMIT: usize = 256;
+
+/// The number of expression nodes in `e`.
+fn expr_node_count(e: &Expr) -> usize {
+    let mut n = 0usize;
+    visit::each_expr(e, &mut |_| n += 1);
+    n
+}
+
+/// Identities one return value contributes to a call's result (see `fn_return_values`). A closure is
+/// Unknown here — it is checked when applied (`discharge_applied_closure`) — and so is a value that
+/// mentions a callee local.
+fn return_value_identities(
+    v: &Expr,
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> FnIdentitySet {
+    if matches!(v, Expr::Lambda { .. }) {
+        return FnIdentitySet::Unknown;
+    }
+    match return_value_in_caller(v, rv, args, ctx) {
+        Some(inst) => fn_identities_of_d(&inst, scope, ctx, depth + 1),
+        None => FnIdentitySet::Unknown,
+    }
+}
+
+thread_local! {
+    /// Multi-return functions whose values are being resolved on this thread's stack. A function
+    /// reached again while its own values are being resolved (recursion, directly or through others)
+    /// is not expanded again: each level fans out over every return value, so re-expansion is
+    /// exponential (a shipped example stopped terminating). The re-entered call is unresolved.
+    static RETURN_VALUES_ACTIVE: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Expansions made in the current function's analysis (see `RETURN_VALUES_BUDGET`).
+    static RETURN_VALUES_SPENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Times an expansion was cut short (guard, budget, depth limit). A result computed while this
+    /// did not move is exact and may be memoized (`RETURN_VALUES_MEMO`).
+    static RETURN_VALUES_TRIPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Exact multi-return results for the current function's analysis, by `return_values_memo_key`.
+    static RETURN_VALUES_MEMO: std::cell::RefCell<BTreeMap<String, MemoValue>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+/// A memoized multi-return result (see `RETURN_VALUES_MEMO`).
+#[derive(Clone)]
+enum MemoValue {
+    Identities(FnIdentitySet),
+    Alias(Result<Option<String>, ()>),
+}
+
+/// Record that an expansion was cut short, so nothing computed around it is memoized.
+fn note_return_values_trip() {
+    RETURN_VALUES_TRIPS.with(|c| c.set(c.get() + 1));
+}
+
+fn return_values_trips() -> u64 {
+    RETURN_VALUES_TRIPS.with(|c| c.get())
+}
+
+/// The memo key of a multi-return query: the lane, the callee, which definition, the arguments as
+/// written, and every variable the arguments mention paired with what its binding holds (so a
+/// re-bound name is a different key).
+fn return_values_memo_key(
+    lane: &str,
+    key: &str,
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> String {
+    // `rv` identifies WHICH definition: every definition of a method name shares `key`.
+    let mut out = format!("{lane}|{key}|{:p}", rv as *const ReturnValues);
+    // Every argument exactly as written: even a literal can select what comes back
+    // (`sel(fs, 0)` vs `sel(fs, 1)` pick different elements; a draft that abstracted literals shared
+    // one cached answer and leaked, review L43/L44).
+    for a in args {
+        out.push_str(&format!("|{a:?}"));
+    }
+    for n in args.iter().flat_map(free_names) {
+        if let Some(b) = scope.get(&n) {
+            out.push_str(&format!(
+                "|{n}={:?}/{:?}/{:?}",
+                b.fn_identities, b.fn_alias, b.field_fn_identities
+            ));
+        }
+    }
+    out
+}
+
+/// Look up, or compute and (when exact) store, a memoized multi-return result.
+fn with_return_values_memo(mkey: String, f: impl FnOnce() -> MemoValue) -> MemoValue {
+    if let Some(v) = RETURN_VALUES_MEMO.with(|m| m.borrow().get(&mkey).cloned()) {
+        return v;
+    }
+    let before = return_values_trips();
+    let v = f();
+    if return_values_trips() == before {
+        RETURN_VALUES_MEMO.with(|m| m.borrow_mut().insert(mkey, v.clone()));
+    }
+    v
+}
+
+/// The most return-value expansions the analysis of ONE function may make (reset per function by
+/// `reset_return_values_budget`). The per-key guard bounds the DEPTH of recursion, not its breadth,
+/// and every carrier frame starts new queries: 40 mutually recursive functions took ~23 s with a
+/// per-query budget (PERF-FANOUT). Past the budget an expansion is treated exactly like a guard trip
+/// (identity Unknown, alias lane over-approximated), so the budget can only turn an answer into a
+/// refusal.
+const RETURN_VALUES_BUDGET: usize = 1024;
+
+/// Nesting at which a return-value expansion starts to count toward `RETURN_VALUES_BUDGET`.
+const RETURN_VALUES_DEEP: usize = 4;
+
+/// Start a fresh return-value expansion budget and memo (at the start of each function's analysis).
+fn reset_return_values_budget() {
+    RETURN_VALUES_SPENT.with(|c| c.set(0));
+    RETURN_VALUES_MEMO.with(|m| m.borrow_mut().clear());
+}
+
+/// Run `f` with `key` marked active; `None` when `key` is already active.
+fn with_return_values_active<T>(key: &str, f: impl FnOnce() -> T) -> Option<T> {
+    // Only DEEP expansions count: the blow-up is recursion through many functions (fan-out), while
+    // a busy function making many shallow queries is linear in its size (review P49: a budget on
+    // every expansion refused a valid function-value call after 60 distinct queries).
+    let deep = RETURN_VALUES_ACTIVE.with(|a| a.borrow().len() >= RETURN_VALUES_DEEP);
+    let over_budget = deep
+        && RETURN_VALUES_SPENT.with(|c| {
+            c.set(c.get() + 1);
+            c.get() > RETURN_VALUES_BUDGET
+        });
+    if over_budget {
+        note_return_values_trip();
+        return None;
+    }
+    let fresh = RETURN_VALUES_ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        // A function already being expanded is not expanded again. A second frame (allowed by
+        // 8424dc0c for `a(c + 1, getsec)`) made mutually recursive fan-out take ~10 s (PERF-FANOUT);
+        // the secret that frame found is now found by `scan_for_secret_fn` / `helper_labeled`.
+        if a.iter().any(|k| k == key) {
+            false
+        } else {
+            a.push(key.to_string());
+            true
+        }
+    });
+    if !fresh {
+        note_return_values_trip();
+        return None;
+    }
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            RETURN_VALUES_ACTIVE.with(|a| {
+                a.borrow_mut().pop();
+            });
+        }
+    }
+    let _pop = Pop;
+    Some(f())
+}
+
+/// The definitions of method `field` a call `base.field(args)` may run, when the tail-based method
+/// registries cannot answer alone: the name has several definitions (the receiver's type picks
+/// one), or one definition with several return values. `Err(())` when the call may not be a method
+/// call at all: `field` is also a declared struct field, and the runtime calls the field's value when
+/// the receiver's type lacks the method.
+fn method_defs<'a>(
+    ctx: &'a SemanticContext,
+    scope: &BTreeMap<String, ScopeBinding>,
+    base: &Expr,
+    field: &str,
+) -> Option<Result<&'a [ReturnValues], ()>> {
+    let defs = ctx.method_return_values.get(field)?;
+    // The runtime dispatches on the receiver's type and falls back to calling the value stored
+    // under `field` (a struct field or a MAP KEY) when that type lacks the method. Only a receiver
+    // of a known struct type with no field of that name is certainly a method call.
+    let known_struct = place_struct_type(base, scope, &ctx.place_types())
+        .and_then(|t| ctx.struct_fields.get(t.trim()))
+        .is_some_and(|fs| !fs.contains_key(field));
+    if !known_struct {
+        return Some(Err(()));
+    }
+    (defs.len() > 1 || defs.iter().any(|d| d.values.len() > 1)).then_some(Ok(defs.as_slice()))
+}
+
+/// Union of the identities of every value a multi-return call may yield (Unknown when the arity does
+/// not match or a value cannot be rewritten into the caller's terms).
+fn return_values_identities(
+    key: &str,
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> FnIdentitySet {
+    if rv.params.len() != args.len() || rv.values.is_empty() {
+        return FnIdentitySet::Unknown;
+    }
+    let mkey = return_values_memo_key("id", key, rv, args, scope);
+    match with_return_values_memo(mkey, || {
+        MemoValue::Identities(
+            with_return_values_active(key, || {
+                rv.values.iter().fold(FnIdentitySet::empty(), |acc, v| {
+                    acc.union(return_value_identities(v, rv, args, scope, ctx, depth))
+                })
+            })
+            .unwrap_or(FnIdentitySet::Unknown),
+        )
+    }) {
+        MemoValue::Identities(ids) => ids,
+        MemoValue::Alias(_) => FnIdentitySet::Unknown,
+    }
+}
+
+/// The alias-lane answer for a multi-return call: a secret or tainting function among the values if
+/// any; otherwise the first named function when EVERY value named one; otherwise `Err(())` (let the
+/// tail-based paths decide).
+fn return_values_alias(
+    key: &str,
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> Result<Option<String>, ()> {
+    if rv.params.len() != args.len() {
+        return Err(());
+    }
+    let mkey = return_values_memo_key("alias", key, rv, args, scope);
+    match with_return_values_memo(mkey, || {
+        MemoValue::Alias(
+            with_return_values_active(key, || {
+                return_values_alias_inner(rv, args, scope, ctx, depth)
+            })
+            .unwrap_or_else(|| scan_for_secret_fn(rv, args, scope, ctx).map(Some).ok_or(())),
+        )
+    }) {
+        MemoValue::Alias(r) => r,
+        MemoValue::Identities(_) => Err(()),
+    }
+}
+
+/// Functions (by name) and methods (`impl <name>`, every definition) whose return values hand back a
+/// secret or tainting FUNCTION VALUE, directly or through further helpers: a fixpoint over the whole
+/// program, computed once per check and cached (a per-call-site walk was exponential on method
+/// chains).
+fn helper_labeled(ctx: &SemanticContext) -> std::cell::Ref<'_, BTreeMap<String, String>> {
+    let stamp = (ctx.secret_fns.len(), ctx.tainting_fns.len());
+    let fresh = matches!(&*ctx.helper_labeled_cache.borrow(), Some((a, b, _)) if (*a, *b) == stamp);
+    if !fresh {
+        let labeled = |n: &str| ctx.secret_fns.contains(n) || ctx.tainting_fns.contains(n);
+        // Everything that may flow into each helper's return values (`return_feeding`): its values,
+        // the locals they name and what is assigned, pushed or written into them — but not a local
+        // that only a declassified use reads.
+        let entries: Vec<(String, Vec<&Expr>)> = ctx
+            .return_feeding
+            .iter()
+            .map(|(k, v)| (k.clone(), v.iter().collect()))
+            .collect();
+        let mut out: BTreeMap<String, String> = BTreeMap::new();
+        loop {
+            let mut changed = false;
+            for (key, vals) in &entries {
+                if out.contains_key(key) {
+                    continue;
+                }
+                let mut hit: Option<String> = None;
+                for v in vals {
+                    visit::each_expr(v, &mut |x| {
+                        if hit.is_some() {
+                            return;
+                        }
+                        match x {
+                            Expr::Var(n) if labeled(n) => hit = Some(n.clone()),
+                            // A helper handed on as a value (`map([0], getsec_v)`) yields its
+                            // result wherever it is applied (review L33/L34).
+                            Expr::Var(n) if out.contains_key(n) => hit = out.get(n).cloned(),
+                            Expr::Call { callee, .. } if !labeled(callee) => {
+                                hit = out.get(callee).cloned();
+                            }
+                            Expr::CallExpr { callee, .. } => {
+                                if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                                    hit = out.get(&format!("impl {field}")).cloned();
+                                }
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+                if let Some(h) = hit {
+                    out.insert(key.clone(), h);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        *ctx.helper_labeled_cache.borrow_mut() = Some((stamp.0, stamp.1, out));
+    }
+    std::cell::Ref::map(ctx.helper_labeled_cache.borrow(), |c| {
+        &c.as_ref().expect("computed above").2
+    })
+}
+
+/// Any secret or tainting function that a multi-return function's values, its bound or assigned
+/// values, its calls or this call's arguments name — directly, or as the return value of a helper
+/// they call (one syntactic level, no expansion). The over-approximation used when the alias lane
+/// cannot name every return value (a value through an assigned local, or recursion deeper than the
+/// guard), instead of falling back to the tail answer.
+fn scan_for_secret_fn(
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<String> {
+    if ctx.secret_fns.is_empty() && ctx.tainting_fns.is_empty() {
+        return None;
+    }
+    let labeled = |n: &str| ctx.secret_fns.contains(n) || ctx.tainting_fns.contains(n);
+    let helper_returns = |call: &Expr| -> Option<String> {
+        let key = match call {
+            Expr::Call { callee, .. } => callee.clone(),
+            Expr::CallExpr { callee, .. } => match callee.as_ref() {
+                Expr::FieldAccess { field, .. } => format!("impl {field}"),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        helper_labeled(ctx).get(&key).cloned()
+    };
+    let mut hit: Option<String> = None;
+    let body_exprs = rv
+        .values
+        .iter()
+        .chain(rv.locals.values())
+        .chain(rv.evaluated.iter())
+        .map(|e| (e, false));
+    // An argument's variables mean what the CALLER's bindings hold (`let s = getsec; a(1, pub1, s)`):
+    // their recorded function identities and aliases, read without any expansion (review L38–L42).
+    for n in args.iter().flat_map(free_names) {
+        let Some(b) = scope.get(&n) else {
+            continue;
+        };
+        let mut names: Vec<String> = Vec::new();
+        names.extend(b.fn_alias.iter().cloned());
+        if let FnIdentitySet::Known(k) = &b.fn_identities {
+            names.extend(k.iter().cloned());
+        }
+        names.extend(b.fn_may.names.iter().cloned());
+        for ids in b.field_fn_identities.values() {
+            if let FnIdentitySet::Known(k) = ids {
+                names.extend(k.iter().cloned());
+            }
+        }
+        for m in names {
+            if labeled(&m) {
+                return Some(m);
+            }
+            if let Some(h) = helper_labeled(ctx).get(&m) {
+                return Some(h.clone());
+            }
+        }
+    }
+    for (e, is_arg) in body_exprs.chain(args.iter().map(|e| (e, true))) {
+        visit::each_expr(e, &mut |x| {
+            if hit.is_some() {
+                return;
+            }
+            match x {
+                // A secret function as a VALUE (not merely called: `declassify(getsec(), ..)`
+                // calls it and hands no function value on).
+                Expr::Var(n) if labeled(n) => hit = Some(n.clone()),
+                // A helper handed IN as an argument (`a(c + 1, h(), h)` called with `mk`): the callee
+                // may apply it and yield its result (review L35–L37). Named elsewhere in the body
+                // (an unused list, `len(map(..))`) it hands nothing on (review round 20 O1/O2/O5).
+                Expr::Var(n) if is_arg && ctx.fn_params.contains_key(n) => {
+                    hit = helper_labeled(ctx).get(n).cloned();
+                }
+                Expr::Call { callee, .. }
+                    if ctx.fn_params.contains_key(callee) && !labeled(callee) =>
+                {
+                    hit = helper_returns(x);
+                }
+                Expr::CallExpr { .. } => hit = helper_returns(x),
+                _ => {}
+            }
+        });
+        if hit.is_some() {
+            break;
+        }
+    }
+    hit
+}
+
+fn return_values_alias_inner(
+    rv: &ReturnValues,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> Result<Option<String>, ()> {
+    let mut first: Option<String> = None;
+    let mut all_named = true;
+    // A value that cannot even be rewritten into the caller's terms (it goes through an assigned or
+    // re-bound callee local) is UNKNOWN; one that is rewritten but names no function is not.
+    let mut unknown = false;
+    for v in &rv.values {
+        let Some(inst) = return_value_in_caller(v, rv, args, ctx) else {
+            all_named = false;
+            unknown = true;
+            continue;
+        };
+        match fn_alias_of_d(&inst, scope, ctx, depth + 1) {
+            Some(n) => {
+                if ctx.secret_fns.contains(&n) || ctx.tainting_fns.contains(&n) {
+                    return Ok(Some(n));
+                }
+                first.get_or_insert(n);
+            }
+            None => all_named = false,
+        }
+    }
+    if all_named && first.is_some() {
+        Ok(first)
+    } else if unknown {
+        // A value the lane cannot name may be the one that matters: over-approximate before the
+        // tail-based paths answer (a secret through an assigned local, `t = getsec; … return t`).
+        match scan_for_secret_fn(rv, args, scope, ctx) {
+            Some(n) => Ok(Some(n)),
+            None => Err(()),
+        }
+    } else {
+        Err(())
+    }
+}
+
+/// Whether `e`, looking through single-assignment locals (bounded depth), names a user function
+/// (`carrier_mentions_function`). `let xs = [f]; app(xs)` carries `f` although `xs` itself names none.
+fn mentions_function_through_locals(e: &Expr, ctx: &SemanticContext) -> bool {
+    let mut frontier = vec![e.clone()];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for _ in 0..4 {
+        let mut next = Vec::new();
+        for x in &frontier {
+            if carrier_mentions_function(x, ctx) {
+                return true;
+            }
+            let mut vars = BTreeSet::new();
+            collect_expr_vars(x, &mut vars);
+            for v in vars {
+                if seen.insert(v.clone()) {
+                    if let Some(init) = ctx.current_fn_let_inits.get(&v) {
+                        next.push(init.clone());
+                    }
+                }
+            }
+        }
+        if next.is_empty() {
+            return false;
+        }
+        frontier = next;
+    }
+    // Depth exhausted without a verdict: treat as a possible carrier (fail closed).
+    true
+}
+
+/// The closure a callee value holds, if `resolve_closure_value` can tell.
+fn closure_of(
+    ctx: &SemanticContext,
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+) -> Option<Box<Expr>> {
+    resolve_closure_value(
+        callee,
+        scope,
+        &ctx.fn_returns_lambda,
+        &ctx.fn_returns_param,
+        &ctx.method_returns_lambda,
+        &ctx.method_returns_param,
+        0,
+    )
+}
+
+/// Whether `v` is bound other than by its single `let` in the function being analyzed.
+fn scope_rebinds(ctx: &SemanticContext, v: &str) -> bool {
+    ctx.current_fn_formals.contains(v) || ctx.current_fn_nonlet_bound.contains(v)
+}
+
+/// Whether the list local `v` may be changed after its `let`: passed to an in-place builtin
+/// (`push(v, ..)`). Lists are values, so a user function cannot change it.
+fn list_local_may_change(ctx: &SemanticContext, v: &str) -> bool {
+    ctx.current_fn_list_mutated.contains(v)
+}
+
+/// Whether every name in `e` means the same thing wherever it is read in the function being
+/// analyzed: bound once by `let` (never assigned, never re-bound) or an unmodified, never re-bound
+/// formal. A later `let a = 1` shadow is a re-binding.
+fn names_stable(ctx: &SemanticContext, e: &Expr) -> bool {
+    let mut vs = BTreeSet::new();
+    collect_expr_vars(e, &mut vs);
+    vs.iter().all(|n| {
+        (ctx.current_fn_let_inits.contains_key(n) && !ctx.current_fn_nonlet_bound.contains(n))
+            || (ctx.current_fn_formals.contains(n)
+                && !ctx.current_fn_rebound.contains(n)
+                && !ctx.current_fn_assigned.contains(n))
+    })
+}
+
+/// Whether `callee` is (or is a single-assignment alias of) a builtin, not shadowed by a binding.
+fn callee_is_builtin(
+    ctx: &SemanticContext,
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+) -> bool {
+    let name = match callee {
+        Expr::Var(n) if !scope.contains_key(n) => Some(n.clone()),
+        _ => fn_alias_of(callee, scope, ctx),
+    };
+    name.is_some_and(|n| {
+        crate::backends::run::is_builtin_name(&n)
+            && !ctx.fn_params.contains_key(&n)
+            && !ctx.current_fn_rebound.contains(&n)
+            && !ctx.current_fn_formals.contains(&n)
+    })
+}
+
+/// Discharge the calls inside the closure `callee` holds, applied to `args` exactly as the runtime
+/// applies it (`run.rs`, `Expr::Lambda`): parameter i is argument i, a missing argument is `0`, a
+/// surplus argument is ignored. `None` when the callee holds no closure the resolver can see; else
+/// `Some(false)` when something was refused.
+fn discharge_applied_closure(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+    args: &[Expr],
+) -> Option<bool> {
+    if analysis_limit::cut() {
+        return Some(true);
+    }
+    let lam = closure_of(ctx, scope, callee)?;
+    let Expr::Lambda { params, body } = *lam else {
+        return None;
+    };
+    let shown = carrier_display(callee);
+    let origin = ctx.current_fn.clone().unwrap_or_default();
+    if ctx.closure_apply_depth >= 8 {
+        // Nested applications beyond the bound: refuse rather than assume the inner calls are safe.
+        carrier_unresolved(
+            ctx,
+            &origin,
+            format!("{shown} applies closures nested too deeply to check"),
+            format!("the closures applied through `{shown}` nest too deeply for their calls to be checked"),
+        );
+        return Some(false);
+    }
+    let actual: Vec<Expr> = (0..params.len())
+        .map(|i| {
+            args.get(i)
+                .cloned()
+                .unwrap_or_else(|| Expr::Literal("0".into()))
+        })
+        .collect();
+    let sub: BTreeMap<String, Expr> = params.iter().cloned().zip(actual).collect();
+    let inst = substitute_vars(&body, &sub);
+    // Only a body that calls something whose precondition could matter needs checking.
+    if !closure_body_matters(ctx, &inst, 0) {
+        return Some(true);
+    }
+    // Instantiation must be FAITHFUL before the body's calls are checked here, in the caller's scope:
+    // - every parameter substituted (`substitution_complete`: a parameter inside a block, a `match`
+    //   or used as a callee is not reached);
+    // - every captured name (the runtime's own capture set, `collect_free_expr`) means here what it
+    //   meant where the closure was defined: only a stable local of a closure defined in this
+    //   function, used as a value, qualifies; a global function or builtin must not be shadowed;
+    // - no block that the expression walker would skip (`discharge_calls_in_expr` defers a block that
+    //   re-binds a modeled name, and nothing would be checked).
+    let defined_here = closure_defined_here(ctx, callee);
+    let mut vars = BTreeSet::new();
+    let mut callees = BTreeSet::new();
+    let bound: BTreeSet<String> = params.iter().cloned().collect();
+    crate::backends::run::collect_free_expr(&body, &bound, &mut vars, &mut callees);
+    let shadowed = |n: &String| {
+        scope.contains_key(n)
+            || ctx.current_fn_rebound.contains(n)
+            || ctx.current_fn_formals.contains(n)
+    };
+    let global = |n: &String| {
+        (ctx.fn_params.contains_key(n) || crate::backends::run::is_builtin_name(n)) && !shadowed(n)
+    };
+    let stable_here = |n: &String| {
+        defined_here
+            && ctx.current_fn_let_inits.contains_key(n)
+            && !ctx.current_fn_formals.contains(n)
+            && !ctx.current_fn_nonlet_bound.contains(n)
+            && !ctx.fn_params.contains_key(n)
+            && !crate::backends::run::is_builtin_name(n)
+    };
+    // The join marker of a merged closure (`merge_lambda_join`) is not a variable.
+    vars.remove("anubis return join");
+    let captured = vars.iter().any(|n| !global(n) && !stable_here(n))
+        || callees.iter().any(|n| !global(n) && !stable_here(n));
+    let mut deferred = false;
+    visit::each_expr(&inst, &mut |x| {
+        if matches!(x, Expr::Block { .. } | Expr::IfLet { .. }) {
+            deferred = true;
+        }
+    });
+    if !substitution_complete(&body, &params) || captured || deferred {
+        carrier_unresolved(
+            ctx,
+            &origin,
+            format!("{shown} applies a closure whose body cannot be instantiated"),
+            format!(
+                "the closure applied through `{shown}` has a body (a block, a captured variable, or a \
+                 parameter the checker cannot substitute) whose calls cannot be checked at this call"
+            ),
+        );
+        return Some(false);
+    }
+    let before = ctx.solver_obligations.len();
+    ctx.closure_apply_depth += 1;
+    let mut asm = assumptions.to_vec();
+    discharge_calls_in_expr(ctx, &mut asm, scope, &inst);
+    ctx.closure_apply_depth -= 1;
+    Some(
+        !ctx.solver_obligations[before..]
+            .iter()
+            .any(|o| o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX)),
+    )
+}
+
+/// Whether running `body` may call something whose precondition matters: a function with a
+/// `requires`, a function that applies a function-valued parameter (the carrier lane), a
+/// higher-order builtin given a function value, or a call through a value — unless that value is a
+/// closure (defined in `body`, or a stable local of this function) whose own body does not matter.
+/// Bounded; exhaustion answers "matters".
+fn closure_body_matters(ctx: &SemanticContext, body: &Expr, depth: u32) -> bool {
+    if depth > 4 {
+        return true;
+    }
+    // Closures bound by `let` inside the body, by name (every binding of the name counts).
+    let mut inner: BTreeMap<String, Vec<Expr>> = BTreeMap::new();
+    let mut other_bound: BTreeSet<String> = BTreeSet::new();
+    visit::each_expr(body, &mut |x| match x {
+        Expr::Block { stmts, .. } => {
+            for st in stmts {
+                match st {
+                    Stmt::Let { name, init, .. } if matches!(init, Expr::Lambda { .. }) => {
+                        inner.entry(name.clone()).or_default().push(init.clone());
+                    }
+                    Stmt::Let { name, .. } => {
+                        other_bound.insert(name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Expr::Lambda { params, .. } => other_bound.extend(params.iter().cloned()),
+        _ => {}
+    });
+    // A call through a value the checker cannot follow can reach a precondition only when a
+    // contracted function escapes as a value somewhere (a closure that calls one directly counts as
+    // an escape, see `compute_escaping_contracted_fns`).
+    let unknown_matters = !ctx.escaping_contracted_fns.is_empty();
+    let lambda_matters = |lam: &Expr| match lam {
+        Expr::Lambda { body, .. } => closure_body_matters(ctx, body, depth + 1),
+        _ => unknown_matters,
+    };
+    let mut matters = false;
+    visit::each_expr(body, &mut |x| {
+        if matters {
+            return;
+        }
+        match x {
+            Expr::Call { callee, args } => {
+                if let Some(lams) = inner.get(callee).filter(|_| !other_bound.contains(callee)) {
+                    matters = lams.iter().any(lambda_matters);
+                } else if ctx.fn_params.contains_key(callee) {
+                    let contracted = ctx
+                        .fn_contracts
+                        .get(callee)
+                        .is_some_and(|(_, req, _)| !req.is_empty());
+                    matters = contracted
+                        || (unknown_matters && ctx.fn_carrier_items.contains_key(callee));
+                } else if crate::backends::run::is_builtin_name(callee) {
+                    // A higher-order builtin runs the functions in its function positions.
+                    let fn_pos = effects::higher_order_closure_args(callee);
+                    matters = args.iter().enumerate().any(|(i, a)| {
+                        fn_pos.contains(&i)
+                            && match a {
+                                Expr::Lambda { body, .. } => {
+                                    closure_body_matters(ctx, body, depth + 1)
+                                }
+                                Expr::Var(v) if ctx.fn_params.contains_key(v) => {
+                                    ctx.fn_contracts
+                                        .get(v)
+                                        .is_some_and(|(_, req, _)| !req.is_empty())
+                                        || ctx.fn_carrier_items.contains_key(v)
+                                }
+                                Expr::Var(v) if crate::backends::run::is_builtin_name(v) => false,
+                                Expr::Var(v) => match inner.get(v) {
+                                    Some(lams) if !other_bound.contains(v) => {
+                                        lams.iter().any(lambda_matters)
+                                    }
+                                    _ => match ctx.current_fn_let_inits.get(v) {
+                                        Some(init @ Expr::Lambda { .. }) => lambda_matters(init),
+                                        _ => unknown_matters,
+                                    },
+                                },
+                                _ => unknown_matters,
+                            }
+                    });
+                } else if let Some(init @ Expr::Lambda { .. }) =
+                    ctx.current_fn_let_inits.get(callee)
+                {
+                    matters =
+                        (other_bound.contains(callee) && unknown_matters) || lambda_matters(init);
+                } else {
+                    matters = unknown_matters;
+                }
+            }
+            Expr::CallExpr { .. } => matters = unknown_matters,
+            _ => {}
+        }
+    });
+    matters
+}
+
+/// Whether `callee`, looking through single-assignment locals, is a closure literal written in the
+/// function being analyzed (so its free names are this function's).
+fn closure_defined_here(ctx: &SemanticContext, callee: &Expr) -> bool {
+    let mut cur = callee;
+    for _ in 0..8 {
+        match cur {
+            Expr::Lambda { .. } => return true,
+            Expr::Var(v) => match ctx.current_fn_let_inits.get(v) {
+                Some(init) => cur = init,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Names bound in `body` by anything but `let`: `for` variables, patterns, closure parameters.
+fn non_let_bound_names(body: &[Stmt]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    visit::each_stmt(body, &mut |st, _| match st {
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            out.extend(pattern.bound_names());
+        }
+        Stmt::For { var, .. } => {
+            out.insert(var.clone());
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Lambda { params, .. } => out.extend(params.iter().cloned()),
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                out.extend(arm.pattern.bound_names());
+            }
+        }
+        Expr::IfLet { pattern, .. } => out.extend(pattern.bound_names()),
+        _ => {}
+    });
+    out
+}
+
+/// Whether `e` is, looking through single-assignment locals, a formal of the function being analyzed
+/// (`g`, or `h` after `let h = g;`). Calls through such a value are the carrier lane's to check, at
+/// each outer call site where the actual argument is known.
+fn derives_from_own_formal(e: &Expr, ctx: &SemanticContext) -> bool {
+    let mut cur = e;
+    for _ in 0..8 {
+        // An element or field of the formal (`gs[0]`, `s.h`) is covered by the carrier lane's
+        // applied-parameter paths just like the formal itself.
+        while let Expr::Index { base, .. } | Expr::FieldAccess { base, .. } = cur {
+            cur = base;
+        }
+        let Expr::Var(v) = cur else {
+            return false;
+        };
+        if ctx.current_fn_formals.contains(v) {
+            // A formal the body re-assigns or re-binds (`let g = …`, `for g in …`, a pattern) may no
+            // longer hold the caller's argument, so the carrier walk at the call site (which checks
+            // the ORIGINAL argument) does not cover it.
+            return !ctx.current_fn_assigned.contains(v) && !ctx.current_fn_rebound.contains(v);
+        }
+        match ctx.current_fn_let_inits.get(v) {
+            Some(init) => cur = init,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// A call through a callee VALUE the checker could not resolve to one function. Refused (explicit
+/// UNDECIDED) when a function whose precondition matters escapes somewhere in the program, since the
+/// callee may be that function and its `requires` would otherwise go unchecked — "unknown" never means
+/// "the precondition holds". A call through a formal of the current function is exempt: the carrier
+/// lane checks it at each outer call site.
+fn unresolved_callee_value(ctx: &mut SemanticContext, callee: &Expr) -> bool {
+    if ctx.escaping_contracted_fns.is_empty() {
+        return true;
+    }
+    if derives_from_own_formal(callee, ctx) {
+        return true;
+    }
+    let shown = carrier_display(callee);
+    let candidates = ctx
+        .escaping_contracted_fns
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let origin = ctx.current_fn.clone().unwrap_or_default();
+    carrier_unresolved(
+        ctx,
+        &origin,
+        format!("{shown} is called but cannot be resolved to a function"),
+        format!(
+            "`{shown}` is called in `{origin}` but the checker cannot tell which function it holds; it \
+             may be one whose precondition matters ({candidates}), so that precondition cannot be \
+             checked here"
+        ),
+    );
+    false
+}
+
+/// User functions that may end the program instead of returning: their body reaches `panic`, `exit`
+/// or `?` (early error return), directly or by calling another such function. A fixpoint over direct
+/// calls; conservative (any mention counts).
+fn compute_may_exit_fns(items: &[Item]) -> BTreeSet<String> {
+    let mut bodies: Vec<(String, BTreeSet<String>, bool)> = Vec::new();
+    visit::each_fn_item(items, &mut |it| {
+        if let Item::Fn { name, body, .. } = it {
+            let mut calls = BTreeSet::new();
+            let mut exits = false;
+            visit::each_expr_in_stmts(body, &mut |e| match e {
+                Expr::Call { callee, .. } => {
+                    if matches!(callee.as_str(), "panic" | "exit") {
+                        exits = true;
+                    }
+                    calls.insert(callee.clone());
+                }
+                Expr::Try(_) => exits = true,
+                _ => {}
+            });
+            bodies.push((name.clone(), calls, exits));
+        }
+    });
+    let mut out: BTreeSet<String> = bodies
+        .iter()
+        .filter(|(_, _, e)| *e)
+        .map(|(n, _, _)| n.clone())
+        .collect();
+    loop {
+        let before = out.len();
+        for (n, calls, _) in &bodies {
+            if !out.contains(n) && calls.iter().any(|c| out.contains(c)) {
+                out.insert(n.clone());
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
+/// Every name bound anywhere in a function: parameters, `let` / pattern / loop bindings, and lambda
+/// parameters and match / if-let binders inside expressions.
+fn function_bound_names(params: &[(String, String)], body: &[Stmt]) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
+    visit::each_stmt(body, &mut |st, _| match st {
+        Stmt::Let { name, .. } => {
+            out.insert(name.clone());
+        }
+        Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+            out.extend(pattern.bound_names());
+        }
+        Stmt::For { var, .. } => {
+            out.insert(var.clone());
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Lambda { params, .. } => out.extend(params.iter().cloned()),
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                out.extend(arm.pattern.bound_names());
+            }
+        }
+        Expr::IfLet { pattern, .. } => out.extend(pattern.bound_names()),
+        _ => {}
+    });
+    out
+}
+
+/// Whether `e` is a direct call to a user function (not shadowed by any binding) whose declared return
+/// type is an integer: its value is certainly an integer, even when the call itself is not encodable.
+fn is_integer_returning_user_call(e: &Expr, ctx: &SemanticContext) -> bool {
+    match e {
+        Expr::Call { callee, .. } => {
+            ctx.user_fn_names.contains(callee)
+                && ctx
+                    .fn_ret_types
+                    .get(callee)
+                    .is_some_and(|t| !t.trim().is_empty() && is_integer_ty(t))
+        }
+        _ => false,
+    }
+}
+
+/// Whether executing `s` to completion always leaves the enclosing block: a `return`, `break` or
+/// `continue`; a call to the diverging builtins `panic(msg)` (a Rust panic: control never reaches the
+/// next statement) or `exit(code)` (`std::process::exit`); or an `if`/`else` whose branches both do.
+/// Conservative: anything else counts as falling through.
+///
+/// `exit` with no argument is NOT diverging (it lowers to a no-op value). And a call-position name
+/// resolves to a user function, then a local, before a builtin, so `panic`/`exit` count only when no
+/// user function and no binding in the program uses that name.
+fn stmt_always_exits(s: &Stmt, ctx: &SemanticContext) -> bool {
+    match s {
+        Stmt::Break | Stmt::Continue => true,
+        Stmt::ExprStmt(Expr::Call { callee, args }) => match callee.as_str() {
+            "return" | "break" | "continue" => true,
+            "panic" | "exit" => {
+                args.len() == 1
+                    && !ctx.user_fn_names.contains(callee)
+                    && !ctx.fn_bound_names.contains(callee)
+            }
+            _ => false,
+        },
+        Stmt::If {
+            then,
+            else_: Some(else_),
+            ..
+        } => block_always_exits(then, ctx) && block_always_exits(else_, ctx),
+        _ => false,
+    }
+}
+
+/// Whether a statement list always leaves the enclosing block: some top-level statement always exits
+/// (statements after it are unreachable; one before it that never finishes never falls through either).
+fn block_always_exits(stmts: &[Stmt], ctx: &SemanticContext) -> bool {
+    stmts.iter().any(|s| stmt_always_exits(s, ctx))
+}
+
+/// Record that the rest of the current block is unreachable: every later obligation in it holds
+/// vacuously. Scoped like any path condition (the enclosing construct restores its snapshot).
+fn push_unreachable(ctx: &mut SemanticContext, assumptions: &mut Vec<String>) {
+    assumptions.push("false".to_string());
+    ctx.active_branch_guards.push("false".to_string());
 }
 
 /// True when statement `s` can break/continue/return OUT of the enclosing loop being analyzed. A
@@ -20920,7 +28365,7 @@ fn verify_while_invariants(
         .collect();
     let outer_assumptions: &[String] = &outer_assumptions;
     let reject = |ctx: &mut SemanticContext, why: &str| {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
             message: format!(
                 "cannot verify this loop invariant inductively: {why}. Invariants are supported on \
@@ -21155,7 +28600,7 @@ fn verify_while_invariants_float(
         .collect();
     let outer_assumptions: &[String] = &outer_assumptions;
     let reject = |ctx: &mut SemanticContext, why: &str| {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
             message: format!(
                 "cannot verify this float loop invariant inductively: {why}. Invariants are supported \
@@ -21231,8 +28676,15 @@ fn verify_while_invariants_float(
     }
 
     // TRANSITION: the straight-line float effect of one iteration on the tracked variables.
-    let transition = match extract_loop_transition(body, &tracked, &model_vars, &is_float_modelable)
-    {
+    //
+    // A write is float-modeled only when the VALUE is genuinely float-kinded. Assignment does not
+    // coerce: `s = 7` stores `Int(7)` in a float variable, so a later `s / 2` is INTEGER division (3),
+    // not `fp.div` (3.5) — modeling the write as `to_fp 7.0` proved a violated `ensures`. The same rule
+    // the float-`let` (`genuinely_float`) and float-field-write (`!is_int_modelable`) paths already apply.
+    let float_write = |e: &Expr, vars: &BTreeSet<String>| {
+        is_float_modelable(e, vars) && is_genuinely_float(e, vars)
+    };
+    let transition = match extract_loop_transition(body, &tracked, &model_vars, &float_write) {
         Some(t) => t,
         None => {
             reject(ctx, "the loop body is not straight-line float assignments");
@@ -21293,6 +28745,204 @@ fn verify_while_invariants_float(
 
 /// Collect every explicit `return X` expression in a statement (recursing into nested blocks), so a
 /// contract's `ensures` can be checked at every return point, not only the tail.
+/// Whether substituting `params` in `e` with `substitute_vars` reaches every occurrence: false when a
+/// parameter appears inside a form it leaves alone (a binding form — `match`, `if let`, a block — or a
+/// call whose callee NAME is the parameter, which is only rewritten for a plain-variable argument).
+fn substitution_complete(e: &Expr, params: &[String]) -> bool {
+    let mentions = |x: &Expr| {
+        let mut hit = false;
+        visit::each_expr(x, &mut |y| match y {
+            Expr::Var(n) if params.contains(n) => hit = true,
+            Expr::Call { callee, .. } if params.contains(callee) => hit = true,
+            _ => {}
+        });
+        hit
+    };
+    match e {
+        Expr::Var(_) | Expr::Literal(_) | Expr::StrLiteral(_) => true,
+        Expr::Binary { lhs, rhs, .. } => {
+            substitution_complete(lhs, params) && substitution_complete(rhs, params)
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => substitution_complete(expr, params),
+        Expr::Call { callee, args } => {
+            !params.contains(callee) && args.iter().all(|a| substitution_complete(a, params))
+        }
+        Expr::CallExpr { callee, args } => {
+            substitution_complete(callee, params)
+                && args.iter().all(|a| substitution_complete(a, params))
+        }
+        Expr::Index { base, index } => {
+            substitution_complete(base, params) && substitution_complete(index, params)
+        }
+        Expr::ArrayLiteral { elements } => {
+            elements.iter().all(|a| substitution_complete(a, params))
+        }
+        Expr::FieldAccess { base, .. } => substitution_complete(base, params),
+        Expr::StructLiteral { fields, .. } => {
+            fields.iter().all(|(_, v)| substitution_complete(v, params))
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            substitution_complete(cond, params)
+                && substitution_complete(then, params)
+                && substitution_complete(else_, params)
+        }
+        Expr::Lambda {
+            params: inner,
+            body,
+        } => {
+            let outer: Vec<String> = params
+                .iter()
+                .filter(|p| !inner.contains(p))
+                .cloned()
+                .collect();
+            substitution_complete(body, &outer)
+        }
+        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+            substitution_complete(inner, params)
+        }
+        // Binding forms (`{ … }`, `match`, `if let`, …) are left alone by `substitute_vars`: any
+        // mention anywhere inside them, as a value or as a callee, is unreached.
+        other => !mentions(other),
+    }
+}
+
+/// A join built by `extend_with_early_returns` whose every leaf is a closure of the same arity, merged
+/// into ONE closure: the parameters of the first, and a body that is the same join over each closure's
+/// body (its parameters renamed to the first's). Calling it means calling whichever the join picks, so
+/// any lane that descends into a returned closure now checks every one of them.
+fn merge_lambda_join(e: &Expr) -> Option<Expr> {
+    fn leaves<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+        match e {
+            Expr::If {
+                cond, then, else_, ..
+            } if matches!(cond.as_ref(), Expr::Var(v) if v == "anubis return join") => {
+                leaves(then, out);
+                leaves(else_, out);
+            }
+            other => out.push(other),
+        }
+    }
+    let mut ls = Vec::new();
+    leaves(e, &mut ls);
+    if ls.len() < 2 {
+        return None;
+    }
+    // A non-closure leaf cannot be called (the runtime panics on calling a non-closure), so it
+    // contributes no body. Closures of EVERY arity are merged: the runtime pads missing arguments with
+    // 0 and ignores surplus ones, so a call of any arity may run any of them. The merged closure takes
+    // the widest parameter list; a narrower closure's parameters are renamed to its prefix.
+    // Only a LITERAL leaf is certainly not callable (the runtime panics calling it). Any other
+    // non-closure leaf (a named function, a call result, an element) may be a callable value the
+    // merged closure would hide, so no merged closure is recorded then; the call falls back to the
+    // identity union (`fn_return_values`) and its escape gate.
+    if ls.iter().any(|l| {
+        !matches!(
+            l,
+            Expr::Lambda { .. }
+                | Expr::Literal(_)
+                | Expr::StrLiteral(_)
+                | Expr::ArrayLiteral { .. }
+                | Expr::StructLiteral { .. }
+                | Expr::MapLiteral { .. }
+        )
+    }) {
+        return None;
+    }
+    let lams: Vec<(&Vec<String>, &Expr)> = ls
+        .iter()
+        .filter_map(|l| match l {
+            Expr::Lambda { params, body } => Some((params, body.as_ref())),
+            _ => None,
+        })
+        .collect();
+    let (merged, _) = *lams.iter().max_by_key(|(p, _)| p.len())?;
+    let merged = merged.clone();
+    let mut bodies = Vec::new();
+    for (params, body) in &lams {
+        // Names the body captures or binds must not collide with a merged parameter it does not own.
+        let own: BTreeSet<String> = params.iter().cloned().collect();
+        let mut vars = BTreeSet::new();
+        let mut callees = BTreeSet::new();
+        crate::backends::run::collect_free_expr(body, &own, &mut vars, &mut callees);
+        let inner_bound = function_bound_names(&[], &[Stmt::ExprStmt((*body).clone())]);
+        let target: Vec<String> = merged[..params.len()].to_vec();
+        if merged.iter().any(|m| {
+            vars.contains(m) || callees.contains(m) || (inner_bound.contains(m) && !own.contains(m))
+        }) {
+            return None;
+        }
+        if **params == target {
+            bodies.push((*body).clone());
+            continue;
+        }
+        if !substitution_complete(body, params) {
+            return None;
+        }
+        let sub: BTreeMap<String, Expr> = params
+            .iter()
+            .cloned()
+            .zip(target.iter().map(|p| Expr::Var(p.clone())))
+            .collect();
+        bodies.push(substitute_vars(body, &sub));
+    }
+    if bodies.len() == 1 {
+        return Some(Expr::Lambda {
+            params: merged,
+            body: Box::new(bodies.pop()?),
+        });
+    }
+    let mut it = bodies.into_iter().rev();
+    let last = it.next()?;
+    let body = it.fold(last, |acc, b| Expr::If {
+        cond: Box::new(Expr::Var("anubis return join".into())),
+        then: Box::new(b),
+        else_: Box::new(acc),
+        span: Default::default(),
+    });
+    Some(Expr::Lambda {
+        params: merged,
+        body: Box::new(body),
+    })
+}
+
+/// Add every explicit `return` value in `body` to the tail values `tv`, skipping structural duplicates.
+/// `tail_values` sees only the final statement, so `if c { return g; } return safe;` yielded just
+/// `[safe]`, and a resolver that trusts a single tail value recorded the function as returning `safe`
+/// — the call `pick(f, 1)(-1)` was then checked against `safe`'s (empty) precondition instead of `f`'s.
+/// With every return present, divergent returns are never mistaken for one value.
+fn extend_with_early_returns(body: &[Stmt], tv: &mut Vec<Expr>) {
+    let mut rets = Vec::new();
+    for st in body {
+        collect_returns_in_stmt(st, &mut rets);
+    }
+    let explicit = !rets.is_empty();
+    for r in rets {
+        let key = format!("{r:?}");
+        if !tv.iter().any(|t| format!("{t:?}") == key) {
+            tv.push(r);
+        }
+    }
+    // Several distinct values reached through explicit `return`s (an early one, or one in each branch
+    // of a tail `if`) are ONE join, not "no single value": collapse them into a nested `if`
+    // over an opaque condition, which every resolver (contract identities, secret and taint sources)
+    // already reads as the UNION of its branches. Dropping the function instead made the secret and
+    // taint lanes, which have no escape gate, name nothing — `if c { return pub1; } return getsec;`
+    // then printed the secret unchecked.
+    if explicit && tv.len() > 1 {
+        let mut values = std::mem::take(tv).into_iter().rev();
+        let last = values.next().expect("len > 1");
+        let joined = values.fold(last, |acc, v| Expr::If {
+            cond: Box::new(Expr::Var("anubis return join".into())),
+            then: Box::new(v),
+            else_: Box::new(acc),
+            span: Default::default(),
+        });
+        tv.push(joined);
+    }
+}
+
 fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
     match s {
         // A statement's expressions can hide a `return` inside a `match`-arm / `if`/block expression or
@@ -21426,37 +29076,60 @@ fn guard_clause_escapes(body: &[Stmt]) -> Vec<(Expr, bool)> {
 /// them. SOUND: `push_branch_path_condition` (the consumer) is a no-op for a non-modelable guard, and a
 /// reassigned param/local is removed from `int_vars` so its guard silently drops — a TRUE path premise
 /// can only turn a REJECT into a PASS, never mask a genuinely-false contract.
+/// The `ensures` discharge's view: [`collect_exits_guarded`] without `?` exits, since an early
+/// `Err` is not the function's value there.
 fn collect_returns_guarded(
     s: &Stmt,
     guards: &[(Expr, bool)],
     out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
 ) {
-    fn push_expr(e: &Expr, g: &[(Expr, bool)], out: &mut Vec<(Expr, Vec<(Expr, bool)>)>) {
+    collect_exits_guarded(s, guards, false, out);
+}
+
+/// [`collect_returns_guarded`], and with `with_try` also every `?` operand ([`try_exits_in_expr`]),
+/// which leaves the function under the same guards: the information-flow checks count those.
+fn collect_exits_guarded(
+    s: &Stmt,
+    guards: &[(Expr, bool)],
+    with_try: bool,
+    out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
+) {
+    fn push_expr(
+        e: &Expr,
+        g: &[(Expr, bool)],
+        with_try: bool,
+        out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
+    ) {
         let mut rs = Vec::new();
         expr_returns(e, &mut rs);
+        if with_try {
+            try_exits_in_expr(e, &mut rs);
+        }
         for r in rs {
             out.push((r, g.to_vec()));
         }
     }
     match s {
-        Stmt::ExprStmt(e) => push_expr(e, guards, out),
-        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => push_expr(init, guards, out),
+        Stmt::ExprStmt(e) => push_expr(e, guards, with_try, out),
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+            push_expr(init, guards, with_try, out)
+        }
         Stmt::Assign { target, value } => {
-            push_expr(target, guards, out);
-            push_expr(value, guards, out);
+            push_expr(target, guards, with_try, out);
+            push_expr(value, guards, with_try, out);
         }
         Stmt::If { cond, then, else_ } => {
-            push_expr(cond, guards, out);
+            push_expr(cond, guards, with_try, out);
             let mut g_then = guards.to_vec();
             g_then.push((cond.clone(), false));
             for st in then {
-                collect_returns_guarded(st, &g_then, out);
+                collect_exits_guarded(st, &g_then, with_try, out);
             }
             if let Some(e) = else_ {
                 let mut g_else = guards.to_vec();
                 g_else.push((cond.clone(), true));
                 for st in e {
-                    collect_returns_guarded(st, &g_else, out);
+                    collect_exits_guarded(st, &g_else, with_try, out);
                 }
             }
         }
@@ -21464,40 +29137,42 @@ fn collect_returns_guarded(
         // the guards accumulated OUTSIDE the loop (a loop-mutated var is de-modeled anyway, so its guard
         // no-ops). Same set of returns as `collect_returns_in_stmt`.
         Stmt::While { cond, body, .. } => {
-            push_expr(cond, guards, out);
+            push_expr(cond, guards, with_try, out);
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::WhileLet { expr, body, .. } => {
-            push_expr(expr, guards, out);
+            push_expr(expr, guards, with_try, out);
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::For { source, body, .. } => {
             match source {
                 crate::frontend::ForSource::Range { start, end } => {
-                    push_expr(start, guards, out);
-                    push_expr(end, guards, out);
+                    push_expr(start, guards, with_try, out);
+                    push_expr(end, guards, with_try, out);
                 }
-                crate::frontend::ForSource::Collection { expr } => push_expr(expr, guards, out),
+                crate::frontend::ForSource::Collection { expr } => {
+                    push_expr(expr, guards, with_try, out)
+                }
             }
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::Loop { body, .. }
         | Stmt::ResearchBlock { body, .. }
         | Stmt::ExploitBlock { body, .. } => {
             for st in body {
-                collect_returns_guarded(st, guards, out);
+                collect_exits_guarded(st, guards, with_try, out);
             }
         }
         Stmt::HybridBlock { gpu, cpu, prove } => {
             for b in [gpu, cpu, prove].into_iter().flatten() {
                 for st in b {
-                    collect_returns_guarded(st, guards, out);
+                    collect_exits_guarded(st, guards, with_try, out);
                 }
             }
         }
@@ -21725,7 +29400,9 @@ fn check_one_return(
     if is_constant_expr(expr) {
         if let Some(actual) = infer_expr_type_scoped(expr, scope) {
             if !types_assignable(rty, &actual) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                // A constant's type against the declared one: no analysis, so it is reported after
+                // an analysis limit too (E2).
+                ctx.push_diag_independent(SemanticDiagnostic {
                     code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
                     message: format!(
                         "function declared `-> {}` but returns a value of type `{}`",
@@ -21852,7 +29529,36 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
                 }
             }
         }
-        Expr::ArrayLiteral { .. } => Some("list".into()),
+        // Item-21 Family-3 (D8): recover the element struct type of an UNANNOTATED array literal so
+        // a `secret`/`tainted` field read off an element (`let xs = [S {..}]; xs[0].k`) is looked
+        // up — `place_struct_type`'s `Index` arm resolves `list<S>` via `container_element_type`.
+        // Produces the SAME `list<S>` spelling a declared `let xs: list<S>` already does (whose
+        // element-read path already rejects, corpus-wide), so no consumer sees a new shape; emitted
+        // only when the literal is non-empty and EVERY element is the same struct literal, else the
+        // bare `list` it was (fail-open — a mixed or non-struct array infers no element type).
+        Expr::ArrayLiteral { elements } => {
+            let mut elem: Option<&str> = None;
+            let mut unanimous = !elements.is_empty();
+            for e in elements {
+                match e {
+                    Expr::StructLiteral { name, .. } => match elem {
+                        Some(prev) if prev != name.as_str() => {
+                            unanimous = false;
+                            break;
+                        }
+                        _ => elem = Some(name.as_str()),
+                    },
+                    _ => {
+                        unanimous = false;
+                        break;
+                    }
+                }
+            }
+            Some(match (unanimous, elem) {
+                (true, Some(s)) => format!("list<{s}>"),
+                _ => "list".into(),
+            })
+        }
         Expr::MapLiteral { .. } => Some("map".into()),
         Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
         Expr::If { then, else_, .. } => value_branch_type(&[
@@ -22307,7 +30013,7 @@ fn check_expr_semantics(
         Expr::Call { callee, args } => {
             if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
                 if args.len() != param_tys.len() {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_MISMATCH".into()),
                         message: format!(
                             "function `{}` expects {} argument(s), got {}",
@@ -22321,7 +30027,7 @@ fn check_expr_semantics(
                     for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                         if let Some(got) = infer_expr_type_scoped(arg, scope) {
                             if !types_assignable(expected, &got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch: argument {} of `{}` expects `{}`, got `{}`",
@@ -22354,7 +30060,7 @@ fn check_expr_semantics(
                 // Higher-order use (`map(xs, f)`) is an internal call, not a source `f(args)`, so it
                 // still pads — matching the strict-direct / pad-higher-order arity policy.
                 if args.len() != arity {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_ARITY_MISMATCH".into()),
                         message: format!(
                             "closure `{}` expects {} argument(s), got {}",
@@ -22430,7 +30136,7 @@ fn check_expr_semantics(
             ) {
                 for operand in [lhs.as_ref(), rhs.as_ref()] {
                     if let Some(bad) = static_non_numeric_operand(operand, scope) {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_TYPE_MISMATCH".into()),
                             message: format!(
                                 "operator `{}` requires numeric operands, but an operand has type `{}`",
@@ -22448,7 +30154,7 @@ fn check_expr_semantics(
             // B1: unary `-` requires a numeric operand.
             if op == "-" {
                 if let Some(bad) = static_non_numeric_operand(expr, scope) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_TYPE_MISMATCH".into()),
                         message: format!("unary `-` requires a numeric operand, got `{}`", bad),
                         span: None,
@@ -22502,7 +30208,7 @@ fn check_expr_semantics(
             // B1: only lists, strings, maps, and structs are indexable. A statically-known numeric
             // or bool base is a type error (dynamic bases are left to the fail-closed runtime).
             if let Some(bad) = static_non_indexable(base, scope) {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                     message: format!(
                         "cannot index a value of type `{}` (only lists, strings, and maps are indexable)",
@@ -22551,7 +30257,7 @@ fn check_expr_semantics(
             if let Expr::FieldAccess { field, .. } = &**callee {
                 if let Some(Some(arity)) = ctx.method_arities.get(field).copied() {
                     if args.len() + 1 != arity {
-                        ctx.diagnostics.push(SemanticDiagnostic {
+                        ctx.push_diag(SemanticDiagnostic {
                             code: Some("ANUBIS_ARITY_MISMATCH".into()),
                             message: format!(
                                 "method `{}` expects {} argument(s), got {}",
@@ -22571,7 +30277,7 @@ fn check_expr_semantics(
             let mut seen = BTreeSet::new();
             for (fname, fexpr) in fields {
                 if !seen.insert(fname.clone()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
+                    ctx.push_diag(SemanticDiagnostic {
                         code: Some("ANUBIS_DUPLICATE_FIELD".into()),
                         message: format!(
                             "duplicate field `{}` in `{}` struct literal",
@@ -22609,7 +30315,7 @@ fn check_expr_semantics(
                     if is_scalar_prim(&declared) {
                         if let Some(got) = infer_expr_type_scoped(fexpr, scope) {
                             if is_scalar_prim(&got) && !types_assignable(&declared, &got) {
-                                ctx.diagnostics.push(SemanticDiagnostic {
+                                ctx.push_diag(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
                                         "type mismatch: field `{}` of `{}` expects `{}`, got `{}`",
@@ -22817,7 +30523,7 @@ fn check_match_exhaustiveness(
         .filter(|v| !covered.contains(v))
         .collect();
     if !missing.is_empty() {
-        ctx.diagnostics.push(SemanticDiagnostic {
+        ctx.push_diag(SemanticDiagnostic {
             code: Some("ANUBIS_MATCH_NON_EXHAUSTIVE".into()),
             message: format!(
                 "non-exhaustive match on `{}`: missing variant(s) {} (add arms or `_`)",
@@ -22853,31 +30559,714 @@ fn declassify_source(
     }
 }
 
-/// Recursively thread a value-position block's STATEMENT flow into `local` for the INTEGRITY walker, at
-/// parity with the enforcing `analyze_stmts` control-flow-merge discipline so the two never disagree.
-/// Straight-line `let`/`Assign{Var}` set/CLEAR the label; nested control-flow (`if`/`while`/`while let`/
-/// `loop`/`for`) is MAY-merged via `merge_taint_over` over EXACTLY the oracle's path set — If: `[then,
-/// (else | snap)]` (a value cleared on BOTH branches is precisely cleared; a uniform base path would OR it
-/// back), loops: `[snap, body]` (snap = the zero-iteration path). A `for` loop var inherits the
-/// collection/range label (mirrors the oracle's For arm). Research/Exploit bodies and all Hybrid lanes
-/// are recursively MAY-merged; statement-position Match and IfLet use the same path join discipline.
-/// Block-`let`s AND destructured pattern vars are seeded with their REAL span so `merge_taint_over`'s
-/// span-identity distinguishes a branch-nested SHADOW (a new binding — its label must not leak to the
-/// outer same-named binding) from a REASSIGNMENT (same span — its label carries). This closes the
-/// value-position nested-control-flow fail-open the former hand-rolled `_ => {}` left open. Non-`Var`
-/// assignment remains outside this label-only helper; cross-iteration loop carry is handled by the
-/// monotone fixpoint immediately below.
-/// Seed a loop's carried taint/secret labels into `scope` to a MONOTONE fixpoint BEFORE the enforcing body
-/// pass checks its sinks. The enforcing `analyze_stmts` walks a loop body once in straight-line order, so a
-/// sink that reads a variable BEFORE a same-body reassignment (`while { send(a); a=b; }`) or through a
-/// multi-hop carry (`{ a=b; b=c }`) never sees the value the reassignment carries on the NEXT iteration
-/// (convergence hunt `wf_095bd48b`). Run the label-only walkers (`walk_block_taint`/`_secret`) over the
-/// body repeatedly, OR-ing any newly-labelled variable into `scope` (labels only grow → converges), so the
-/// body pass sees every may-carried label. Fail-closed over-approximation (a var labelled on SOME iteration
-/// is treated as labelled throughout). Bounded by name count (max carry-chain length).
+/// The flow discipline every label walker shares (IFC-JOIN-BREAK-SHADOW): the value-block walker
+/// ([`walk_block_labels`]), the enforcing lane's loop seeding ([`seed_loop_carried_labels`]), the
+/// return summary ([`body_returns`]) and the parameter-return summary ([`body_param_returns`]).
+///
+/// - A statement list is walked IN ORDER on its own state, so a later write overwrites an earlier
+///   one exactly.
+/// - At a control-flow merge (`if`/`else`, `match` arms, `if let`) the alternatives' states JOIN: a
+///   label on any path survives, a value cleared on every path is clean. A path that does not reach
+///   the merge (it returned, broke or continued) takes no part in it.
+/// - What leaves a block early is kept: the states at its `break`s join the loop's exit, the states
+///   at its `continue`s join the loop's head. The joins used to keep END states only, so
+///   `loop { x = k; if c { break; } x = 0; }` left `x` clean.
+/// - A loop iterates its body from the joined head to a fixpoint (labels only grow, so it ends); a
+///   later entry into the same loop in the same walk starts from the head the last one reached, so
+///   nested loops cost the sum, not the product, of their iterations.
+/// - A `let` or binder that shadows an outer name keeps the outer binding aside ([`shadowed_key`])
+///   and puts it back when its scope ends, so what was assigned to the outer name before the shadow
+///   reaches the merge. The joins used to skip a shadowing path, so `if c { x = k; let x = 0; }`
+///   left `x` clean, and a merge whose every path shadowed `x` cleared it.
+/// - Only where order is not tracked — the statements nested in a statement's own EXPRESSIONS (a
+///   value block, an expression-position arm: [`stmt_value_exprs`]) — the order-free closure
+///   [`nested_may_labels`] stands in.
+///
+/// `fall` is the state at the end of a statement list (`None` when no path reaches it); `brk` and
+/// `cont` join the states at every `break` / `continue` in it that leaves to the enclosing loop.
+struct FlowExits<S> {
+    fall: Option<S>,
+    brk: Option<S>,
+    cont: Option<S>,
+}
+
+impl<S> FlowExits<S> {
+    fn falling(state: S) -> Self {
+        Self {
+            fall: Some(state),
+            brk: None,
+            cont: None,
+        }
+    }
+
+    fn none() -> Self {
+        Self {
+            fall: None,
+            brk: None,
+            cont: None,
+        }
+    }
+}
+
+/// Join `src` into `dst`; `None` is "no path".
+fn join_exit<S>(dst: &mut Option<S>, src: Option<S>, join: &impl Fn(&mut S, &S)) {
+    if let Some(s) = src {
+        match dst {
+            Some(d) => join(d, &s),
+            None => *dst = Some(s),
+        }
+    }
+}
+
+/// The key a binding is kept under while a `let` or binder at `site` (the shadowing statement's
+/// address, unique among the scopes open at once) shadows its name: no identifier can take it, so no
+/// read reaches it until [`settle_scope`] puts it back.
+fn shadowed_key(name: &str, site: usize) -> String {
+    format!("\u{1}shadowed:{name}:{site:x}")
+}
+
+/// Before `name` is bound afresh at `site`: when it names a binding of the enclosing scope (`keys`)
+/// that is not already kept aside here, keep a copy of it under [`shadowed_key`].
+fn hide_shadowed<V: Clone>(
+    state: &mut BTreeMap<String, V>,
+    name: &str,
+    site: usize,
+    keys: &BTreeSet<String>,
+    hidden: &mut Vec<(String, String)>,
+) {
+    if !keys.contains(name) || hidden.iter().any(|(n, _)| n == name) {
+        return;
+    }
+    if let Some(b) = state.get(name).cloned() {
+        let key = shadowed_key(name, site);
+        state.insert(key.clone(), b);
+        hidden.push((name.to_string(), key));
+    }
+}
+
+/// End a scope in a state that leaves it: every binding kept aside returns to its name (replacing
+/// the shadow), and every name the scope bound is dropped, so the state is keyed like the scope's
+/// entry (`keys`) and its bindings are the entry's bindings.
+fn settle_scope<V>(
+    state: &mut BTreeMap<String, V>,
+    keys: &BTreeSet<String>,
+    hidden: &[(String, String)],
+) {
+    for (name, key) in hidden {
+        if let Some(b) = state.remove(key) {
+            state.insert(name.clone(), b);
+        }
+    }
+    state.retain(|k, _| keys.contains(k));
+}
+
+fn settle_exits<V>(
+    exits: &mut FlowExits<BTreeMap<String, V>>,
+    keys: &BTreeSet<String>,
+    hidden: &[(String, String)],
+) {
+    for s in [&mut exits.fall, &mut exits.brk, &mut exits.cont]
+        .into_iter()
+        .flatten()
+    {
+        settle_scope(s, keys, hidden);
+    }
+}
+
+/// The expressions a statement holds whose nested statements the label walks do not visit in order:
+/// a `let` / assignment value, a loop or `if` header (and loop invariants), and a statement-position
+/// `match` / `if let` scrutinee. The guards and values of a statement-position `match` / `if let`
+/// arm are the arm's own ([`arm_value_exprs`]): they run with its binders bound, a block arm's tail
+/// after its statements.
+fn stmt_value_exprs(stmt: &Stmt) -> Vec<&Expr> {
+    match stmt {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => vec![init],
+        Stmt::Assign { target, value } => vec![target, value],
+        Stmt::If { cond, .. } => vec![cond],
+        Stmt::While {
+            cond, invariant, ..
+        } => std::iter::once(cond).chain(invariant).collect(),
+        Stmt::Loop { invariant, .. } => invariant.iter().collect(),
+        Stmt::For {
+            source, invariant, ..
+        } => {
+            let mut v: Vec<&Expr> = match source {
+                crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                crate::frontend::ForSource::Collection { expr } => vec![expr],
+            };
+            v.extend(invariant);
+            v
+        }
+        Stmt::WhileLet { expr, .. } => vec![expr],
+        Stmt::ExprStmt(Expr::Match { scrutinee, .. } | Expr::IfLet { scrutinee, .. }) => {
+            vec![&**scrutinee]
+        }
+        Stmt::ExprStmt(e) => vec![e],
+        Stmt::ResearchBlock { .. }
+        | Stmt::ExploitBlock { .. }
+        | Stmt::HybridBlock { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::SpecBlock { .. } => Vec::new(),
+    }
+}
+
+/// A statement-position `match` arm's or `if let` branch's own expressions: its guard and, for a
+/// non-block body, the body; a block body's tail is its block's ([`walk_block_labels`]'s
+/// `block_value`).
+fn arm_value_exprs<'e>(guard: Option<&'e Expr>, body: &'e Expr) -> Vec<&'e Expr> {
+    let mut v: Vec<&Expr> = guard.into_iter().collect();
+    if !matches!(body, Expr::Block { .. }) {
+        v.push(body);
+    }
+    v
+}
+
+/// The sub-arms the runtime tries for a `match` arm, in order, as the pattern each one binds
+/// (`backends/run.rs` `lower_match_expr`): a top-level or-pattern arm `A | B if g => body` runs as
+/// `A if g => body` and then `B if g => body`, each alternative binding only its OWN names. A name
+/// one alternative does not bind is the OUTER binding in the guard and the body there, read and
+/// written: `let x = q.k; match 1 { 1 | x => { r = x; } }` gives `r` the outer, secret `x`, and
+/// `1 | x => { x = q.k; }` writes it. Walking such an arm once with every alternative's names bound
+/// hid that binding (REG-OR-PATTERN-RET, OR-PATTERN-ENF, OR-PATTERN-PARAM). An or-pattern none of
+/// whose alternatives binds stays one sub-arm: its guard and body run under the same bindings
+/// whichever alternative matched (`1 | 2 | 3 => ..` is walked once), and a guard run again for a
+/// later matching alternative repeats writes the walks already close order-free.
+fn arm_patterns(arm: &crate::frontend::MatchArm) -> Vec<&Pattern> {
+    match &arm.pattern {
+        Pattern::Or(alts) if alts.iter().any(|p| !p.bound_names().is_empty()) => {
+            alts.iter().collect()
+        }
+        p => vec![p],
+    }
+}
+
+/// Every sub-arm of `arms` ([`arm_patterns`]) with its arm, in the order the runtime tries them.
+fn sub_arms(
+    arms: &[crate::frontend::MatchArm],
+) -> impl Iterator<Item = (&crate::frontend::MatchArm, &Pattern)> {
+    arms.iter()
+        .flat_map(|arm| arm_patterns(arm).into_iter().map(move |p| (arm, p)))
+}
+
+/// The identity (`info.span`) of a binding a pattern binds in the enforcing lane: never a source
+/// span (no offset starts at `usize::MAX`) and never another pattern's. The enforcing joins
+/// ([`merge_taint_over`], [`merge_fn_alias_over`], [`relabel_shadowing_join`]) take a path's
+/// binding for the outer one when their spans are equal; a binder seeded with no span equalled an
+/// outer binding with none (a parameter, a `for` variable, a `while let` binder), so a `match`
+/// whose every arm binds the name merged the clean binders over the outer binding, clearing it, and
+/// the shadow repair never ran (ENF-EQUAL-SPAN-BINDER-SHADOW).
+fn pattern_binder_span(pattern: &Pattern) -> (usize, usize) {
+    (usize::MAX, pattern as *const Pattern as usize)
+}
+
+/// Whether `e` binds a pattern (`match` arms, `if let`) anywhere inside, lambdas included.
+fn expr_binds_patterns(e: &Expr) -> bool {
+    let mut found = false;
+    visit::each_expr(e, &mut |x| {
+        found |= matches!(x, Expr::Match { .. } | Expr::IfLet { .. });
+    });
+    found
+}
+
+/// Whether `e` holds statements outside any lambda body (a value block, a block arm).
+fn expr_nests_stmts(e: &Expr) -> bool {
+    let mut found = false;
+    visit::each_stmt_in_expr(e, &mut |_, in_lambda| found |= !in_lambda);
+    found
+}
+
+/// Whether running `e` may write a binding of the frame it runs in: it holds statements (a value
+/// block, a block arm) or an in-place `push` / `insert` ([`in_place_pushes`]), outside lambda bodies.
+/// A match guard that does and then fails leaves those writes to the arms after it: one whose only
+/// write was `nope(push(xs, q.k))` reached the next arm's `return xs` with `xs` clean.
+fn expr_nests_writes(e: &Expr) -> bool {
+    expr_nests_stmts(e) || !in_place_pushes(&[e]).is_empty()
+}
+
+fn is_loop_stmt(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::While { .. } | Stmt::WhileLet { .. } | Stmt::Loop { .. } | Stmt::For { .. }
+    )
+}
+
+type LabelScope = BTreeMap<String, ScopeBinding>;
+
+/// OR `domain`'s label from `src` into `dst`, name by name over `dst`'s names (both states settled to
+/// the same scope, so a name denotes the same binding in both).
+fn label_join(domain: BlockLabelDomain<'_>, dst: &mut LabelScope, src: &LabelScope) {
+    for (name, d) in dst.iter_mut() {
+        if let Some(s) = src.get(name) {
+            if domain.labelled(s) && !domain.labelled(d) {
+                let source = s
+                    .info
+                    .taint_source
+                    .clone()
+                    .unwrap_or_else(|| format!("`{name}` on a joined path"));
+                domain.taint_place(d, source);
+            }
+        }
+    }
+}
+
+fn same_labels(domain: BlockLabelDomain<'_>, a: &LabelScope, b: &LabelScope) -> bool {
+    a.iter().all(|(name, x)| {
+        b.get(name)
+            .is_none_or(|y| domain.labelled(x) == domain.labelled(y))
+    })
+}
+
+/// Label, in `cur`, every outer binding the nested statements assign what they may give it there.
+fn apply_nested_labels(domain: BlockLabelDomain<'_>, cur: &mut LabelScope, nested: &NestedMay) {
+    for name in &nested.assigned {
+        if let (Some(m), Some(b)) = (nested.may.get(name), cur.get_mut(name)) {
+            if domain.labelled(m) && !domain.labelled(b) {
+                let source = m
+                    .info
+                    .taint_source
+                    .clone()
+                    .unwrap_or_else(|| format!("`{name}` assigned in a nested block"));
+                domain.taint_place(b, source);
+            }
+        }
+    }
+}
+
+/// A labelled `return` (or tail value) that a walk in return-summary mode reached.
+struct LabelledReturn;
+
+/// What a walk in return-summary mode seeds, for the statements a judged value sits in, on top of
+/// the walked state ([`body_returns`]).
+type RetSeed<'a> = &'a dyn Fn(&Stmt, &mut LabelScope);
+
+/// One label walk ([`walk_block_labels`]) over a value block, a loop the enforcing lane seeds, or a
+/// function body in return-summary mode.
+struct LabelWalk<'a> {
+    domain: BlockLabelDomain<'a>,
+    struct_fields: &'a PlaceTypes<'a>,
+    /// Return-summary mode ([`body_returns`]): every `return` and tail value the walk reaches is
+    /// judged on the walked state plus what this seeds for the statements it sits in (declared
+    /// pattern binders, local lambdas); a labelled one ends the walk.
+    ret_seed: Option<RetSeed<'a>>,
+    /// Per loop or hybrid block (by address), the head its last fixpoint reached in this walk.
+    heads: BTreeMap<usize, LabelScope>,
+}
+
+impl<'a> LabelWalk<'a> {
+    fn new(
+        domain: BlockLabelDomain<'a>,
+        struct_fields: &'a PlaceTypes<'a>,
+        ret_seed: Option<RetSeed<'a>>,
+    ) -> Self {
+        Self {
+            domain,
+            struct_fields,
+            ret_seed,
+            heads: BTreeMap::new(),
+        }
+    }
+
+    /// In return-summary mode, whether `value` — returned, or the function's tail value — is
+    /// labelled in `state` with `seeds`' declared binders and local lambdas added.
+    fn judge(
+        &self,
+        value: &Expr,
+        state: &LabelScope,
+        seeds: &[Stmt],
+    ) -> Result<(), LabelledReturn> {
+        let Some(seed) = self.ret_seed else {
+            return Ok(());
+        };
+        let mut local = state.clone();
+        for s in seeds {
+            seed(s, &mut local);
+        }
+        match self.domain.expr_source(value, &local, self.struct_fields) {
+            Some(_) => Err(LabelledReturn),
+            None => Ok(()),
+        }
+    }
+
+    /// The statements nested in `stmt`'s own expressions ([`stmt_value_exprs`]); see
+    /// [`LabelWalk::value_writes`].
+    fn expression_writes(
+        &self,
+        stmt: &Stmt,
+        cur: &mut LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<(), LabelledReturn> {
+        self.value_writes(
+            &stmt_value_exprs(stmt),
+            cur,
+            std::slice::from_ref(stmt),
+            out,
+        )
+    }
+
+    /// Expressions run at this point of the walk (a statement's own, an arm's guard or value, a
+    /// block's tail) can hold statements — a value block, an expression-position arm — whose order
+    /// the walk does not track: when they do, or when a `return` among them may read a binder they
+    /// bind, the order-free closure over them ([`nested_may_labels`]) stands in. Each outer binding
+    /// they assign takes the label it may get there, BEFORE the statement's own effect (so
+    /// `x = if c { x = k; 0 } else { 0 }` still ends clean); a `return` among them is judged with
+    /// every such write counted; a `break` / `continue` among them leaves with that state.
+    fn value_writes(
+        &self,
+        exprs: &[&Expr],
+        cur: &mut LabelScope,
+        seeds: &[Stmt],
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<(), LabelledReturn> {
+        let mut rets = Vec::new();
+        if self.ret_seed.is_some() {
+            for &e in exprs {
+                expr_returns(e, &mut rets);
+                // `v?` leaves the function with `v`'s `Err` / `None`.
+                try_exits_in_expr(e, &mut rets);
+            }
+        }
+        let (breaks, continues) = expr_loop_exits(exprs);
+        let nests = exprs.iter().any(|e| expr_nests_stmts(e))
+            || breaks
+            || continues
+            || !in_place_pushes(exprs).is_empty();
+        if !nests && (rets.is_empty() || !exprs.iter().any(|e| expr_binds_patterns(e))) {
+            for r in &rets {
+                self.judge(r, cur, seeds)?;
+            }
+            return Ok(());
+        }
+        let nested = nested_may_labels(exprs, cur, self.domain, self.struct_fields);
+        for r in &rets {
+            self.judge(r, &nested.may, seeds)?;
+        }
+        apply_nested_labels(self.domain, cur, &nested);
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        if nested.breaks {
+            join_exit(&mut out.brk, Some(nested.may.clone()), &join);
+        }
+        if nested.continues {
+            join_exit(&mut out.cont, Some(nested.may), &join);
+        }
+        Ok(())
+    }
+
+    /// Join alternatives into the statement they belong to: `cur` becomes the join of the states that
+    /// reach the merge (false when none does); their breaks and continues join into `out`.
+    fn merge_paths(
+        &self,
+        cur: &mut LabelScope,
+        paths: Vec<FlowExits<LabelScope>>,
+        out: &mut FlowExits<LabelScope>,
+    ) -> bool {
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        let mut fall = None;
+        for p in paths {
+            join_exit(&mut fall, p.fall, &join);
+            join_exit(&mut out.brk, p.brk, &join);
+            join_exit(&mut out.cont, p.cont, &join);
+        }
+        match fall {
+            Some(s) => {
+                *cur = s;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Run `run` from `cur` in a scope that binds `names` at `site` (seeded by `seed`): in every
+    /// state that leaves it, the bindings they shadowed come back and the binders are dropped.
+    fn scoped(
+        &mut self,
+        cur: &LabelScope,
+        names: &[String],
+        site: usize,
+        seed: impl FnOnce(&mut LabelScope),
+        run: impl FnOnce(&mut Self, LabelScope) -> Result<FlowExits<LabelScope>, LabelledReturn>,
+    ) -> Result<FlowExits<LabelScope>, LabelledReturn> {
+        let keys: BTreeSet<String> = cur.keys().cloned().collect();
+        let mut hidden = Vec::new();
+        let mut entry = cur.clone();
+        for n in names {
+            hide_shadowed(&mut entry, n, site, &keys, &mut hidden);
+        }
+        seed(&mut entry);
+        let mut exits = run(self, entry)?;
+        settle_exits(&mut exits, &keys, &hidden);
+        Ok(exits)
+    }
+
+    /// A statement-position `match` arm or `if let` branch from `entry` (its binders seeded): its
+    /// guard runs first; a block's statements are walked in order and its tail after them; the value
+    /// is judged where the arm ends when it is the function's (`tail`).
+    fn arm_body(
+        &mut self,
+        guard: Option<&Expr>,
+        body: &Expr,
+        mut entry: LabelScope,
+        tail: bool,
+        seeds: &[Stmt],
+    ) -> Result<FlowExits<LabelScope>, LabelledReturn> {
+        let mut early = FlowExits::none();
+        self.value_writes(&arm_value_exprs(guard, body), &mut entry, seeds, &mut early)?;
+        let mut exits = match body {
+            Expr::Block { stmts, tail: value } => {
+                walk_block_labels(stmts, entry, self, tail, value.as_deref(), true)?
+            }
+            // An arm `None => break` / `_ => continue` leaves the loop; nothing falls through.
+            Expr::Call { callee, .. } if callee == "break" || callee == "continue" => {
+                let mut exits = FlowExits::none();
+                if callee == "break" {
+                    exits.brk = Some(entry);
+                } else {
+                    exits.cont = Some(entry);
+                }
+                exits
+            }
+            other => {
+                if tail {
+                    self.judge(other, &entry, seeds)?;
+                }
+                FlowExits::falling(entry)
+            }
+        };
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        join_exit(&mut exits.brk, early.brk, &join);
+        join_exit(&mut exits.cont, early.cont, &join);
+        Ok(exits)
+    }
+
+    /// A loop statement in a walked list: `cur` becomes the state after it (false when nothing
+    /// leaves it).
+    fn loop_exit(
+        &mut self,
+        stmt: &Stmt,
+        body: &[Stmt],
+        cur: &mut LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<bool, LabelledReturn> {
+        let (_, exit) = self.loop_fixpoint(stmt, body, std::mem::take(cur), out)?;
+        match exit {
+            Some(s) => {
+                *cur = s;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// A loop's head (what its body starts from at any iteration) and the state after it (`None`
+    /// when nothing leaves it). The body is walked from the head, and the head joined with what
+    /// reaches the body's end or a `continue`, until it holds (labels only grow over a fixed set of
+    /// names, so this ends); the state after is the head (where the condition fails; not for `loop`)
+    /// joined with every `break`. The header runs at every head: its own nested writes and returns
+    /// count there, and the binders take the label of the range, collection or scrutinee read there.
+    fn loop_fixpoint(
+        &mut self,
+        stmt: &Stmt,
+        body: &[Stmt],
+        entry: LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<(LabelScope, Option<LabelScope>), LabelledReturn> {
+        let domain = self.domain;
+        let struct_fields = self.struct_fields;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        let site = stmt as *const Stmt as usize;
+        let binders: Vec<String> = match stmt {
+            Stmt::For { var, .. } => vec![var.clone()],
+            Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+            _ => Vec::new(),
+        };
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            label_join(domain, &mut head, prev);
+        }
+        let mut brk: Option<LabelScope> = None;
+        loop {
+            let mut header = FlowExits::none();
+            self.expression_writes(stmt, &mut head, &mut header)?;
+            let header_source = header_label(stmt, &head, domain, struct_fields);
+            let exits = self.scoped(
+                &head,
+                &binders,
+                site,
+                |scope| match stmt {
+                    Stmt::For { var, .. } => {
+                        scope.insert(var.clone(), domain.loop_binding(var, header_source.clone()));
+                    }
+                    Stmt::WhileLet { pattern, .. } => {
+                        domain.seed_pattern(scope, pattern, &header_source, struct_fields)
+                    }
+                    _ => {}
+                },
+                |walk, scope| walk_block_labels(body, scope, walk, false, None, true),
+            )?;
+            let mut next = head.clone();
+            for s in [&exits.fall, &exits.cont, &header.cont]
+                .into_iter()
+                .flatten()
+            {
+                label_join(domain, &mut next, s);
+            }
+            join_exit(&mut brk, exits.brk, &join);
+            // A `break` / `continue` in the header's own nested statements: which loop it leaves is
+            // not modelled, so it counts for this loop and the enclosing one.
+            join_exit(&mut brk, header.brk.clone(), &join);
+            join_exit(&mut out.brk, header.brk, &join);
+            join_exit(&mut out.cont, header.cont, &join);
+            if same_labels(domain, &next, &head) {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        let mut exit = match stmt {
+            Stmt::Loop { .. } => None,
+            _ => Some(head.clone()),
+        };
+        join_exit(&mut exit, brk, &join);
+        Ok((head, exit))
+    }
+
+    /// A hybrid block: the backend picks which lanes run and in what order, so the state after it is
+    /// the fixpoint of running any lane from it (each may start from what another wrote).
+    fn hybrid_fixpoint(
+        &mut self,
+        stmt: &Stmt,
+        lanes: &[&[Stmt]],
+        entry: LabelScope,
+        out: &mut FlowExits<LabelScope>,
+    ) -> Result<LabelScope, LabelledReturn> {
+        let domain = self.domain;
+        let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+        let site = stmt as *const Stmt as usize;
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            label_join(domain, &mut head, prev);
+        }
+        loop {
+            let mut next = head.clone();
+            for lane in lanes {
+                let exits = walk_block_labels(lane, head.clone(), self, false, None, true)?;
+                if let Some(f) = &exits.fall {
+                    label_join(domain, &mut next, f);
+                }
+                join_exit(&mut out.brk, exits.brk, &join);
+                join_exit(&mut out.cont, exits.cont, &join);
+            }
+            if same_labels(domain, &next, &head) {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        Ok(head)
+    }
+
+    /// For the enforcing lane: the head of a loop or hybrid block and the state after it.
+    fn carried(
+        &mut self,
+        stmt: &Stmt,
+        entry: LabelScope,
+    ) -> Result<(LabelScope, Option<LabelScope>), LabelledReturn> {
+        // A `break` / `continue` that leaves to an ENCLOSING loop is that loop's to seed: it walks
+        // this statement inside its own body.
+        let mut escapes = FlowExits::none();
+        match stmt {
+            Stmt::While { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. } => self.loop_fixpoint(stmt, body, entry, &mut escapes),
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                let lanes: Vec<&[Stmt]> = [gpu, cpu, prove]
+                    .into_iter()
+                    .flatten()
+                    .map(Vec::as_slice)
+                    .collect();
+                let head = self.hybrid_fixpoint(stmt, &lanes, entry, &mut escapes)?;
+                Ok((head.clone(), Some(head)))
+            }
+            _ => Ok((entry.clone(), Some(entry))),
+        }
+    }
+}
+
+/// The label a loop header gives its binders at `head`: a `for` variable its range's or
+/// collection's, a `while let` pattern its scrutinee's. Read at every head, not once at entry: a
+/// `while let` re-reads its scrutinee each iteration, and reading a `for` source there too only adds
+/// labels.
+fn header_label(
+    stmt: &Stmt,
+    head: &LabelScope,
+    domain: BlockLabelDomain<'_>,
+    struct_fields: &PlaceTypes<'_>,
+) -> Option<String> {
+    match stmt {
+        Stmt::For {
+            source: crate::frontend::ForSource::Range { start, end },
+            ..
+        } => domain
+            .expr_source(start, head, struct_fields)
+            .or_else(|| domain.expr_source(end, head, struct_fields)),
+        Stmt::For {
+            source: crate::frontend::ForSource::Collection { expr },
+            ..
+        }
+        | Stmt::WhileLet { expr, .. } => domain.expr_source(expr, head, struct_fields),
+        _ => None,
+    }
+}
+
+/// Hand a value block's walked state back to its caller, which reads the block's tail in it (so it is
+/// left unsettled: the tail may read the block's own `let`s).
+fn finish_value_block(
+    local: &mut LabelScope,
+    walked: Result<FlowExits<LabelScope>, LabelledReturn>,
+) {
+    if let Ok(exits) = walked {
+        if let Some(end) = exits.fall.or(exits.brk).or(exits.cont) {
+            *local = end;
+        }
+    }
+}
+
+/// The enforcing lane's two label domains.
+fn enforcing_label_domains(ctx: &SemanticContext) -> [BlockLabelDomain<'_>; 2] {
+    [
+        BlockLabelDomain::Taint {
+            sources: &ctx.tainting_fns,
+            param_returns: &ctx.param_return_taint,
+            method_sources: &ctx.method_tainting_fns,
+        },
+        BlockLabelDomain::Secret {
+            sources: &ctx.secret_fns,
+            param_returns: &ctx.param_return_taint,
+            method_sources: &ctx.method_secret_fns,
+        },
+    ]
+}
+
+/// Seed a loop's (or hybrid block's) carried taint/secret labels into `scope` BEFORE the enforcing
+/// body pass checks its sinks, and return the states the label walk found after it.
+///
+/// The enforcing `analyze_stmts` walks a loop body once, in order, so a sink that reads a variable
+/// BEFORE a same-body reassignment (`while { send(a); a = b; }`), through a multi-hop carry
+/// (`{ a = b; b = c }`) or through a `continue` never sees what the reassignment carries into the
+/// NEXT iteration (convergence hunt `wf_095bd48b`). The label walk iterates the loop to its head
+/// fixpoint ([`LabelWalk::loop_fixpoint`], both domains) and every name gets what the head holds; a
+/// `while let` binder or `for` variable also gets what the head gives the scrutinee or source. The
+/// returned exit states (the head where the condition fails, joined with every `break`) are joined
+/// at the loop's merge: a label live at a `break` was lost when the merge kept only the body's end
+/// state (IFC-JOIN-BREAK-SHADOW). Fail-closed over-approximation: a name labelled on SOME iteration
+/// is labelled throughout the body.
 #[allow(clippy::too_many_arguments)]
 fn seed_loop_carried_labels(
-    body: &[Stmt],
+    stmt: &Stmt,
     scope: &mut BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
     secret_fns: &BTreeSet<String>,
@@ -22885,63 +31274,393 @@ fn seed_loop_carried_labels(
     method_tainting_fns: &BTreeSet<String>,
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
+) -> Vec<BTreeMap<String, ScopeBinding>> {
+    let domains = [
+        BlockLabelDomain::Taint {
+            sources: tainting_fns,
+            param_returns: param_return_taint,
+            method_sources: method_tainting_fns,
+        },
+        BlockLabelDomain::Secret {
+            sources: secret_fns,
+            param_returns: param_return_taint,
+            method_sources: method_secret_fns,
+        },
+    ];
+    let mut exits = Vec::new();
+    for domain in domains {
+        let mut walk = LabelWalk::new(domain, struct_fields, None);
+        // Not judging returns, the walk never ends early.
+        let Ok((head, exit)) = walk.carried(stmt, scope.clone()) else {
+            continue;
+        };
+        label_join(domain, scope, &head);
+        let binders = match stmt {
+            Stmt::For { var, .. } => vec![var.clone()],
+            Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+            _ => Vec::new(),
+        };
+        if let Some(source) = header_label(stmt, &head, domain, struct_fields) {
+            for name in binders {
+                if let Some(b) = scope.get_mut(&name) {
+                    if !domain.labelled(b) {
+                        domain.taint_place(b, source.clone());
+                    }
+                }
+            }
+        }
+        exits.extend(exit);
+    }
+    exits
+}
+
+/// A write inside a statement's own expressions (a value block, an expression-position arm) reaches
+/// the outer binding before the statement's own effect: label it now, order-free over those writes
+/// ([`nested_may_labels`]). The enforcing lane analyzed such a block on a copy of the scope and
+/// dropped it, so `let v = if c { x = k; 0 } else { 0 }; println(x)` printed the secret.
+fn seed_expression_nested_labels(
+    stmt: &Stmt,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
 ) {
-    let bound = scope.len() + 2;
-    for _ in 0..bound {
-        let mut c = scope.clone();
-        walk_block_taint(
-            body,
-            &mut c,
-            tainting_fns,
-            param_return_taint,
-            method_tainting_fns,
-            struct_fields,
+    seed_value_nested_labels(&stmt_value_exprs(stmt), scope, ctx);
+}
+
+/// [`seed_expression_nested_labels`] for expressions that run at another point: a statement-position
+/// arm's guard (with its binders bound) and a value block's tail (after its statements). An in-place
+/// `push` / `insert` among them writes its container too ([`holds_builtin_push`]): one in an argument,
+/// a condition or a guard (`let n = len(push(xs, k))`), or an arm's or block's last call (`_ => {
+/// push(xs, p.k) }`, `;` or not, which [`analyze_value_block`] reads as the value), labelled nothing,
+/// and a later `println(xs)` printed the secret.
+fn seed_value_nested_labels(
+    exprs: &[&Expr],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    if !exprs.iter().any(|e| expr_nests_stmts(e)) && !holds_builtin_push(exprs, ctx) {
+        return;
+    }
+    let types = ctx.place_types();
+    for domain in enforcing_label_domains(ctx) {
+        let nested = nested_may_labels(exprs, scope, domain, &types);
+        apply_nested_labels(domain, scope, &nested);
+    }
+}
+
+/// Whether `exprs` hold, outside lambda bodies, a `push` / `insert` the runtime runs as the in-place
+/// builtin. These are in EXPRESSION position (an argument, a condition, a guard, an arm's or a block's
+/// value), where a user function of that name is called instead (`backends/run.rs` `Expr::Call`: user
+/// functions, then locals, then builtins) and writes nothing here (matrix
+/// `rv32_valid_r32b_d5_main_arm_last_push_overrefusal`); a local of that name still counts
+/// (fail-closed). A statement `push` nested in a block is always the builtin: the callers' own
+/// [`expr_nests_stmts`] test covers it.
+fn holds_builtin_push(exprs: &[&Expr], ctx: &SemanticContext) -> bool {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Lambda { body, .. } = x {
+                visit::each_expr(body, &mut |y| {
+                    in_lambda.insert(y as *const Expr);
+                });
+            }
+        });
+    }
+    let mut found = false;
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Call { callee, args } = x {
+                found |= is_in_place_push(callee, args)
+                    && !ctx.user_fn_names.contains(callee.as_str())
+                    && !in_lambda.contains(&(x as *const Expr));
+            }
+        });
+    }
+    found
+}
+
+/// The enforcing lane's joins keep a path's label only when the path's binding is the outer one
+/// (same span): a path that SHADOWED an outer name — `if c { x = k; let x = 0; }`, or every arm
+/// binding its own `x` — reached the merge without the outer binding's state, and the merge dropped
+/// what the path assigned to it, or cleared it outright when every path shadowed it
+/// (IFC-JOIN-BREAK-SHADOW). When a path did, the label walk of the statement from `before` (which
+/// keeps a shadowed binding aside and restores it: [`shadowed_key`]) supplies the outer labels.
+fn relabel_shadowing_join(
+    stmt: &Stmt,
+    before: &BTreeMap<String, ScopeBinding>,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    let shadowed = before.iter().any(|(name, outer)| {
+        paths.iter().any(|path| {
+            path.get(name)
+                .is_some_and(|b| b.info.span != outer.info.span)
+        })
+    });
+    if !shadowed {
+        return;
+    }
+    let types = ctx.place_types();
+    for domain in enforcing_label_domains(ctx) {
+        let mut walk = LabelWalk::new(domain, &types, None);
+        let walked = walk_block_labels(
+            std::slice::from_ref(stmt),
+            before.clone(),
+            &mut walk,
+            false,
+            None,
+            true,
         );
-        walk_block_secret(
-            body,
-            &mut c,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        );
+        if let Ok(FlowExits {
+            fall: Some(end), ..
+        }) = walked
+        {
+            label_join(domain, scope, &end);
+        }
+    }
+}
+
+/// What function values a loop body may leave in the OUTER bindings it assigns, at any point of any
+/// iteration: the function-value twin of [`seed_loop_carried_labels`] (and of [`nested_may_labels`]
+/// in the return summary).
+///
+/// The enforcing walk runs a loop body once, from the state before the loop, so a call that precedes
+/// an in-body reassignment (`while c { f(k); f = h2; }`) was judged only against what `f` held on
+/// entry, although the next iteration applies `h2`: the egress, sink, capability and secret-return
+/// checks all missed it (review ordret1 LOOP-REASSIGN-AFTER-CALL-EGRESS; matrix
+/// `open_loop_reassign_after_use_secret` is its secret-return twin). The join after the loop read only
+/// the body's END state, so a function a `break` or `continue` leaves with was lost too (the
+/// function-value half of IFC-JOIN-BREAK-SHADOW).
+///
+/// Order-free and name-keyed like `nested_may_labels`: every write in the body counts on every path
+/// and every iteration until nothing changes — a `let` (a body local that feeds a later write), a
+/// `for` variable, `while let` or pattern binder (whatever its source may carry), an assignment
+/// `x = …`, and a write into a field, key or element (`b.g = h2`, `xs[i] = h2`). Lambda bodies are
+/// skipped: a closure captures by value, so its writes never reach this frame. A name bound more
+/// than once, or shadowing an outer binding, is one name here, so an inner shadow's value can widen
+/// the outer binding (an over-approximation).
+///
+/// Only KNOWN names are added. An unresolved write adds nothing, as at a join: `call_targets` and the
+/// label lanes read an `Unknown` identity set as naming no function, so letting one erase the names
+/// the entry state already resolved would drop checks the single walk makes today. For the same
+/// reason an alias the binding already has is kept. The identity and gate-tag sets only grow and a
+/// missing alias is set only to a strictly more dangerous one each time, over finitely many names,
+/// so the closure terminates and the seeded state holds everything the entry state held.
+///
+/// Returns the assigned outer bindings with everything they may hold; `None` when the body assigns
+/// no outer binding.
+fn loop_carried_fn_values(
+    body: &[Stmt],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<BTreeMap<String, ScopeBinding>> {
+    // (target, source, whether the target is bound to an element the source carries)
+    let mut writes: Vec<(String, &Expr, bool)> = Vec::new();
+    // (root, access path, value) of a write into a field, key or element (`b.g = h2`, `xs[i] = h2`)
+    let mut place_writes: Vec<(String, String, &Expr)> = Vec::new();
+    let mut assigned: BTreeSet<String> = BTreeSet::new();
+    visit::each_stmt(body, &mut |s, in_lambda| {
+        if in_lambda {
+            return;
+        }
+        match s {
+            Stmt::Let { name, init, .. } => writes.push((name.clone(), init, false)),
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                if scope.contains_key(name) {
+                    assigned.insert(name.clone());
+                }
+                writes.push((name.clone(), value, false));
+            }
+            Stmt::Assign { target, value } => {
+                if let Some((root, path)) = flatten_access_path(target) {
+                    if scope.contains_key(&root) {
+                        assigned.insert(root.clone());
+                    }
+                    place_writes.push((root, path, value));
+                }
+            }
+            Stmt::LetPattern {
+                pattern,
+                init: source,
+                ..
+            }
+            | Stmt::WhileLet {
+                pattern,
+                expr: source,
+                ..
+            } => {
+                for n in pattern.bound_names() {
+                    writes.push((n, source, true));
+                }
+            }
+            Stmt::For {
+                var,
+                source: crate::frontend::ForSource::Collection { expr },
+                ..
+            } => writes.push((var.clone(), expr, true)),
+            _ => {}
+        }
+    });
+    if assigned.is_empty() {
+        return None;
+    }
+    // `match` arms and `if let` in expression position bind their patterns too.
+    visit::each_expr_in_stmts(body, &mut |e| match e {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            for arm in arms {
+                for n in arm.pattern.bound_names() {
+                    writes.push((n, &**scrutinee, true));
+                }
+            }
+        }
+        Expr::IfLet {
+            pattern, scrutinee, ..
+        } => {
+            for n in pattern.bound_names() {
+                writes.push((n, &**scrutinee, true));
+            }
+        }
+        _ => {}
+    });
+    let mut may = scope.clone();
+    for (name, _, _) in &writes {
+        may.entry(name.clone()).or_insert_with(|| {
+            let mut b = labelled_param_binding(name, false, None, false);
+            b.fn_identities = FnIdentitySet::empty();
+            b.builtin_gate_tags = BuiltinGateTags::empty();
+            b
+        });
+    }
+    // `fn_alias` holds one name, and a call through a binding whose identity set is `Unknown` has
+    // only that name to check, so an alias the binding already has is never replaced (the added
+    // names reach every consumer through the identity set). A binding with none takes the most
+    // dangerous candidate, as `join_fn_alias` and `merge_fn_alias_over` prefer it.
+    let alias_free: BTreeSet<String> = writes
+        .iter()
+        .map(|(target, _, _)| target)
+        .filter(|target| may.get(*target).is_some_and(|b| b.fn_alias.is_none()))
+        .cloned()
+        .collect();
+    let rank = |name: &str| -> u8 {
+        if ctx.secret_fns.contains(name) || ctx.tainting_fns.contains(name) {
+            3
+        } else if ctx.param_egress.get(name).is_some_and(|s| !s.is_empty())
+            || ctx.param_sinks.get(name).is_some_and(|s| !s.is_empty())
+            || is_sink(name)
+        {
+            2
+        } else {
+            1
+        }
+    };
+    loop {
+        if analysis_limit::cut() {
+            break;
+        }
         let mut changed = false;
-        let names: Vec<String> = c.keys().cloned().collect();
-        for n in names {
-            let (ct, cs, ct_label, cs_label) = c
-                .get(&n)
-                .map(|b| {
-                    let taint_label = if b.taint_label.is_clean() && b.info.tainted {
-                        // Slice 4 still has legacy-only place/carrier writers. Preserve their
-                        // loop-carried behavior until that slice migrates them.
-                        security_label::SecurityLabel::from_legacy_taint(
-                            b.info.tainted,
-                            b.info.taint_source.clone(),
-                        )
-                    } else {
-                        b.taint_label.clone()
-                    };
-                    let secret_label = if b.secret_label.is_clean() && b.secret {
-                        security_label::SecurityLabel::from_legacy_secret(b.secret)
-                    } else {
-                        b.secret_label.clone()
-                    };
-                    (b.info.tainted, b.secret, taint_label, secret_label)
-                })
-                .unwrap_or((
-                    false,
-                    false,
-                    security_label::SecurityLabel::clean(),
-                    security_label::SecurityLabel::clean(),
-                ));
-            if let Some(sb) = scope.get_mut(&n) {
-                if ct && !sb.info.tainted {
-                    sb.set_taint_label(sb.taint_label.clone().join(ct_label));
+        for &(ref target, source, carried) in &writes {
+            let (ids, tags, alias, fields) = if carried {
+                (
+                    fn_identities_carried_by_value(source, &may, ctx),
+                    builtin_gate_tags_carried_by_value_d(source, &may, ctx, 0),
+                    None,
+                    BTreeMap::new(),
+                )
+            } else {
+                let mut fields = BTreeMap::new();
+                match source {
+                    Expr::Var(v) => {
+                        if let Some(b) = may.get(v) {
+                            fields = b.field_fn_identities.clone();
+                        }
+                    }
+                    _ => collect_container_fn_identities(source, "", &may, ctx, &mut fields),
+                }
+                (
+                    fn_identities_of(source, &may, ctx),
+                    builtin_gate_tags_of(source, &may, ctx),
+                    fn_alias_of(source, &may, ctx),
+                    fields,
+                )
+            };
+            let Some(b) = may.get_mut(target) else {
+                continue;
+            };
+            if let (FnIdentitySet::Known(add), FnIdentitySet::Known(have)) =
+                (ids, &mut b.fn_identities)
+            {
+                for n in add {
+                    changed |= have.insert(n);
+                }
+            }
+            if let BuiltinGateTags::Known(add) = tags {
+                if !add.is_empty() {
+                    match &mut b.builtin_gate_tags {
+                        BuiltinGateTags::Known(have) => {
+                            for t in add {
+                                changed |= have.insert(t);
+                            }
+                        }
+                        unresolved => {
+                            *unresolved = BuiltinGateTags::Known(add);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if let Some(a) = alias.filter(|_| alias_free.contains(target)) {
+                if b.fn_alias.as_deref().map_or(0, rank) < rank(a.as_str()) {
+                    b.fn_alias = Some(a);
                     changed = true;
                 }
-                if cs && !sb.secret {
-                    sb.set_secret_label(sb.secret_label.clone().join(cs_label));
-                    changed = true;
+            }
+            for (key, ids) in fields {
+                if let FnIdentitySet::Known(add) = ids {
+                    if add.is_empty() {
+                        continue;
+                    }
+                    if let FnIdentitySet::Known(have) = b
+                        .field_fn_identities
+                        .entry(key)
+                        .or_insert_with(FnIdentitySet::empty)
+                    {
+                        for n in add {
+                            changed |= have.insert(n);
+                        }
+                    }
+                }
+            }
+        }
+        // A write into a field, key or element adds to what that path holds; one through a computed
+        // index (`*`) may be any element, so it adds to every path, as the ordered walk does.
+        for (root, path, value) in &place_writes {
+            let FnIdentitySet::Known(add) = fn_identities_of(value, &may, ctx) else {
+                continue;
+            };
+            if add.is_empty() {
+                continue;
+            }
+            let Some(b) = may.get_mut(root) else {
+                continue;
+            };
+            let mut keys = vec![path.clone()];
+            if path.split('.').any(|seg| seg == "*") {
+                keys.extend(b.field_fn_identities.keys().cloned());
+            }
+            for key in keys {
+                if let FnIdentitySet::Known(have) = b
+                    .field_fn_identities
+                    .entry(key)
+                    .or_insert_with(FnIdentitySet::empty)
+                {
+                    for n in &add {
+                        changed |= have.insert(n.clone());
+                    }
                 }
             }
         }
@@ -22949,6 +31668,43 @@ fn seed_loop_carried_labels(
             break;
         }
     }
+    may.retain(|name, _| assigned.contains(name));
+    Some(may)
+}
+
+/// Seed a loop's carried function values ([`loop_carried_fn_values`]) into `scope` before its body
+/// is walked, so a call early in the body sees what a later write in the body stores for the next
+/// iteration. Returns them when the body can leave early (`break`, `continue`), for the join after
+/// the loop: the state a loop leaves with is then not only its end state. The analysis stays
+/// sound only if every loop form of both statement walkers (`analyze_stmts`, `walk_block_effects`)
+/// calls this.
+fn seed_loop_carried_fn_values(
+    body: &[Stmt],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<BTreeMap<String, ScopeBinding>> {
+    let carried = loop_carried_fn_values(body, scope, ctx)?;
+    for (name, m) in &carried {
+        if let Some(b) = scope.get_mut(name) {
+            b.fn_identities = m.fn_identities.clone();
+            b.fn_alias = m.fn_alias.clone();
+            b.builtin_gate_tags = m.builtin_gate_tags.clone();
+            b.field_fn_identities = m.field_fn_identities.clone();
+        }
+    }
+    let mut leaves_early = false;
+    visit::each_stmt(body, &mut |s, in_lambda| {
+        if !in_lambda && matches!(s, Stmt::Break | Stmt::Continue) {
+            leaves_early = true;
+        }
+    });
+    // In expression position (`None => break`) too; one inside a lambda only adds the path.
+    visit::each_expr_in_stmts(body, &mut |e| {
+        if matches!(e, Expr::Call { callee, .. } if callee == "break" || callee == "continue") {
+            leaves_early = true;
+        }
+    });
+    leaves_early.then_some(carried)
 }
 
 #[derive(Clone, Copy)]
@@ -22966,6 +31722,27 @@ enum BlockLabelDomain<'a> {
 }
 
 impl BlockLabelDomain<'_> {
+    /// Whether `name` is a user function (each has a parameter-return summary).
+    fn is_user_fn(self, name: &str) -> bool {
+        match self {
+            Self::Taint { param_returns, .. } | Self::Secret { param_returns, .. } => {
+                param_returns.contains_key(name)
+            }
+        }
+    }
+
+    fn lane(self) -> ReturnSummaryLane {
+        match self {
+            Self::Taint { .. } => ReturnSummaryLane::Taint,
+            Self::Secret { .. } => ReturnSummaryLane::Secret,
+        }
+    }
+
+    /// Whether `binding` carries this domain's label, read as a later `Var` read reports it.
+    fn labelled(self, binding: &ScopeBinding) -> bool {
+        self.lane().is_labelled(binding)
+    }
+
     fn expr_source(
         self,
         expr: &Expr,
@@ -23095,6 +31872,10 @@ impl BlockLabelDomain<'_> {
         let (tainted, taint_source) = taint_label.to_legacy_taint();
         let secret = secret_label.to_legacy_secret();
         ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: var.to_string(),
                 ty: None,
@@ -23108,6 +31889,7 @@ impl BlockLabelDomain<'_> {
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -23119,170 +31901,211 @@ impl BlockLabelDomain<'_> {
     }
 }
 
-/// Total statement walker shared by the integrity and confidentiality value-block lanes.
+/// Total statement walker shared by the integrity and confidentiality label lanes: value blocks
+/// (via `walk_block_taint` / `walk_block_secret`), the enforcing lane's loop seeding and shadow
+/// repair, and the return summary ([`body_returns`]), all under the flow discipline of
+/// [`FlowExits`].
 ///
 /// The domain owns only label-specific operations. Statement structure, recursive descent,
 /// branch/loop joins, pattern binding, and every code-holding field are handled once here so a new
-/// `Stmt` variant or field cannot silently drift between the two security labels.
+/// `Stmt` variant or field cannot silently drift between the two security labels. `tail`: this
+/// list's value is the function's (in return-summary mode its last statement, then `block_value`,
+/// is judged). `settle`: bring every state that leaves the list back to its entry's names; a value
+/// block's caller passes `false` and reads the block's tail in the unsettled end state.
 fn walk_block_labels(
     stmts: &[Stmt],
-    local: &mut BTreeMap<String, ScopeBinding>,
-    domain: BlockLabelDomain<'_>,
-    struct_fields: &PlaceTypes<'_>,
-) {
-    for stmt in stmts {
-        match stmt {
+    mut cur: LabelScope,
+    walk: &mut LabelWalk<'_>,
+    tail: bool,
+    block_value: Option<&Expr>,
+    settle: bool,
+) -> Result<FlowExits<LabelScope>, LabelledReturn> {
+    let domain = walk.domain;
+    let struct_fields = walk.struct_fields;
+    let keys: BTreeSet<String> = cur.keys().cloned().collect();
+    let mut hidden: Vec<(String, String)> = Vec::new();
+    let mut out: FlowExits<LabelScope> = FlowExits::none();
+    let join = |d: &mut LabelScope, s: &LabelScope| label_join(domain, d, s);
+    let n = stmts.len();
+    let mut reaches_end = true;
+    for (i, stmt) in stmts.iter().enumerate() {
+        let stmt_is_tail = tail && i + 1 == n;
+        let site = stmt as *const Stmt as usize;
+        let seeds = std::slice::from_ref(stmt);
+        // A loop runs its header at every head (`LabelWalk::loop_fixpoint`).
+        if !is_loop_stmt(stmt) {
+            walk.expression_writes(stmt, &mut cur, &mut out)?;
+        }
+        let falls = match stmt {
             Stmt::Let {
                 name,
                 ty,
                 init,
                 span,
             } => {
-                domain.seed_let(name, ty.as_deref(), init, local, struct_fields);
-                if let Some(binding) = local.get_mut(name) {
+                hide_shadowed(&mut cur, name, site, &keys, &mut hidden);
+                domain.seed_let(name, ty.as_deref(), init, &mut cur, struct_fields);
+                if let Some(binding) = cur.get_mut(name) {
                     binding.info.span = Some((span.start, span.end));
                 }
+                true
             }
             Stmt::LetPattern {
                 pattern,
                 init,
                 span,
             } => {
-                let source = domain.expr_source(init, local, struct_fields);
-                domain.seed_pattern(local, pattern, &source, struct_fields);
-                for name in pattern.bound_names() {
-                    if let Some(binding) = local.get_mut(&name) {
+                let source = domain.expr_source(init, &cur, struct_fields);
+                let names = pattern.bound_names();
+                for name in &names {
+                    hide_shadowed(&mut cur, name, site, &keys, &mut hidden);
+                }
+                domain.seed_pattern(&mut cur, pattern, &source, struct_fields);
+                for name in &names {
+                    if let Some(binding) = cur.get_mut(name) {
                         binding.info.span = Some((span.start, span.end));
                     }
                 }
+                true
             }
             Stmt::Assign {
                 target: Expr::Var(name),
                 value,
             } => {
-                let source = domain.expr_source(value, local, struct_fields);
-                if let Some(binding) = local.get_mut(name) {
+                let source = domain.expr_source(value, &cur, struct_fields);
+                if let Some(binding) = cur.get_mut(name) {
                     domain.assign_binding(binding, source);
                 }
+                true
             }
             Stmt::Assign { target, value } => {
                 if let Some(root) = assign_target_root(target) {
-                    if let Some(source) = domain.expr_source(value, local, struct_fields) {
-                        if let Some(binding) = local.get_mut(root) {
+                    // The keys and indices decide where the value lands (`m[k] = 1` stores `k`).
+                    let mut keys = Vec::new();
+                    place_key_exprs(target, &mut keys);
+                    let source = std::iter::once(value)
+                        .chain(keys)
+                        .find_map(|e| domain.expr_source(e, &cur, struct_fields));
+                    if let Some(source) = source {
+                        if let Some(binding) = cur.get_mut(root) {
                             domain.taint_place(binding, source);
                         }
                     }
                 }
+                true
             }
             Stmt::If { cond, then, else_ } => {
                 // The reduced value-label model is explicit-flow-only, but it must still traverse the
                 // condition. The enforcing lane owns the separate secret-PC rejection.
-                drop(domain.expr_source(cond, local, struct_fields));
-                let mut then_scope = local.clone();
-                walk_block_labels(then, &mut then_scope, domain, struct_fields);
-                let else_scope = if let Some(body) = else_ {
-                    let mut scope = local.clone();
-                    walk_block_labels(body, &mut scope, domain, struct_fields);
-                    scope
-                } else {
-                    local.clone()
+                drop(domain.expr_source(cond, &cur, struct_fields));
+                // Without an `else` the statement is not a value (the runtime's `split_tail_expr`
+                // yields `0`), so its branch's last statement is not the function's.
+                let then_exits = walk_block_labels(
+                    then,
+                    cur.clone(),
+                    walk,
+                    stmt_is_tail && else_.is_some(),
+                    None,
+                    true,
+                )?;
+                let else_exits = match else_ {
+                    Some(body) => {
+                        walk_block_labels(body, cur.clone(), walk, stmt_is_tail, None, true)?
+                    }
+                    None => FlowExits::falling(cur.clone()),
                 };
-                merge_taint_over(local, &[&then_scope, &else_scope]);
+                walk.merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
             }
             Stmt::While {
                 cond,
                 body,
                 invariant,
             } => {
-                drop(domain.expr_source(cond, local, struct_fields));
+                drop(domain.expr_source(cond, &cur, struct_fields));
                 for predicate in invariant {
-                    drop(domain.expr_source(predicate, local, struct_fields));
+                    drop(domain.expr_source(predicate, &cur, struct_fields));
                 }
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
             Stmt::Loop { body, invariant } => {
                 for predicate in invariant {
-                    drop(domain.expr_source(predicate, local, struct_fields));
+                    drop(domain.expr_source(predicate, &cur, struct_fields));
                 }
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
+            // `loop_exit` binds `pattern` from `expr` at every head.
             Stmt::WhileLet {
-                pattern,
+                pattern: _,
                 expr,
                 body,
             } => {
-                let source = domain.expr_source(expr, local, struct_fields);
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                domain.seed_pattern(&mut body_scope, pattern, &source, struct_fields);
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                drop(domain.expr_source(expr, &cur, struct_fields));
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
+            // `loop_exit` binds `var` from `source` at every head.
             Stmt::For {
-                var,
+                var: _,
                 source,
                 body,
                 invariant,
             } => {
-                let source = match source {
+                match source {
                     crate::frontend::ForSource::Range { start, end } => {
-                        let start_source = domain.expr_source(start, local, struct_fields);
-                        let end_source = domain.expr_source(end, local, struct_fields);
-                        start_source.or(end_source)
+                        drop(domain.expr_source(start, &cur, struct_fields));
+                        drop(domain.expr_source(end, &cur, struct_fields));
                     }
                     crate::frontend::ForSource::Collection { expr } => {
-                        domain.expr_source(expr, local, struct_fields)
+                        drop(domain.expr_source(expr, &cur, struct_fields));
                     }
-                };
-                for predicate in invariant {
-                    drop(domain.expr_source(predicate, local, struct_fields));
                 }
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                body_scope.insert(var.clone(), domain.loop_binding(var, source));
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                for predicate in invariant {
+                    drop(domain.expr_source(predicate, &cur, struct_fields));
+                }
+                walk.loop_exit(stmt, body, &mut cur, &mut out)?
             }
             Stmt::ResearchBlock { intent: _, body } | Stmt::ExploitBlock { intent: _, body } => {
-                let snapshot = local.clone();
-                let mut body_scope = local.clone();
-                walk_block_labels(body, &mut body_scope, domain, struct_fields);
-                merge_taint_over(local, &[&snapshot, &body_scope]);
+                let body_exits = walk_block_labels(body, cur.clone(), walk, false, None, true)?;
+                let skipped = FlowExits::falling(cur.clone());
+                walk.merge_paths(&mut cur, vec![skipped, body_exits], &mut out)
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
-                let snapshot = local.clone();
-                let mut lanes = vec![snapshot.clone()];
-                for body in [gpu, cpu, prove].into_iter().flatten() {
-                    let mut lane_scope = snapshot.clone();
-                    walk_block_labels(body, &mut lane_scope, domain, struct_fields);
-                    lanes.push(lane_scope);
-                }
-                let lane_refs: Vec<&BTreeMap<String, ScopeBinding>> = lanes.iter().collect();
-                merge_taint_over(local, &lane_refs);
+                let lanes: Vec<&[Stmt]> = [gpu, cpu, prove]
+                    .into_iter()
+                    .flatten()
+                    .map(Vec::as_slice)
+                    .collect();
+                cur = walk.hybrid_fixpoint(stmt, &lanes, cur, &mut out)?;
+                true
             }
             Stmt::ExprStmt(Expr::Match {
                 scrutinee, arms, ..
             }) => {
-                let source = domain.expr_source(scrutinee, local, struct_fields);
-                let mut arm_scopes = Vec::new();
-                for arm in arms {
-                    let mut arm_scope = local.clone();
-                    domain.seed_pattern(&mut arm_scope, &arm.pattern, &source, struct_fields);
-                    if let Expr::Block { stmts, .. } = &arm.body {
-                        walk_block_labels(stmts, &mut arm_scope, domain, struct_fields);
-                    } else {
-                        drop(domain.expr_source(&arm.body, &arm_scope, struct_fields));
+                let source = domain.expr_source(scrutinee, &cur, struct_fields);
+                let mut arm_exits = Vec::with_capacity(arms.len());
+                // Arms are tried in order, an or-pattern arm one alternative at a time
+                // ([`sub_arms`]): a guard that runs and fails leaves what it wrote to the arms after it.
+                let mut tried = cur.clone();
+                for (arm, pattern) in sub_arms(arms) {
+                    let names = pattern.bound_names();
+                    let seed = |scope: &mut LabelScope| {
+                        domain.seed_pattern(scope, pattern, &source, struct_fields)
+                    };
+                    arm_exits.push(walk.scoped(&tried, &names, site, seed, |w, scope| {
+                        w.arm_body(arm.guard.as_ref(), &arm.body, scope, stmt_is_tail, seeds)
+                    })?);
+                    if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_writes(g)) {
+                        let failed = walk.scoped(&tried, &names, site, seed, |w, mut scope| {
+                            let mut exits = FlowExits::none();
+                            w.value_writes(&[guard], &mut scope, seeds, &mut exits)?;
+                            exits.fall = Some(scope);
+                            Ok(exits)
+                        })?;
+                        if let Some(f) = &failed.fall {
+                            label_join(domain, &mut tried, f);
+                        }
                     }
-                    arm_scopes.push(arm_scope);
                 }
-                let arm_refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
-                merge_taint_over(local, &arm_refs);
+                walk.merge_paths(&mut cur, arm_exits, &mut out)
             }
             Stmt::ExprStmt(Expr::IfLet {
                 pattern,
@@ -23291,82 +32114,145 @@ fn walk_block_labels(
                 else_,
                 ..
             }) => {
-                let source = domain.expr_source(scrutinee, local, struct_fields);
-                let mut then_scope = local.clone();
-                domain.seed_pattern(&mut then_scope, pattern, &source, struct_fields);
-                if let Expr::Block { stmts, .. } = then.as_ref() {
-                    walk_block_labels(stmts, &mut then_scope, domain, struct_fields);
-                } else {
-                    drop(domain.expr_source(then, &then_scope, struct_fields));
-                }
-                let mut else_scope = local.clone();
-                if let Expr::Block { stmts, .. } = else_.as_ref() {
-                    walk_block_labels(stmts, &mut else_scope, domain, struct_fields);
-                } else {
-                    drop(domain.expr_source(else_, &else_scope, struct_fields));
-                }
-                merge_taint_over(local, &[&then_scope, &else_scope]);
+                let source = domain.expr_source(scrutinee, &cur, struct_fields);
+                let then_exits = walk.scoped(
+                    &cur,
+                    &pattern.bound_names(),
+                    site,
+                    |scope| domain.seed_pattern(scope, pattern, &source, struct_fields),
+                    |w, scope| w.arm_body(None, then, scope, stmt_is_tail, seeds),
+                )?;
+                let else_exits = walk.arm_body(None, else_, cur.clone(), stmt_is_tail, seeds)?;
+                walk.merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
             }
-            Stmt::ExprStmt(Expr::Call { callee, args })
+            Stmt::ExprStmt(call @ Expr::Call { callee, args })
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
             {
                 if let Some(root) = assign_target_root(&args[0]) {
                     let source = args[1..]
                         .iter()
-                        .find_map(|arg| domain.expr_source(arg, local, struct_fields));
+                        .find_map(|arg| domain.expr_source(arg, &cur, struct_fields));
                     if let Some(source) = source {
-                        if let Some(binding) = local.get_mut(root) {
+                        if let Some(binding) = cur.get_mut(root) {
                             domain.taint_place(binding, source);
                         }
                     }
                 }
+                // The list's last statement, `;` or not, is its value (the runtime's
+                // `split_tail_expr`): the builtin `push` yields the container it just wrote, the
+                // builtin `insert` yields `0`, a user function or local of either name what it
+                // returns. Never judged, a function (or an arm or branch that is its value) ending
+                // in `push(xs, q.k);` returned the secret.
+                let builtin_insert = callee == "insert"
+                    && !domain.is_user_fn(callee)
+                    && !cur.contains_key(callee.as_str());
+                if stmt_is_tail && !builtin_insert {
+                    walk.judge(call, &cur, seeds)?;
+                }
+                true
+            }
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
+                if let Some(returned) = args.first() {
+                    walk.judge(returned, &cur, seeds)?;
+                }
+                false
+            }
+            // `break` / `continue` written as an expression statement leave like `Stmt::Break` /
+            // `Stmt::Continue` do.
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "break" => {
+                for a in args {
+                    drop(domain.expr_source(a, &cur, struct_fields));
+                }
+                join_exit(&mut out.brk, Some(std::mem::take(&mut cur)), &join);
+                false
+            }
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "continue" => {
+                for a in args {
+                    drop(domain.expr_source(a, &cur, struct_fields));
+                }
+                join_exit(&mut out.cont, Some(std::mem::take(&mut cur)), &join);
+                false
             }
             Stmt::ExprStmt(expr) => {
-                drop(domain.expr_source(expr, local, struct_fields));
+                drop(domain.expr_source(expr, &cur, struct_fields));
+                if stmt_is_tail {
+                    walk.judge(expr, &cur, seeds)?;
+                }
+                true
             }
-            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { forall: _ } => {}
+            Stmt::Break => {
+                join_exit(&mut out.brk, Some(std::mem::take(&mut cur)), &join);
+                false
+            }
+            Stmt::Continue => {
+                join_exit(&mut out.cont, Some(std::mem::take(&mut cur)), &join);
+                false
+            }
+            Stmt::SpecBlock { forall: _ } => true,
+        };
+        if !falls {
+            reaches_end = false;
+            break;
         }
     }
+    if reaches_end {
+        // The block's tail runs after its statements: its own nested writes and returns count here.
+        if let Some(value) = block_value {
+            walk.value_writes(&[value], &mut cur, stmts, &mut out)?;
+            if tail {
+                walk.judge(value, &cur, stmts)?;
+            }
+        }
+        out.fall = Some(cur);
+    }
+    if settle {
+        settle_exits(&mut out, &keys, &hidden);
+    }
+    Ok(out)
 }
 
 fn walk_block_taint(
     stmts: &[Stmt],
+    value: Option<&Expr>,
     local: &mut BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     method_tainting_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
-    walk_block_labels(
-        stmts,
-        local,
+    let mut walk = LabelWalk::new(
         BlockLabelDomain::Taint {
             sources: tainting_fns,
             param_returns: param_return_taint,
             method_sources: method_tainting_fns,
         },
         struct_fields,
+        None,
     );
+    let walked = walk_block_labels(stmts, local.clone(), &mut walk, false, value, false);
+    finish_value_block(local, walked);
 }
 
 fn walk_block_secret(
     stmts: &[Stmt],
+    value: Option<&Expr>,
     local: &mut BTreeMap<String, ScopeBinding>,
     secret_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
 ) {
-    walk_block_labels(
-        stmts,
-        local,
+    let mut walk = LabelWalk::new(
         BlockLabelDomain::Secret {
             sources: secret_fns,
             param_returns: param_return_taint,
             method_sources: method_secret_fns,
         },
         struct_fields,
+        None,
     );
+    let walked = walk_block_labels(stmts, local.clone(), &mut walk, false, value, false);
+    finish_value_block(local, walked);
 }
 
 /// The taint-source label of an expression, or `None` if clean — the 4-arg wrapper over
@@ -23407,6 +32293,46 @@ fn last_expr_of_stmts(stmts: &[Stmt]) -> Option<&Expr> {
         Stmt::ExprStmt(expr) => Some(expr),
         _ => None,
     })
+}
+
+/// Item-21 Family-3 (D10): infer a function's return STRUCT type when it is UNANNOTATED but every
+/// return position constructs the same struct literal. Used only to fill an empty `fn_ret_types`
+/// entry so declared-field-qualifier recovery (`place_struct_type`) reaches a `secret`/`tainted`
+/// field read off a factory result (`let a = mk(); a.k`), exactly as a declared `-> S` already does.
+///
+/// Conservative by construction: it requires at least one return, requires EVERY return (explicit
+/// `return S {..}` and an implicit tail `S {..}`) to be a bare `Expr::StructLiteral`, and requires
+/// them to AGREE on the struct name. Any non-literal return (a `let`-bound value, a call, a
+/// conditional) or a disagreement yields `None` — fail-open, so a polymorphic or non-struct factory
+/// infers nothing and cannot cause an over-rejection. It only ever FILLS an empty entry; a declared
+/// return type is never overridden (the caller consults this only when `ret` is `None`).
+fn infer_returned_struct_name(body: &[Stmt]) -> Option<String> {
+    let mut returns: Vec<Expr> = Vec::new();
+    for st in body {
+        collect_returns_in_stmt(st, &mut returns);
+    }
+    if let Some(tail) = last_expr_of_stmts(body) {
+        // An implicit tail value is a return; an explicit `return ..` tail is already collected
+        // above (its VALUE, unwrapped), so do not also count the `return` call wrapper here.
+        let is_return_call = matches!(tail, Expr::Call { callee, .. } if callee == "return");
+        if !is_return_call {
+            returns.push(tail.clone());
+        }
+    }
+    if returns.is_empty() {
+        return None;
+    }
+    let mut name: Option<String> = None;
+    for r in &returns {
+        let Expr::StructLiteral { name: sname, .. } = r else {
+            return None;
+        };
+        match &name {
+            Some(prev) if prev != sname => return None,
+            _ => name = Some(sname.clone()),
+        }
+    }
+    name
 }
 
 /// Integrity-side tail-value walker over a statement slice, hoisted out of
@@ -23546,6 +32472,13 @@ impl SourceLane {
         }
     }
 
+    fn return_summary_lane(self) -> ReturnSummaryLane {
+        match self {
+            Self::Taint => ReturnSummaryLane::Taint,
+            Self::Secret => ReturnSummaryLane::Secret,
+        }
+    }
+
     fn var_source(self, name: &str, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
         match self {
             Self::Taint => scope
@@ -23628,8 +32561,10 @@ impl SourceLane {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn source_lane_apply_block(
     stmts: &[Stmt],
+    value: Option<&Expr>,
     local: &mut BTreeMap<String, ScopeBinding>,
     lane_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
@@ -23640,6 +32575,7 @@ fn source_lane_apply_block(
     match lane {
         SourceLane::Taint => walk_block_taint(
             stmts,
+            value,
             local,
             lane_fns,
             param_return_taint,
@@ -23648,6 +32584,7 @@ fn source_lane_apply_block(
         ),
         SourceLane::Secret => walk_block_secret(
             stmts,
+            value,
             local,
             lane_fns,
             param_return_taint,
@@ -23727,6 +32664,26 @@ fn container_element_source(
 /// Replaces the historical `expr_taint_source_m` / `expr_secret_source_m`
 /// twins. One `Expr` match; lane hooks keep Call / container / TaintSource
 /// / Var / FieldAccess / Block / match-lambda semantics byte-preserving.
+/// Prefix of a WHOLE-VALUE struct source: a struct value one of whose declared fields carries the
+/// lane's qualifier. Printing or sending the whole value (`print(p)`) releases that field — the
+/// runtime renders every field — but a read of ANOTHER field (`p.pub_n`) does not, so field reads
+/// discard a source with this prefix and fall back to the per-field declaration.
+const WHOLE_STRUCT_SOURCE: &str = "a whole struct value holding ";
+
+/// The whole-value source of struct type `ty`, if one of its declared fields carries `lane`'s qualifier.
+fn whole_struct_source(
+    ty: &str,
+    struct_fields: &PlaceTypes<'_>,
+    lane: SourceLane,
+) -> Option<String> {
+    struct_fields
+        .fields
+        .get(ty.trim())?
+        .iter()
+        .find_map(|(f, t)| lane.declared_field_source(f, t))
+        .map(|src| format!("{WHOLE_STRUCT_SOURCE}{src} (type `{}`)", ty.trim()))
+}
+
 fn expr_source(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -23736,8 +32693,27 @@ fn expr_source(
     struct_fields: &PlaceTypes<'_>,
     lane: SourceLane,
 ) -> Option<String> {
+    if analysis_limit::cut() {
+        note_return_values_trip();
+        return Some(ANALYSIS_LIMIT_SOURCE.into());
+    }
     match expr {
-        Expr::Var(name) => lane.var_source(name, scope),
+        // In a RETURN SUMMARY, a bare FUNCTION NAME read as a value (`let g = h2`, `g = h2` in a
+        // branch, `b.g = h2`, `return h2`, so also `let g = choose(n)` for a `choose` returning one)
+        // carries what the function returns when applied: the answer this analysis already gives
+        // its eta-expansion `|n| h2(n)` (the `Lambda` arm) and a container holding it
+        // (`container_element_secret`). The summaries track no function identities (the enforcing
+        // lane's `fn_alias`), so `let g = h2; return g(n)` was not secret-returning and
+        // `print(f(3))` printed `h2`'s secret. A name bound in scope (a local, a parameter, a
+        // pattern binder) is that binding, never the function. Summary scopes only
+        // ([`RETURN_SUMMARY_SCOPE`]): the enforcing lane resolves identities itself, and labelling a
+        // function VALUE there would reject storing or counting one (`len(map([1], getsec_v))`).
+        Expr::Var(name) => lane.var_source(name, scope).or_else(|| {
+            (scope.contains_key(RETURN_SUMMARY_SCOPE)
+                && !scope.contains_key(name)
+                && lane_fns.contains(name))
+            .then(|| format!("return value of `{name}`"))
+        }),
         Expr::Binary { lhs, rhs, .. } => expr_source(
             lhs,
             scope,
@@ -23768,38 +32744,24 @@ fn expr_source(
             lane,
         ),
         Expr::Call { callee, args } => {
-            // Resolve a FUNCTION-VALUE ALIAS before consulting either summary:
-            // `let g = key; g()` parses as `Call { callee: "g" }`, and a raw-name
-            // lookup misses `key`'s entry. Same resolution on both lanes so
-            // aliasing cannot launder a label one lane already rejects.
-            let resolved = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
+            // Every function the call may run ([`call_targets`]), the same on both lanes so
+            // aliasing cannot launder a label one lane already rejects. `let g = key; g()` parses as
+            // `Call { callee: "g" }`, and a raw-name lookup missed `key`'s entry. A CALL-position
+            // name is a user function before it is a local (`param_return_taint` holds an entry for
+            // every user function), so `let h = pubfn; h(3)` returns what the user `h` returns.
+            // MULTI-CANDIDATE: the single-name `fn_alias` collapses a may-hold-several-functions
+            // binding to ONE preferred name, chosen lane-agnostically, so a binding that may hold a
+            // secret-returning AND a tainting function (a mixed `{secret_fn, taint_fn}` field applied
+            // at the taint-only `write_file`) lost the other lane's candidate; every target counts.
+            let user_fn = param_return_taint.contains_key(callee.as_str());
+            let targets = call_targets(callee, scope, user_fn);
+            let local = if user_fn { None } else { scope.get(callee) };
+            let rets = union_over_targets(param_return_taint, &targets);
             if let Some(src) = lane.constructor_source(callee, scope) {
                 Some(src)
-            } else if lane_fns.contains(resolved) {
-                Some(format!("return value of `{}`", resolved))
-            } else if let Some(hit) = scope.get(callee).and_then(|b| match &b.fn_identities {
-                // MULTI-CANDIDATE per-lane check. The single-name `fn_alias` collapses a
-                // may-hold-several-functions binding to ONE preferred name, chosen lane-agnostically
-                // (`join_fn_alias` / the FieldAccess/Index arm prefer any secret-or-taint candidate).
-                // A binding that may hold BOTH a secret-returning AND a tainting function therefore
-                // resolves `fn_alias` to only one of them, and the OTHER lane's check misses at a
-                // sink that this lane alone guards (e.g. a mixed `{secret_fn, taint_fn}` field applied
-                // at the taint-only `write_file`: the secret lane does not guard a non-egress sink, so
-                // the collapsed-to-secret alias let the tainted branch through). The full identity set
-                // is preserved on the binding, so consult it directly: if ANY known candidate is in
-                // THIS lane's dangerous set, the call may return this lane's label. Additive and
-                // fail-closed — it can only ADD a source where the single-name spine dropped one.
-                FnIdentitySet::Known(names) => names
-                    .iter()
-                    .find(|n| lane_fns.contains(n.as_str()))
-                    .cloned(),
-                FnIdentitySet::Unknown => None,
-            }) {
+            } else if let Some(hit) = targets.iter().find(|t| lane_fns.contains(t.as_str())) {
                 Some(format!("return value of `{}`", hit))
-            } else if let Some(rets) = param_return_taint.get(resolved) {
+            } else if let Some(src) = rets.as_ref().and_then(|rets| {
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {
                         expr_source(
@@ -23813,8 +32775,16 @@ fn expr_source(
                         )
                     })
                 })
-            } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
+            }) {
+                Some(src)
+            // No named candidate returns a labelled argument; a binding that may ALSO hold a lambda
+            // (`if c { |x| p.k } else { zero }`) still returns what the lambda captures. The named
+            // candidates' summaries used to end the check here (LAMBDA-PLUS-NAMED-FN-JOIN).
+            } else if let Some(lam) = local.and_then(|b| b.closure_lambda.clone()) {
                 let capture = if let Expr::Lambda { params, body } = lam.as_ref() {
+                    let Some(_frame) = closure_frame() else {
+                        return Some(ANALYSIS_LIMIT_SOURCE.into());
+                    };
                     let mut inner = scope.clone();
                     for p in params {
                         inner.remove(p);
@@ -23827,17 +32797,30 @@ fn expr_source(
                         .into_iter()
                         .map(|t| substitute_vars(&t, &__subst))
                         .collect();
-                    tails.iter().find_map(|t| {
-                        expr_source(
-                            t,
-                            &inner,
-                            lane_fns,
-                            param_return_taint,
-                            method_fns,
-                            struct_fields,
-                            lane,
-                        )
-                    })
+                    tails
+                        .iter()
+                        .find_map(|t| {
+                            expr_source(
+                                t,
+                                &inner,
+                                lane_fns,
+                                param_return_taint,
+                                method_fns,
+                                struct_fields,
+                                lane,
+                            )
+                        })
+                        .or_else(|| {
+                            closure_extra_source(
+                                body,
+                                &inner,
+                                lane_fns,
+                                param_return_taint,
+                                method_fns,
+                                struct_fields,
+                                lane,
+                            )
+                        })
                 } else {
                     None
                 };
@@ -23861,11 +32844,17 @@ fn expr_source(
                             )
                         })
                     })
-            } else if scope.get(callee).is_some_and(|b| lane.binding_labeled(b)) {
-                scope
-                    .get(callee)
-                    .and_then(|b| lane.apply_labeled_source(b, callee))
+            } else if rets.is_some() && !local.is_some_and(|b| b.fn_may.open) {
+                // Every candidate is a named function and none returns a labelled argument. A
+                // binding that may also hold a callable no name covers (`if c { abs } else { zero }`,
+                // [`FnMay::open`]) falls through: the builtin may return its argument.
+                None
+            } else if local.is_some_and(|b| lane.binding_labeled(b)) {
+                local.and_then(|b| lane.apply_labeled_source(b, callee))
             } else {
+                // A shape-only builtin (`len(xs)`) reveals no field of a struct it is given, so a
+                // whole-struct source does not flow through it.
+                let shape_only = matches!(callee.as_str(), "len" | "count" | "is_empty");
                 args.iter().find_map(|arg| {
                     expr_source(
                         arg,
@@ -23876,6 +32865,7 @@ fn expr_source(
                         struct_fields,
                         lane,
                     )
+                    .filter(|src| !(shape_only && src.starts_with(WHOLE_STRUCT_SOURCE)))
                 })
             }
         }
@@ -23918,6 +32908,39 @@ fn expr_source(
             }
         }
         Expr::TaintSource { label } => lane.taint_source_label(label),
+        // `p["k"]` on a struct reads field `k` (the runtime looks the key up by name), so it carries
+        // that field's declared qualifier exactly like `p.k` (including the unknown-base rule).
+        Expr::Index { base, index } if matches!(index.as_ref(), Expr::StrLiteral(_)) => {
+            let Expr::StrLiteral(key) = index.as_ref() else {
+                return None;
+            };
+            let as_field = Expr::FieldAccess {
+                base: base.clone(),
+                field: key.clone(),
+                span: Default::default(),
+            };
+            expr_source(
+                base,
+                scope,
+                lane_fns,
+                param_return_taint,
+                method_fns,
+                struct_fields,
+                lane,
+            )
+            .filter(|src| !src.starts_with(WHOLE_STRUCT_SOURCE))
+            .or_else(|| {
+                expr_source(
+                    &as_field,
+                    scope,
+                    lane_fns,
+                    param_return_taint,
+                    method_fns,
+                    struct_fields,
+                    lane,
+                )
+            })
+        }
         Expr::Index { base, index } => expr_source(
             base,
             scope,
@@ -23947,9 +32970,29 @@ fn expr_source(
             struct_fields,
             lane,
         )
-        .or_else(|| {
-            let field_ty = declared_field_type(base, field, scope, struct_fields)?;
-            lane.declared_field_source(field, &field_ty)
+        // A whole-struct source on the base says only that SOME field is qualified; which field
+        // this read takes is decided by the declarations below.
+        .filter(|src| !src.starts_with(WHOLE_STRUCT_SOURCE))
+        .or_else(|| match declared_field_type(base, field, scope, struct_fields) {
+            Some(field_ty) => lane.declared_field_source(field, &field_ty),
+            // The base's struct type is UNKNOWN (an untyped formal whose callers pass a container
+            // element, a value the inference cannot prove): which declaration of `field` applies is
+            // not known, so if ANY declared struct gives a field of that name this lane's qualifier,
+            // the read carries it. Reading `s.k` off an unknown `s` used to carry nothing, and
+            // `fn leak(s) { print(s.k) }; leak(xs[0])` printed a `secret` field (D9 residual).
+            None if place_struct_type(base, scope, struct_fields)
+                .is_none_or(|t| !struct_fields.fields.contains_key(t.trim())) =>
+            {
+                struct_fields
+                .fields
+                .values()
+                .filter_map(|fs| fs.get(field))
+                .find_map(|t| lane.declared_field_source(field, t))
+                .map(|src| {
+                    format!("{src} (the base's struct type is unknown, so every declaration counts)")
+                })
+            }
+            None => None,
         }),
         Expr::Cast { expr, .. } => expr_source(
             expr,
@@ -23971,17 +33014,20 @@ fn expr_source(
                 lane,
             )
         }),
-        Expr::StructLiteral { fields, .. } => fields.iter().find_map(|(_, e)| {
-            container_element_source(
-                e,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-                lane,
-            )
-        }),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .find_map(|(_, e)| {
+                container_element_source(
+                    e,
+                    scope,
+                    lane_fns,
+                    param_return_taint,
+                    method_fns,
+                    struct_fields,
+                    lane,
+                )
+            })
+            ,
         Expr::EnumConstruct { fields, .. } => fields.iter().find_map(|e| {
             container_element_source(
                 e,
@@ -24024,22 +33070,36 @@ fn expr_source(
             let subst = closure_body_let_subst(body);
             let mut tails = Vec::new();
             expr_tail_values(body, &mut tails);
-            tails.iter().find_map(|t| {
-                expr_source(
-                    &substitute_vars(t, &subst),
-                    &inner,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                    lane,
-                )
-            })
+            tails
+                .iter()
+                .find_map(|t| {
+                    expr_source(
+                        &substitute_vars(t, &subst),
+                        &inner,
+                        lane_fns,
+                        param_return_taint,
+                        method_fns,
+                        struct_fields,
+                        lane,
+                    )
+                })
+                .or_else(|| {
+                    closure_extra_source(
+                        body,
+                        &inner,
+                        lane_fns,
+                        param_return_taint,
+                        method_fns,
+                        struct_fields,
+                        lane,
+                    )
+                })
         }
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
             source_lane_apply_block(
                 stmts,
+                tail.as_deref(),
                 &mut local,
                 lane_fns,
                 param_return_taint,
@@ -24084,11 +33144,12 @@ fn expr_source(
                 struct_fields,
                 lane,
             );
-            arms.iter().find_map(|arm| {
+            // One alternative of an or-pattern arm at a time ([`sub_arms`]).
+            sub_arms(arms).find_map(|(arm, pattern)| {
                 let mut local = scope.clone();
                 seed_pattern(
                     &mut local,
-                    &arm.pattern,
+                    pattern,
                     &scrut,
                     lane.seed_pattern_lane(),
                     struct_fields,
@@ -24224,15 +33285,18 @@ fn expr_source(
                     .and_then(|b| b.field_closures.get(&path).cloned())
             });
             if let Some(Expr::Var(f)) = stored_closure.as_deref() {
-                let target = scope
-                    .get(f)
-                    .and_then(|b| b.fn_alias.as_deref())
-                    .unwrap_or(f.as_str());
-                if lane_fns.contains(target) {
+                // `f` was stored as a VALUE, where a local shadows a user function of its name.
+                if let Some(target) = call_targets(f, scope, false)
+                    .into_iter()
+                    .find(|t| lane_fns.contains(t.as_str()))
+                {
                     return Some(format!("return value of `{target}`"));
                 }
             }
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
+                let Some(_frame) = closure_frame() else {
+                    return Some(ANALYSIS_LIMIT_SOURCE.into());
+                };
                 let mut inner = scope.clone();
                 for p in params {
                     inner.remove(p);
@@ -24245,18 +33309,59 @@ fn expr_source(
                     .into_iter()
                     .map(|t| substitute_vars(&t, &__subst))
                     .collect();
-                if let Some(s) = tails.iter().find_map(|t| {
-                    expr_source(
-                        t,
-                        &inner,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                        lane,
-                    )
-                }) {
+                if let Some(s) = tails
+                    .iter()
+                    .find_map(|t| {
+                        expr_source(
+                            t,
+                            &inner,
+                            lane_fns,
+                            param_return_taint,
+                            method_fns,
+                            struct_fields,
+                            lane,
+                        )
+                    })
+                    .or_else(|| {
+                        closure_extra_source(
+                            body,
+                            &inner,
+                            lane_fns,
+                            param_return_taint,
+                            method_fns,
+                            struct_fields,
+                            lane,
+                        )
+                    })
+                {
                     return Some(s);
+                }
+            }
+            // A callable placed via PLACE-ASSIGNMENT (`b.f = key; b.f()`) is recorded in
+            // `field_fn_identities`, NOT `field_closures`: the non-`Var` `Stmt::Assign` write
+            // handler retains-out the stale closure at the path and inserts only the identity set
+            // (`analyze_stmts` place-assign arm, ~mod.rs:10609). The `stored_closure` lookup above
+            // reads `field_closures`, so it misses this shape — the exact `CallExpr` analogue of
+            // the let-bound read gap row 6 closed for `fn_alias_of` (`let g = b.f; g()`). Consult
+            // the identity map the write side DOES populate, with the same fail-closed rule row 6 /
+            // `join_fn_alias` use: ANY lane-dangerous candidate in the set rejects. Read directly
+            // off the binding (like `field_closures` above), so this stays `ctx`-free. Additive: a
+            // non-lane identity (`b.f = plainfn`) is absent from `lane_fns` and still accepts, and
+            // an `Unknown`/empty set or an unresolvable path yields nothing — the prior behaviour.
+            //
+            // Consulted even when a closure IS stored at the path: a branch or loop join restores
+            // `field_closures` from before the block, while `merge_fn_alias_over` unions the identity
+            // sets. After `let b = B { g: h1 }; if c { b.g = h2; }` the stored closure is still `h1`'s
+            // eta-expansion and only the identity set `{h1, h2}` knows `b.g` may be `h2`, so
+            // `print(b.g(n))` printed the secret while the straight-line `b.g = h2` was rejected.
+            if let Some((root, path)) = flatten_access_path(callee) {
+                if let Some(FnIdentitySet::Known(names)) = scope
+                    .get(&root)
+                    .and_then(|b| b.field_fn_identities.get(&path))
+                {
+                    if let Some(target) = names.iter().find(|n| lane_fns.contains(n.as_str())) {
+                        return Some(format!("return value of `{target}`"));
+                    }
                 }
             }
             if let Expr::FieldAccess { field, .. } = callee.as_ref() {
@@ -24407,8 +33512,7 @@ fn container_element_secret(
     }
     scope
         .get(n)
-        .and_then(|b| b.fn_alias.clone())
-        .filter(|a| secret_fns.contains(a))
+        .and_then(|b| binding_may_call(b, secret_fns))
         .map(|a| format!("return value of `{a}`"))
 }
 
@@ -24444,8 +33548,7 @@ fn container_element_taint(
     }
     scope
         .get(n)
-        .and_then(|b| b.fn_alias.clone())
-        .filter(|a| tainting_fns.contains(a))
+        .and_then(|b| binding_may_call(b, tainting_fns))
         .map(|a| format!("return value of `{a}`"))
 }
 
@@ -24456,12 +33559,6 @@ fn container_element_taint(
 // `expr_taint_source`'s `Call` arm so `sink(get_secret())` is flagged even with no tainted argument.
 // It is deliberately whole-value + reassignment-insensitive + declassify-aware, exactly matching the
 // intra-procedural analysis, and MONOTONE (only grows) so it needs no control-flow-merge join.
-
-/// Whether an expression is a `return X` (Anubis models `return` as a call to the pseudo-function
-/// named `"return"`, never a real function).
-fn is_return_call(e: &Expr) -> bool {
-    matches!(e, Expr::Call { callee, .. } if callee == "return")
-}
 
 /// Seed one `let` binding's taint into `scope`, mirroring the real let-seeding (annotation OR a
 /// tainted, non-declassified initializer). Params are never seeded here — a returned parameter is
@@ -24503,6 +33600,10 @@ fn seed_one_let(
     scope.insert(
         name.to_string(),
         ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: name.to_string(),
                 ty: ty.map(str::to_string),
@@ -24516,6 +33617,7 @@ fn seed_one_let(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -24581,6 +33683,10 @@ fn seed_pattern(
     for n in pattern.bound_names() {
         let is_declared_here = declared.contains(&n);
         let mut binding = ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: n.clone(),
                 ty: None,
@@ -24594,6 +33700,7 @@ fn seed_pattern(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -24634,29 +33741,73 @@ fn seed_pattern(
 /// closure (and `f(0)` carries `g`'s captured secret/taint to an egress). The scrutinee's
 /// `field_closures` (populated by `collect_container_closures` for the `EnumConstruct`) are keyed by
 /// positional index; an `EnumVariant` pattern's positional `bindings[i]` binds payload field `i`.
-/// Closes soundness hunt2 [03]. Only a `Var` scrutinee with a positional `Binding` sub-pattern
-/// resolves — anything else is left as-is (no false labelling).
+/// Closes soundness hunt2 [03]. Every binder of every pattern shape resolves, through
+/// [`pattern_closures`] (a scrutinee that is a literal, a struct or list pattern, a nested path).
 fn propagate_pattern_closures(
     scope: &mut BTreeMap<String, ScopeBinding>,
     scrutinee: &Expr,
     pattern: &Pattern,
+    ctx: &SemanticContext,
 ) {
-    let Expr::Var(sv) = scrutinee else {
-        return;
+    let found = pattern_closures(scope, scrutinee, pattern, ctx);
+    apply_pattern_closures(scope, found);
+}
+
+/// The closures each name `pattern` binds out of `scrutinee` may be applied as: the closure stored at
+/// the binder's access path (`let [a, b] = [zero, |x| ..]` gives `b` the lambda; `Some(g) =>` the
+/// payload's), every closure a mutation stored at a slot no path names (`push`), and for a binder that
+/// takes the whole value, the scrutinee's own closures. Only an enum payload of a variable was followed,
+/// so `let [a, b] = [zero, |x| print(x)]; b(k)` descended nothing (a variant of
+/// CONTAINER-LAMBDA-AS-HOF-CALLBACK). Read before the binders are seeded, so a binder shadowing a name
+/// the scrutinee reads does not stand in for it.
+fn pattern_closures(
+    scope: &BTreeMap<String, ScopeBinding>,
+    scrutinee: &Expr,
+    pattern: &Pattern,
+    ctx: &SemanticContext,
+) -> Vec<(String, Box<Expr>)> {
+    let stored: BTreeMap<String, Box<Expr>> = match scrutinee {
+        Expr::Var(sv) => scope
+            .get(sv)
+            .map(|b| b.field_closures.clone())
+            .unwrap_or_default(),
+        _ => {
+            let mut m = BTreeMap::new();
+            collect_container_closures(scrutinee, "", scope, ctx, &mut m);
+            m
+        }
     };
-    let fclos = match scope.get(sv) {
-        Some(b) if !b.field_closures.is_empty() => b.field_closures.clone(),
-        _ => return,
+    let weak = |k: &str| {
+        k.strip_prefix("_p")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
     };
-    if let Pattern::EnumVariant { bindings, .. } = pattern {
-        for (i, sub) in bindings.iter().enumerate() {
-            if let Pattern::Binding(name) = sub {
-                if let Some(lam) = fclos.get(&i.to_string()) {
-                    if let Some(b) = scope.get_mut(name) {
-                        b.closure_lambda = Some(lam.clone());
-                    }
-                }
+    let mut paths = BTreeMap::new();
+    collect_pattern_binding_paths(pattern, "", &mut paths);
+    let mut out = Vec::new();
+    for (name, path) in paths {
+        if path.is_empty() {
+            for lam in callback_closure_candidates(scrutinee, scope, ctx) {
+                out.push((name.clone(), lam));
             }
+            continue;
+        }
+        for (k, lam) in &stored {
+            if (k == &path || weak(k)) && matches!(lam.as_ref(), Expr::Lambda { .. }) {
+                out.push((name.clone(), lam.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Add what [`pattern_closures`] found to the seeded binders.
+fn apply_pattern_closures(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    found: Vec<(String, Box<Expr>)>,
+) {
+    for (name, lam) in found {
+        if let Some(b) = scope.get_mut(&name) {
+            add_closure_candidate(b, lam);
         }
     }
 }
@@ -24719,6 +33870,10 @@ fn seed_effect_let(
     scope.insert(
         name.to_string(),
         ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: name.to_string(),
                 ty: ty.map(str::to_string),
@@ -24732,6 +33887,7 @@ fn seed_effect_let(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -24874,6 +34030,10 @@ fn seed_effect_pattern(
         scope.insert(
             n.clone(),
             ScopeBinding {
+                whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: n,
                     ty: None,
@@ -24881,12 +34041,13 @@ fn seed_effect_pattern(
                     tainted: taint.is_some(),
                     taint_source: taint.clone(),
                     declassified: false,
-                    span: None,
+                    span: Some(pattern_binder_span(pattern)),
                 },
                 closure_arity: None,
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities,
                 field_fn_identities,
                 builtin_gate_tags,
@@ -24929,6 +34090,10 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
         if let Some(lam) = lam {
             let e = scope.entry(name.to_string()).or_insert_with(|| {
                 ScopeBinding {
+                    whole_struct: None,
+                    whole_captures: None,
+                    whole_list: false,
+                    whole_map: false,
                     info: BindingInfo {
                         name: name.to_string(),
                         ty: None,
@@ -24942,6 +34107,7 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
                     fn_alias: None,
+                    fn_may: FnMay::default(),
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
                     builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -25032,6 +34198,10 @@ fn seed_declared_pattern_binders(
     for n in names {
         let b = scope.entry(n.clone()).or_insert_with(|| {
             ScopeBinding {
+                whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: n.clone(),
                     ty: None,
@@ -25045,6 +34215,7 @@ fn seed_declared_pattern_binders(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -25129,10 +34300,9 @@ fn collect_stmt_patterns<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Pattern>) {
 /// `body_returns_taint` / `body_returns_secret` into one skeleton so a new
 /// statement shape cannot be learned on one lane and dropped on the other.
 ///
-/// Semantic split preserved in this slice: only [`ReturnSummaryLane::Secret`]
-/// seeds `while let` binders from declared `secret<T>` payloads. The taint
-/// twin historically did not; adding that seeder is a D4 closure and belongs
-/// in its own slice with its own fixture.
+/// The walk itself is the shared label walker ([`walk_block_labels`]); both lanes
+/// seed `while let`, `match` and `if let` binders from the scrutinee and from
+/// declared qualified payloads (`seed_pattern`).
 #[derive(Clone, Copy)]
 enum ReturnSummaryLane {
     Taint,
@@ -25140,73 +34310,6 @@ enum ReturnSummaryLane {
 }
 
 impl ReturnSummaryLane {
-    fn expr_source(
-        self,
-        expr: &Expr,
-        scope: &BTreeMap<String, ScopeBinding>,
-        lane_fns: &BTreeSet<String>,
-        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-        method_fns: &BTreeSet<String>,
-        struct_fields: &PlaceTypes<'_>,
-    ) -> Option<String> {
-        match self {
-            Self::Taint => expr_source(
-                expr,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-                SourceLane::Taint,
-            ),
-            Self::Secret => expr_source(
-                expr,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-                SourceLane::Secret,
-            ),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn seed_let(
-        self,
-        name: &str,
-        ty: Option<&str>,
-        init: &Expr,
-        scope: &mut BTreeMap<String, ScopeBinding>,
-        lane_fns: &BTreeSet<String>,
-        param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-        method_fns: &BTreeSet<String>,
-        struct_fields: &PlaceTypes<'_>,
-    ) {
-        match self {
-            Self::Taint => seed_one_let(
-                name,
-                ty,
-                init,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-            ),
-            Self::Secret => seed_one_let_secret(
-                name,
-                ty,
-                init,
-                scope,
-                lane_fns,
-                param_return_taint,
-                method_fns,
-                struct_fields,
-            ),
-        }
-    }
-
     fn seed_pattern_lane(self) -> SeedPatternLane {
         match self {
             Self::Taint => SeedPatternLane::Taint,
@@ -25214,88 +34317,689 @@ impl ReturnSummaryLane {
         }
     }
 
-    fn write_var_label(self, binding: &mut ScopeBinding, src: Option<String>) {
+    /// Whether `binding` carries this lane's label, read exactly as `SourceLane::var_source` reads a
+    /// `Var`, so a binding this says is labelled is one a later read of it reports.
+    fn is_labelled(self, binding: &ScopeBinding) -> bool {
         match self {
-            Self::Taint => binding.set_taint_label(
-                security_label::SecurityLabel::from_legacy_taint(src.is_some(), src),
-            ),
-            Self::Secret => binding.set_secret_label(
-                security_label::SecurityLabel::from_legacy_secret(src.is_some()),
-            ),
+            Self::Taint => binding.info.tainted && binding.info.taint_source.is_some(),
+            Self::Secret => binding.secret,
         }
     }
 
-    fn mark_root_labelled(self, binding: &mut ScopeBinding, src: String) {
+    /// Whether a declared type annotation carries this lane's qualifier (`tainted<T>` / `secret<T>`).
+    fn declared(self, ty: Option<&str>) -> bool {
         match self {
-            Self::Taint => {
-                binding.set_taint_label(security_label::SecurityLabel::labeled_from(src))
-            }
-            Self::Secret => binding.set_secret_label(security_label::SecurityLabel::labeled(None)),
-        }
-    }
-
-    /// Lane-parameterized `while let` declared-payload seeder. Closes the D4 taint-side
-    /// residual explicitly named in the second-rewrite `PHASE_2_COMPLETION_2026-08-13.md`
-    /// § 9.7: prior to this slice the Secret arm seeded declared enum-payload / struct-field
-    /// binders and the Taint arm bailed out at the top, so a function that internally
-    /// destructured a `tainted<T>` payload through `while let ... = ...` and returned the
-    /// binding was NOT seen as returning tainted data; callers of that function then
-    /// passed the "clean" return value to a sink and the summary-side check accepted.
-    /// The direct (enforcing-lane) form was already caught in both lanes; only the
-    /// summary path — this helper's only caller, inside `body_returns` — needed the fix.
-    ///
-    /// The lane picks its own declared-qualifier predicate through `SeedPatternLane`
-    /// (the same routing the collapsed `seed_pattern` twin uses) and the label bit
-    /// through `mark_root_labelled`, so any future third lane adopts both writes by
-    /// implementing the two lane helpers instead of touching this function.
-    fn seed_while_let_binders(
-        self,
-        stmt: &Stmt,
-        scope: &mut BTreeMap<String, ScopeBinding>,
-        struct_fields: &PlaceTypes<'_>,
-    ) {
-        let Stmt::WhileLet { pattern, .. } = stmt else {
-            return;
-        };
-        let mut names = BTreeSet::new();
-        qualified_pattern_binders(
-            pattern,
-            struct_fields,
-            self.seed_pattern_lane().declared_qualifier(),
-            &mut names,
-        );
-        for n in names {
-            let b = scope.entry(n.clone()).or_insert_with(|| {
-                ScopeBinding {
-                    info: BindingInfo {
-                        name: n.clone(),
-                        ty: None,
-                        mode: String::new(),
-                        tainted: false,
-                        taint_source: None,
-                        declassified: false,
-                        span: None,
-                    },
-                    closure_arity: None,
-                    closure_lambda: None,
-                    field_closures: BTreeMap::new(),
-                    fn_alias: None,
-                    fn_identities: FnIdentitySet::Unknown,
-                    field_fn_identities: BTreeMap::new(),
-                    builtin_gate_tags: BuiltinGateTags::Unknown,
-                    field_builtin_gate_tags: BTreeMap::new(),
-                    taint_label: security_label::SecurityLabel::default(),
-                    secret_label: security_label::SecurityLabel::default(),
-                    secret: false,
-                }
-                .with_labels()
-            });
-            self.mark_root_labelled(b, format!("declared enum payload `{n}`"));
+            Self::Taint => is_tainted_type(ty),
+            Self::Secret => is_secret_type(ty),
         }
     }
 }
 
-/// Lane-parameterized replacement for `body_returns_taint` / `body_returns_secret`.
+/// One write [`nested_may_labels`] closes over: when any of `sources` carries the label, every
+/// binding in `targets` may carry it.
+struct NestedWrite<'a> {
+    targets: Vec<String>,
+    sources: Vec<&'a Expr>,
+}
+
+/// Record a pattern binding for [`nested_may_labels`]: every binder may hold the scrutinee's label,
+/// and a binder whose DECLARED payload or field type carries the lane's qualifier holds it anyway.
+fn nested_pattern_write<'a>(
+    pattern: &'a Pattern,
+    scrutinee: &'a Expr,
+    lane: ReturnSummaryLane,
+    struct_fields: &PlaceTypes<'_>,
+    binds: &mut Vec<(String, Option<&'a str>)>,
+    declared: &mut BTreeSet<String>,
+    writes: &mut Vec<NestedWrite<'a>>,
+) {
+    let targets = pattern.bound_names();
+    binds.extend(targets.iter().map(|n| (n.clone(), None)));
+    qualified_pattern_binders(
+        pattern,
+        struct_fields,
+        lane.seed_pattern_lane().declared_qualifier(),
+        declared,
+    );
+    writes.push(NestedWrite {
+        targets,
+        sources: vec![scrutinee],
+    });
+}
+
+/// The names `sources` read: every `Var` and every callee named by a `Call`, anywhere inside them
+/// (value blocks and lambda bodies included).
+fn source_reads(sources: &[&Expr]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for &e in sources {
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Var(n) => {
+                names.insert(n.clone());
+            }
+            Expr::Call { callee, .. } => {
+                names.insert(callee.clone());
+            }
+            _ => {}
+        });
+    }
+    names
+}
+
+/// Close monotone writes to a fixpoint with a worklist. `reads[i]` names what write `i`'s sources
+/// read (`None`: they may read anything); `eval(i)` applies write `i` and returns the names it
+/// changed. A write is evaluated again only when a name it reads changes, so a carry chain in any
+/// order costs one evaluation per link, where a pass over every write per change cost one PASS per
+/// link (quadratic: `PERF1-closure-quadratic-x-nesting-x-fixpoint`).
+fn close_writes(reads: &[Option<BTreeSet<String>>], mut eval: impl FnMut(usize) -> Vec<String>) {
+    let mut users: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    let mut anything: Vec<usize> = Vec::new();
+    for (i, r) in reads.iter().enumerate() {
+        match r {
+            Some(names) => {
+                for n in names {
+                    users.entry(n.as_str()).or_default().push(i);
+                }
+            }
+            None => anything.push(i),
+        }
+    }
+    let mut queued = vec![true; reads.len()];
+    let mut queue: std::collections::VecDeque<usize> = (0..reads.len()).collect();
+    while let Some(i) = queue.pop_front() {
+        queued[i] = false;
+        for changed in eval(i) {
+            for &j in users
+                .get(changed.as_str())
+                .into_iter()
+                .flatten()
+                .chain(anything.iter())
+            {
+                if !queued[j] {
+                    queued[j] = true;
+                    queue.push_back(j);
+                }
+            }
+        }
+    }
+}
+
+/// Whether `callee(args)` is the in-place `push`/`insert` form, which writes into `args[0]`.
+fn is_in_place_push(callee: &str, args: &[Expr]) -> bool {
+    matches!(callee, "push" | "insert") && args.len() >= 2
+}
+
+/// The KEY and INDEX expressions of an assignment place (`k` in `m[k] = v`, `i` and `j` in
+/// `b.xs[i][j] = v`). They decide where the value lands, so a label on one is written into the root
+/// with the value: `m["${q.k}"] = 1` stores the secret as a key of `m`, and the root took its label
+/// from the clean `1` alone (in the return summary and in the enforcing lane).
+fn place_key_exprs<'a>(target: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match target {
+        Expr::Index { base, index } => {
+            out.push(index.as_ref());
+            place_key_exprs(base, out);
+        }
+        Expr::FieldAccess { base, .. } => place_key_exprs(base, out),
+        _ => {}
+    }
+}
+
+/// The operands of `?` in `e`, outside nested lambdas: `v?` leaves the enclosing function with `v`'s
+/// `Err` (or `None`), so for the flow lanes `v` is a returned value, returned under the conditions
+/// that reach it. A `?` in a closure leaves the closure ([`closure_extra_source`] reads those).
+///
+/// Kept apart from [`expr_returns`], which also feeds identity and contract resolution: there an
+/// early `Err` is not the function's value (it would un-resolve a sole returned function, or be
+/// checked against an `ensures`). Neither return summary nor the implicit-flow check saw them:
+/// `let v = Err(q.k)?; return Ok(0);` printed the secret, and `if q.k > 100 { let v = Err(0)?; }`
+/// encoded the condition in which of `Ok` / `Err` came back.
+fn try_exits_in_expr(e: &Expr, out: &mut Vec<Expr>) {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    visit::each_expr(e, &mut |x| lambda_try_nodes(x, &mut in_lambda));
+    visit::each_expr(e, &mut |x| push_try_exit(x, &in_lambda, out));
+}
+
+/// The `?` nodes inside `e` when `e` is a lambda: they leave the closure, not the function.
+fn lambda_try_nodes(e: &Expr, in_lambda: &mut BTreeSet<*const Expr>) {
+    if let Expr::Lambda { body, .. } = e {
+        visit::each_expr(body, &mut |y| {
+            if matches!(y, Expr::Try(_)) {
+                in_lambda.insert(y as *const Expr);
+            }
+        });
+    }
+}
+
+fn push_try_exit(e: &Expr, in_lambda: &BTreeSet<*const Expr>, out: &mut Vec<Expr>) {
+    if let Expr::Try(inner) = e {
+        if !in_lambda.contains(&(e as *const Expr)) {
+            out.push((**inner).clone());
+        }
+    }
+}
+
+/// The in-place `push` / `insert` calls in `exprs` outside lambda bodies, in EXPRESSION position as
+/// well as statement form: the runtime writes the container in place either way (`backends/run.rs`
+/// lowers `let t = push(xs, v)` to `{ xs.push_val(v); xs.clone() }`), and the walks knew only the
+/// statement (`let t = push(xs, q.k); return xs;` returned the secret with a clean summary).
+fn in_place_pushes<'a>(exprs: &[&'a Expr]) -> Vec<(&'a str, &'a [Expr])> {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Lambda { body, .. } = x {
+                visit::each_expr(body, &mut |y| {
+                    in_lambda.insert(y as *const Expr);
+                });
+            }
+        });
+    }
+    let mut out = Vec::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if in_lambda.contains(&(x as *const Expr)) {
+                return;
+            }
+            if let Expr::Call { callee, args } = x {
+                if is_in_place_push(callee, args) {
+                    if let Some(root) = assign_target_root(&args[0]) {
+                        out.push((root, &args[1..]));
+                    }
+                }
+            }
+        });
+    }
+    out
+}
+
+/// Whether any statement nested in `e` assigns a binding, or `e` holds an in-place `push`/`insert`
+/// (a cheap test before [`closure_extra_source`] copies a closure body).
+fn expr_nests_assignment(e: &Expr) -> bool {
+    let mut found = false;
+    visit::each_expr(e, &mut |x| match x {
+        Expr::Call { callee, args } if is_in_place_push(callee, args) => found = true,
+        Expr::Block { stmts, .. } => visit::each_stmt(stmts, &mut |s, _| {
+            if matches!(s, Stmt::Assign { .. }) {
+                found = true;
+            }
+        }),
+        _ => {}
+    });
+    found
+}
+
+/// What a CLOSURE CALL may yield beyond the tails the closure arms read (`expr_tail_values` through
+/// `closure_body_let_subst`, in the scope the closure was built in). Those substitute the body's
+/// `let`s only, so a body that WRITES a name before yielding it — a captured name (`|| { x = q.k; x
+/// }`) or its own local (`let y = 0; y = q.k; y`) — yielded what the name held outside, and a `v?` in
+/// the body, which returns `v`'s `Err` from the closure, was not read at all: each returned the
+/// secret through a clean `g()`, in a callee's summary and in `main`. Here the tails and those `?`
+/// operands are read in the body's order-free may-scope ([`nested_may_labels`]). `None` at once for
+/// a body with no assignment, `push`/`insert` or `?`, where the tails already read are complete.
+#[allow(clippy::too_many_arguments)]
+fn closure_extra_source(
+    body: &Expr,
+    inner: &BTreeMap<String, ScopeBinding>,
+    lane_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+    lane: SourceLane,
+) -> Option<String> {
+    let mut exits = Vec::new();
+    try_exits_in_expr(body, &mut exits);
+    if exits.is_empty() && !expr_nests_assignment(body) {
+        return None;
+    }
+    let domain = match lane.return_summary_lane() {
+        ReturnSummaryLane::Taint => BlockLabelDomain::Taint {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+        ReturnSummaryLane::Secret => BlockLabelDomain::Secret {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+    };
+    let may = nested_may_labels(&[body], inner, domain, struct_fields).may;
+    let mut values = Vec::new();
+    expr_tail_values(body, &mut values);
+    values.extend(exits);
+    values.iter().find_map(|v| {
+        expr_source(
+            v,
+            &may,
+            lane_fns,
+            param_return_taint,
+            method_fns,
+            struct_fields,
+            lane,
+        )
+    })
+}
+
+/// Whether `exprs` hold, outside lambda bodies, a `break` / `continue` in expression position: the
+/// parser gives one in an arm or a value (`None => break`, `let y = match c { true => break, _ => 0
+/// }`) as `Expr::Call { callee: "break" | "continue" }`, never as `Stmt::Break`. A walk that knew only
+/// the statement form took a loop whose only exit is one for a loop that never ends, and skipped
+/// every `return` after it (review of the ordinary-lane designs, U1/U2). One inside a loop nested
+/// there leaves that loop: counting it for the enclosing one only adds a path.
+fn expr_loop_exits(exprs: &[&Expr]) -> (bool, bool) {
+    let mut in_lambda: BTreeSet<*const Expr> = BTreeSet::new();
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if let Expr::Lambda { body, .. } = x {
+                visit::each_expr(body, &mut |y| {
+                    in_lambda.insert(y as *const Expr);
+                });
+            }
+        });
+    }
+    let (mut breaks, mut continues) = (false, false);
+    for &e in exprs {
+        visit::each_expr(e, &mut |x| {
+            if in_lambda.contains(&(x as *const Expr)) {
+                return;
+            }
+            if let Expr::Call { callee, .. } = x {
+                breaks |= callee == "break";
+                continues |= callee == "continue";
+            }
+        });
+    }
+    (breaks, continues)
+}
+
+/// What the statements nested in a statement's own expressions may do ([`nested_may_labels`]).
+struct NestedMay {
+    /// The labels every binding may carry anywhere among them.
+    may: BTreeMap<String, ScopeBinding>,
+    /// The outer names they ASSIGN (`x = …`, `x[i] = …`, `push(x, …)`).
+    assigned: BTreeSet<String>,
+    /// Whether a `break` / `continue` among them (outside lambdas) may leave to the enclosing loop.
+    breaks: bool,
+    continues: bool,
+}
+
+/// The labels every binding MAY carry anywhere among the statements nested in `exprs` — a
+/// statement's own expressions ([`stmt_value_exprs`]: a value block, an expression-position arm),
+/// the one place the label walks do not track order — and the outer names they assign.
+///
+/// Deliberately order-free and name-keyed: starting from `scope`, every nested write counts on every
+/// path and every iteration until nothing changes; a name bound more than once, or shadowing an
+/// outer binding, is one binding here, and if its sites disagree on its declared type the type is
+/// dropped, so a field read off it counts every declaration. Lambda bodies are skipped: a closure
+/// captures by value, so its writes never reach this frame (a write to a captured name is invisible
+/// after the call; runtime-checked). Only the statements nested in expressions are closed over: the
+/// walks visit a statement's own bodies in order, so the closure no longer runs for every compound
+/// statement at every nesting level over everything beneath it (`PERF-NESTED-MAY-LABELS-PER-LEVEL`).
+fn nested_may_labels(
+    exprs: &[&Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    domain: BlockLabelDomain<'_>,
+    struct_fields: &PlaceTypes<'_>,
+) -> NestedMay {
+    let lane = domain.lane();
+    let mut writes: Vec<NestedWrite<'_>> = Vec::new();
+    let mut binds: Vec<(String, Option<&str>)> = Vec::new();
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    let mut assigned: BTreeSet<String> = BTreeSet::new();
+    let (mut breaks, mut continues) = expr_loop_exits(exprs);
+    for &e in exprs {
+        // `push` / `insert` in expression position write their container too.
+        for (root, args) in in_place_pushes(&[e]) {
+            assigned.insert(root.to_string());
+            writes.push(NestedWrite {
+                targets: vec![root.to_string()],
+                sources: args.iter().collect(),
+            });
+        }
+        visit::each_stmt_in_expr(e, &mut |s, in_lambda| {
+            if in_lambda {
+                return;
+            }
+            match s {
+                Stmt::Let { name, ty, init, .. } => {
+                    binds.push((name.clone(), ty.as_deref()));
+                    if lane.declared(ty.as_deref()) {
+                        declared.insert(name.clone());
+                    }
+                    writes.push(NestedWrite {
+                        targets: vec![name.clone()],
+                        sources: vec![init],
+                    });
+                }
+                Stmt::LetPattern { pattern, init, .. } => nested_pattern_write(
+                    pattern,
+                    init,
+                    lane,
+                    struct_fields,
+                    &mut binds,
+                    &mut declared,
+                    &mut writes,
+                ),
+                Stmt::WhileLet { pattern, expr, .. } => nested_pattern_write(
+                    pattern,
+                    expr,
+                    lane,
+                    struct_fields,
+                    &mut binds,
+                    &mut declared,
+                    &mut writes,
+                ),
+                Stmt::For { var, source, .. } => {
+                    binds.push((var.clone(), None));
+                    let sources = match source {
+                        crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                        crate::frontend::ForSource::Collection { expr } => vec![expr],
+                    };
+                    writes.push(NestedWrite {
+                        targets: vec![var.clone()],
+                        sources,
+                    });
+                }
+                Stmt::Assign { target, value } => {
+                    if let Some(root) = assign_target_root(target) {
+                        assigned.insert(root.to_string());
+                        let mut sources = vec![value];
+                        place_key_exprs(target, &mut sources);
+                        writes.push(NestedWrite {
+                            targets: vec![root.to_string()],
+                            sources,
+                        });
+                    }
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args })
+                    if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+                {
+                    if let Some(root) = assign_target_root(&args[0]) {
+                        assigned.insert(root.to_string());
+                        writes.push(NestedWrite {
+                            targets: vec![root.to_string()],
+                            sources: args[1..].iter().collect(),
+                        });
+                    }
+                }
+                // A `break` inside a loop nested here leaves that loop, not the enclosing one;
+                // counting it for the enclosing one only adds a path.
+                Stmt::Break => breaks = true,
+                Stmt::Continue => continues = true,
+                _ => {}
+            }
+        });
+        // `match` arms and `if let` in expression position bind their patterns too.
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                for arm in arms {
+                    nested_pattern_write(
+                        &arm.pattern,
+                        scrutinee,
+                        lane,
+                        struct_fields,
+                        &mut binds,
+                        &mut declared,
+                        &mut writes,
+                    );
+                }
+            }
+            Expr::IfLet {
+                pattern, scrutinee, ..
+            } => nested_pattern_write(
+                pattern,
+                scrutinee,
+                lane,
+                struct_fields,
+                &mut binds,
+                &mut declared,
+                &mut writes,
+            ),
+            _ => {}
+        });
+    }
+    let mut may = scope.clone();
+    for (name, ty) in &binds {
+        match may.get_mut(name) {
+            Some(b) => {
+                if b.info.ty.as_deref() != *ty {
+                    b.info.ty = None;
+                }
+            }
+            None => {
+                let mut b = labelled_param_binding(name, false, None, false);
+                b.info.ty = ty.map(str::to_string);
+                may.insert(name.clone(), b);
+            }
+        }
+    }
+    for name in &declared {
+        if let Some(b) = may.get_mut(name) {
+            if !domain.labelled(b) {
+                domain.taint_place(b, format!("declared qualifier on `{name}`"));
+            }
+        }
+    }
+    // A write whose sources name a binding holding a closure (or stored field closures) can read
+    // names the sources do not mention: it is re-evaluated on every change.
+    let reads: Vec<Option<BTreeSet<String>>> = writes
+        .iter()
+        .map(|w| {
+            let names = source_reads(&w.sources);
+            let opaque = names.iter().any(|n| {
+                may.get(n)
+                    .is_some_and(|b| b.closure_lambda.is_some() || !b.field_closures.is_empty())
+            });
+            (!opaque).then_some(names)
+        })
+        .collect();
+    close_writes(&reads, |i| {
+        let w = &writes[i];
+        let mut changed = Vec::new();
+        if w.targets
+            .iter()
+            .all(|t| may.get(t).is_some_and(|b| domain.labelled(b)))
+        {
+            return changed;
+        }
+        let Some(src) = w
+            .sources
+            .iter()
+            .find_map(|e| domain.expr_source(e, &may, struct_fields))
+        else {
+            return changed;
+        };
+        for t in &w.targets {
+            let b = may
+                .entry(t.clone())
+                .or_insert_with(|| labelled_param_binding(t, false, None, false));
+            if !domain.labelled(b) {
+                domain.taint_place(b, src.clone());
+                changed.push(t.clone());
+            }
+        }
+        changed
+    });
+    NestedMay {
+        may,
+        assigned,
+        breaks,
+        continues,
+    }
+}
+
+/// The parameters a value may carry, read order-free from every name it mentions (outside a
+/// well-formed `declassify`, which releases): an over-approximation of [`expr_param_return_flow`]
+/// for a value that holds statements, used inside the order-free closure. Evaluating such a value
+/// exactly walks its blocks, whose own closures evaluate the values nested in them again: time
+/// exponential in how deeply value blocks nest in scrutinees (`match identity(if c { ..; match
+/// identity(..) { .. } } ..)`, eleven levels: 71 s where the checker before the ordered joins took
+/// 2 s). The closure is order-free already, so reading every name the value mentions loses nothing
+/// it kept.
+fn shallow_param_flow(e: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTreeSet<usize> {
+    let mut released: BTreeSet<*const Expr> = BTreeSet::new();
+    visit::each_expr(e, &mut |x| {
+        if let Expr::Declassify {
+            inner,
+            policy,
+            reason,
+        } = x
+        {
+            if declassify_wellformed(policy, reason) {
+                visit::each_expr(inner, &mut |y| {
+                    released.insert(y as *const Expr);
+                });
+            }
+        }
+    });
+    let mut out = BTreeSet::new();
+    visit::each_expr(e, &mut |x| {
+        if released.contains(&(x as *const Expr)) {
+            return;
+        }
+        if let Expr::Var(n) = x {
+            if let Some(ps) = flow.get(n) {
+                out.extend(ps.iter().copied());
+            }
+        }
+    });
+    out
+}
+
+/// The param-flow twin of [`nested_may_labels`] for [`body_param_returns`]: every name any statement
+/// nested in `exprs` may bind or assign, with the parameters it may carry there (order-free,
+/// name-keyed, lambdas skipped).
+struct NestedFlow {
+    may: BTreeMap<String, BTreeSet<usize>>,
+    assigned: BTreeSet<String>,
+    breaks: bool,
+    continues: bool,
+}
+
+fn nested_param_flow(
+    exprs: &[&Expr],
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+    known: &BTreeMap<String, BTreeSet<usize>>,
+) -> NestedFlow {
+    let mut writes: Vec<(Vec<String>, Vec<&Expr>)> = Vec::new();
+    let mut assigned = BTreeSet::new();
+    let (mut breaks, mut continues) = expr_loop_exits(exprs);
+    for &e in exprs {
+        // `push` / `insert` in expression position write their container too.
+        for (root, args) in in_place_pushes(&[e]) {
+            assigned.insert(root.to_string());
+            writes.push((vec![root.to_string()], args.iter().collect()));
+        }
+        visit::each_stmt_in_expr(e, &mut |s, in_lambda| {
+            if in_lambda {
+                return;
+            }
+            match s {
+                Stmt::Let { name, init, .. } => writes.push((vec![name.clone()], vec![init])),
+                Stmt::LetPattern { pattern, init, .. } => {
+                    writes.push((pattern.bound_names(), vec![init]))
+                }
+                Stmt::WhileLet { pattern, expr, .. } => {
+                    writes.push((pattern.bound_names(), vec![expr]))
+                }
+                Stmt::For { var, source, .. } => {
+                    let sources = match source {
+                        crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                        crate::frontend::ForSource::Collection { expr } => vec![expr],
+                    };
+                    writes.push((vec![var.clone()], sources));
+                }
+                Stmt::Assign { target, value } => {
+                    if let Some(root) = assign_target_root(target) {
+                        assigned.insert(root.to_string());
+                        let mut sources = vec![value];
+                        place_key_exprs(target, &mut sources);
+                        writes.push((vec![root.to_string()], sources));
+                    }
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args })
+                    if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+                {
+                    if let Some(root) = assign_target_root(&args[0]) {
+                        assigned.insert(root.to_string());
+                        writes.push((vec![root.to_string()], args[1..].iter().collect()));
+                    }
+                }
+                Stmt::Break => breaks = true,
+                Stmt::Continue => continues = true,
+                _ => {}
+            }
+        });
+        visit::each_expr(e, &mut |x| match x {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                for arm in arms {
+                    writes.push((arm.pattern.bound_names(), vec![&**scrutinee]));
+                }
+            }
+            Expr::IfLet {
+                pattern, scrutinee, ..
+            } => writes.push((pattern.bound_names(), vec![&**scrutinee])),
+            _ => {}
+        });
+    }
+    let mut may = flow.clone();
+    let reads: Vec<Option<BTreeSet<String>>> = writes
+        .iter()
+        .map(|(_, sources)| Some(source_reads(sources)))
+        .collect();
+    close_writes(&reads, |i| {
+        let (targets, sources) = &writes[i];
+        let mut set = BTreeSet::new();
+        for s in sources {
+            set.extend(if expr_nests_stmts(s) {
+                shallow_param_flow(s, &may)
+            } else {
+                expr_param_return_flow(s, &may, known)
+            });
+        }
+        let mut changed = Vec::new();
+        if set.is_empty() {
+            return changed;
+        }
+        for t in targets {
+            let entry = may.entry(t.clone()).or_default();
+            let before = entry.len();
+            entry.extend(set.iter().copied());
+            if entry.len() != before {
+                changed.push(t.clone());
+            }
+        }
+        changed
+    });
+    NestedFlow {
+        may,
+        assigned,
+        breaks,
+        continues,
+    }
+}
+
+/// Lane-parameterized replacement for `body_returns_taint` / `body_returns_secret`: whether a
+/// function body may return a value carrying the lane's label.
+///
+/// The body is walked by the shared label walker ([`walk_block_labels`]) in return-summary mode,
+/// under the flow discipline of [`FlowExits`]: statements in order (an overwrite clears a label
+/// exactly), branches and `match`/`if let` arms joined (a label on any path survives, a value
+/// cleared on every path is clean), loops to their head fixpoint, `break`/`continue` states kept,
+/// shadowed outer bindings restored at scope end; the order-free closure only for statements nested
+/// in a statement's own expressions. Every `return` and tail value is judged where it is reached,
+/// with the statement's declared pattern binders (`let`/`while let`/`match`/`if let`, `LetPattern`
+/// included) and local lambdas seeded on top.
+///
+/// This replaced (IFC-JOIN-BREAK-SHADOW, review of 9dc7be91) a walk that restored its scope after
+/// every nested statement and put back, from an order-free closure over EVERYTHING nested in it,
+/// every label it might have written: an overwrite of a secret by a LATER branch that clears it on
+/// every path, a label that exists before a loop and is overwritten before every read, and a temp
+/// reused by a second loop all made the function secret- or taint-returning (OR1-OR3), and the
+/// closure was recomputed for every statement at every nesting level (quadratic in a carry chain,
+/// times the nesting, times the summary fixpoint).
 #[allow(clippy::too_many_arguments)]
 fn body_returns(
     stmts: &[Stmt],
@@ -25307,256 +35011,48 @@ fn body_returns(
     struct_fields: &PlaceTypes<'_>,
     lane: ReturnSummaryLane,
 ) -> bool {
-    let n = stmts.len();
-    for (i, stmt) in stmts.iter().enumerate() {
-        let stmt_is_tail = tail && i + 1 == n;
-        match stmt {
-            Stmt::Let { name, ty, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                if rets.iter().any(|e| {
-                    lane.expr_source(
-                        e,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
-                lane.seed_let(
-                    name,
-                    ty.as_deref(),
-                    init,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                );
+    // The walker itself binds `let`, `LetPattern`, `while let`, `for`, `match` and `if let` binders
+    // (`seed_pattern`, declared qualified payloads included); a judged value also gets these.
+    let seed = |stmt: &Stmt, local: &mut BTreeMap<String, ScopeBinding>| {
+        match lane {
+            ReturnSummaryLane::Taint => {
+                seed_declared_pattern_binders(stmt, struct_fields, ty::is_tainted, local, |b| {
+                    b.set_taint_label(security_label::SecurityLabel::labeled_from(
+                        "declared enum payload",
+                    ));
+                })
             }
-            Stmt::LetPattern { pattern, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                if rets.iter().any(|e| {
-                    lane.expr_source(
-                        e,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
-                let label = lane.expr_source(
-                    init,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                );
-                seed_pattern(
-                    scope,
-                    pattern,
-                    &label,
-                    lane.seed_pattern_lane(),
-                    struct_fields,
-                );
-            }
-            Stmt::If { then, else_, .. } => {
-                let saved = scope.clone();
-                if body_returns(
-                    then,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    stmt_is_tail,
-                    struct_fields,
-                    lane,
-                ) {
-                    return true;
-                }
-                *scope = saved.clone();
-                if let Some(else_body) = else_ {
-                    if body_returns(
-                        else_body,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        stmt_is_tail,
-                        struct_fields,
-                        lane,
-                    ) {
-                        return true;
-                    }
-                }
-                *scope = saved;
-            }
-            Stmt::While { body, .. }
-            | Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
-                let saved = scope.clone();
-                lane.seed_while_let_binders(stmt, scope, struct_fields);
-                if body_returns(
-                    body,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    false,
-                    struct_fields,
-                    lane,
-                ) {
-                    return true;
-                }
-                *scope = saved;
-            }
-            Stmt::HybridBlock { gpu, cpu, prove } => {
-                for b in [gpu, cpu, prove].into_iter().flatten() {
-                    let saved = scope.clone();
-                    if body_returns(
-                        b,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        false,
-                        struct_fields,
-                        lane,
-                    ) {
-                        return true;
-                    }
-                    *scope = saved;
-                }
-            }
-            Stmt::Assign {
-                target: Expr::Var(name),
-                value,
-            } => {
-                let src = lane.expr_source(
-                    value,
-                    scope,
-                    lane_fns,
-                    param_return_taint,
-                    method_fns,
-                    struct_fields,
-                );
-                if let Some(b) = scope.get_mut(name) {
-                    lane.write_var_label(b, src);
-                }
-            }
-            Stmt::Assign { target, value } => {
-                if let Some(root) = assign_target_root(target) {
-                    if let Some(src) = lane.expr_source(
-                        value,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    ) {
-                        if let Some(b) = scope.get_mut(root) {
-                            lane.mark_root_labelled(b, src);
-                        }
-                    }
-                }
-            }
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Some(root) = assign_target_root(&args[0]) {
-                    if let Some(src) = args[1..].iter().find_map(|a| {
-                        lane.expr_source(
-                            a,
-                            scope,
-                            lane_fns,
-                            param_return_taint,
-                            method_fns,
-                            struct_fields,
-                        )
-                    }) {
-                        if let Some(b) = scope.get_mut(root) {
-                            lane.mark_root_labelled(b, src);
-                        }
-                    }
-                }
-            }
-            _ => {
-                let mut scope_local;
-                let scope: &mut BTreeMap<String, ScopeBinding> = {
-                    scope_local = scope.clone();
-                    match lane {
-                        ReturnSummaryLane::Taint => seed_declared_pattern_binders(
-                            stmt,
-                            struct_fields,
-                            ty::is_tainted,
-                            &mut scope_local,
-                            |b| {
-                                b.set_taint_label(security_label::SecurityLabel::labeled_from(
-                                    "declared enum payload",
-                                ));
-                            },
-                        ),
-                        ReturnSummaryLane::Secret => seed_declared_pattern_binders(
-                            stmt,
-                            struct_fields,
-                            ty::is_secret,
-                            &mut scope_local,
-                            |b| b.set_secret_label(security_label::SecurityLabel::labeled(None)),
-                        ),
-                    }
-                    seed_stmt_local_lambdas(stmt, &mut scope_local);
-                    &mut scope_local
-                };
-                let mut rets = Vec::new();
-                collect_returns_in_stmt(stmt, &mut rets);
-                if rets.iter().any(|e| {
-                    lane.expr_source(
-                        e,
-                        scope,
-                        lane_fns,
-                        param_return_taint,
-                        method_fns,
-                        struct_fields,
-                    )
-                    .is_some()
-                }) {
-                    return true;
-                }
-                if stmt_is_tail {
-                    if let Stmt::ExprStmt(e) = stmt {
-                        if !is_return_call(e)
-                            && lane
-                                .expr_source(
-                                    e,
-                                    scope,
-                                    lane_fns,
-                                    param_return_taint,
-                                    method_fns,
-                                    struct_fields,
-                                )
-                                .is_some()
-                        {
-                            return true;
-                        }
-                    }
-                }
+            ReturnSummaryLane::Secret => {
+                seed_declared_pattern_binders(stmt, struct_fields, ty::is_secret, local, |b| {
+                    b.set_secret_label(security_label::SecurityLabel::labeled(None))
+                })
             }
         }
+        seed_stmt_local_lambdas(stmt, local);
+    };
+    let seed: RetSeed<'_> = &seed;
+    let domain = match lane {
+        ReturnSummaryLane::Taint => BlockLabelDomain::Taint {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+        ReturnSummaryLane::Secret => BlockLabelDomain::Secret {
+            sources: lane_fns,
+            param_returns: param_return_taint,
+            method_sources: method_fns,
+        },
+    };
+    let mut walk = LabelWalk::new(domain, struct_fields, Some(seed));
+    match walk_block_labels(stmts, scope.clone(), &mut walk, tail, None, false) {
+        Ok(exits) => {
+            if let Some(end) = exits.fall {
+                *scope = end;
+            }
+            false
+        }
+        Err(LabelledReturn) => true,
     }
-    false
 }
 
 /// Seed a return-summary scope with every typed parameter. A qualifier-declared param is
@@ -25572,6 +35068,10 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
         scope.insert(
             name.clone(),
             ScopeBinding {
+                whole_struct: None,
+                whole_captures: None,
+                whole_list: false,
+                whole_map: false,
                 info: BindingInfo {
                     name: name.clone(),
                     ty: Some(ty.clone()),
@@ -25585,6 +35085,7 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_may: FnMay::default(),
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
                 builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -25705,6 +35206,11 @@ fn fn_returns_taint(
 ) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
+    // A return-summary walk ([`RETURN_SUMMARY_SCOPE`]): a bare function name reads as its return.
+    scope.insert(
+        RETURN_SUMMARY_SCOPE.to_string(),
+        labelled_param_binding(RETURN_SUMMARY_SCOPE, false, None, false),
+    );
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     body_returns(
         body,
@@ -25832,6 +35338,10 @@ fn seed_one_let_secret(
     scope.insert(
         name.to_string(),
         ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: name.to_string(),
                 ty: ty.map(str::to_string),
@@ -25845,6 +35355,7 @@ fn seed_one_let_secret(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -25945,6 +35456,11 @@ fn fn_returns_secret(
 ) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
+    // A return-summary walk ([`RETURN_SUMMARY_SCOPE`]): a bare function name reads as its return.
+    scope.insert(
+        RETURN_SUMMARY_SCOPE.to_string(),
+        labelled_param_binding(RETURN_SUMMARY_SCOPE, false, None, false),
+    );
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     body_returns(
         body,
@@ -26053,6 +35569,39 @@ pub(crate) fn collect_fn_params_bodies<'a>(
 /// keyed by bare name (so same-named methods across impls share a key and their summaries UNION —
 /// fail-closed). `self` is kept at parameter index 0, matching the runtime dispatch (run.rs builds
 /// `call_args = [receiver, …]`), so a summary index p≥1 corresponds to call arg p-1.
+/// Impl methods by bare name, each with the (generic-free) type it is declared on, for the
+/// whole-struct lane (a receiver of known type calls only its own impl).
+fn collect_impl_methods_typed(
+    items: &[Item],
+    out: &mut BTreeMap<String, Vec<(String, whole::WholeBody)>>,
+) {
+    for item in items {
+        match item {
+            Item::Impl {
+                type_name, methods, ..
+            } => {
+                let ty = type_name.split('<').next().unwrap_or("").trim().to_string();
+                for m in methods {
+                    if let Item::Fn {
+                        name, params, body, ..
+                    } = m
+                    {
+                        out.entry(name.clone()).or_default().push((
+                            ty.clone(),
+                            (
+                                params.iter().map(|(n, _)| n.clone()).collect(),
+                                body.clone(),
+                            ),
+                        ));
+                    }
+                }
+            }
+            Item::Module { items, .. } => collect_impl_methods_typed(items, out),
+            _ => {}
+        }
+    }
+}
+
 fn collect_impl_method_params_bodies<'a>(
     items: &'a [Item],
     out: &mut Vec<(String, Vec<String>, &'a [Stmt])>,
@@ -26165,17 +35714,18 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             for stmt in stmts {
                 apply_stmt_param_flow(stmt, &mut local);
             }
-            tail.as_ref()
-                .map(|t| expr_param_flow(t, &local))
-                .unwrap_or_default()
+            match tail {
+                Some(t) => expr_param_flow(t, &local),
+                None => stmts_value_param_flow(stmts, &local),
+            }
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             let scrut = expr_param_flow(scrutinee, flow);
-            arms.iter().fold(BTreeSet::new(), |mut acc, arm| {
+            sub_arms(arms).fold(BTreeSet::new(), |mut acc, (arm, pattern)| {
                 let mut local = flow.clone();
-                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut local, pattern, &scrut);
                 acc.extend(expr_param_flow(&arm.body, &local));
                 acc
             })
@@ -26238,6 +35788,35 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
     }
 }
 
+/// What a statement list with no tail slot yields, read in `flow` (the flow after it): its last bare
+/// expression (a `push` yields its container), or a last `if`/`else`'s condition and both branches'
+/// values — the runtime's `split_tail_expr`. [`expr_param_flow`] read the tail slot alone, so `let ys
+/// = if c { let t = v; t + 0; } else { 0 }; println(ys)` left `v` out of the egress summary.
+fn stmts_value_param_flow(
+    stmts: &[Stmt],
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+) -> BTreeSet<usize> {
+    match stmts.last() {
+        Some(Stmt::ExprStmt(e)) => expr_param_flow(e, flow),
+        Some(Stmt::If {
+            cond,
+            then,
+            else_: Some(else_),
+        }) => {
+            let mut s = expr_param_flow(cond, flow);
+            for branch in [then, else_] {
+                let mut local = flow.clone();
+                for stmt in branch {
+                    apply_stmt_param_flow(stmt, &mut local);
+                }
+                s.extend(stmts_value_param_flow(branch, &local));
+            }
+            s
+        }
+        _ => BTreeSet::new(),
+    }
+}
+
 /// Apply one statement's scope effect to a value-position block's param-flow map `local` — the shared
 /// per-statement step of `expr_param_flow`'s `Block` arm. Handles straight-line `let`/`Assign` (incl.
 /// field/index write to the root) AND a NESTED statement-`match`/`if let`/`push` that reassigns an outer
@@ -26278,9 +35857,9 @@ fn apply_stmt_param_flow(stmt: &Stmt, local: &mut BTreeMap<String, BTreeSet<usiz
         }) => {
             let scrut = expr_param_flow(scrutinee, local);
             let base = local.clone();
-            for arm in arms {
+            for (arm, pattern) in sub_arms(arms) {
                 let mut c = base.clone();
-                seed_flow_pattern(&mut c, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut c, pattern, &scrut);
                 if let Expr::Block { stmts, .. } = &arm.body {
                     for s in stmts {
                         apply_stmt_param_flow(s, &mut c);
@@ -26345,6 +35924,25 @@ fn seed_flow_pattern(
     }
 }
 
+/// The parameter-sink summaries' twin of the label lanes' nested writes: the statements nested in
+/// `exprs` (a value block, an expression-position arm) and every in-place `push` / `insert` in them,
+/// outside lambda bodies, write outer names before what reads them there runs. Each outer name they
+/// assign gains, order-free, every parameter it may take there ([`nested_param_flow`]; no return
+/// summaries yet, so a call carries every argument). The walk below read none of them:
+/// `let n = len(push(xs, v)); println(xs)`, an arm `_ => { push(xs, v) }` and `let n = if c { x = v;
+/// 0 } else { 0 }; println(x)` left the parameter out of the egress summary.
+fn sink_flow_nested_writes(exprs: &[&Expr], flow: &mut BTreeMap<String, BTreeSet<usize>>) {
+    if !exprs.iter().any(|e| expr_nests_writes(e)) {
+        return;
+    }
+    let nested = nested_param_flow(exprs, flow, &BTreeMap::new());
+    for name in &nested.assigned {
+        if let (Some(m), Some(f)) = (nested.may.get(name), flow.get_mut(name)) {
+            f.extend(m.iter().copied());
+        }
+    }
+}
+
 /// Walk a body collecting parameter indices that reach a sink under the current
 /// `known_param_sinks` summary. Scope-aware (snapshot/restore around blocks).
 fn body_param_sinks(
@@ -26361,6 +35959,9 @@ fn body_param_sinks(
     // the param→egress summary and `leak(secret)` compiled (soundness hunt2 [13]).
     let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
     for stmt in stmts {
+        // What the statements and in-place writes nested in its own expressions write reaches what
+        // the statement reads (before its own write, as in the label lanes).
+        sink_flow_nested_writes(&stmt_value_exprs(stmt), flow);
         match stmt {
             Stmt::Let { name, init, .. } => {
                 // A sink can hide inside the initializer (e.g. `let _ = sink(x)`).
@@ -26464,13 +36065,67 @@ fn body_param_sinks(
                     );
                     let before = flow.clone();
                     union_flow_into(flow, &b);
+                    // The condition runs again at every head, its own nested writes too.
+                    sink_flow_nested_writes(&[cond], flow);
                     if *flow == before {
                         break;
                     }
                 }
+                // ... and its sinks see what the loop carries there: read only on entry, `while
+                // show(x) { x = v; }` left `v` out of the summary.
+                collect_param_sinks_in_expr(
+                    cond,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
             }
-            Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
+            // The scrutinee runs at every head (its sinks were never read) and the binders carry what
+            // it yields (they carried nothing).
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
+                let bound = flow.len() + 1;
+                for _ in 0..bound {
+                    collect_param_sinks_in_expr(
+                        expr,
+                        flow,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
+                    let mut b = flow.clone();
+                    seed_flow_pattern(&mut b, pattern, &expr_param_flow(expr, flow));
+                    body_param_sinks(
+                        body,
+                        &mut b,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
+                    let before = flow.clone();
+                    union_flow_into(flow, &b);
+                    sink_flow_nested_writes(&[expr], flow);
+                    if *flow == before {
+                        break;
+                    }
+                }
+                collect_param_sinks_in_expr(
+                    expr,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
+            }
+            Stmt::Loop { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let bound = flow.len() + 1;
@@ -26494,6 +36149,22 @@ fn body_param_sinks(
             Stmt::For {
                 body, source, var, ..
             } => {
+                // The range or collection is evaluated once, before the first iteration: a sink in it
+                // was never read.
+                let src_exprs: Vec<&Expr> = match source {
+                    crate::frontend::ForSource::Range { start, end } => vec![start, end],
+                    crate::frontend::ForSource::Collection { expr } => vec![expr],
+                };
+                for e in src_exprs {
+                    collect_param_sinks_in_expr(
+                        e,
+                        flow,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
+                }
                 // Loop var inherits collection/range param flow (conservative).
                 let src_flow = match source {
                     crate::frontend::ForSource::Range { start, end } => {
@@ -26573,9 +36244,27 @@ fn body_param_sinks(
                     found,
                 );
                 let scrut = expr_param_flow(scrutinee, flow);
-                for arm in arms {
+                for (arm, pattern) in sub_arms(arms) {
                     let mut c = flow.clone();
-                    seed_flow_pattern(&mut c, &arm.pattern, &scrut);
+                    seed_flow_pattern(&mut c, pattern, &scrut);
+                    // The guard and a bare body write too (a guard that fails leaves its writes to
+                    // the later arms: `c` joins `flow` below), and a sink in the guard was never read:
+                    // it runs with the binders bound, before the body
+                    // (`_ if (if true { send(v); false } else { false }) => ..`).
+                    sink_flow_nested_writes(
+                        &arm_value_exprs(arm.guard.as_ref(), &arm.body),
+                        &mut c,
+                    );
+                    if let Some(guard) = &arm.guard {
+                        collect_param_sinks_in_expr(
+                            guard,
+                            &c,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
+                    }
                     match &arm.body {
                         Expr::Block { stmts, tail } => {
                             body_param_sinks(
@@ -26587,6 +36276,7 @@ fn body_param_sinks(
                                 found,
                             );
                             if let Some(t) = tail {
+                                sink_flow_nested_writes(&[&**t], &mut c);
                                 collect_param_sinks_in_expr(
                                     t,
                                     &c,
@@ -26630,6 +36320,7 @@ fn body_param_sinks(
                 let scrut = expr_param_flow(scrutinee, flow);
                 let mut c = flow.clone();
                 seed_flow_pattern(&mut c, pattern, &scrut);
+                // A bare branch or a block's tail writes too (`if let .. { push(xs, v) }`).
                 match then.as_ref() {
                     Expr::Block { stmts, tail } => {
                         body_param_sinks(
@@ -26641,6 +36332,7 @@ fn body_param_sinks(
                             found,
                         );
                         if let Some(t) = tail {
+                            sink_flow_nested_writes(&[&**t], &mut c);
                             collect_param_sinks_in_expr(
                                 t,
                                 &c,
@@ -26651,14 +36343,17 @@ fn body_param_sinks(
                             );
                         }
                     }
-                    other => collect_param_sinks_in_expr(
-                        other,
-                        &c,
-                        sink_pred,
-                        known_param_sinks,
-                        known_method_param_sinks,
-                        found,
-                    ),
+                    other => {
+                        sink_flow_nested_writes(&[other], &mut c);
+                        collect_param_sinks_in_expr(
+                            other,
+                            &c,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
+                    }
                 }
                 union_flow_into(flow, &c);
                 let mut e2 = flow.clone();
@@ -26673,6 +36368,7 @@ fn body_param_sinks(
                             found,
                         );
                         if let Some(t) = tail {
+                            sink_flow_nested_writes(&[&**t], &mut e2);
                             collect_param_sinks_in_expr(
                                 t,
                                 &e2,
@@ -26683,14 +36379,17 @@ fn body_param_sinks(
                             );
                         }
                     }
-                    other => collect_param_sinks_in_expr(
-                        other,
-                        &e2,
-                        sink_pred,
-                        known_param_sinks,
-                        known_method_param_sinks,
-                        found,
-                    ),
+                    other => {
+                        sink_flow_nested_writes(&[other], &mut e2);
+                        collect_param_sinks_in_expr(
+                            other,
+                            &e2,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
+                    }
                 }
                 union_flow_into(flow, &e2);
             }
@@ -26908,9 +36607,9 @@ fn collect_param_sinks_in_expr(
                 found,
             );
             let scrut = expr_param_flow(scrutinee, flow);
-            for arm in arms {
+            for (arm, pattern) in sub_arms(arms) {
                 let mut local = flow.clone();
-                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut local, pattern, &scrut);
                 if let Some(guard) = &arm.guard {
                     collect_param_sinks_in_expr(
                         guard,
@@ -27166,8 +36865,13 @@ fn expr_param_return_flow(
                 }
                 s
             } else {
-                // Unknown/builtin during bootstrap: conservative union of args.
-                args.iter().fold(BTreeSet::new(), |mut acc, a| {
+                // Unknown/builtin during bootstrap: conservative union of args. A call through a
+                // local or a parameter that HOLDS a function (`fn app(g, n) { return g(n); }`) also
+                // returns what that function returns, so the binding's own flow reaches the result:
+                // `app` was summarized as returning `n` alone, and `print(app(|x| p.k, 3))` printed
+                // the secret the closure captured.
+                let through = flow.get(callee).cloned().unwrap_or_default();
+                args.iter().fold(through, |mut acc, a| {
                     acc.extend(expr_param_return_flow(a, flow, known_param_return));
                     acc
                 })
@@ -27204,30 +36908,33 @@ fn expr_param_return_flow(
                 acc
             })
         }
-        // Value-position block: delegate the block's STATEMENT flow to `body_param_returns` — THE single
-        // stmt walker — so the value-position walker and the function-body walker share one implementation
-        // and cannot re-diverge. `discard` is a throwaway `found`: a value-position block does not
-        // accumulate returns (a `return` inside it is collected by the enclosing body walker's own
-        // `expr_returns`), and `tail = false` so no block statement is mis-read as an implicit return.
-        // This replaces a former hand-rolled loop whose `_ => {}` arm DROPPED nested control-flow (a
-        // value-position under-approximation — a missed leak: `send({ let r=0; if c { r=x; } r })` slipped
-        // through); the block now inherits the driver's branch may-union, so a param assigned only inside a
-        // nested branch reaches the tail. The tail is then evaluated in the block's post-statement `local`.
+        // Value-position block: walked by the function-body walker ([`ParamWalk`]) — THE single stmt
+        // walker, so the two cannot re-diverge (a former hand-rolled loop here dropped nested control
+        // flow: `send({ let r=0; if c { r=x; } r })`) — in TAIL mode: what it collects is the block's
+        // VALUE, its tail after its statements (their writes reach the flow it is read in) or, with no
+        // tail slot, what its last statement yields (the runtime's `split_tail_expr`: a bare expression
+        // — `push(xs, v);` yields the container — or both branches of a last `if`/`else`). The value was
+        // read from the tail slot alone, so `let ys = if c { push(xs, v); } else { [0] }` (or `{ let t
+        // = v; t + 0; }`) carried nothing and `return ys` returned the parameter under a clean summary.
+        // A `return` in the block is collected too, which adds only what the enclosing walk returns
+        // anyway (its own `expr_returns`). A block no path falls out of yields nothing.
         Expr::Block { stmts, tail } => {
-            let mut local = flow.clone();
-            let mut discard = BTreeSet::new();
-            body_param_returns(stmts, &mut local, known_param_return, &mut discard, false);
-            tail.as_ref()
-                .map(|t| expr_param_return_flow(t, &local, known_param_return))
-                .unwrap_or_default()
+            let mut value = BTreeSet::new();
+            ParamWalk {
+                known: known_param_return,
+                found: &mut value,
+                heads: BTreeMap::new(),
+            }
+            .block(stmts, flow.clone(), true, tail.as_deref(), false);
+            value
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
-            arms.iter().fold(BTreeSet::new(), |mut acc, arm| {
+            sub_arms(arms).fold(BTreeSet::new(), |mut acc, (arm, pattern)| {
                 let mut local = flow.clone();
-                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                seed_flow_pattern(&mut local, pattern, &scrut);
                 acc.extend(expr_param_return_flow(
                     &arm.body,
                     &local,
@@ -27373,6 +37080,18 @@ fn lambda_body_return_flow(
     found
 }
 
+/// Collect the parameter indices a statement list can RETURN under `known_param_return` into
+/// `found`, leaving `flow` at the list's end state (a value block's caller reads its tail there).
+///
+/// Walked under the flow discipline of [`FlowExits`] ([`ParamWalk`]): statements in order (a
+/// straight-line `x = …` replaces `x`'s flow exactly), alternatives JOINED (a param reaching a name
+/// on any path reaches it after; one cleared on every path is cleared), loops to their head fixpoint
+/// with every `continue` state, `break` states joined into the loop's exit, and a binding a `let` or
+/// binder shadows kept aside and restored when the scope ends. The walk used to merge each branch's
+/// END state name by name into the pre-branch flow: a param live at a `break` and overwritten before
+/// the end of the body, or assigned to an outer name that the branch then shadowed with a `let`, was
+/// dropped (`open_rv36o_sib_brk_param`, `open_rv36o_sib_shd_param`), as was one carried through a
+/// `continue` or assigned inside a value block, and a `while let` binder carried nothing.
 fn body_param_returns(
     stmts: &[Stmt],
     flow: &mut BTreeMap<String, BTreeSet<usize>>,
@@ -27380,265 +37099,566 @@ fn body_param_returns(
     found: &mut BTreeSet<usize>,
     tail: bool,
 ) {
-    let n = stmts.len();
-    // Local lambda bindings in this block, so `return g()` / `let r = g()` where `g = |p| body`
-    // resolves to the closure body's return-flow — the param→return-taint twin of the value-block and
-    // returned-closure fixes (soundness hunt2 [12]: `fn fwd(x){ let g = || x; return g(); }` returned
-    // x through the local closure but the summary treated `g()` as opaque, so `send(fwd(secret))`
-    // compiled).
-    let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
-    for (i, stmt) in stmts.iter().enumerate() {
-        let stmt_is_tail = tail && i + 1 == n;
-        match stmt {
-            Stmt::Let { name, init, .. } => {
-                // Hidden returns inside the initializer.
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                for r in rets {
-                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
-                }
-                if matches!(init, Expr::Lambda { .. }) {
-                    lambdas.insert(name.clone(), init.clone());
-                }
-                let cleared = matches!(
-                    init,
-                    Expr::Declassify { policy, reason, .. } if declassify_wellformed(policy, reason)
-                );
-                if cleared {
-                    flow.insert(name.clone(), BTreeSet::new());
-                } else {
-                    let f = local_lambda_return_flow(init, flow, &lambdas, known_param_return)
-                        .unwrap_or_else(|| expr_param_return_flow(init, flow, known_param_return));
-                    flow.insert(name.clone(), f);
-                }
+    let mut walk = ParamWalk {
+        known: known_param_return,
+        found,
+        heads: BTreeMap::new(),
+    };
+    let exits = walk.block(stmts, flow.clone(), tail, None, false);
+    if let Some(end) = exits.fall.or(exits.brk).or(exits.cont) {
+        *flow = end;
+    }
+}
+
+type ParamFlow = BTreeMap<String, BTreeSet<usize>>;
+
+/// Union `src`'s flow into `dst` over `dst`'s names (both settled to the same scope).
+fn param_flow_join(dst: &mut ParamFlow, src: &ParamFlow) {
+    for (name, d) in dst.iter_mut() {
+        if let Some(s) = src.get(name) {
+            d.extend(s.iter().copied());
+        }
+    }
+}
+
+/// One walk of [`body_param_returns`].
+struct ParamWalk<'a> {
+    known: &'a ParamFlow,
+    found: &'a mut BTreeSet<usize>,
+    /// Per loop or hybrid block (by address), the head its last fixpoint reached in this walk.
+    heads: BTreeMap<usize, ParamFlow>,
+}
+
+impl ParamWalk<'_> {
+    /// A returned (or tail) value's parameters, through a local lambda it applies too.
+    fn note_return(&mut self, e: &Expr, flow: &ParamFlow, lambdas: &BTreeMap<String, Expr>) {
+        self.found
+            .extend(expr_param_return_flow(e, flow, self.known));
+        if let Some(lf) = local_lambda_return_flow(e, flow, lambdas, self.known) {
+            self.found.extend(lf);
+        }
+    }
+
+    /// The statements nested in `stmt`'s own expressions ([`stmt_value_exprs`]); see
+    /// [`ParamWalk::value_writes`].
+    fn expression_writes(
+        &mut self,
+        stmt: &Stmt,
+        cur: &mut ParamFlow,
+        lambdas: &BTreeMap<String, Expr>,
+        out: &mut FlowExits<ParamFlow>,
+    ) {
+        self.value_writes(&stmt_value_exprs(stmt), cur, lambdas, out);
+    }
+
+    /// Expressions run at this point (a statement's own, an arm's guard or value, a block's tail)
+    /// whose nested statements the walk does not order: the returns among them are collected with
+    /// every write nested there counted, the outer names those statements assign gain what they may
+    /// get there (before the statement's own write), and a `break` / `continue` among them leaves
+    /// with that flow (order-free: [`nested_param_flow`], the twin of [`nested_may_labels`]).
+    fn value_writes(
+        &mut self,
+        exprs: &[&Expr],
+        cur: &mut ParamFlow,
+        lambdas: &BTreeMap<String, Expr>,
+        out: &mut FlowExits<ParamFlow>,
+    ) {
+        let mut rets = Vec::new();
+        for &e in exprs {
+            expr_returns(e, &mut rets);
+            // `v?` leaves the function with `v`'s `Err` / `None`.
+            try_exits_in_expr(e, &mut rets);
+        }
+        let (breaks, continues) = expr_loop_exits(exprs);
+        let nests = exprs.iter().any(|e| expr_nests_stmts(e))
+            || breaks
+            || continues
+            || !in_place_pushes(exprs).is_empty();
+        if !nests && (rets.is_empty() || !exprs.iter().any(|e| expr_binds_patterns(e))) {
+            for r in &rets {
+                self.note_return(r, cur, lambdas);
             }
-            // A destructuring `let [a,b] = [x,0]; return a` propagates the init's param-flow to each
-            // bound name — without this arm a destructured param that is returned was silently dropped.
-            Stmt::LetPattern { pattern, init, .. } => {
-                let mut rets = Vec::new();
-                expr_returns(init, &mut rets);
-                for r in rets {
-                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
-                }
-                let set = expr_param_return_flow(init, flow, known_param_return);
-                seed_flow_pattern(flow, pattern, &set);
-            }
-            // A param assigned to a local inside a branch MAY reach a later return, so MERGE (union)
-            // each branch-end flow into the outer flow rather than RESTORING the pre-branch flow — the
-            // restore dropped `let r=0; if c { r=x; } return r`. `found` accumulates unconditionally
-            // across the branch recursions (only the flow map is merged here).
-            Stmt::If { then, else_, .. } => {
-                let saved = flow.clone();
-                let mut t = saved.clone();
-                body_param_returns(then, &mut t, known_param_return, found, stmt_is_tail);
-                let mut e = saved.clone();
-                if let Some(else_body) = else_ {
-                    body_param_returns(else_body, &mut e, known_param_return, found, stmt_is_tail);
-                }
-                *flow = saved;
-                union_flow_into(flow, &t);
-                union_flow_into(flow, &e);
-            }
-            Stmt::While { body, .. }
-            | Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
-                // Iterate the loop body to a FIXPOINT: a value can migrate across iterations
-                // (`while … { a = b; b = c; }` carries c's param to `a` only on the 2nd pass), so a single
-                // pass UNDER-approximates and a returned loop-carried param laundered (soundness hunt
-                // `wf_5b2a1bcc` leak_34). Accumulate by UNION each pass into `acc` (monotone even though a
-                // straight-line `Assign` STRONG-overwrites WITHIN one pass — the union never shrinks `acc`),
-                // so it converges; bound by name count (an upper bound on the carry-chain length).
-                let bound = flow.len() + 1;
-                let mut acc = flow.clone();
-                for _ in 0..bound {
-                    let mut b = acc.clone();
-                    body_param_returns(body, &mut b, known_param_return, found, false);
-                    let before = acc.clone();
-                    union_flow_into(&mut acc, &b);
-                    if acc == before {
-                        break;
-                    }
-                }
-                union_flow_into(flow, &acc);
-            }
-            Stmt::For {
-                body, var, source, ..
-            } => {
-                let src_flow = match source {
-                    crate::frontend::ForSource::Range { start, end } => {
-                        let mut s = expr_param_return_flow(start, flow, known_param_return);
-                        s.extend(expr_param_return_flow(end, flow, known_param_return));
-                        s
-                    }
-                    crate::frontend::ForSource::Collection { expr } => {
-                        expr_param_return_flow(expr, flow, known_param_return)
-                    }
-                };
-                // Same loop-carried fixpoint as the `While` arm, re-seeding the loop var each pass.
-                let bound = flow.len() + 1;
-                let mut acc = flow.clone();
-                for _ in 0..bound {
-                    let mut b = acc.clone();
-                    b.insert(var.clone(), src_flow.clone());
-                    body_param_returns(body, &mut b, known_param_return, found, false);
-                    let before = acc.clone();
-                    union_flow_into(&mut acc, &b);
-                    if acc == before {
-                        break;
-                    }
-                }
-                union_flow_into(flow, &acc);
-            }
-            Stmt::HybridBlock { gpu, cpu, prove } => {
-                for b in [gpu, cpu, prove].into_iter().flatten() {
-                    let mut bf = flow.clone();
-                    body_param_returns(b, &mut bf, known_param_return, found, false);
-                    union_flow_into(flow, &bf);
-                }
-            }
-            // A straight-line whole-`Var` reassignment STRONG-overwrites: `r = <value>` unconditionally
-            // replaces the entire binding, so `r`'s prior param-flow is dead and dropping it is EXACT
-            // (not an under-approximation) — the value the tail/return reads derives solely from the RHS.
-            // Soundness is confined to straight-line position BY CONSTRUCTION: a reassignment inside a
-            // branch/loop is recursed on a CLONE and then may-unioned back (the If/While/For/Loop/Hybrid
-            // arms above union the branch-post flow with the pre-branch flow), which demotes a conditional
-            // clear to a MAY — the pre-branch flow always survives. This is the precision the value-walker
-            // Block arm already had (fe44f35); lifting it into the one canonical stmt walker keeps the two
-            // walkers from re-diverging. Verified sound + monotone in the `compute_param_return_taint`
-            // fixpoint (add-only accumulation never defeats it: a clearing RHS is intrinsically small from
-            // iteration 1).
-            Stmt::Assign {
-                target: Expr::Var(name),
-                value,
-            } => {
-                let set = expr_param_return_flow(value, flow, known_param_return);
-                flow.insert(name.clone(), set);
-            }
-            // A non-`Var` target (`buf[0]=k`, `obj.f=k`) is a MAY-update of the root binding, so weak-union
-            // into the root (overwriting would drop the param-flow the sibling elements already carry).
-            Stmt::Assign { target, value } => {
-                if let Some(root) = assign_target_root(target) {
-                    let rhs = expr_param_return_flow(value, flow, known_param_return);
-                    flow.entry(root.to_string()).or_default().extend(rhs);
-                }
-            }
-            // Task #48-f: `push(xs, v)` / `insert(map, k, v)` MUTATES the container `xs`/`map` to include
-            // the pushed value(s), so if the container is later RETURNED, those values' param-flow reaches
-            // the return. Weak-union the flow of every non-container arg into the container binding (push
-            // ADDS, it does not overwrite). Closes container-return taint laundering
-            // (`fn fill(xs, v){ push(xs, v); return xs }` — v reaches the return via the mutated container,
-            // so `send(fill([0], secret)[0])` is caught). Over-approximate (key + value) = safe direction.
-            Stmt::ExprStmt(Expr::Call { callee, args })
-                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
-            {
-                if let Expr::Var(container) = &args[0] {
-                    for a in &args[1..] {
-                        let rhs = expr_param_return_flow(a, flow, known_param_return);
-                        flow.entry(container.clone()).or_default().extend(rhs);
-                    }
-                }
-            }
-            // A statement-position `match`/`if let` that RETURNS a pattern binding — `fn extract(o){ match
-            // o { Some(x) => { return x; } None => { return 0; } } }` returns param `o`'s payload through
-            // the `Some(x)` binding, so `extract` must flow param 0 to its return. The `_ =>` arm below
-            // collects the `return x` but `x` is not in `flow` (it is pattern-bound), so the flow was lost
-            // (hunt wf_e67160a7). Seed each arm's pattern with the scrutinee's param-flow, then recurse.
-            Stmt::ExprStmt(Expr::Match {
-                scrutinee, arms, ..
-            }) => {
-                let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
-                for arm in arms {
-                    let mut c = flow.clone();
-                    seed_flow_pattern(&mut c, &arm.pattern, &scrut);
-                    match &arm.body {
-                        Expr::Block { stmts, tail } => {
-                            body_param_returns(
-                                stmts,
-                                &mut c,
-                                known_param_return,
-                                found,
-                                stmt_is_tail,
-                            );
-                            if stmt_is_tail {
-                                if let Some(t) = tail {
-                                    found.extend(expr_param_return_flow(t, &c, known_param_return));
-                                }
-                            }
-                        }
-                        other => {
-                            if stmt_is_tail {
-                                found.extend(expr_param_return_flow(other, &c, known_param_return));
-                            }
-                        }
-                    }
-                    // May-merge the arm-body reassignments back — a nested `match c { _ => { a = p } }`
-                    // (not in tail position) must propagate `a`'s new flow to the later block tail
-                    // (`let out = { let mut a=0; match c { _ => { a=p } }; a }`) — else the value-block
-                    // return laundered the param (audit after hunt wf_e67160a7).
-                    union_flow_into(flow, &c);
-                }
-            }
-            Stmt::ExprStmt(Expr::IfLet {
-                pattern,
-                scrutinee,
-                then,
-                else_,
-                ..
-            }) => {
-                let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
-                let mut c = flow.clone();
-                seed_flow_pattern(&mut c, pattern, &scrut);
-                if let Expr::Block { stmts, tail } = then.as_ref() {
-                    body_param_returns(stmts, &mut c, known_param_return, found, stmt_is_tail);
-                    if stmt_is_tail {
-                        if let Some(t) = tail {
-                            found.extend(expr_param_return_flow(t, &c, known_param_return));
-                        }
-                    }
-                } else if stmt_is_tail {
-                    found.extend(expr_param_return_flow(then, &c, known_param_return));
-                }
-                let mut e = flow.clone();
-                if let Expr::Block { stmts, tail } = else_.as_ref() {
-                    body_param_returns(stmts, &mut e, known_param_return, found, stmt_is_tail);
-                    if stmt_is_tail {
-                        if let Some(t) = tail {
-                            found.extend(expr_param_return_flow(t, &e, known_param_return));
-                        }
-                    }
-                } else if stmt_is_tail {
-                    found.extend(expr_param_return_flow(else_, &e, known_param_return));
-                }
-                union_flow_into(flow, &c);
-                union_flow_into(flow, &e);
-            }
-            _ => {
-                let mut rets = Vec::new();
-                collect_returns_in_stmt(stmt, &mut rets);
-                for r in rets {
-                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
-                    if let Some(lf) =
-                        local_lambda_return_flow(&r, flow, &lambdas, known_param_return)
-                    {
-                        found.extend(lf);
-                    }
-                }
-                if stmt_is_tail {
-                    if let Stmt::ExprStmt(e) = stmt {
-                        if !is_return_call(e) {
-                            found.extend(expr_param_return_flow(e, flow, known_param_return));
-                            if let Some(lf) =
-                                local_lambda_return_flow(e, flow, &lambdas, known_param_return)
-                            {
-                                found.extend(lf);
-                            }
-                        }
-                    }
-                }
+            return;
+        }
+        let nested = nested_param_flow(exprs, cur, self.known);
+        for r in &rets {
+            self.note_return(r, &nested.may, lambdas);
+        }
+        for name in &nested.assigned {
+            if let (Some(m), Some(f)) = (nested.may.get(name), cur.get_mut(name)) {
+                f.extend(m.iter().copied());
             }
         }
+        if nested.breaks {
+            join_exit(&mut out.brk, Some(nested.may.clone()), &param_flow_join);
+        }
+        if nested.continues {
+            join_exit(&mut out.cont, Some(nested.may), &param_flow_join);
+        }
+    }
+
+    /// Join alternatives: `cur` becomes the join of those that reach the merge (false when none
+    /// does); their breaks and continues join into `out`.
+    fn merge_paths(
+        cur: &mut ParamFlow,
+        paths: Vec<FlowExits<ParamFlow>>,
+        out: &mut FlowExits<ParamFlow>,
+    ) -> bool {
+        let mut fall = None;
+        for p in paths {
+            join_exit(&mut fall, p.fall, &param_flow_join);
+            join_exit(&mut out.brk, p.brk, &param_flow_join);
+            join_exit(&mut out.cont, p.cont, &param_flow_join);
+        }
+        match fall {
+            Some(f) => {
+                *cur = f;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Run `run` from `cur` in a scope binding `names` at `site` (seeded by `seed`): in every flow
+    /// that leaves it, the bindings they shadowed come back and the binders are dropped.
+    fn scoped(
+        &mut self,
+        cur: &ParamFlow,
+        names: &[String],
+        site: usize,
+        seed: impl FnOnce(&mut ParamFlow),
+        run: impl FnOnce(&mut Self, ParamFlow) -> FlowExits<ParamFlow>,
+    ) -> FlowExits<ParamFlow> {
+        let keys: BTreeSet<String> = cur.keys().cloned().collect();
+        let mut hidden = Vec::new();
+        let mut entry = cur.clone();
+        for n in names {
+            hide_shadowed(&mut entry, n, site, &keys, &mut hidden);
+        }
+        seed(&mut entry);
+        let mut exits = run(self, entry);
+        settle_exits(&mut exits, &keys, &hidden);
+        exits
+    }
+
+    /// A statement-position `match` arm or `if let` branch from `entry` (binders seeded): its guard
+    /// runs first, a block's tail after its statements; when it is the function's value (`tail`),
+    /// its value's parameters are returned.
+    fn arm_body(
+        &mut self,
+        guard: Option<&Expr>,
+        body: &Expr,
+        mut entry: ParamFlow,
+        tail: bool,
+        lambdas: &BTreeMap<String, Expr>,
+    ) -> FlowExits<ParamFlow> {
+        let mut early = FlowExits::none();
+        self.value_writes(
+            &arm_value_exprs(guard, body),
+            &mut entry,
+            lambdas,
+            &mut early,
+        );
+        let mut exits = match body {
+            Expr::Block { stmts, tail: value } => {
+                self.block(stmts, entry, tail, value.as_deref(), true)
+            }
+            // An arm `None => break` / `_ => continue` leaves the loop; nothing falls through.
+            Expr::Call { callee, .. } if callee == "break" || callee == "continue" => {
+                let mut exits = FlowExits::none();
+                if callee == "break" {
+                    exits.brk = Some(entry);
+                } else {
+                    exits.cont = Some(entry);
+                }
+                exits
+            }
+            other => {
+                if tail {
+                    self.note_return(other, &entry, lambdas);
+                }
+                FlowExits::falling(entry)
+            }
+        };
+        join_exit(&mut exits.brk, early.brk, &param_flow_join);
+        join_exit(&mut exits.cont, early.cont, &param_flow_join);
+        exits
+    }
+
+    /// A loop: the body from the joined head to a fixpoint (flows only grow over a fixed set of
+    /// names), every `continue` joining the head; the flow after it is the head (not for `loop`)
+    /// joined with every `break` (`None` when nothing leaves it). The header runs at every head: its
+    /// own nested writes and returns count there, a `for` variable carries its range's or
+    /// collection's flow and a `while let` pattern its scrutinee's, read there.
+    fn loop_exit(
+        &mut self,
+        stmt: &Stmt,
+        body: &[Stmt],
+        entry: ParamFlow,
+        out: &mut FlowExits<ParamFlow>,
+    ) -> Option<ParamFlow> {
+        let site = stmt as *const Stmt as usize;
+        let binders: Vec<String> = match stmt {
+            Stmt::For { var, .. } => vec![var.clone()],
+            Stmt::WhileLet { pattern, .. } => pattern.bound_names(),
+            _ => Vec::new(),
+        };
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            param_flow_join(&mut head, prev);
+        }
+        let mut brk: Option<ParamFlow> = None;
+        loop {
+            let mut header = FlowExits::none();
+            self.expression_writes(stmt, &mut head, &BTreeMap::new(), &mut header);
+            let header_flow = match stmt {
+                Stmt::For {
+                    source: crate::frontend::ForSource::Range { start, end },
+                    ..
+                } => {
+                    let mut s = expr_param_return_flow(start, &head, self.known);
+                    s.extend(expr_param_return_flow(end, &head, self.known));
+                    s
+                }
+                Stmt::For {
+                    source: crate::frontend::ForSource::Collection { expr },
+                    ..
+                }
+                | Stmt::WhileLet { expr, .. } => expr_param_return_flow(expr, &head, self.known),
+                _ => BTreeSet::new(),
+            };
+            let exits = self.scoped(
+                &head,
+                &binders,
+                site,
+                |f| match stmt {
+                    Stmt::For { var, .. } => {
+                        f.insert(var.clone(), header_flow.clone());
+                    }
+                    Stmt::WhileLet { pattern, .. } => seed_flow_pattern(f, pattern, &header_flow),
+                    _ => {}
+                },
+                |walk, f| walk.block(body, f, false, None, true),
+            );
+            let mut next = head.clone();
+            for s in [&exits.fall, &exits.cont, &header.cont]
+                .into_iter()
+                .flatten()
+            {
+                param_flow_join(&mut next, s);
+            }
+            join_exit(&mut brk, exits.brk, &param_flow_join);
+            // A `break` / `continue` in the header's own nested statements counts for this loop and
+            // the enclosing one (which it leaves is not modelled).
+            join_exit(&mut brk, header.brk.clone(), &param_flow_join);
+            join_exit(&mut out.brk, header.brk, &param_flow_join);
+            join_exit(&mut out.cont, header.cont, &param_flow_join);
+            if next == head {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        let mut exit = match stmt {
+            Stmt::Loop { .. } => None,
+            _ => Some(head),
+        };
+        join_exit(&mut exit, brk, &param_flow_join);
+        exit
+    }
+
+    /// A hybrid block: any lanes, in any order — the fixpoint of running any lane from the state.
+    fn hybrid(
+        &mut self,
+        stmt: &Stmt,
+        lanes: &[&[Stmt]],
+        entry: ParamFlow,
+        out: &mut FlowExits<ParamFlow>,
+    ) -> ParamFlow {
+        let site = stmt as *const Stmt as usize;
+        let mut head = entry;
+        if let Some(prev) = self.heads.get(&site) {
+            param_flow_join(&mut head, prev);
+        }
+        loop {
+            let mut next = head.clone();
+            for lane in lanes {
+                let exits = self.block(lane, head.clone(), false, None, true);
+                if let Some(f) = &exits.fall {
+                    param_flow_join(&mut next, f);
+                }
+                join_exit(&mut out.brk, exits.brk, &param_flow_join);
+                join_exit(&mut out.cont, exits.cont, &param_flow_join);
+            }
+            if next == head {
+                break;
+            }
+            head = next;
+        }
+        self.heads.insert(site, head.clone());
+        head
+    }
+
+    /// Walk a statement list from `cur`; see [`body_param_returns`]. `tail`: the list's value is the
+    /// function's (its last statement, then `block_value`, is returned). `settle`: bring every flow
+    /// that leaves it back to the entry's names.
+    fn block(
+        &mut self,
+        stmts: &[Stmt],
+        mut cur: ParamFlow,
+        tail: bool,
+        block_value: Option<&Expr>,
+        settle: bool,
+    ) -> FlowExits<ParamFlow> {
+        let keys: BTreeSet<String> = cur.keys().cloned().collect();
+        let mut hidden: Vec<(String, String)> = Vec::new();
+        let mut out: FlowExits<ParamFlow> = FlowExits::none();
+        // Local lambda bindings in this block, so `return g()` / `let r = g()` where `g = |p| body`
+        // resolves to the closure body's return-flow — the param→return-taint twin of the
+        // value-block and returned-closure fixes (soundness hunt2 [12]: `fn fwd(x){ let g = || x;
+        // return g(); }` returned x through the local closure but the summary treated `g()` as
+        // opaque, so `send(fwd(secret))` compiled).
+        let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
+        let n = stmts.len();
+        let mut reaches_end = true;
+        for (i, stmt) in stmts.iter().enumerate() {
+            let stmt_is_tail = tail && i + 1 == n;
+            let site = stmt as *const Stmt as usize;
+            if !is_loop_stmt(stmt) {
+                self.expression_writes(stmt, &mut cur, &lambdas, &mut out);
+            }
+            let falls = match stmt {
+                Stmt::Let { name, init, .. } => {
+                    if matches!(init, Expr::Lambda { .. }) {
+                        lambdas.insert(name.clone(), init.clone());
+                    }
+                    let cleared = matches!(
+                        init,
+                        Expr::Declassify { policy, reason, .. } if declassify_wellformed(policy, reason)
+                    );
+                    let f = if cleared {
+                        BTreeSet::new()
+                    } else {
+                        local_lambda_return_flow(init, &cur, &lambdas, self.known)
+                            .unwrap_or_else(|| expr_param_return_flow(init, &cur, self.known))
+                    };
+                    hide_shadowed(&mut cur, name, site, &keys, &mut hidden);
+                    cur.insert(name.clone(), f);
+                    true
+                }
+                // A destructuring `let [a,b] = [x,0]; return a` propagates the init's param-flow to
+                // each bound name.
+                Stmt::LetPattern { pattern, init, .. } => {
+                    let set = expr_param_return_flow(init, &cur, self.known);
+                    for name in pattern.bound_names() {
+                        hide_shadowed(&mut cur, &name, site, &keys, &mut hidden);
+                    }
+                    seed_flow_pattern(&mut cur, pattern, &set);
+                    true
+                }
+                // A whole-`Var` reassignment STRONG-overwrites: `r = <value>` replaces the binding, so
+                // `r`'s prior param-flow is dead and dropping it is EXACT. A reassignment on SOME
+                // paths only is joined with the others at the merge, so the prior flow survives on
+                // them.
+                Stmt::Assign {
+                    target: Expr::Var(name),
+                    value,
+                } => {
+                    let set = expr_param_return_flow(value, &cur, self.known);
+                    cur.insert(name.clone(), set);
+                    true
+                }
+                // A non-`Var` target (`buf[0]=k`, `obj.f=k`) is a MAY-update of the root binding.
+                Stmt::Assign { target, value } => {
+                    if let Some(root) = assign_target_root(target) {
+                        let mut rhs = expr_param_return_flow(value, &cur, self.known);
+                        // The keys and indices decide where the value lands (`m[k] = 1` stores `k`).
+                        let mut keys = Vec::new();
+                        place_key_exprs(target, &mut keys);
+                        for k in keys {
+                            rhs.extend(expr_param_return_flow(k, &cur, self.known));
+                        }
+                        cur.entry(root.to_string()).or_default().extend(rhs);
+                    }
+                    true
+                }
+                Stmt::If { then, else_, .. } => {
+                    // Without an `else` the statement yields `0` ([`walk_block_labels`]).
+                    let then_tail = stmt_is_tail && else_.is_some();
+                    let then_exits = self.block(then, cur.clone(), then_tail, None, true);
+                    let else_exits = match else_ {
+                        Some(body) => self.block(body, cur.clone(), stmt_is_tail, None, true),
+                        None => FlowExits::falling(cur.clone()),
+                    };
+                    Self::merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
+                }
+                Stmt::While { body, .. }
+                | Stmt::WhileLet { body, .. }
+                | Stmt::Loop { body, .. }
+                | Stmt::For { body, .. } => {
+                    match self.loop_exit(stmt, body, std::mem::take(&mut cur), &mut out) {
+                        Some(f) => {
+                            cur = f;
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                    let body_exits = self.block(body, cur.clone(), false, None, true);
+                    let skipped = FlowExits::falling(cur.clone());
+                    Self::merge_paths(&mut cur, vec![skipped, body_exits], &mut out)
+                }
+                Stmt::HybridBlock { gpu, cpu, prove } => {
+                    let lanes: Vec<&[Stmt]> = [gpu, cpu, prove]
+                        .into_iter()
+                        .flatten()
+                        .map(Vec::as_slice)
+                        .collect();
+                    cur = self.hybrid(stmt, &lanes, cur, &mut out);
+                    true
+                }
+                // `push(xs, v)` / `insert(map, k, v)` MUTATES the container to include the value(s):
+                // weak-union their flow into the container (task #48-f).
+                Stmt::ExprStmt(call @ Expr::Call { callee, args })
+                    if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+                {
+                    if let Expr::Var(container) = &args[0] {
+                        for a in &args[1..] {
+                            let rhs = expr_param_return_flow(a, &cur, self.known);
+                            cur.entry(container.clone()).or_default().extend(rhs);
+                        }
+                    }
+                    // As the list's last statement it is also its value ([`walk_block_labels`]); the
+                    // builtin `insert` yields `0`. With no summaries (`known` empty: the sink
+                    // summaries' closure) a user function of that name is not told apart: it counts.
+                    let builtin_insert = callee == "insert"
+                        && !self.known.is_empty()
+                        && !self.known.contains_key(callee.as_str())
+                        && !cur.contains_key(callee.as_str())
+                        && !lambdas.contains_key(callee.as_str());
+                    if stmt_is_tail && !builtin_insert {
+                        self.note_return(call, &cur, &lambdas);
+                    }
+                    true
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
+                    if let Some(returned) = args.first() {
+                        self.note_return(returned, &cur, &lambdas);
+                    }
+                    false
+                }
+                // A statement-position `match`/`if let` binds each arm's pattern with the scrutinee's
+                // param-flow (`match o { Some(x) => { return x; } … }` returns `o`'s payload; hunt
+                // wf_e67160a7), and its arms join like branches.
+                Stmt::ExprStmt(Expr::Match {
+                    scrutinee, arms, ..
+                }) => {
+                    let scrut = expr_param_return_flow(scrutinee, &cur, self.known);
+                    let mut arm_exits = Vec::with_capacity(arms.len());
+                    // Arms are tried in order: a guard that runs and fails leaves what it wrote to
+                    // the arms after it.
+                    let mut tried = cur.clone();
+                    // An or-pattern arm one alternative at a time ([`sub_arms`]).
+                    for (arm, pattern) in sub_arms(arms) {
+                        let names = pattern.bound_names();
+                        let seed = |f: &mut ParamFlow| seed_flow_pattern(f, pattern, &scrut);
+                        arm_exits.push(self.scoped(&tried, &names, site, seed, |walk, f| {
+                            walk.arm_body(arm.guard.as_ref(), &arm.body, f, stmt_is_tail, &lambdas)
+                        }));
+                        if let Some(guard) = arm.guard.as_ref().filter(|g| expr_nests_writes(g)) {
+                            let failed = self.scoped(&tried, &names, site, seed, |walk, mut f| {
+                                let mut exits = FlowExits::none();
+                                walk.value_writes(&[guard], &mut f, &lambdas, &mut exits);
+                                exits.fall = Some(f);
+                                exits
+                            });
+                            if let Some(f) = &failed.fall {
+                                param_flow_join(&mut tried, f);
+                            }
+                        }
+                    }
+                    Self::merge_paths(&mut cur, arm_exits, &mut out)
+                }
+                Stmt::ExprStmt(Expr::IfLet {
+                    pattern,
+                    scrutinee,
+                    then,
+                    else_,
+                    ..
+                }) => {
+                    let scrut = expr_param_return_flow(scrutinee, &cur, self.known);
+                    let then_exits = self.scoped(
+                        &cur,
+                        &pattern.bound_names(),
+                        site,
+                        |f| seed_flow_pattern(f, pattern, &scrut),
+                        |walk, f| walk.arm_body(None, then, f, stmt_is_tail, &lambdas),
+                    );
+                    let else_exits =
+                        self.arm_body(None, else_, cur.clone(), stmt_is_tail, &lambdas);
+                    Self::merge_paths(&mut cur, vec![then_exits, else_exits], &mut out)
+                }
+                // `break` / `continue` written as an expression statement leave like the statements.
+                Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "break" => {
+                    join_exit(
+                        &mut out.brk,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "continue" => {
+                    join_exit(
+                        &mut out.cont,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::ExprStmt(e) => {
+                    if stmt_is_tail {
+                        self.note_return(e, &cur, &lambdas);
+                    }
+                    true
+                }
+                Stmt::Break => {
+                    join_exit(
+                        &mut out.brk,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::Continue => {
+                    join_exit(
+                        &mut out.cont,
+                        Some(std::mem::take(&mut cur)),
+                        &param_flow_join,
+                    );
+                    false
+                }
+                Stmt::SpecBlock { .. } => true,
+            };
+            if !falls {
+                reaches_end = false;
+                break;
+            }
+        }
+        if reaches_end {
+            // The block's tail runs after its statements: its nested writes and returns count here.
+            if let Some(value) = block_value {
+                self.value_writes(&[value], &mut cur, &lambdas, &mut out);
+                if tail {
+                    self.note_return(value, &cur, &lambdas);
+                }
+            }
+            out.fall = Some(cur);
+        }
+        if settle {
+            settle_exits(&mut out, &keys, &hidden);
+        }
+        out
     }
 }
 
@@ -27739,7 +37759,7 @@ fn apply_inherited_capability(
         "fs.write" => {
             effects.push("file_write".into());
             if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                     message: format!(
                         "safe mode file_write (via callee `uses({raw})`) forbidden without `uses(fs.write)`"
@@ -27751,7 +37771,7 @@ fn apply_inherited_capability(
         "net.send" => {
             effects.push("network".into());
             if mode == Mode::Safe && !safe_cap_allowed(ctx, "net.send") {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                     message: format!(
                         "safe mode network (via callee `uses({raw})`) forbidden without `uses(net.send)`"
@@ -27763,7 +37783,7 @@ fn apply_inherited_capability(
         "shell" => {
             effects.push("shell".into());
             if mode == Mode::Safe && !safe_cap_allowed(ctx, "shell") {
-                ctx.diagnostics.push(SemanticDiagnostic {
+                ctx.push_diag(SemanticDiagnostic {
                     code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
                     message: format!(
                         "safe mode shell/exec (via callee `uses({raw})`) forbidden without `uses(shell)`"
@@ -27854,6 +37874,7 @@ fn empty_ir() -> TypedIR {
         hir: Hir::default(),
         mir: vec![],
         solver_obligations: vec![],
+        over_approx_obligations: BTreeSet::new(),
         symbols: vec![],
         taint_traces: vec![],
         diagnostics: vec![],
@@ -28305,6 +38326,10 @@ mod fn_identity_spine_tests {
 
     fn binding(identities: FnIdentitySet) -> ScopeBinding {
         ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: "fixture".into(),
                 ty: None,
@@ -28319,6 +38344,7 @@ mod fn_identity_spine_tests {
             secret: false,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: identities,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: BuiltinGateTags::Unknown,
@@ -28504,7 +38530,28 @@ mod fn_identity_spine_tests {
             }),
             args: vec![Expr::Var("value".into())],
         })];
-        assert!(collect_unconditional_param_contract_applications(&body, &params).is_empty());
+        // A method call on a formal receiver is recorded as a call ON the field access, resolved at
+        // the call site; the receiver itself is never applied as a function.
+        let items = contract_carrier::collect_carrier_items(
+            "t",
+            &["receiver".into(), "value".into()],
+            &body,
+            &BTreeSet::new(),
+        );
+        let applies: Vec<&Expr> = items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                contract_carrier::CarrierKind::Apply { callee, .. } => Some(callee),
+                _ => None,
+            })
+            .collect();
+        assert!(applies
+            .iter()
+            .all(|c| !matches!(c, Expr::Var(n) if n == "receiver")));
+        assert!(applies
+            .iter()
+            .all(|c| matches!(c, Expr::FieldAccess { field, .. } if field == "method")));
+        let _ = params;
     }
 
     #[test]
@@ -28517,9 +38564,64 @@ mod fn_identity_spine_tests {
             }),
             args: vec![Expr::Literal("1".into())],
         })];
-        let applications = collect_unconditional_param_contract_applications(&body, &params);
-        assert_eq!(applications.len(), 1);
-        assert_eq!(applications[0].param_indices, BTreeSet::from([0]));
+        let items = contract_carrier::collect_carrier_items(
+            "t",
+            &["functions".into()],
+            &body,
+            &BTreeSet::new(),
+        );
+        let applies: Vec<&Expr> = items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                contract_carrier::CarrierKind::Apply { callee, .. } => Some(callee),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(applies.len(), 1);
+        assert!(matches!(applies[0], Expr::Index { base, .. }
+            if matches!(base.as_ref(), Expr::Var(n) if n == "functions")));
+        let _ = params;
+    }
+
+    /// One carrier resolution is bounded (crash review, 2026-09-24): `let a = a + a` doubles the
+    /// inlined value with every line, 2^41 nodes after 40 of them. Past the bound the value is the
+    /// alias placeholder, which is never a fact and, called, never a known function.
+    #[test]
+    fn carrier_resolution_is_bounded() {
+        let var = |n: &str| Expr::Var(n.into());
+        let let_a = |init: Expr| Stmt::Let {
+            name: "a".into(),
+            ty: None,
+            init,
+            span: Span::default(),
+        };
+        let mut body = vec![let_a(var("y"))];
+        for _ in 0..40 {
+            body.push(let_a(Expr::Binary {
+                op: "+".into(),
+                lhs: Box::new(var("a")),
+                rhs: Box::new(var("a")),
+            }));
+        }
+        body.push(Stmt::ExprStmt(Expr::Call {
+            callee: "g".into(),
+            args: vec![var("a")],
+        }));
+        let items = contract_carrier::collect_carrier_items(
+            "t",
+            &["g".into(), "y".into()],
+            &body,
+            &BTreeSet::new(),
+        );
+        let args: Vec<&Expr> = items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                contract_carrier::CarrierKind::Apply { args, .. } => args.first(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(args.len(), 1);
+        assert!(contract_carrier::mentions_unmodeled(args[0]));
     }
 }
 
@@ -28580,6 +38682,10 @@ mod builtin_gate_tag_tests {
 
     fn binding(tags: BuiltinGateTags) -> ScopeBinding {
         ScopeBinding {
+            whole_struct: None,
+            whole_captures: None,
+            whole_list: false,
+            whole_map: false,
             info: BindingInfo {
                 name: "fixture".into(),
                 ty: None,
@@ -28594,6 +38700,7 @@ mod builtin_gate_tag_tests {
             secret: false,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_may: FnMay::default(),
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
             builtin_gate_tags: tags,
@@ -28899,5 +39006,339 @@ mod builtin_gate_tag_tests {
             .field_builtin_gate_tags
             .values()
             .any(|tags| tags.contains(&BuiltinGateTag::Capability("fs.write".into()))));
+    }
+}
+
+#[cfg(test)]
+mod certificate_coverage_tests {
+    use super::*;
+
+    fn check(status: &str, detail: &str, name: &str) -> SolverCheck {
+        SolverCheck {
+            name: name.into(),
+            status: status.into(),
+            detail: detail.into(),
+            model: None,
+            smt: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_native_proof_is_certified_and_a_z3_proof_is_not() {
+        assert_eq!(
+            certificate_status(&check("PASS", PROVED_DETAIL_CERTIFIED, "e")),
+            CertificateStatus::Certified
+        );
+        assert_eq!(
+            certificate_status(&check("PASS", PROVED_DETAIL_SOLVER_ONLY, "e")),
+            CertificateStatus::TrustedToSolver
+        );
+    }
+
+    #[test]
+    fn the_certified_detail_is_matched_exactly_not_by_prefix() {
+        // The certified detail BEGINS WITH the solver-only detail. A
+        // `starts_with` test would report every z3-only obligation as
+        // certified — the worst error this classifier could make, because it
+        // inflates the coverage number in the direction that flatters the
+        // compiler, and it would do so silently on every REG-002 obligation.
+        assert!(
+            PROVED_DETAIL_CERTIFIED.starts_with(PROVED_DETAIL_SOLVER_ONLY),
+            "this test is only meaningful while that prefix relation holds"
+        );
+        assert_eq!(
+            certificate_status(&check("PASS", PROVED_DETAIL_SOLVER_ONLY, "e")),
+            CertificateStatus::TrustedToSolver,
+            "the shorter detail must not be read as the longer one"
+        );
+    }
+
+    #[test]
+    fn nothing_unrecognised_is_ever_counted_as_certified() {
+        // Coverage may understate itself. It may never overstate.
+        for detail in [NO_OBLIGATIONS_DETAIL, "some future wording", ""] {
+            assert_eq!(
+                certificate_status(&check("PASS", detail, "e")),
+                CertificateStatus::NotApplicable,
+                "detail {detail:?}"
+            );
+        }
+        assert_eq!(
+            certificate_status(&check("FAIL", PROVED_DETAIL_CERTIFIED, "e")),
+            CertificateStatus::NotApplicable,
+            "a failure discharges nothing, whatever its detail says"
+        );
+    }
+
+    #[test]
+    fn coverage_counts_and_names_what_has_no_witness() {
+        let c = certificate_coverage(&[
+            check("PASS", PROVED_DETAIL_CERTIFIED, "ensures:a"),
+            check("PASS", PROVED_DETAIL_CERTIFIED, "ensures:b"),
+            check("PASS", PROVED_DETAIL_SOLVER_ONLY, "ensures:(bvsdiv x y)"),
+            check("FAIL", "disproved", "ensures:d"),
+        ]);
+        assert_eq!(c.certified, 2);
+        assert_eq!(c.trusted_to_solver, 1);
+        assert_eq!(
+            c.discharged, 3,
+            "the failure is not a discharged obligation"
+        );
+        assert_eq!(
+            c.uncertified,
+            vec!["ensures:(bvsdiv x y)"],
+            "the admission is specific, not just a count"
+        );
+    }
+
+    #[test]
+    fn an_empty_program_reports_no_coverage_rather_than_zero() {
+        // A program with nothing to prove has not failed to witness anything.
+        // `0/0` would read as "nothing was witnessed" instead of "nothing was
+        // attempted", and a consumer would be right to treat that as alarming.
+        let c = certificate_coverage(&[check("PASS", NO_OBLIGATIONS_DETAIL, "none")]);
+        assert_eq!(c.discharged, 0);
+        assert!(c.verdict_line().is_none());
+    }
+
+    #[test]
+    fn the_verdict_never_claims_a_witness_exists_when_none_was_kept() {
+        // The defect this locks out. A plain `anubis check` builds each
+        // refutation, hands it to the checker, and DROPS it: no bundle, no
+        // .drat, nothing a stranger can re-check. The verdict used to say
+        // "carry a re-checkable witness" on exactly that run, upgrading a
+        // discarded in-process check into a durable third-party artifact.
+        let mut c = certificate_coverage(&[check("PASS", PROVED_DETAIL_CERTIFIED, "a")]);
+
+        c.witnesses_retained = false;
+        let line = c.verdict_line().expect("something was discharged");
+        assert!(
+            !line.contains("re-checkable witness"),
+            "must not promise re-checkability when nothing was written: {line}"
+        );
+        assert!(line.contains("not retained"), "and must say so: {line}");
+
+        c.witnesses_retained = true;
+        let kept = c.verdict_line().unwrap();
+        assert!(kept.contains("retained in the evidence bundle"), "{kept}");
+    }
+
+    #[test]
+    fn an_obligation_that_was_never_decided_is_counted_not_hidden() {
+        // `obligation_undecided_is_unsound` deliberately excludes wrap-safety,
+        // so an UNKNOWN wrap-safety check passes the run. Counting only the
+        // discharged ones printed "1/1 obligations" for a run where a second
+        // was never decided at all — the denominator shrinking to fit.
+        let c = certificate_coverage(&[
+            check("PASS", PROVED_DETAIL_CERTIFIED, "ensures:a"),
+            check("UNKNOWN", "solver did not decide", "wrap-safety:b"),
+        ]);
+        assert_eq!(c.certified, 1);
+        assert_eq!(c.discharged, 1);
+        assert_eq!(
+            c.not_discharged, 1,
+            "the undecided obligation must be visible"
+        );
+        let line = c.verdict_line().unwrap();
+        assert!(line.contains("never decided"), "{line}");
+    }
+
+    #[test]
+    fn a_soundness_alarm_is_never_blamed_on_the_program_or_the_budget() {
+        // Each of these used to land in `AssertionFailKind::Other`, which the
+        // machine-readable lane rendered as "restate the obligation or raise
+        // the budget" — telling an agent to weaken a contract in response to
+        // the compiler contradicting itself.
+        for detail in [
+            "ANUBIS_NATIVE_DISAGREEMENT: the native solver proved this obligation but z3 found it satisfiable",
+            "ANUBIS_REPLAY_MISMATCH: model did not re-verify",
+            "ANUBIS_Z3_ONLY_UNTRUSTED: native solver declined and z3 alone is not trusted here",
+            "solver rejected the emitted SMT (z3: `error` stderr ``)",
+        ] {
+            assert_eq!(
+                refusal_locus(&check("FAIL", detail, "ensures:x")),
+                RefusalLocus::Compiler,
+                "detail {detail:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exhausting_the_memory_bound_is_undecided_not_a_compiler_bug() {
+        // Adding `-memory:` to Z3_ARGS made `(error "out of memory")` reachable,
+        // and the generic `(error …)` arm would have reported it as "solver
+        // rejected the emitted SMT" — blaming this compiler for an obligation
+        // that is simply too big, and sending a reader to hunt a bug that is
+        // not there.
+        let c = check("FAIL", UNDECIDED_MEMORY_DETAIL, "ensures:x");
+        assert_eq!(
+            classify_assertion_fail(&c),
+            AssertionFailKind::Undecided,
+            "a resource limit is an undecided obligation"
+        );
+        assert_eq!(refusal_locus(&c), RefusalLocus::Capability);
+        assert!(
+            !UNDECIDED_MEMORY_DETAIL.contains("solver rejected the emitted SMT"),
+            "must not carry the marker that means the compiler malformed the query"
+        );
+        assert!(
+            !UNDECIDED_MEMORY_DETAIL.contains("timeout")
+                && !UNDECIDED_MEMORY_DETAIL.contains("time budget"),
+            "a space bound is not a clock"
+        );
+    }
+
+    #[test]
+    fn a_missing_solver_is_an_environment_problem_not_a_contract_problem() {
+        for detail in [
+            "z3 unavailable: No such file or directory (os error 2)",
+            "z3 stdin failed: broken pipe",
+            "z3 execution failed: killed",
+        ] {
+            assert_eq!(
+                refusal_locus(&check("FAIL", detail, "ensures:x")),
+                RefusalLocus::Environment,
+                "no contract edit can install a solver: {detail:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_vacuous_contract_is_the_programs_fault() {
+        let d = "assumptions are self-contradictory (unsatisfiable), so the postcondition is not \
+                 really established";
+        assert_eq!(
+            refusal_locus(&check("FAIL", d, "ensures:x")),
+            RefusalLocus::Program
+        );
+    }
+
+    #[test]
+    fn an_ordinary_disproof_and_an_undecided_keep_their_old_owners() {
+        assert_eq!(
+            refusal_locus(&SolverCheck {
+                name: "ensures:x".into(),
+                status: "FAIL".into(),
+                detail: DISPROVED_DETAIL_Z3.into(),
+                model: Some("sat\n()\n".into()),
+                smt: String::new(),
+            }),
+            RefusalLocus::Program
+        );
+        assert_eq!(
+            refusal_locus(&check("FAIL", "solver returned `unknown`", "ensures:x")),
+            RefusalLocus::Capability
+        );
+    }
+
+    #[test]
+    fn the_verdict_line_states_the_ratio_and_never_claims_more() {
+        let c = certificate_coverage(&[
+            check("PASS", PROVED_DETAIL_CERTIFIED, "a"),
+            check("PASS", PROVED_DETAIL_SOLVER_ONLY, "b"),
+        ]);
+        let line = c.verdict_line().expect("something was discharged");
+        assert!(line.contains("1/2"), "states the ratio: {line}");
+        assert!(
+            line.contains("trusted to the solver"),
+            "names the residual: {line}"
+        );
+        // The correspondence chain from CNF back to source is still the
+        // compiler's word (docs/PROOF_CORRESPONDENCE.md), so no phrasing here
+        // may imply the program was verified end to end.
+        let lower = line.to_lowercase();
+        for overclaim in ["fully verified", "proven correct", "guaranteed", "100%"] {
+            assert!(
+                !lower.contains(overclaim),
+                "verdict line overclaims: {line}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod smt_well_formedness_tests {
+    use super::*;
+
+    #[test]
+    fn float_literals_are_smt_lib_decimals() {
+        // `{:?}` prints these as `1e20` / `1e-7`, which z3 rejects (`unknown constant e20`).
+        assert_eq!(smt_decimal(1e20), "100000000000000000000.0");
+        assert_eq!(smt_decimal(1e-7), "0.0000001");
+        assert_eq!(smt_decimal(7.0), "7.0");
+        assert_eq!(smt_decimal(3.5), "3.5");
+        assert_eq!(smt_decimal(0.1), "0.1");
+        for v in [1e20, 1e-7, 0.1, 123456.789, f64::MIN_POSITIVE, f64::MAX] {
+            let d = smt_decimal(v);
+            assert!(!d.contains('e') && d.contains('.'), "{d}");
+            assert_eq!(d.parse::<f64>().unwrap(), v, "{d} does not round-trip");
+        }
+    }
+
+    #[test]
+    fn z3_query_rejection_is_not_a_resource_limit() {
+        assert!(z3_rejected_query(
+            "(error \"line 5 column 8: Sort mismatch at argument #1 for function (declare-fun bvsgt\""
+        ));
+        assert!(!z3_rejected_query("(error \"out of memory\")"));
+        assert!(!z3_rejected_query("unsat"));
+        assert!(!z3_rejected_query("sat"));
+        assert!(!z3_rejected_query("unknown"));
+    }
+}
+
+#[cfg(test)]
+mod relevance_slicing_tests {
+    use super::*;
+
+    fn set(vs: &[&str]) -> BTreeSet<String> {
+        vs.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn keeps_facts_connected_to_the_assertion_transitively() {
+        let a = vec![
+            "(= anb_y (fp.mul RNE anb_x ((_ to_fp 11 53) RNE 100000000000000000000.0)))"
+                .to_string(),
+            "(fp.gt anb_z ((_ to_fp 11 53) RNE 0.0))".to_string(),
+            "(= anb_w anb_z)".to_string(),
+        ];
+        let declared = set(&["anb_x", "anb_y", "anb_z", "anb_w"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_w ((_ to_fp 11 53) RNE 0.0))", &declared);
+        // w connects to z through the copy fact; the y = x * 1e20 definition is unrelated.
+        assert_eq!(kept, vec![&a[1], &a[2]]);
+    }
+
+    #[test]
+    fn a_dangling_definition_is_dropped_even_when_connected() {
+        // `y = x * 1e20` shares x with the assertion, but y is used nowhere: dropping it keeps the
+        // obligation equisatisfiable (any x has a y), and keeps an `fp.mul` out of a native query.
+        let a = vec![
+            "(fp.gt anb_x ((_ to_fp 11 53) RNE 1.0))".to_string(),
+            "(= anb_y (fp.mul RNE anb_x ((_ to_fp 11 53) RNE 100000000000000000000.0)))"
+                .to_string(),
+            "(= anb_z (fp.add RNE anb_y anb_y))".to_string(),
+        ];
+        let declared = set(&["anb_x", "anb_y", "anb_z"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_x ((_ to_fp 11 53) RNE 0.0))", &declared);
+        // z is unused, so its definition goes; then y is unused, so its definition goes too.
+        assert_eq!(kept, vec![&a[0]]);
+    }
+
+    #[test]
+    fn a_definition_the_assertion_uses_is_kept() {
+        let a = vec!["(= anb_y (fp.mul RNE anb_x ((_ to_fp 11 53) RNE 2.0)))".to_string()];
+        let declared = set(&["anb_x", "anb_y"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_y ((_ to_fp 11 53) RNE 0.0))", &declared);
+        assert_eq!(kept, vec![&a[0]]);
+    }
+
+    #[test]
+    fn operator_tokens_do_not_connect_facts() {
+        // `RNE` / `to_fp` appear in every float fact; they are not variables.
+        let a = vec!["(= anb_y (fp.add RNE anb_x ((_ to_fp 11 53) RNE 1.0)))".to_string()];
+        let declared = set(&["anb_x", "anb_y", "anb_z"]);
+        let kept = relevant_assumptions(&a, "(fp.gt anb_z ((_ to_fp 11 53) RNE 0.0))", &declared);
+        assert!(kept.is_empty());
     }
 }

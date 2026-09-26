@@ -1,0 +1,21 @@
+// Composable transforms: `then(f, g)` chains two stages. The billing pipeline mixes in a secret
+// salt (its result is only range-checked). The display pipeline reads the public offset of a
+// settings record that also holds an API key; its result is printed.
+struct Settings {
+    offset: i64,
+    api_key: secret<i64>,
+}
+
+fn then(f, g) {
+    return |x| g(f(x));
+}
+
+fn main() {
+    let salt: secret<i64> = 42;
+    let cfg = Settings { offset: 7, api_key: salt + 1 };
+    let salted = then(then(then(then(|x| x + salt, |x| x * 2), |x| x + 1), |x| x % 1000), |x| x - 3);
+    let h = salted(5);
+    assert(h > -1000000);
+    let shown = then(then(then(then(|x| x + cfg.offset, |x| x * 2), |x| x + 1), |x| x % 1000), |x| x - 3);
+    print(shown(5));
+}

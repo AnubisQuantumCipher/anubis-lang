@@ -1,0 +1,9 @@
+out/minmax-repeatability/precision-expansion/compare.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")
+out/minmax-repeatability/precision-expansion/helper.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")
+out/minmax-repeatability/precision-expansion/unary.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")

@@ -141,7 +141,7 @@ fn mono_unboxed_abi(params: &[(String, String)], ret: Option<&str>) -> Option<Mo
 /// Collect every name bound anywhere in a function (params + let/for/match/if-let/while-let/
 /// lambda bindings). Over-approximates scope per function, which is enough to let a local shadow
 /// a builtin of the same name at call sites.
-fn collect_local_names(
+pub(crate) fn collect_local_names(
     params: &[(String, String)],
     body: &[Stmt],
 ) -> std::collections::BTreeSet<String> {
@@ -1647,9 +1647,9 @@ impl AnubisValue {
             AnubisValue::List(v) => {
                 match anubis_norm_index(i.as_i64(), v.len()) {
                     Some(k) => v[k].clone(),
+                    // The message names no operand: a trap must not print the program's data.
                     None => panic!(
-                        "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a list of length {} (use get(xs, i, default) for optional access)",
-                        i.as_i64(), v.len()
+                        "ANUBIS_INDEX_OUT_OF_BOUNDS: a list index is out of bounds (use get(xs, i, default) for optional access)"
                     ),
                 }
             }
@@ -1659,8 +1659,7 @@ impl AnubisValue {
                 match anubis_norm_index(i.as_i64(), chars.len()) {
                     Some(k) => anubis_mk_str(chars[k].to_string()),
                     None => panic!(
-                        "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a string of length {}",
-                        i.as_i64(), chars.len()
+                        "ANUBIS_INDEX_OUT_OF_BOUNDS: a string index is out of bounds (use get(s, i, default) for optional access)"
                     ),
                 }
             }
@@ -1671,14 +1670,20 @@ impl AnubisValue {
                 match m.iter().find(|(k, _)| k == &key) {
                     Some((_, v)) => v.clone(),
                     None => panic!(
-                        "ANUBIS_MISSING_KEY: map has no key {:?} (use get(m, k, default) or has_key(m, k) for optional access)",
-                        key
+                        "ANUBIS_MISSING_KEY: the map has no such key (use get(m, k, default) or has_key(m, k) for optional access)"
                     ),
                 }
             }
             // A+: struct field order supports list-style r[0] (TargetRun and friends).
             // Kept as a compat accessor: a missing struct index/key stays 0 (documented list-view semantics).
+            // A STRING key reads the field of that name. It used to be tried as a position first, and
+            // a non-numeric string parses to 0, so `p["pub_n"]` returned the FIRST field (a secret
+            // one, in the case that found it). Positions are for integer indexes only.
             AnubisValue::Struct { fields, .. } => {
+                if let AnubisValue::Str(_) = &i {
+                    let key = i.display_string();
+                    return fields.iter().find(|(k, _)| k == &key).map(|(_, v)| v.clone()).unwrap_or(AnubisValue::Int(0));
+                }
                 let idx = i.as_i64();
                 if idx >= 0 && (idx as usize) < fields.len() {
                     fields[idx as usize].1.clone()
@@ -2176,13 +2181,13 @@ fn anubis_chr(v: AnubisValue) -> AnubisValue {
     let n = v.as_i64();
     match char::from_u32(n as u32) {
         Some(c) => anubis_mk_str(c.to_string()),
-        None => panic!("ANUBIS_INVALID_CODEPOINT: {} is not a valid Unicode scalar value (surrogate range D800-DFFF, negative, or > 0x10FFFF)", n),
+        None => panic!("ANUBIS_INVALID_CODEPOINT: the code point is not a valid Unicode scalar value (surrogate range D800-DFFF, negative, or > 0x10FFFF)"),
     }
 }
 fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
     let count_raw = n.as_i64();
     if count_raw < 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: repeat count must be non-negative, got {}", count_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: repeat count must be non-negative");
     }
     let count = count_raw as usize;
     match s {
@@ -2199,11 +2204,11 @@ fn anubis_substr(s: AnubisValue, start: AnubisValue, len: AnubisValue) -> Anubis
     // Was `.max(0)` — negative start/len silently became empty-prefix (Phase-5 M–Z SILENT_WRONG).
     let st_raw = start.as_i64();
     if st_raw < 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: substr start must be non-negative, got {}", st_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: substr start must be non-negative");
     }
     let ln_raw = len.as_i64();
     if ln_raw < 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: substr length must be non-negative, got {}", ln_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: substr length must be non-negative");
     }
     let st = st_raw as usize;
     let ln = ln_raw as usize;
@@ -2383,8 +2388,7 @@ fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
             match anubis_norm_index(key.as_i64(), l.len()) {
                 Some(k) => std::rc::Rc::make_mut(l).remove(k),
                 None => panic!(
-                    "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a list of length {} (use get(xs, i, default) for optional access)",
-                    key.as_i64(), l.len()
+                    "ANUBIS_INDEX_OUT_OF_BOUNDS: remove: a list index is out of bounds (use get(xs, i, default) for optional access)"
                 ),
             }
         }
@@ -2393,8 +2397,7 @@ fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
             match m.iter().position(|(kk, _)| kk == &k) {
                 Some(pos) => std::rc::Rc::make_mut(m).remove(pos).1,
                 None => panic!(
-                    "ANUBIS_MISSING_KEY: key `{}` is not present in the map (use get(m, k, default) for optional access)",
-                    k
+                    "ANUBIS_MISSING_KEY: remove: the map has no such key (use has_key(m, k) to guard)"
                 ),
             }
         }
@@ -2552,13 +2555,13 @@ fn anubis_args() -> AnubisValue {
 fn anubis_read_file(path: AnubisValue) -> AnubisValue {
     match std::fs::read_to_string(path.display_string()) {
         Ok(s) => anubis_mk_str(s),
-        Err(e) => panic!("ANUBIS_IO_ERROR: read_file({}): {}", path.display_string(), e),
+        Err(e) => panic!("ANUBIS_IO_ERROR: read_file: {}", e),
     }
 }
 fn anubis_write_file(path: AnubisValue, contents: AnubisValue) -> AnubisValue {
     match std::fs::write(path.display_string(), contents.display_string()) {
         Ok(()) => AnubisValue::Int(0),
-        Err(e) => panic!("ANUBIS_IO_ERROR: write_file({}): {}", path.display_string(), e),
+        Err(e) => panic!("ANUBIS_IO_ERROR: write_file: {}", e),
     }
 }
 /// Unlink a path. Shares the `fs.write` capability (filesystem mutation). Missing path is success
@@ -2568,7 +2571,7 @@ fn anubis_delete_file(path: AnubisValue) -> AnubisValue {
     match std::fs::remove_file(&p) {
         Ok(()) => AnubisValue::Int(0),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => AnubisValue::Int(0),
-        Err(e) => panic!("ANUBIS_IO_ERROR: delete_file({}): {}", p, e),
+        Err(e) => panic!("ANUBIS_IO_ERROR: delete_file: {}", e),
     }
 }
 // Capability mint/export/Keychain-SE bind: see keychain_se_runtime.inc.rs (injected after core).
@@ -2589,7 +2592,7 @@ fn anubis_open(path: AnubisValue) -> AnubisValue {
     // (contents are read via read_file). Fail-closed on missing/unreadable paths.
     match std::fs::File::open(path.display_string()) {
         Ok(_) => anubis_mk_str(path.display_string()),
-        Err(e) => panic!("ANUBIS_IO_ERROR: open({}): {}", path.display_string(), e),
+        Err(e) => panic!("ANUBIS_IO_ERROR: open: {}", e),
     }
 }
 fn anubis_time_now() -> AnubisValue {
@@ -2932,13 +2935,13 @@ fn anubis_clamp(x: AnubisValue, lo: AnubisValue, hi: AnubisValue) -> AnubisValue
     if x.is_float() || lo.is_float() || hi.is_float() {
         let (lo_f, hi_f) = (lo.as_f64(), hi.as_f64());
         if lo_f > hi_f {
-            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted — lo ({}) > hi ({})", lo_f, hi_f);
+            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted (lo > hi)");
         }
         AnubisValue::Float(x.as_f64().max(lo_f).min(hi_f))
     } else {
         let (lo_i, hi_i) = (lo.as_i64(), hi.as_i64());
         if lo_i > hi_i {
-            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted — lo ({}) > hi ({})", lo_i, hi_i);
+            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted (lo > hi)");
         }
         AnubisValue::Int(x.as_i64().max(lo_i).min(hi_i))
     }
@@ -2955,7 +2958,7 @@ fn anubis_factorial(n: AnubisValue) -> AnubisValue {
         ),
     };
     if n_raw < 0 {
-        panic!("ANUBIS_DOMAIN_ERROR: factorial is undefined for negative integers, got {}", n_raw);
+        panic!("ANUBIS_DOMAIN_ERROR: factorial is undefined for negative integers");
     }
     let n = n_raw;
     let mut acc: i64 = 1;
@@ -2963,7 +2966,7 @@ fn anubis_factorial(n: AnubisValue) -> AnubisValue {
     while i <= n {
         acc = match acc.checked_mul(i) {
             Some(v) => v,
-            None => panic!("ANUBIS_OVERFLOW: factorial({}) overflows i64 (i64::MAX is 9223372036854775807, reached between 20! and 21!)", n),
+            None => panic!("ANUBIS_OVERFLOW: factorial overflows i64 (i64::MAX is 9223372036854775807, reached between 20! and 21!)"),
         };
         i += 1;
     }
@@ -2993,7 +2996,7 @@ fn anubis_pad(s: AnubisValue, width: AnubisValue, pad: AnubisValue, at_start: bo
     // Was `.max(0)` — negative width silently became a no-op (Phase-5 M–Z SILENT_WRONG).
     let w_raw = width.as_i64();
     if w_raw < 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: pad width must be non-negative, got {}", w_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: pad width must be non-negative");
     }
     let w = w_raw as usize;
     let p = { let ps = pad.display_string(); if ps.is_empty() { " ".to_string() } else { ps } };
@@ -3035,7 +3038,7 @@ fn anubis_unique(a: AnubisValue) -> AnubisValue {
 fn anubis_take(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n_raw = n.as_i64();
     if n_raw < 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: take count must be non-negative, got {}", n_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: take count must be non-negative");
     }
     let n = n_raw as usize;
     anubis_mk_list(anubis_iter(a).into_iter().take(n).collect())
@@ -3043,7 +3046,7 @@ fn anubis_take(a: AnubisValue, n: AnubisValue) -> AnubisValue {
 fn anubis_drop(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n_raw = n.as_i64();
     if n_raw < 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: drop count must be non-negative, got {}", n_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: drop count must be non-negative");
     }
     let n = n_raw as usize;
     anubis_mk_list(anubis_iter(a).into_iter().skip(n).collect())
@@ -3064,7 +3067,7 @@ fn anubis_drop_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
 fn anubis_chunk(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n_raw = n.as_i64();
     if n_raw <= 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: chunk size must be positive, got {}", n_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: chunk size must be positive");
     }
     let n = n_raw as usize;
     anubis_mk_list(anubis_iter(a).chunks(n).map(|c| anubis_mk_list(c.to_vec())).collect())
@@ -3072,7 +3075,7 @@ fn anubis_chunk(a: AnubisValue, n: AnubisValue) -> AnubisValue {
 fn anubis_window(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n_raw = n.as_i64();
     if n_raw <= 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: window size must be positive, got {}", n_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: window size must be positive");
     }
     let n = n_raw as usize;
     let items = anubis_iter(a);
@@ -3231,7 +3234,7 @@ fn anubis_times(n: AnubisValue, f: AnubisValue) -> AnubisValue {
         ),
     };
     if n_raw < 0 {
-        panic!("ANUBIS_INVALID_ARGUMENT: times count must be non-negative, got {}", n_raw);
+        panic!("ANUBIS_INVALID_ARGUMENT: times count must be non-negative");
     }
     let n = n_raw;
     anubis_mk_list((0..n).map(|i| f.call_closure(vec![AnubisValue::Int(i)])).collect())
@@ -3244,10 +3247,10 @@ fn anubis_append_file(path: AnubisValue, contents: AnubisValue) -> AnubisValue {
     let p = path.display_string();
     let mut f = match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
         Ok(f) => f,
-        Err(e) => panic!("ANUBIS_IO_ERROR: append_file({}): {}", p, e),
+        Err(e) => panic!("ANUBIS_IO_ERROR: append_file: {}", e),
     };
     if let Err(e) = write!(f, "{}", contents.display_string()) {
-        panic!("ANUBIS_IO_ERROR: append_file({}): {}", p, e);
+        panic!("ANUBIS_IO_ERROR: append_file: {}", e);
     }
     AnubisValue::Int(0)
 }
@@ -3435,7 +3438,7 @@ fn anubis_pack_require_numeric(fn_name: &str, v: &AnubisValue) {
             let trimmed = s.trim();
             if trimmed.parse::<i64>().is_err() && trimmed.parse::<f64>().is_err() {
                 panic!(
-                    "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got string `{s}` which does not parse as a number"
+                    "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got a string that does not parse as a number"
                 );
             }
         }
@@ -3919,7 +3922,7 @@ pub fn is_builtin_name(name: &str) -> bool {
 /// Collect the free identifiers of an expression, split into value uses (`vars`, always captured
 /// by a lambda) and callee uses (`callees`, captured only when they are not a user function or a
 /// builtin — i.e. when they name a closure-valued local). A name used as a value takes precedence.
-fn collect_free_expr(
+pub(crate) fn collect_free_expr(
     e: &Expr,
     bound: &std::collections::BTreeSet<String>,
     vars: &mut std::collections::BTreeSet<String>,
@@ -5131,10 +5134,20 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             let mut vars = std::collections::BTreeSet::new();
             let mut callees = std::collections::BTreeSet::new();
             collect_free_expr(body, &bound, &mut vars, &mut callees);
-            // Capture every value-use (always a local, even if its name shadows a builtin), plus
+            // Capture every value-use of a LOCAL (even one whose name shadows a builtin), plus
             // callee-uses that name a closure-valued local (a local binding, or a name that is
-            // neither a user function nor a builtin).
-            let mut to_capture = vars;
+            // neither a user function nor a builtin). A user function or builtin named as a value
+            // (`|v| f`) is lowered by `var_as_value` inside the body and is not captured: cloning it
+            // as a local failed to compile (E0425, RT-LAMBDA-FNNAME).
+            let mut to_capture: std::collections::BTreeSet<String> = vars
+                .into_iter()
+                .filter(|v| {
+                    ctx.locals.contains(v)
+                        || !(ctx.fns.contains(v)
+                            || ctx.fn_arities.contains_key(v)
+                            || is_builtin_name(v))
+                })
+                .collect();
             for c in callees {
                 if ctx.locals.contains(&c) || (!ctx.fns.contains(&c) && !is_builtin_name(&c)) {
                     to_capture.insert(c);
@@ -5356,9 +5369,10 @@ fn lower_match_expr(
     // Fail closed: a match where no arm matched has no defensible value. Enum scrutinees are
     // already rejected at compile time by exhaustiveness checking; non-enum scrutinees (list/
     // int/string shapes) can't be statically enumerated, so they trap at runtime instead of
-    // silently fabricating a value.
+    // silently fabricating a value. The message does not print the value: a trap must not
+    // disclose the program's data.
     out.push_str(&format!(
-        "if !{done} {{ panic!(\"ANUBIS_MATCH_UNMATCHED: no match arm matched value `{{}}` (add a `_` arm)\", ({m}).display_string()); }} "
+        "if !{done} {{ panic!(\"ANUBIS_MATCH_UNMATCHED: no match arm matched the value (add a `_` arm)\"); }} "
     ));
     // The block's tail expression is the selected arm's value.
     out.push_str(&format!("{r} }}"));
@@ -5699,6 +5713,59 @@ pub fn resolved_run_timeout() -> Option<std::time::Duration> {
     parse_run_timeout_secs(std::env::var("ANUBIS_RUN_TIMEOUT_SECS").ok().as_deref())
 }
 
+/// `ETXTBSY` — "Text file busy" — from an `execve`, which is never a defect in
+/// the program being launched.
+///
+/// It is the POSIX fork/exec race. `fork` copies the file-descriptor table, so
+/// a child created by one thread momentarily holds another thread's *write*
+/// handle to some entirely different executable, and `close-on-exec` only takes
+/// effect at the exec that has not happened yet. The kernel refuses to exec any
+/// file that some process holds open for writing, so a build finishing on one
+/// thread can make an unrelated run fail on another.
+///
+/// There is no lock to take: the two threads are touching different files, and
+/// the offending handle belongs to a process that is about to discard it. The
+/// window is microseconds and closes on its own, so a bounded retry is the
+/// correct shape rather than serialising the world.
+///
+/// Measured on this tree: a full `--lib` run at four threads produced exactly
+/// two failures, `module_scoped_struct_and_fn` and
+/// `phase4_proptest_discharge_and_disproof`, both this error, both passing when
+/// run alone. Note what it is not — it is a loud spawn failure, never a wrong
+/// answer, so nothing was ever silently mis-verdicted by it. It is in the way
+/// of *measuring* load-independence (criterion 5), which is why it is fixed.
+const ETXTBSY: i32 = 26;
+
+/// Retry budget for the race above: ~1s total, against a window of microseconds.
+/// Generous enough that saturation cannot exhaust it, short enough that a
+/// genuinely busy executable still fails rather than hanging the suite.
+const EXEC_BUSY_RETRIES: u32 = 40;
+const EXEC_BUSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+
+fn is_exec_busy(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(ETXTBSY)
+}
+
+/// Run `attempt` until it stops losing the fork/exec race.
+///
+/// Every other error is returned on the first try: only `ETXTBSY` is transient,
+/// and retrying anything else would turn a real failure into a slow real
+/// failure.
+pub(crate) fn retry_while_exec_busy<T>(
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut left = EXEC_BUSY_RETRIES;
+    loop {
+        match attempt() {
+            Err(e) if is_exec_busy(&e) && left > 0 => {
+                left -= 1;
+                std::thread::sleep(EXEC_BUSY_BACKOFF);
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Run a prepared child `Command` to completion under an optional wall-clock
 /// budget, capturing stdout and stderr.
 ///
@@ -5725,12 +5792,13 @@ pub fn run_child_capped(
     let Some(budget) = timeout else {
         // Unbounded opt-out: keep the simple blocking capture.
         return Ok(CappedRun {
-            output: cmd.output()?,
+            output: retry_while_exec_busy(|| cmd.output())?,
             timed_out: false,
         });
     };
 
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = retry_while_exec_busy(|| cmd.spawn())?;
 
     // Drain both pipes on dedicated threads so a chatty child cannot wedge by
     // filling a pipe buffer while the main thread polls for exit.
@@ -6108,7 +6176,7 @@ pub fn compile_sign_and_run_source(
     let (mono, sites) = (typed.mono_specializations, typed.mono_call_sites);
     #[cfg(not(target_os = "macos"))]
     {
-        return compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono, &sites);
+        compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono, &sites)
     }
     #[cfg(target_os = "macos")]
     {
@@ -6319,6 +6387,54 @@ mod run_tests {
     }
 
     #[test]
+    fn exec_busy_is_retried_and_every_other_error_is_not() {
+        use std::cell::Cell;
+        use std::io::{Error, ErrorKind};
+
+        // Loses the race twice, then wins — the real shape of the fork/exec
+        // window, which closes on its own in microseconds.
+        let tries = Cell::new(0u32);
+        let got = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            if tries.get() < 3 {
+                Err(Error::from_raw_os_error(ETXTBSY))
+            } else {
+                Ok("ran")
+            }
+        })
+        .expect("a transient ETXTBSY must not be fatal");
+        assert_eq!(got, "ran");
+        assert_eq!(tries.get(), 3);
+
+        // A missing executable is not transient. Retrying it would turn a real
+        // failure into a slow real failure and hide the cause behind a delay.
+        let tries = Cell::new(0u32);
+        let err = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(Error::new(ErrorKind::NotFound, "no such file"))
+        })
+        .expect_err("a non-transient error must surface");
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert_eq!(tries.get(), 1, "returned on the first attempt, not retried");
+    }
+
+    #[test]
+    fn exec_busy_retries_are_bounded() {
+        use std::cell::Cell;
+        use std::io::Error;
+        // A genuinely busy executable must still fail, rather than hanging the
+        // suite behind an unbounded retry.
+        let tries = Cell::new(0u32);
+        let err = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(Error::from_raw_os_error(ETXTBSY))
+        })
+        .expect_err("the budget must run out");
+        assert!(is_exec_busy(&err), "and it surfaces as the error it was");
+        assert_eq!(tries.get(), EXEC_BUSY_RETRIES + 1);
+    }
+
+    #[test]
     fn run_child_capped_returns_output_when_program_is_fast() {
         use std::time::Duration;
         let mut cmd = std::process::Command::new("echo");
@@ -6523,12 +6639,14 @@ fn main() {
         let exe = dir.join("anubis_run");
         compile_native_rust_to_exe(&rust_source, &exe)
             .expect("compile via cargo (audited crypto deps)");
-        let mut child = std::process::Command::new(&exe)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn");
+        let mut child = retry_while_exec_busy(|| {
+            std::process::Command::new(&exe)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        })
+        .expect("spawn");
         child.stdin.take().unwrap().write_all(stdin_bytes).unwrap();
         let out = child.wait_with_output().expect("wait");
         let _ = std::fs::remove_dir_all(&dir);
@@ -7387,6 +7505,56 @@ fn main() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "7");
+    }
+
+    #[test]
+    fn runtime_traps_do_not_print_operand_values() {
+        // A fail-closed trap's message goes to stderr: it must not carry the program's data (an
+        // index, a key, a count, the unmatched value), which may be secret (IFC v2 review round 1,
+        // L17/L21). Each program traps on an operand holding 424242.
+        for (src, code) in [
+            (
+                "fn main() { let xs = [1, 2]; let i = 424242; print(xs[i]); }",
+                "ANUBIS_INDEX_OUT_OF_BOUNDS",
+            ),
+            (
+                "fn main() { let s = \"ab\"; print(s[424242]); }",
+                "ANUBIS_INDEX_OUT_OF_BOUNDS",
+            ),
+            (
+                "fn main() { let m = {\"a\": 1}; let k = str(424242); print(m[k]); }",
+                "ANUBIS_MISSING_KEY",
+            ),
+            (
+                "fn main() { print(repeat(\"x\", 0 - 424242)); }",
+                "ANUBIS_INVALID_ARGUMENT",
+            ),
+            (
+                "fn main() { print(take([1], 0 - 424242)); }",
+                "ANUBIS_INVALID_ARGUMENT",
+            ),
+            (
+                "fn main() { let xs = [1]; let i = 424242; let y = remove(xs, i); print(y); }",
+                "ANUBIS_INDEX_OUT_OF_BOUNDS",
+            ),
+            (
+                "fn main() { let m = {\"a\": 1}; let y = remove(m, str(424242)); print(y); }",
+                "ANUBIS_MISSING_KEY",
+            ),
+            (
+                "fn main() { let v = 424242; let r = match v { 1 => 0 }; print(r); }",
+                "ANUBIS_MATCH_UNMATCHED",
+            ),
+        ] {
+            let out = compile_and_run_source(src, false, &[]).expect("compile+run");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success(), "{src}: must trap");
+            assert!(err.contains(code), "{src}: stderr: {err}");
+            assert!(
+                !err.contains("424242"),
+                "{src}: the trap printed its operand: {err}"
+            );
+        }
     }
 
     #[test]

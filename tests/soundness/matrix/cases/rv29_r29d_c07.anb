@@ -1,0 +1,2 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p }; let mut t = [1, 2]; let r = remove(t, len(filter(xs, |x| str(x) < "S { k: 5"))); print(t); }

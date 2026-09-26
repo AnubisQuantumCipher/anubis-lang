@@ -1,0 +1,15 @@
+struct P {
+    a: i64,
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let mut p = P { a: 1 };
+    loop {
+        if s > 100 {
+            break;
+        }
+        p.extra = 2;
+        break;
+    }
+    println(len(p));
+}

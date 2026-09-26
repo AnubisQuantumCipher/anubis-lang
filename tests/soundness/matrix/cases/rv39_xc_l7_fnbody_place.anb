@@ -1,0 +1,17 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+struct U { n: i64 }
+struct W { t: T }
+struct V { w: W }
+impl T { fn show(self, o) { print(self.n); } fn next(self) -> T { return self; } }
+impl U { fn show(self, o) { print(o); } fn next(self) -> T { return self; } }
+fn run(p) {
+    let w = W { t: U { n: 1 } };
+    let y = w.t.next();
+    y.show(p);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p);
+}

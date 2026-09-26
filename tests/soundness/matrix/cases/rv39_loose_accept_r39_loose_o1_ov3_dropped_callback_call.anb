@@ -1,0 +1,23 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+struct U { n: i64 }
+struct W { t: T, m: i64 }
+impl T {
+    fn show(self, o) {
+        print(self.n);
+    }
+}
+impl U {
+    fn show(self, o) {
+        print(o);
+    }
+}
+fn tap(w: W, f) -> W {
+    f(w.m);
+    return w;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let w = tap(W { t: T { n: 1 }, m: 0 }, |z| z);
+    w.t.show(p);
+}

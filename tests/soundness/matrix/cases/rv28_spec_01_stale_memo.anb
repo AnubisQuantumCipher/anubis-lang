@@ -1,0 +1,5 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(x, n) { if n == 0 { return x; } let a = f(x, n - 1); return g(x, n - 1); }
+fn g(x, n) { return f(x, n); }
+fn both(x) { let u = f(x, 1); return g(x, 1); }
+fn main() { let p = S { k: 42, pub_n: 3 }; print(both(p)); }

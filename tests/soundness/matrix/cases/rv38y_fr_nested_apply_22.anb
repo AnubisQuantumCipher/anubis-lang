@@ -1,0 +1,5 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(apply(|q| q.pub_n, [apply(|y21| y21, [apply(|y20| y20, [apply(|y19| y19, [apply(|y18| y18, [apply(|y17| y17, [apply(|y16| y16, [apply(|y15| y15, [apply(|y14| y14, [apply(|y13| y13, [apply(|y12| y12, [apply(|y11| y11, [apply(|y10| y10, [apply(|y9| y9, [apply(|y8| y8, [apply(|y7| y7, [apply(|y6| y6, [apply(|y5| y5, [apply(|y4| y4, [apply(|y3| y3, [apply(|y2| y2, [apply(|y1| y1, [apply(|y0| y0, [p])])])])])])])])])])])])])])])])])])])])])])]));
+}

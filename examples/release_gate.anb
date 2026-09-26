@@ -34,7 +34,9 @@ fn passed_checks(checks: list) -> i64 {
 
 fn decide(release: Release, passed: i64) -> Gate {
     let missing = release.required_checks - passed;
-    if missing == 0 && release.health >= 80 {
+    // `proven_double` requires a nonnegative count below 2^62; `decide` receives `passed` from its
+    // caller, so it states that bound instead of assuming it.
+    if missing == 0 && release.health >= 80 && passed >= 0 && passed < 4611686018427387904 {
         return Gate::Ship {
             name: release.name,
             confidence: proven_double(passed),

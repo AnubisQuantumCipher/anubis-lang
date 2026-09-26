@@ -1,0 +1,9 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let xs = [s, 50, 1000, 3];
+    let ys = sort_by(xs, |x| {
+        println("k");
+        x
+    });
+    println("done");
+}

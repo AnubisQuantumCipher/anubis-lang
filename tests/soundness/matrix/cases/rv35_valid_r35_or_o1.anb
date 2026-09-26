@@ -1,0 +1,29 @@
+struct Employee { k: secret<i64>, email: secret<str>, name: str, dept: str }
+struct Dept { name: str, staff: list<Employee> }
+impl Employee {
+    fn same(self, other: Employee) -> bool {
+        return self == other;
+    }
+    fn label(self) -> str {
+        return "${self.name} (${self.dept})";
+    }
+}
+impl Dept {
+    fn same(self, other: Dept) -> bool {
+        return self.name == other.name;
+    }
+    fn label(self) -> str {
+        return "${self.name}: ${len(self.staff)} staff";
+    }
+}
+fn main() {
+    let ann = Employee { k: 42, email: "ann@corp.example", name: "ann", dept: "eng" };
+    let bob = Employee { k: 7, email: "bob@corp.example", name: "bob", dept: "eng" };
+    let eng = Dept { name: "eng", staff: [ann, bob] };
+    let ops = Dept { name: "ops", staff: [] };
+    println(eng.label());
+    println(ops.label());
+    println("eng is ops: ${eng.same(ops)}");
+    let addr = declassify(ann.email, "notify-consent", "ann opted in to email notifications");
+    println("notifying ${addr}");
+}

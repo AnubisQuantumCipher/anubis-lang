@@ -1,0 +1,14 @@
+fn show(q) {
+    print("shown");
+    return 0;
+}
+fn run(n) {
+    let w = [show, show];
+    let pick = |show| show;
+    let r = pick(w[0]);
+    r(n);
+    return 0;
+}
+fn main() {
+    run(5);
+}

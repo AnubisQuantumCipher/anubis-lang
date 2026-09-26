@@ -1,0 +1,30 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+struct U { n: i64 }
+struct W { t: T, m: i64 }
+impl T {
+    fn show(self, o) {
+        print(self.n);
+    }
+}
+impl U {
+    fn show(self, o) {
+        print(o);
+    }
+}
+impl W {
+    fn set(self) -> W {
+        let c = self;
+        c.t = U { n: 2 };
+        return c;
+    }
+    fn again(self) -> W {
+        return self.set();
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let w = W { t: T { n: 1 }, m: 0 };
+    let r: W = call(|q| q.again(), w);
+    r.t.show(p);
+}

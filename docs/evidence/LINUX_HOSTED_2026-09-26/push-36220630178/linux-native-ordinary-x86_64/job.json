@@ -1,0 +1,11 @@
+{
+  "JOB_STATUS": "failure",
+  "EXPECTED_ARCH": "x86_64",
+  "GITHUB_SHA": "f48a5c9aa63125b9a069c4837bd42693a95a812c",
+  "GITHUB_RUN_ID": "36220630178",
+  "GITHUB_RUN_ATTEMPT": "1",
+  "GITHUB_REPOSITORY": "AnubisQuantumCipher/anubis-lang",
+  "GITHUB_REF": "refs/heads/mission/anubis-1.0",
+  "GITHUB_EVENT_NAME": "push",
+  "SOURCE_HEAD_SHA": ""
+}

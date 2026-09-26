@@ -1,0 +1,30 @@
+struct Instr { k: secret<i64>, op: i64 }
+fn simulate(prog) {
+    let fetch = None;
+    let decode = None;
+    let execute = None;
+    let memory = None;
+    let writeback = None;
+    let retired = None;
+    let cycles = 0;
+    let done = 0;
+    for ins in prog {
+        retired = writeback;
+        writeback = memory;
+        memory = execute;
+        execute = decode;
+        decode = fetch;
+        fetch = ins;
+        cycles = cycles + 1;
+        if retired != None {
+            done = done + 1;
+        }
+    }
+    return [cycles, done];
+}
+fn main() {
+    let prog = [Instr { k: 42, op: 1 }, Instr { k: 7, op: 2 }, Instr { k: 9, op: 3 }, Instr { k: 1, op: 4 }, Instr { k: 2, op: 5 }, Instr { k: 3, op: 6 }, Instr { k: 4, op: 7 }, Instr { k: 5, op: 8 }];
+    let r = simulate(prog);
+    print(r[0]);
+    print(r[1]);
+}

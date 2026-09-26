@@ -1,0 +1,22 @@
+fn mk(s) {
+    |z| {
+        if s > 100 {
+            println("big");
+        } else {
+            println("small");
+        }
+        z
+    }
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let f = mk(0);
+    let a = |u| f;
+    let b = |u| a;
+    let d = |u| b;
+    let g = d(0)(0)(0);
+    let h = mk(k);
+    let pick = if false { g } else { h };
+    let r = pick(0);
+    println("end");
+}

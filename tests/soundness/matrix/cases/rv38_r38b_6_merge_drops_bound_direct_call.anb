@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn id1(x) { return x; }
+fn zero(x) { return 0; }
+fn getn(x) { return x.pub_n; }
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let m = { "a": p };
+    let g = zero;
+    if p.pub_n > 0 { g = if p.pub_n > 1 { let t = id1; t } else { zero }; }
+    print(g(p));
+}

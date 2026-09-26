@@ -1,0 +1,4 @@
+fn getsec() -> secret<i64> { let s: secret<i64> = 42; return s; }
+fn pub1() -> i64 { return 1; }
+fn sel(xs, i) { if i > 100 { return pub1; } return xs[i]; }
+fn main() { let fs = [pub1, getsec]; let a = sel(fs, 0); print(a()); let b = sel(fs, 1); print(b()); }

@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { inner: S, b: i64 }
+fn f(t) { let T { inner, b } = t; return inner; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(T { inner: p, b: 1 }));
+}

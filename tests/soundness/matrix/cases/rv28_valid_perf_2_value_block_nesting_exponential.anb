@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(x) {
+    let r = if x.pub_n > 20 { let v20 = if x.pub_n > 19 { let v19 = if x.pub_n > 18 { let v18 = if x.pub_n > 17 { let v17 = if x.pub_n > 16 { let v16 = if x.pub_n > 15 { let v15 = if x.pub_n > 14 { let v14 = if x.pub_n > 13 { let v13 = if x.pub_n > 12 { let v12 = if x.pub_n > 11 { let v11 = if x.pub_n > 10 { let v10 = if x.pub_n > 9 { let v9 = if x.pub_n > 8 { let v8 = if x.pub_n > 7 { let v7 = if x.pub_n > 6 { let v6 = if x.pub_n > 5 { let v5 = if x.pub_n > 4 { let v4 = if x.pub_n > 3 { let v3 = if x.pub_n > 2 { let v2 = if x.pub_n > 1 { let v1 = x.pub_n; v1 + 1 } else { 0 }; v2 + 1 } else { 0 }; v3 + 1 } else { 0 }; v4 + 1 } else { 0 }; v5 + 1 } else { 0 }; v6 + 1 } else { 0 }; v7 + 1 } else { 0 }; v8 + 1 } else { 0 }; v9 + 1 } else { 0 }; v10 + 1 } else { 0 }; v11 + 1 } else { 0 }; v12 + 1 } else { 0 }; v13 + 1 } else { 0 }; v14 + 1 } else { 0 }; v15 + 1 } else { 0 }; v16 + 1 } else { 0 }; v17 + 1 } else { 0 }; v18 + 1 } else { 0 }; v19 + 1 } else { 0 }; v20 + 1 } else { 0 };
+    return r;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

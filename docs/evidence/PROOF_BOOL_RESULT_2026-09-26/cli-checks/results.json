@@ -1,0 +1,295 @@
+{
+  "pin": {
+    "path": "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+    "sha256": "c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7",
+    "code_commit": "b835b94b44fa8705dd973eb1133f862706fd04a8",
+    "head_after_build": "e3b8e1a11cd1dc05c76419bce56009fd901a819d",
+    "source_manifest": "docs/evidence/PROOF_BOOL_RESULT_2026-09-26/source-manifest.json",
+    "source_stability": "docs/evidence/PROOF_BOOL_RESULT_2026-09-26/source-stability.json",
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--release",
+      "-j",
+      "2",
+      "-p",
+      "anubis"
+    ],
+    "note": "Build began at code commit, docs-only commit followed during dependency compilation. Compiler/solver/CLI/vendor/toolchain input hashes remain unchanged. No byte-for-byte independent rebuild claim."
+  },
+  "binary_sha256_before": "c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7",
+  "binary_sha256_after": "c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7",
+  "scope": "Only registered ifc2r2_proof_bool_ cases and listed forms; full Safe check plus IFC2 report. No full-matrix claim.",
+  "rows": [
+    {
+      "id": "ifc2r2_proof_bool_method_fallback",
+      "form": "carrier",
+      "mode": "check",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.anb",
+      "source_sha256": "290a88b6c40c67cb687b566a45d6087463099373b9e7dd5c4327e33f83fe52f3",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "check",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_method_fallback-carrier"
+      ],
+      "rc": 1,
+      "stdout": "anubis check tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: /home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_method_fallback-carrier/evidence-20260926-061623-safe\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_method_fallback",
+      "form": "carrier",
+      "mode": "ifc2-report",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.anb",
+      "source_sha256": "290a88b6c40c67cb687b566a45d6087463099373b9e7dd5c4327e33f83fe52f3",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "ifc2-report",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis ifc2-report tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "Error: 1 information-flow finding(s)\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_method_fallback",
+      "form": "direct",
+      "mode": "check",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.direct.anb",
+      "source_sha256": "f2bac9f0217f2e11ef73489be4b9eff5746171037ece3aa4af2e3b18eb136587",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "check",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.direct.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_method_fallback-direct"
+      ],
+      "rc": 1,
+      "stdout": "anubis check tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.direct.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: /home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_method_fallback-direct/evidence-20260926-061623-safe\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_method_fallback",
+      "form": "direct",
+      "mode": "ifc2-report",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.direct.anb",
+      "source_sha256": "f2bac9f0217f2e11ef73489be4b9eff5746171037ece3aa4af2e3b18eb136587",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "ifc2-report",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.direct.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis ifc2-report tests/soundness/matrix/cases/ifc2r2_proof_bool_method_fallback.direct.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "Error: 1 information-flow finding(s)\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_public",
+      "form": "carrier",
+      "mode": "check",
+      "intent": "ACCEPT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_public.anb",
+      "source_sha256": "7f1d60694c601307888ffe266e181cc3fbe424a16d51534a2ca519f68d9d596b",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "check",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_public.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_public-carrier"
+      ],
+      "rc": 0,
+      "stdout": "anubis check tests/soundness/matrix/cases/ifc2r2_proof_bool_public.anb (evidence=false, verified=false)\ncheck passed\n",
+      "stderr": "",
+      "observed": "ACCEPT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_public",
+      "form": "carrier",
+      "mode": "ifc2-report",
+      "intent": "ACCEPT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_public.anb",
+      "source_sha256": "7f1d60694c601307888ffe266e181cc3fbe424a16d51534a2ca519f68d9d596b",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "ifc2-report",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_public.anb"
+      ],
+      "rc": 0,
+      "stdout": "anubis ifc2-report tests/soundness/matrix/cases/ifc2r2_proof_bool_public.anb (IFC v2 alone; not a check)\nno information flow found\n",
+      "stderr": "",
+      "observed": "ACCEPT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_released",
+      "form": "carrier",
+      "mode": "check",
+      "intent": "ACCEPT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_released.anb",
+      "source_sha256": "89cb6ff96c6ef09f04d431d41cd5a044965ac6e429a33e3ebea087856de2a965",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "check",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_released.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_released-carrier"
+      ],
+      "rc": 0,
+      "stdout": "anubis check tests/soundness/matrix/cases/ifc2r2_proof_bool_released.anb (evidence=false, verified=false)\ncheck passed\n",
+      "stderr": "",
+      "observed": "ACCEPT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_released",
+      "form": "carrier",
+      "mode": "ifc2-report",
+      "intent": "ACCEPT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_released.anb",
+      "source_sha256": "89cb6ff96c6ef09f04d431d41cd5a044965ac6e429a33e3ebea087856de2a965",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "ifc2-report",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_released.anb"
+      ],
+      "rc": 0,
+      "stdout": "anubis ifc2-report tests/soundness/matrix/cases/ifc2r2_proof_bool_released.anb (IFC v2 alone; not a check)\nno information flow found\n",
+      "stderr": "",
+      "observed": "ACCEPT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_ordinary_struct",
+      "form": "carrier",
+      "mode": "check",
+      "intent": "ACCEPT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_ordinary_struct.anb",
+      "source_sha256": "f613c40b09c20b5c0cf9366b34b0dc24fcfe478da5eaa6c15738a2e523458b2e",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "check",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_ordinary_struct.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_ordinary_struct-carrier"
+      ],
+      "rc": 0,
+      "stdout": "anubis check tests/soundness/matrix/cases/ifc2r2_proof_bool_ordinary_struct.anb (evidence=false, verified=false)\ncheck passed\n",
+      "stderr": "",
+      "observed": "ACCEPT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_ordinary_struct",
+      "form": "carrier",
+      "mode": "ifc2-report",
+      "intent": "ACCEPT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_ordinary_struct.anb",
+      "source_sha256": "f613c40b09c20b5c0cf9366b34b0dc24fcfe478da5eaa6c15738a2e523458b2e",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "ifc2-report",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_ordinary_struct.anb"
+      ],
+      "rc": 0,
+      "stdout": "anubis ifc2-report tests/soundness/matrix/cases/ifc2r2_proof_bool_ordinary_struct.anb (IFC v2 alone; not a check)\nno information flow found\n",
+      "stderr": "",
+      "observed": "ACCEPT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_helper_return",
+      "form": "carrier",
+      "mode": "check",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_helper_return.anb",
+      "source_sha256": "ed7c92a5e0581d1eb08824dfbf1899d8f537be9014d59d0aed18462581902c7b",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "check",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_helper_return.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_helper_return-carrier"
+      ],
+      "rc": 1,
+      "stdout": "anubis check tests/soundness/matrix/cases/ifc2r2_proof_bool_helper_return.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: /home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_helper_return-carrier/evidence-20260926-061623-safe\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_helper_return",
+      "form": "carrier",
+      "mode": "ifc2-report",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_helper_return.anb",
+      "source_sha256": "ed7c92a5e0581d1eb08824dfbf1899d8f537be9014d59d0aed18462581902c7b",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "ifc2-report",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_helper_return.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis ifc2-report tests/soundness/matrix/cases/ifc2r2_proof_bool_helper_return.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "Error: 1 information-flow finding(s)\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_secret_truth",
+      "form": "carrier",
+      "mode": "check",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_secret_truth.anb",
+      "source_sha256": "3870f45070177ac005ff20d2b5e04e5f73aba0340d1bbac18d816ceb77261dae",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "check",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_secret_truth.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_secret_truth-carrier"
+      ],
+      "rc": 1,
+      "stdout": "anubis check tests/soundness/matrix/cases/ifc2r2_proof_bool_secret_truth.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: /home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/cli-checks/ifc2r2_proof_bool_secret_truth-carrier/evidence-20260926-061624-safe\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `proof_commit_bool` (the proof journal is public)\n",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `proof_commit_bool` (the proof journal is public)\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    },
+    {
+      "id": "ifc2r2_proof_bool_secret_truth",
+      "form": "carrier",
+      "mode": "ifc2-report",
+      "intent": "REJECT",
+      "source": "tests/soundness/matrix/cases/ifc2r2_proof_bool_secret_truth.anb",
+      "source_sha256": "3870f45070177ac005ff20d2b5e04e5f73aba0340d1bbac18d816ceb77261dae",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+        "ifc2-report",
+        "tests/soundness/matrix/cases/ifc2r2_proof_bool_secret_truth.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis ifc2-report tests/soundness/matrix/cases/ifc2r2_proof_bool_secret_truth.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `proof_commit_bool` (the proof journal is public)\n",
+      "stderr": "Error: 1 information-flow finding(s)\n",
+      "observed": "SEC_REJECT",
+      "passed": true
+    }
+  ],
+  "summary": {
+    "PASS": 14
+  }
+}

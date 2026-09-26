@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn t3(g) { return 0 }
+fn t2(g) { t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); t3(|x| g(x)); return 0 }
+fn t1(g) { t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); t2(|x| g(x)); return 0 }
+fn burn() { t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); t1(|x| x); return 0 }
+fn f(g) { return g(0) }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print([burn(), f(|x| p)]);
+}

@@ -1,0 +1,29 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn lookup(xs, id) {
+    let hits = filter(xs, |a| a.id == id);
+    if is_empty(hits) {
+        return None;
+    }
+    return Some(hits[0]);
+}
+
+fn owner(xs, id) {
+    return match lookup(xs, id) {
+        Some(a) => a.owner,
+        None => "?",
+    };
+}
+
+fn owner2(xs, id) {
+    match lookup(xs, id) {
+        Some(a) => { return a.owner; },
+        None => { return "?"; },
+    }
+}
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }, Account { id: 3, owner: "cy", k: 9, balance: 175 }];
+
+    print(owner2(accts, 1));
+}

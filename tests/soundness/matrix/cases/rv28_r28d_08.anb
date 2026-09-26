@@ -1,0 +1,19 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn g(s) {
+    let mut a = "";
+    let mut b = "";
+    let mut c = "";
+    let mut d = "";
+    let mut e = "";
+    let mut i = 0;
+    while i < 6 {
+        e = d;
+        d = c;
+        c = b;
+        b = a;
+        a = str(s);
+        i = i + 1;
+    }
+    return e;
+}
+fn main() { let p = S { k: 42, pub_n: 3 }; print(g(p)); }

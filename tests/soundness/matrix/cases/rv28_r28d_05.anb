@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { a: string, b: i64 }
+fn f(t) { return t[0]; }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p }; let mut ys = ["u", "v"]; ys[01] = str(p); print(ys[1]); }

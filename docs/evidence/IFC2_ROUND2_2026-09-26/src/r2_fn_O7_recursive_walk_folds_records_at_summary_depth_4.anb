@@ -1,0 +1,25 @@
+struct Acct {
+    id: i64,
+    bal: secret<i64>,
+}
+enum Tree {
+    Leaf,
+    Node(Tree, Acct, Tree),
+}
+fn build(lo, hi) {
+    if lo > hi {
+        return Tree::Leaf;
+    }
+    let mid = (lo + hi) / 2;
+    return Tree::Node(build(lo, mid - 1), Acct { id: mid, bal: mid * 100 }, build(mid + 1, hi));
+}
+fn ids(t) {
+    return match t {
+        Tree::Leaf => [],
+        Tree::Node(l, a, r) => ids(l) + [a.id] + ids(r),
+    };
+}
+fn main() {
+    let t = build(1, 7);
+    println(ids(t));
+}

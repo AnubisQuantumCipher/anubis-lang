@@ -1,0 +1,12 @@
+fn f(n: i64) requires(n < 256) {
+    println(n);
+}
+fn main() {
+    let c = len(args()) >= 0;
+    let mut x: u8 = 200;
+    if c {
+        x = x + 100;
+    }
+    println(x);
+    f(x);
+}

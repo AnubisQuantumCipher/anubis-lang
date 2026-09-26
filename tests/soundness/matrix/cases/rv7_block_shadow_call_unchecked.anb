@@ -1,0 +1,2 @@
+fn f(x: i64) -> i64 requires(x > 0) { print("f entered with ${x}"); return x; }
+fn main() { let s = 1; let r = if s > 0 { let s = 5; f(-1) } else { 0 }; print(r + s); }

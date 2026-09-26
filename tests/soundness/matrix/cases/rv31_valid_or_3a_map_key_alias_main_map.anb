@@ -1,0 +1,14 @@
+struct User { k: secret<i64>, id: i64, name: string }
+fn with_user(ctx, u) {
+    ctx["user"] = u;
+    return ctx;
+}
+fn render(ctx) {
+    return "<h1>" + ctx["title"] + "</h1><p>" + ctx["user"].name + "</p>";
+}
+fn main() {
+    let u = User { k: 42, id: 1, name: "ann" };
+    let base = { "title": "Home" };
+    let ctx = with_user(base, u);
+    println(render(ctx));
+}

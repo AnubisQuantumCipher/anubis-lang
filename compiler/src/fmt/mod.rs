@@ -402,7 +402,7 @@ fn bin_prec(op: &str) -> u8 {
     }
 }
 
-fn fmt_expr(e: &Expr) -> String {
+pub(crate) fn fmt_expr(e: &Expr) -> String {
     fmt_expr_prec(e, 0)
 }
 

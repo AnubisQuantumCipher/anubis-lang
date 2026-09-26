@@ -1,0 +1,6 @@
+fn getsec() -> secret<i64> { let s: secret<i64> = 42; return s; }
+fn pub1() -> i64 { return 1; }
+struct B { n: i64 }
+impl B { fn s(self) { return getsec; } }
+fn a(c, g, h) { if c > 5 { return g; } let b = B { n: 1 }; let r = a(c + 1, h, b.s()); return r; }
+fn main() { let q = a(1, pub1, pub1); print(q()); }

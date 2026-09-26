@@ -1,0 +1,134 @@
+{
+  "pin": "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+  "pin_sha256": "bb62868e0f1495a12f26499e6499aaa2c6ef6ffe08f1212ab59f470bd1bf6c88",
+  "runs": [
+    {
+      "case": "g4_selfref_old_prints_stmt.anb",
+      "secret": "42",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g4_selfref_old_prints_stmt-42/g4_selfref_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g4_selfref_old_prints_stmt-42/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.4669207769911736,
+      "source_sha256": "d6bc2cccc91e2919df5e16ed111bdfd948acda5b94c5d3a09fccd174bb682aff",
+      "log_sha256": "a46466f61a0ad0354e9eabfcda63599639a3daabb3f199c74e0cc3c3ee97555b"
+    },
+    {
+      "case": "g4_selfref_old_prints_stmt.anb",
+      "secret": "123456",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g4_selfref_old_prints_stmt-123456/g4_selfref_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g4_selfref_old_prints_stmt-123456/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.4163378019875381,
+      "source_sha256": "5ea204be9115e924a5fd30a8faae7430ee564b3af1b95758897052c890e62abc",
+      "log_sha256": "2d65a49184a0615e23d7306c6b14d54849e32b2d0587abd7a994f787ce1e525b"
+    },
+    {
+      "case": "g5_mutual_old_prints_stmt.anb",
+      "secret": "42",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g5_mutual_old_prints_stmt-42/g5_mutual_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g5_mutual_old_prints_stmt-42/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.4167493020067923,
+      "source_sha256": "f3848b1e2cc5b15f2721c6df6b6bc8c9e4d1d3c09544d22b5c54a2a55d3b1a0a",
+      "log_sha256": "0fb3f713168bb177fb5bd44cfd74e86fc45808e89411dd9255edf5e23a2096e4"
+    },
+    {
+      "case": "g5_mutual_old_prints_stmt.anb",
+      "secret": "123456",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g5_mutual_old_prints_stmt-123456/g5_mutual_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/g5_mutual_old_prints_stmt-123456/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.4170129299745895,
+      "source_sha256": "0cd52d174f612841ddc12e80871506bf92978b40c234bdcca0fc2afccb4d7951",
+      "log_sha256": "7220f043e94a68a47f96e2003d92608e89e47b5fcfdbda9ed4f4fdce9be4848a"
+    },
+    {
+      "case": "scalar_g4_selfref_old_prints_stmt.anb",
+      "secret": "42",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g4_selfref_old_prints_stmt-42/scalar_g4_selfref_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g4_selfref_old_prints_stmt-42/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.4173039719753433,
+      "source_sha256": "e458ba8eee2be21f0e535d2bdae8f3b8bb36eca4461601d3ecf2e208b39129fb",
+      "log_sha256": "0b55b3536be8607942e6db27b101cc1ee6e59de12bc748409cca2beea9b16ab1"
+    },
+    {
+      "case": "scalar_g4_selfref_old_prints_stmt.anb",
+      "secret": "123456",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g4_selfref_old_prints_stmt-123456/scalar_g4_selfref_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g4_selfref_old_prints_stmt-123456/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.4172218899766449,
+      "source_sha256": "6cf625d0b9a721791eae50663e6a3f05f343cf497bda9c86cad648514e5c392b",
+      "log_sha256": "2589d80e1a04e2396aafe0fdfd22e640b6da35c524054f8977388423839b3b4c"
+    },
+    {
+      "case": "scalar_g5_mutual_old_prints_stmt.anb",
+      "secret": "42",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g5_mutual_old_prints_stmt-42/scalar_g5_mutual_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g5_mutual_old_prints_stmt-42/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.4162032210151665,
+      "source_sha256": "8703ba3e0fcf98c50eb5f9f7ac61ff42fece4307df296e211893803607e15155",
+      "log_sha256": "d0b38b2f88b65d00bc86b9ddb1433f36b2acafacc0427bae24b1a393cf0c517e"
+    },
+    {
+      "case": "scalar_g5_mutual_old_prints_stmt.anb",
+      "secret": "123456",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "run",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g5_mutual_old_prints_stmt-123456/scalar_g5_mutual_old_prints_stmt.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g5_mutual_old_prints_stmt-123456/native",
+        "--json"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.3664346209843643,
+      "source_sha256": "5dab8f342e3f9e5f2d435ed9c500bff3463f13c5a18c93e18d8dde565f967114",
+      "log_sha256": "0411b3117b57e60c1282dde57c5ebc8726f28a043f4e82ca96e94fac26ca6cd0"
+    }
+  ]
+}

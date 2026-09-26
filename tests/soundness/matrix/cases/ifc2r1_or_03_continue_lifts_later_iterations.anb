@@ -1,0 +1,17 @@
+// Batch job: log every record as it is processed, skip the ones whose amount exceeds a
+// secret limit, and keep a secret running total of the rest.
+fn main() {
+    let limit: secret<i64> = 42;
+    let amounts = [5, 70, 12, 300, 8];
+    let mut total: secret<i64> = 0;
+    let mut n = 0;
+    for a in amounts {
+        n = n + 1;
+        print("processing record " + str(n));
+        if a > limit {
+            continue;
+        }
+        total = total + a;
+    }
+    print("processed " + str(n) + " records");
+}

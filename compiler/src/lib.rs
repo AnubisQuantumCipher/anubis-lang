@@ -3,6 +3,7 @@
 //! v0.1 MVP scope per plan.
 
 pub mod backends;
+pub mod diagnostics;
 pub mod doc;
 pub mod evidence;
 pub mod fmt;
@@ -13,6 +14,7 @@ pub mod middle;
 pub mod package;
 pub mod project;
 pub mod resolve;
+pub mod resource;
 pub mod selfhost_schema;
 pub mod stdlib;
 
@@ -24,7 +26,7 @@ pub use middle::research_profile;
 pub use middle::research_profile::{
     proven_effects_from_source, proven_effects_via_typecheck, ProvenEffectSet,
 };
-pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
+pub use middle::{ifc2_findings, typecheck, typecheck_ex, SymbolicEngine, TaintPass};
 // Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer
 // and its row count. Consumed by `compiler/tests/security_label_correspondence_observer.rs`
 // (integration test that only sees `pub` items) and by any external harness that wants to
@@ -88,6 +90,22 @@ mod tests {
     use crate::evidence::{build_evidence_bundle, validate_bundle};
     use crate::frontend::parse_source;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// The program typechecks and is REFUSED as undecided, with nothing disproved: a precondition the
+    /// checker cannot encode at a call site is neither proved nor refuted, never silently accepted and
+    /// never reported with a counterexample. (Before 2026-09-23 such preconditions were dropped and the
+    /// program accepted; several tests below pinned that fail-open and now pin this instead.)
+    fn refused_undecided_not_disproved(src: &str) -> bool {
+        let Ok(ir) = typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) else {
+            return false;
+        };
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks.iter().filter(|c| c.status == "FAIL").collect();
+        !fails.is_empty()
+            && fails
+                .iter()
+                .all(|c| middle::classify_assertion_fail(c) == middle::AssertionFailKind::Undecided)
+    }
 
     fn unique_test_dir(label: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -798,9 +816,10 @@ mod tests {
             "marker binary must exist after lower"
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run marker");
+        let run = crate::backends::run::retry_while_exec_busy(|| {
+            std::process::Command::new(&exe_path).output()
+        })
+        .expect("run marker");
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(
             out.contains("analysis-only artifact") && out.contains("not directly executable"),
@@ -922,9 +941,10 @@ fn trigger() {
             emitted
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run marker");
+        let run = crate::backends::run::retry_while_exec_busy(|| {
+            std::process::Command::new(&exe_path).output()
+        })
+        .expect("run marker");
         let stdout = String::from_utf8_lossy(&run.stdout);
         assert!(
             stdout.contains("taint:"),
@@ -954,9 +974,10 @@ fn trigger() {
             emitted
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run real program");
+        let run = crate::backends::run::retry_while_exec_busy(|| {
+            std::process::Command::new(&exe_path).output()
+        })
+        .expect("run real program");
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(
             out.contains("hello-from-build") && out.contains("42"),
@@ -2327,7 +2348,7 @@ fn main() {
 
     #[test]
     fn undecided_loop_invariant_step_fails_closed() {
-        // A z3 `unknown` (undecided within the time budget — NOT disproved) on ANY proof-carrying
+        // A z3 `unknown` (undecided within the work budget — NOT disproved) on ANY proof-carrying
         // obligation must fail closed. The loop-invariant PRESERVATION step is deliberately excluded from
         // the separate vacuity check (a loop whose invariant implies ¬cond never iterates), but it must
         // still be in the undecided-verdict set — else a timed-out step silently admits a possibly-false
@@ -3163,6 +3184,26 @@ fn bad() {
         ));
     }
 
+    #[test]
+    fn replay_accepts_array_only_witness_and_still_pins_scalars() {
+        // A container's backing array is the only declared constant: z3's model gives it as an
+        // array value the replay does not parse. The violation is ground, so the counterexample is
+        // real and must replay (it was reported REPLAY_MISMATCH).
+        let arrays_only = "(set-logic QF_ABV)\n\
+            (declare-fun xs__arr () (Array (_ BitVec 64) (_ BitVec 64)))\n\
+            (assert (not (bvsgt (bvneg (_ bv1 64)) (_ bv0 64))))\n(check-sat)\n";
+        let model = "sat\n(\n  (define-fun xs__arr () (Array (_ BitVec 64) (_ BitVec 64))\n    \
+            ((as const (Array (_ BitVec 64) (_ BitVec 64))) #x0000000000000000))\n)";
+        assert!(middle::replay_counterexample(arrays_only, model));
+        // A scalar constant with no parsed witness still fails closed, array or not.
+        let with_scalar = "(set-logic QF_ABV)\n\
+            (declare-fun xs__arr () (Array (_ BitVec 64) (_ BitVec 64)))\n\
+            (declare-const x (_ BitVec 64))\n(assert (bvsgt x (_ bv0 64)))\n(check-sat)\n";
+        assert!(!middle::replay_counterexample(with_scalar, model));
+        // Garbage model text on an array-only query fails closed.
+        assert!(!middle::replay_counterexample(arrays_only, "not a model"));
+    }
+
     /// Regression lock (2026-07-25): a sat model is DISPROVED with a pretty-printed witness,
     /// never the conflated `ANUBIS_ASSERTION_UNPROVEN` "or undecided" message.
     #[test]
@@ -3226,11 +3267,7 @@ fn bad(x: i64) -> i64
         let check = middle::SolverCheck {
             name: "ensures:(hard)".into(),
             status: "FAIL".into(),
-            detail: "solver could not decide this contract within its time budget (z3 \
-                 returned `unknown`, typically a hard symbolic division/remainder); failing \
-                 closed — an undecided postcondition is not a proof. Restate it as a simpler \
-                 or better-bounded obligation"
-                .into(),
+            detail: middle::UNDECIDED_DETAIL.into(),
             model: None,
             smt: String::new(),
         };
@@ -4712,9 +4749,12 @@ fn bad() {
             !discharged("struct P { x: f64 } fn f(p: P) requires(p.x == 7.0) { assert(p.x / 2 == 3); } fn main() { f(P { x: 7 }); }"),
             "the coerced float model rejects the divergent INTEGER value (3) — proving the coercion is modeled"
         );
+        // POLICY (2026-09-23): the CALL-SITE precondition `P { x: g() }.x == 7.0` depends on what `g`
+        // returns, which nothing states (no `ensures`); it used to be dropped, so this "discharged".
+        // It is now refused as undecided — never disproved.
         assert!(
-            discharged("struct P { x: f64 } fn g() -> i64 { return 7; } fn f(p: P) requires(p.x == 7.0) { assert(p.x / 2 == 3.5); } fn main() { f(P { x: g() }); }"),
-            "an int-returning CALL into an f64 field is coerced → the float value (3.5) proves"
+            refused_undecided_not_disproved("struct P { x: f64 } fn g() -> i64 { return 7; } fn f(p: P) requires(p.x == 7.0) { assert(p.x / 2 == 3.5); } fn main() { f(P { x: g() }); }"),
+            "an int-returning CALL into an f64 field: the call-site precondition is undecided, never disproved"
         );
         // A MATCHING field value still typechecks (no over-rejection); a struct-typed field is not numeric:
         assert!(
@@ -10017,11 +10057,13 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             "a string-let concat proves `u == s + t` and disproves `u == t + s`"
         );
         // a NON-ASCII literal operand keeps the concat unmodeled (fail-open), per the printable-ASCII gate.
+        // POLICY (2026-09-23): the call-site precondition is not encoded (printable-ASCII gate) and is
+        // now refused as undecided — still never a wrong-model disproof.
         assert!(
-            accepts(
+            refused_undecided_not_disproved(
                 r#"fn g(s: string) -> i64 requires(s + "é" == "aé") { return 1; } fn f() -> i64 { return g("a"); } fn main() { print(f()); }"#
             ),
-            "a concat with a non-ASCII literal operand stays fail-open (printable-ASCII gate)"
+            "a concat with a non-ASCII literal operand is undecided (printable-ASCII gate), never disproved"
         );
     }
 
@@ -10599,12 +10641,14 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             ),
             "a list-pattern binding shadowing a param must not inherit the param's facts"
         );
-        // a NON-shadowing payload binding stays fail-open (documented residual — unchanged verdict).
+        // A NON-shadowing payload binding: its value is not modeled, so `g(n)`'s precondition cannot be
+        // encoded. This was a documented fail-open residual (accepted unchecked); POLICY (2026-09-23)
+        // it is now refused as undecided, never disproved.
         assert!(
-            accepts(
+            refused_undecided_not_disproved(
                 r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(o: Opt) -> i64 { let z = match o { Opt::Some(n) => g(n), Opt::None => 1 }; return z; } fn main() { print(f(Opt::Some(5))); }"#
             ),
-            "a non-shadowing payload binding stays fail-open (documented residual)"
+            "a non-shadowing payload binding is undecided (was a fail-open residual), never disproved"
         );
         // an ENCLOSING modeled var used in a destructuring arm's body still discharges normally — the
         // rename touches only the SHADOWING bound names, not other vars.
@@ -10653,12 +10697,13 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             !accepts(r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(len(s) >= 3) { return 100 / (len(s) - 2); } fn f(a: string, o: SOpt) -> i64 requires(len(a) >= 1) { let z = match o { SOpt::Some(a) => gs(a), SOpt::None => 1 }; return z; } fn main() { print(f("x", SOpt::Some("no"))); }"#),
             "a STRING payload shadow must fail closed in the str.len sub-lane too (coverage tautology)"
         );
-        // a NON-shadowing string payload feeding a strlen-contracted call stays fail-open (unchanged).
+        // A NON-shadowing string payload feeding a strlen-contracted call: was a documented fail-open
+        // residual; POLICY (2026-09-23) refused as undecided, never disproved.
         assert!(
-            accepts(
+            refused_undecided_not_disproved(
                 r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(len(s) >= 3) { return 1; } fn f(o: SOpt) -> i64 { let z = match o { SOpt::Some(n) => gs(n), SOpt::None => 1 }; return z; } fn main() { print(f(SOpt::Some("abc"))); }"#
             ),
-            "a non-shadowing string payload stays fail-open (documented residual)"
+            "a non-shadowing string payload is undecided (was a fail-open residual), never disproved"
         );
     }
 
@@ -10856,9 +10901,12 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // other shape) is registered then PRUNED, because no fact for it landed in the assumptions. It must
         // revert to fail-open (ACCEPT) — NOT strand the ASCII assert against a free var and over-reject. A
         // registration-without-prune would spuriously REJECT this valid-per-the-checker program.
+        // POLICY (2026-09-23): the body is still pruned (no stranded over-rejection of the ASCII assert),
+        // but the CALL-SITE precondition over the non-ASCII literal is not encoded and is refused as
+        // undecided — never disproved.
         assert!(
-            accepts(r#"struct P { a: string } fn g(p: P) requires(p.a == "aé") { assert(p.a == "zz"); } fn main() { g(P{a: "aé"}); }"#),
-            "a field whose requires clause is unseeded (non-ASCII literal) must be pruned back to fail-open"
+            refused_undecided_not_disproved(r#"struct P { a: string } fn g(p: P) requires(p.a == "aé") { assert(p.a == "zz"); } fn main() { g(P{a: "aé"}); }"#),
+            "a field whose requires clause is unseeded (non-ASCII literal): undecided at the call site, never disproved"
         );
         assert!(
             accepts(r#"struct P { a: string } fn pred(s: string) -> bool { return true; } fn g(p: P) requires(pred(p.a)) { assert(p.a == "zz"); } fn main() { g(P{a: "qq"}); }"#),
@@ -11306,9 +11354,11 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // counts bytes/units (`str.len("aé")` = 3), not runtime chars (`len("aé")` = 2). Modeling it would
         // false-REJECT this runtime-valid call (`len("aé") == 2` holds) and false-ACCEPT the dual. The lane
         // fail-opens on non-ASCII literals, so this stays ACCEPT (never a wrong-model reject).
+        // POLICY (2026-09-23): still never a wrong-model reject; the unencodable call-site precondition
+        // is now refused as undecided instead of accepted unchecked.
         assert!(
-            accepts(r#"fn h(s: string) -> i64 requires(len(s) == 2) { return 0; } fn f() -> i64 { let z = h("aé"); return z; } fn main() { print(f()); }"#),
-            "a non-ASCII string literal must fail-open (z3 str.len counts bytes, not chars) — no wrong-model"
+            refused_undecided_not_disproved(r#"fn h(s: string) -> i64 requires(len(s) == 2) { return 0; } fn f() -> i64 { let z = h("aé"); return z; } fn main() { print(f()); }"#),
+            "a non-ASCII string literal is not modeled (z3 str.len counts bytes): undecided, never disproved"
         );
         // SOUNDNESS (review-caught): a raw NUL/control literal is NOT printable-ASCII, so it fail-opens like
         // any non-modelable literal. z3 TRUNCATES a raw-NUL literal (`str.len("ab\0cd")` = 2, not runtime 5),
@@ -11354,9 +11404,11 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // over-rejecting a valid program that fail-open-accepted before the lane. The assert and call-site
         // sites skip an obligation whose referenced string var has no seeded fact (fail-open, pre-lane;
         // the assert stays runtime-enforced). All three review reproducers must ACCEPT:
+        // POLICY (2026-09-23): the body assert still does not strand (no spurious `s = ""` disproof); the
+        // call-site precondition over the non-ASCII literal is refused as undecided.
         assert!(
-            accepts(r#"fn f(s: string) -> i64 requires(s == "é") { assert(len(s) >= 1); return 0; } fn main() { print(f("é")); }"#),
-            "an unseedable non-ASCII requires must not strand a body strlen assert (spurious s=\"\")"
+            refused_undecided_not_disproved(r#"fn f(s: string) -> i64 requires(s == "é") { assert(len(s) >= 1); return 0; } fn main() { print(f("é")); }"#),
+            "an unseedable non-ASCII requires must not strand a body strlen assert: undecided, never disproved"
         );
         assert!(
             accepts(
@@ -11364,8 +11416,10 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             ),
             "an unseedable int-var length bound must not strand a body strlen assert"
         );
+        // POLICY (2026-09-23): no stranded strlen disproof at the forwarded call; the non-ASCII call site
+        // `f("é")` is refused as undecided.
         assert!(
-            accepts(
+            refused_undecided_not_disproved(
                 r#"fn g(s: string) -> i64 requires(len(s) >= 1) { return 0; } fn f(s: string) -> i64 requires(s == "é") { let z = g(s); return z; } fn main() { print(f("é")); }"#
             ),
             "an unseedable requires must not strand a forwarded call-site strlen obligation"
@@ -11583,18 +11637,22 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // (a non-ASCII `requires(s == "café")` seeds nothing) must fail-OPEN, not strand against a free var
         // → over-reject. `starts_with("café","ca")` is true at runtime, so the program is VALID — must
         // ACCEPT. (Equality is NOT gated: `is_pure_string_predicate` is false for it.)
+        // POLICY (2026-09-23): the ASSERT still does not strand (no disproof); the call-site precondition
+        // `"café" == "café"` over a non-ASCII literal is not encoded and is refused as undecided.
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "café") { assert(starts_with(s, "ca")); } fn main() { f("café"); }"#),
-            "a pure-predicate assert with an unseedable (non-ASCII) justification fail-opens — no stranded over-rejection"
+            refused_undecided_not_disproved(r#"fn f(s: string) requires(s == "café") { assert(starts_with(s, "ca")); } fn main() { f("café"); }"#),
+            "a pure-predicate assert with an unseedable (non-ASCII) justification: undecided, never disproved"
         );
         // OVER-REJECTION guard 2 (review lens-2, the strlen interaction): a `requires(contains(s, …))` seeds
         // a str.contains fact that MENTIONS s but does not tightly bound len(s); it must NOT spuriously
         // "cover" a `len(s) >= N` strlen obligation whose real justification is the unseeable non-ASCII pin.
         // `len("café") = 4 >= 3` at runtime → VALID → must ACCEPT (the predicate fact is excluded from the
         // strlen coverage, keeping the strlen lane as it was before the predicate lane existed).
+        // POLICY (2026-09-23): no spurious strlen disproof; the non-ASCII call-site precondition is refused
+        // as undecided.
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "café") requires(contains(s, "f")) { assert(len(s) >= 3); } fn main() { f("café"); }"#),
-            "a str.contains fact must not spuriously cover a strlen obligation → no interaction over-rejection"
+            refused_undecided_not_disproved(r#"fn f(s: string) requires(s == "café") requires(contains(s, "f")) { assert(len(s) >= 3); } fn main() { f("café"); }"#),
+            "a str.contains fact must not spuriously cover a strlen obligation: undecided, never disproved"
         );
     }
 
@@ -11736,9 +11794,11 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // seeds nothing) it must fail-OPEN, not strand against a free var. `substr("café",0,2)="ca"` holds
         // at runtime → VALID → must ACCEPT. (A plain `s == lit` pin is NOT gated — its uncovered reject is
         // correct.)
+        // POLICY (2026-09-23): as above — no stranded disproof; the non-ASCII call-site precondition is
+        // refused as undecided.
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "café") { assert(substr(s, 0, 2) == "ca"); } fn main() { f("café"); }"#),
-            "a substr-equality with an unseeable (non-ASCII) justification fail-opens — no stranded over-rejection"
+            refused_undecided_not_disproved(r#"fn f(s: string) requires(s == "café") { assert(substr(s, 0, 2) == "ca"); } fn main() { f("café"); }"#),
+            "a substr-equality with an unseeable (non-ASCII) justification: undecided, never disproved"
         );
         assert!(
             accepts(
@@ -13700,5 +13760,46 @@ math = { git = "https://example.invalid/math.git" }
             err.contains("ANUBIS_DEP_PROOF_UNVERIFIED") && err.contains("summaries"),
             "got: {err}"
         );
+    }
+
+    /// A refusal must never name the flag that would bypass it.
+    ///
+    /// Enforced over the emitted text rather than by review: the advertisement
+    /// this forbids survived in `format_build_check_failures` for the life of
+    /// the project, which is the evidence that a review-based rule does not
+    /// hold. An agent optimising to make `check` pass will take the cheapest
+    /// edit the compiler names, and a suppression flag is always cheaper than
+    /// understanding a counterexample.
+    #[test]
+    fn diagnostics_never_advertise_their_own_bypass() {
+        let src = "fn diff(a: i64, b: i64) -> i64 requires(a >= 0) requires(a <= 1000) \
+                   requires(b >= -1000) requires(b <= 1000) ensures(result >= 0) { return a - b; }";
+        let ir =
+            typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks.into_iter().filter(|c| c.status == "FAIL").collect();
+        assert!(
+            !fails.is_empty(),
+            "fixture must actually fail so there is a refusal to inspect"
+        );
+
+        for text in [
+            middle::format_check_failures(&fails),
+            middle::format_build_check_failures(&fails),
+        ] {
+            let lower = text.to_lowercase();
+            for forbidden in [
+                "no-verify",
+                "no_verify",
+                "suppress",
+                "confidence",
+                "ignore this",
+            ] {
+                assert!(
+                    !lower.contains(forbidden),
+                    "a refusal named {forbidden:?}, offering an agent a cheaper path than a real repair:\n{text}"
+                );
+            }
+        }
     }
 }

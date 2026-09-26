@@ -1,0 +1,4 @@
+fn main() uses(fs.write) {
+    let s: secret<i64> = 123456;
+    let r = write_file("/dev/stderr", str(s));
+}

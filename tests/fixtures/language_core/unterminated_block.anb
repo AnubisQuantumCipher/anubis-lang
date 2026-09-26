@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: expected
+// ERROR_CONTAINS: after block
 // FEATURE: an unterminated block is a fail-closed parse error (preserves the negative parse
 // coverage that missing_semicolon.anb used to provide, now that semicolons are optional).
 fn main() {

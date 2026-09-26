@@ -1,0 +1,21 @@
+// A wallet held entirely as a secret; its audit method logs progress with constant text and
+// keeps the checks private.
+struct Wallet {
+    owner: str,
+    balance: i64,
+}
+
+impl Wallet {
+    fn audit(self) -> secret<bool> {
+        print("audit: starting");
+        let ok = self.balance >= 0;
+        print("audit: done");
+        return ok;
+    }
+}
+
+fn main() {
+    let w: secret<Wallet> = Wallet { owner: "ana", balance: 42 };
+    let ok = w.audit();
+    assert(ok || !ok);
+}

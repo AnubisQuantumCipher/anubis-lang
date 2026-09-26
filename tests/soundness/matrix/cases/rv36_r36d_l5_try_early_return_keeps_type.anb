@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { a: i64 }
+enum Result { Ok(i64), Err(S) }
+impl T {
+  fn step(self, r) { let v = r?; return self; }
+  fn show(self) { return 0; }
+}
+impl Result { fn show(self) { match self { Result::Err(e) => print(e), Result::Ok(v) => print(v), } return 0; } }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let inv: T = T { a: 1 };
+  inv = inv.step(Result::Err(p));
+  let z = inv.show();
+}

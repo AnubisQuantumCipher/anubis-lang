@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+struct W { f: T }
+impl T { fn show(self) -> str { return "t ${self.v}"; } }
+impl U { fn show(self) -> str { return "u ${self.inner}"; } }
+fn setf(w, x) -> W { let mut c = w; c.f = x; return c; }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let g = setf;
+  let w2 = g(W { f: T { v: 0 } }, U { inner: p });
+  println(w2.f.show());
+}

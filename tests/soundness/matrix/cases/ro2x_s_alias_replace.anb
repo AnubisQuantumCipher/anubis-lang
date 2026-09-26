@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h3(x) { print(x); return 0; }
+fn getsec(x) { let s: secret<i64> = 7; return s; }
+fn zero(x) { return 0; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let c = p.pub_n > 1;
+    let d = p.pub_n > 100;
+    let g = if c { h3 } else { if d { let t = h3; t } else { zero } };
+    let y = if d { g = getsec; 0 } else { 0 };
+    let z = g(p.k);
+}

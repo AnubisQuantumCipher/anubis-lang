@@ -1,0 +1,29 @@
+struct Item { k: secret<i64>, sku: string, qty: i64 }
+struct Inventory { items: list<Item>, n: i64 }
+struct Console { prefix: string }
+impl Inventory {
+    fn render(self, items) {
+        for it in items { print("${it.sku} x${it.qty}"); }
+        print("count ${self.n}");
+    }
+}
+impl Console {
+    fn render(self, lines) {
+        for l in lines { print("${self.prefix}${l}"); }
+    }
+}
+impl Inventory {
+    fn add(self, it) {
+        match it.qty {
+            5 => { return Console { prefix: "> " }; },
+            _ => 0,
+        }
+        return Inventory { items: self.items, n: self.n + 1 };
+    }
+}
+fn main() {
+    let incoming = [Item { k: 42, sku: "bolt", qty: 3 }, Item { k: 42, sku: "nut", qty: 5 }];
+    let inv = Inventory { items: [], n: 0 };
+    for it in incoming { inv = inv.add(it); }
+    inv.render(incoming);
+}

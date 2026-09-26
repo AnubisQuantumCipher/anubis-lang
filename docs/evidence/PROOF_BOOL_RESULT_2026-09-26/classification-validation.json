@@ -1,0 +1,23 @@
+{
+  "tests": [
+    "anubis-compiler::security_label_correspondence_observer::public_observer_emits_declared_row_count",
+    "anubis-compiler::security_label_correspondence_observer::public_observer_row_shape_is_tsv_with_op_prefix",
+    "anubis-compiler::security_label_correspondence_observer::public_observer_keys_are_unique",
+    "anubis-compiler::security_label_correspondence_observer::public_observer_emit_to_env_path",
+    "anubis::closure_names_function_value::closure_returning_a_user_function_compiles_and_runs",
+    "anubis::closure_names_function_value::closure_returning_a_builtin_compiles_and_runs",
+    "anubis::closure_names_function_value::a_local_shadowing_a_builtin_is_still_captured",
+    "anubis::struct_string_index_reads_named_field::string_key_reads_the_named_field_not_the_first",
+    "anubis::struct_string_index_reads_named_field::public_string_key_does_not_release_a_secret_first_field",
+    "anubis::run_input_json::run_input_json_feeds_proof_inputs_to_native_run",
+    "anubis::evidence_source_binding::manifestless_build_evidence_binds_only_the_requested_program",
+    "anubis-compiler::ifc2_proof_commit_bool::bool_commit_result_evaluates_method_fallback_arguments",
+    "anubis-compiler::ifc2_proof_commit_bool::scalar_receiver_and_direct_print_validate_the_rejection_controls",
+    "anubis-compiler::ifc2_proof_commit_bool::bool_commit_result_kind_survives_helper_returns",
+    "anubis-compiler::ifc2_proof_commit_bool::bool_commit_preserves_journal_rejection_for_secret_truth",
+    "anubis-compiler::ifc2_proof_commit_bool::bool_commit_preserves_public_and_declassified_fallback_arguments",
+    "anubis-compiler::ifc2_proof_commit_bool::ordinary_struct_method_still_drops_unused_arguments",
+    "anubis-compiler::ifc2_proof_commit_bool::bool_commit_accepts_public_inputs_of_supported_kinds"
+  ],
+  "source_hashes_match": true
+}

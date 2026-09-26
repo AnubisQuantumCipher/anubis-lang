@@ -1,0 +1,15 @@
+fn upd(m, c) {
+    if c {
+        m["a"] = 5;
+    }
+    m
+}
+fn main() {
+    let s: secret<i64> = 123456;
+    let mut m = {"a": 1, "b": 2};
+    let ks = ["a"];
+    let k = ks[0];
+    let x = remove(m, k);
+    let r = upd(m, s > 100);
+    println(len(r));
+}

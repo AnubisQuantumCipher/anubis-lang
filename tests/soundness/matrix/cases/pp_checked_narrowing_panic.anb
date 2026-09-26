@@ -1,0 +1,5 @@
+fn narrow(x: i64) -> i64 ensures(result >= 0) ensures(result <= 30) {
+  if x < 0 || x > 30 { panic("out of range"); }
+  return x;
+}
+fn main() { print(narrow(7)); }

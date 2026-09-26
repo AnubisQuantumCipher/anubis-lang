@@ -1,0 +1,20 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { a: i64 }
+impl S {
+    fn get(self) -> i64 {
+        return len(str(self));
+    }
+}
+impl T {
+    fn get(self) -> i64 {
+        return 0;
+    }
+}
+fn mk(q: S) -> T {
+    return q;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let x = mk(p);
+    print(x.get());
+}

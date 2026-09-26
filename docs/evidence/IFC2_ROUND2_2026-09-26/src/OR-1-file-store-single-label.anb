@@ -1,0 +1,16 @@
+// A login gate: a failed PIN check appends a line to the audit log on disk. Afterwards the
+// program loads its public banner setting from a different file and prints the banner style.
+fn main() uses(io.print, fs.read, fs.write) {
+    let pin: secret<i64> = 42;
+    let attempt = 1234;
+    write_file("banner.cfg", "wide");
+    if attempt != pin {
+        append_file("audit.log", "failed attempt\n");
+    }
+    let style = read_file("banner.cfg");
+    if style == "wide" {
+        print("==================== WELCOME ====================");
+    } else {
+        print("== WELCOME ==");
+    }
+}

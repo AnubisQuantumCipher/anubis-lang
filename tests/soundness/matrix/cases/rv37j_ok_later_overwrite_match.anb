@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q: S, mode: i64) {
+    let mut out = 0;
+    if mode == 9 { out = q.k * 3; }
+    match mode {
+        9 => { out = 0; }
+        _ => { out = q.pub_n; }
+    }
+    return out;
+}
+fn main() { let p = S { k: 42, pub_n: 3 }; print(f(p, 9)); print(f(p, 1)); }

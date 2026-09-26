@@ -1,0 +1,216 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f0(x) { return |y| y + x; }
+fn f1(x) {
+    let g0 = f0(x + 0);
+    let g1 = f0(x + 1);
+    let g2 = f0(x + 2);
+    let g3 = f0(x + 3);
+    let g4 = f0(x + 4);
+    let g5 = f0(x + 5);
+    let g6 = f0(x + 6);
+    let g7 = f0(x + 7);
+    let g8 = f0(x + 8);
+    let g9 = f0(x + 9);
+    let g10 = f0(x + 10);
+    let g11 = f0(x + 11);
+    let g12 = f0(x + 12);
+    let g13 = f0(x + 13);
+    let g14 = f0(x + 14);
+    let g15 = f0(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f2(x) {
+    let g0 = f1(x + 0);
+    let g1 = f1(x + 1);
+    let g2 = f1(x + 2);
+    let g3 = f1(x + 3);
+    let g4 = f1(x + 4);
+    let g5 = f1(x + 5);
+    let g6 = f1(x + 6);
+    let g7 = f1(x + 7);
+    let g8 = f1(x + 8);
+    let g9 = f1(x + 9);
+    let g10 = f1(x + 10);
+    let g11 = f1(x + 11);
+    let g12 = f1(x + 12);
+    let g13 = f1(x + 13);
+    let g14 = f1(x + 14);
+    let g15 = f1(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f3(x) {
+    let g0 = f2(x + 0);
+    let g1 = f2(x + 1);
+    let g2 = f2(x + 2);
+    let g3 = f2(x + 3);
+    let g4 = f2(x + 4);
+    let g5 = f2(x + 5);
+    let g6 = f2(x + 6);
+    let g7 = f2(x + 7);
+    let g8 = f2(x + 8);
+    let g9 = f2(x + 9);
+    let g10 = f2(x + 10);
+    let g11 = f2(x + 11);
+    let g12 = f2(x + 12);
+    let g13 = f2(x + 13);
+    let g14 = f2(x + 14);
+    let g15 = f2(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f4(x) {
+    let g0 = f3(x + 0);
+    let g1 = f3(x + 1);
+    let g2 = f3(x + 2);
+    let g3 = f3(x + 3);
+    let g4 = f3(x + 4);
+    let g5 = f3(x + 5);
+    let g6 = f3(x + 6);
+    let g7 = f3(x + 7);
+    let g8 = f3(x + 8);
+    let g9 = f3(x + 9);
+    let g10 = f3(x + 10);
+    let g11 = f3(x + 11);
+    let g12 = f3(x + 12);
+    let g13 = f3(x + 13);
+    let g14 = f3(x + 14);
+    let g15 = f3(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f5(x) {
+    let g0 = f4(x + 0);
+    let g1 = f4(x + 1);
+    let g2 = f4(x + 2);
+    let g3 = f4(x + 3);
+    let g4 = f4(x + 4);
+    let g5 = f4(x + 5);
+    let g6 = f4(x + 6);
+    let g7 = f4(x + 7);
+    let g8 = f4(x + 8);
+    let g9 = f4(x + 9);
+    let g10 = f4(x + 10);
+    let g11 = f4(x + 11);
+    let g12 = f4(x + 12);
+    let g13 = f4(x + 13);
+    let g14 = f4(x + 14);
+    let g15 = f4(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f6(x) {
+    let g0 = f5(x + 0);
+    let g1 = f5(x + 1);
+    let g2 = f5(x + 2);
+    let g3 = f5(x + 3);
+    let g4 = f5(x + 4);
+    let g5 = f5(x + 5);
+    let g6 = f5(x + 6);
+    let g7 = f5(x + 7);
+    let g8 = f5(x + 8);
+    let g9 = f5(x + 9);
+    let g10 = f5(x + 10);
+    let g11 = f5(x + 11);
+    let g12 = f5(x + 12);
+    let g13 = f5(x + 13);
+    let g14 = f5(x + 14);
+    let g15 = f5(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f7(x) {
+    let g0 = f6(x + 0);
+    let g1 = f6(x + 1);
+    let g2 = f6(x + 2);
+    let g3 = f6(x + 3);
+    let g4 = f6(x + 4);
+    let g5 = f6(x + 5);
+    let g6 = f6(x + 6);
+    let g7 = f6(x + 7);
+    let g8 = f6(x + 8);
+    let g9 = f6(x + 9);
+    let g10 = f6(x + 10);
+    let g11 = f6(x + 11);
+    let g12 = f6(x + 12);
+    let g13 = f6(x + 13);
+    let g14 = f6(x + 14);
+    let g15 = f6(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f8(x) {
+    let g0 = f7(x + 0);
+    let g1 = f7(x + 1);
+    let g2 = f7(x + 2);
+    let g3 = f7(x + 3);
+    let g4 = f7(x + 4);
+    let g5 = f7(x + 5);
+    let g6 = f7(x + 6);
+    let g7 = f7(x + 7);
+    let g8 = f7(x + 8);
+    let g9 = f7(x + 9);
+    let g10 = f7(x + 10);
+    let g11 = f7(x + 11);
+    let g12 = f7(x + 12);
+    let g13 = f7(x + 13);
+    let g14 = f7(x + 14);
+    let g15 = f7(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f9(x) {
+    let g0 = f8(x + 0);
+    let g1 = f8(x + 1);
+    let g2 = f8(x + 2);
+    let g3 = f8(x + 3);
+    let g4 = f8(x + 4);
+    let g5 = f8(x + 5);
+    let g6 = f8(x + 6);
+    let g7 = f8(x + 7);
+    let g8 = f8(x + 8);
+    let g9 = f8(x + 9);
+    let g10 = f8(x + 10);
+    let g11 = f8(x + 11);
+    let g12 = f8(x + 12);
+    let g13 = f8(x + 13);
+    let g14 = f8(x + 14);
+    let g15 = f8(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f10(x) {
+    let g0 = f9(x + 0);
+    let g1 = f9(x + 1);
+    let g2 = f9(x + 2);
+    let g3 = f9(x + 3);
+    let g4 = f9(x + 4);
+    let g5 = f9(x + 5);
+    let g6 = f9(x + 6);
+    let g7 = f9(x + 7);
+    let g8 = f9(x + 8);
+    let g9 = f9(x + 9);
+    let g10 = f9(x + 10);
+    let g11 = f9(x + 11);
+    let g12 = f9(x + 12);
+    let g13 = f9(x + 13);
+    let g14 = f9(x + 14);
+    let g15 = f9(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn f11(x) {
+    let g0 = f10(x + 0);
+    let g1 = f10(x + 1);
+    let g2 = f10(x + 2);
+    let g3 = f10(x + 3);
+    let g4 = f10(x + 4);
+    let g5 = f10(x + 5);
+    let g6 = f10(x + 6);
+    let g7 = f10(x + 7);
+    let g8 = f10(x + 8);
+    let g9 = f10(x + 9);
+    let g10 = f10(x + 10);
+    let g11 = f10(x + 11);
+    let g12 = f10(x + 12);
+    let g13 = f10(x + 13);
+    let g14 = f10(x + 14);
+    let g15 = f10(x + 15);
+    return |y| g0(y) + g15(y) + 1;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let h = f11(1);
+    println("${h(p.pub_n)}");
+}

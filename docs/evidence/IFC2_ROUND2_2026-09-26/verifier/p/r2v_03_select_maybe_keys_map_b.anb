@@ -1,0 +1,11 @@
+fn pick(c, x, y) {
+    if c { x } else { y }
+}
+fn main() {
+    let k: secret<i64> = 123456;
+    let c = len(args()) > 100;
+    let m1 = if c { {"a": []} } else { {"a": [], "b": []} };
+    let m2 = if c { {"a": [], "b": []} } else { {"a": []} };
+    let m = pick(k > 100, m1, m2);
+    println(len(m));
+}

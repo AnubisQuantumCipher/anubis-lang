@@ -1,0 +1,18 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Point { x: i64, y: i64 }
+impl Point { fn show(self) -> string { return "${self}"; } }
+impl S { fn show(self) -> string { return "S#${self.pub_n}"; } }
+struct Team { lead: S, size: i64, tags: list<string> }
+impl Team {
+    fn grow(self) -> Team { self.size = self.size + 1; return self; }
+    fn tag(self, t: string) -> Team { self.tags = self.tags + [t]; return self; }
+    fn show(self) -> string { return "team of ${self.size}"; }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let t = Team { lead: p, size: 1, tags: [] };
+    let t = t.grow();
+    println(t.show());
+    let lead = t.lead;
+    println(lead.show());
+}

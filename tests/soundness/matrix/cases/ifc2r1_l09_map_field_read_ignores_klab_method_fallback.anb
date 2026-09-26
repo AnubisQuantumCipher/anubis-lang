@@ -1,0 +1,12 @@
+struct Z { q: i64 }
+impl Z {
+    fn go(self, x) {
+        0
+    }
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let k = if s > 100 { "go" } else { "no" };
+    let m = {k: |x| print(x)};
+    m.go(7);
+}

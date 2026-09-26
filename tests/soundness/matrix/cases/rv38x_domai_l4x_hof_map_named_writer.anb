@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+impl T { fn show(self) -> str { return "t ${self.v}"; } }
+impl U { fn show(self) -> str { return "u ${self.inner}"; } }
+struct W { f: T }
+fn setf(w) -> W { let mut c = w; c.f = U { inner: S { k: 42, pub_n: 3 } }; return c; }
+fn mk(ws: list<W>) -> list<W> { return map(ws, setf); }
+fn main() {
+  let ys = mk([W { f: T { v: 0 } }]);
+  println(ys[0].f.show());
+}

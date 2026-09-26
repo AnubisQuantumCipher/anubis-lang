@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show_pub(s) { return "n=${s.pub_n}"; }
+fn show_short(s) { return "S"; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut a = show_pub;
+    let mut b = show_short;
+    for i in 0..3 {
+        let t = a;
+        a = b;
+        b = t;
+        println(a(p));
+    }
+}

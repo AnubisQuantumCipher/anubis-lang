@@ -1,0 +1,6 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let k = "a";
+    let m = {"a": 1, k: s};
+    print(m["a"]);
+}

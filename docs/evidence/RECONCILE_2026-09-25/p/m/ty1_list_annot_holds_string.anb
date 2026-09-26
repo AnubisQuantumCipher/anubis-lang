@@ -1,0 +1,4 @@
+fn main() {
+    let s: list<i64> = "ab";
+    print(len(s));
+}

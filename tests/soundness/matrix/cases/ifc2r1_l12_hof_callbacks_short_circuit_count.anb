@@ -1,0 +1,8 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let xs = [s, 3];
+    let r = any(xs, |x| {
+        print("visit");
+        x > 100
+    });
+}

@@ -17,12 +17,94 @@ refused what it could not decide. It does **not** yet mean the program cannot vi
 see `docs/CLAIMS.md` item 21 and the phased blueprint.
 
 ### Added
+- `anubis check --message-format=json` emits the `anubis-diagnostics/1` stream on stdout: one JSON
+  object per refusal, then a summary, and nothing else on that channel. The epistemic class is a
+  field rather than a severity, so `disproved` and `undecided` never collapse into one value. A
+  refusal raised before the solver ran still reports `fail`. `suggestions` is always empty, because
+  the existing "possible fix" re-fails when applied verbatim and is never re-proved. Schema and its
+  deliberate omissions: `docs/language/DIAGNOSTICS_JSON.md`. An unrecognised `--message-format`
+  value is refused rather than treated as `human`. Optional flag, so MINOR under
+  `docs/language/SEMVER_1_0_POLICY.md`; the schema is NOT part of the 1.0 frozen surface.
+- Certificate coverage in the ordinary `check` verdict, and as a `coverage` object on the JSON
+  summary. A pass now states how many discharged obligations were settled by a machine-checked
+  refutation and names those resting on the solver's word. No new analysis: the native lane's
+  decision was already being made per obligation and discarded. Coverage may understate itself and
+  may never overstate it — an obligation whose provenance is unrecognised counts as neither, and one
+  that was never decided is counted under `not_discharged` rather than dropped from the denominator.
+  `witnesses_retained` says whether the refutations were actually written anywhere: on a plain
+  `check` they are verified in process and discarded, and only `--evidence` retains them.
+- `[package] edition` in the manifest, with an edition this compiler does not recognise refused
+  (`ANUBIS_EDITION_UNKNOWN`) rather than compiled under today's rules. `docs/language/EDITIONS.md`.
+- `anubis evidence-verify` re-derives every published `rup_refutation` by reverse unit propagation,
+  reading the published DIMACS and DRAT text rather than any solver struct. Measured 2026-09-21: the
+  documented forgery — replace a `.drat` with a two-line stub and recompute `MANIFEST.sha256` — went
+  from `overall: PASS` to FAIL exit 1; an honest bundle still passes, replayed in-process and
+  independently by upstream `drat-trim`. Listed here as an added check, NOT under **Fixed**: this
+  file's honesty rule requires a 0-flip verdict-diff, a VM seal and an empty audit re-run before a
+  soundness closure may be claimed, and none of those has been run for it.
 - `.gitattributes`, `.github/CODEOWNERS`, `.github/dependabot.yml`, and this changelog — repository
   operating surface brought in line with how the project is actually developed.
 - `tools/host_exec_guard.py`: the destructive rule is now pinned by the self-test in both
   directions (15 must-block, 8 must-allow cases).
 
 ### Fixed
+- A refusal in the machine-readable lane no longer tells an agent to weaken a contract in response
+  to a soundness alarm. `ANUBIS_NATIVE_DISAGREEMENT`, `ANUBIS_Z3_ONLY_UNTRUSTED`, a malformed query
+  the compiler emitted, and a missing z3 all fell into one residual bucket that rendered as
+  `restate_or_raise_budget`. Who owns a refusal is now decided by `middle::refusal_locus`,
+  separately from what the solver established: a cross-check alarm routes to the compiler, an
+  unavailable solver to the environment, a vacuous contract to the program.
+- The verdict no longer claims a re-checkable witness exists when none was written. A plain `check`
+  builds each refutation, hands it to the checker and drops it; the line said obligations "carry a
+  re-checkable witness" on exactly that run. It now says what happened and whether anything was
+  retained.
+- The `z3-rlimit` budget is no longer stamped on diagnostics the z3 bound did not decide: a
+  native-lane counterexample comes from the CDCL conflict budget, and an unavailable solver ran
+  under no budget at all.
+- `anubis evidence-verify` no longer returns silently when `analysis/proofs.json` is absent or its
+  obligations array is empty. Silence pushed no check, so the report carried no proof row and read
+  as though the proofs had been examined — deleting the refutations was a cheaper forgery than
+  stubbing them, and it reached `overall: PASS`.
+- The native-authoritative gate printed its timeout failure before the disagreement log, so a run
+  with both suppressed the more serious of the two and leaked the tempfile.
+- Three harnesses (`run_runtime_fixtures.sh`, `run_run_failclosed_gate.sh`,
+  `run_stdlib_failclosed_gate.sh`) sat at a 120 s budget equal to the solver's per-query hang guard,
+  re-creating the very inversion the guard's own note says it fixed. `anubis run` and `anubis build`
+  run the same solver pass, so all three now derive their budget from the same place.
+- Solver queries are bounded in SPACE as well as work and time (`-memory:2048`). Found by driving
+  this machine to zero available memory: a single obligation grew z3 to 19.9 GiB of resident memory
+  in 73 seconds. `rlimit` counts solver work and `-T` counts seconds; neither counts bytes, so a
+  fast-allocating query was bounded only by the machine. Raising `-T` from 20 s to 120 s had
+  multiplied the window such a query has to allocate in, from roughly 4 GiB to roughly 26 GiB at the
+  observed rate. A memory cap keeps the determinism property a clock breaks, since the same query
+  allocates the same bytes anywhere. Verified by outcome: the full 937-file corpus re-run under the
+  bound shows zero verdict flips against `main`.
+- Exhausting that memory bound reports as UNDECIDED rather than as a malformed query. z3 answers
+  `(error "out of memory")`, which the existing `(error …)` arm would have reported as "solver
+  rejected the emitted SMT — a malformed obligation is not a proof", blaming the compiler for an
+  obligation that is merely too large.
+- Proof search is bounded by work rather than by wall clock. z3 runs under a deterministic
+  `rlimit` and the native solver's clock is off by default, so the same query yields the same
+  verdict under any machine load. Measured 2026-09-21: a QF_FP obligation cost 91,502,028 resource
+  units and 8.18 s of CPU against the previous 10 s timeout, a margin of 1.2x, which is why provable
+  contracts came back UNDECIDED under parallel load. The corpus verdict-diff under saturation that
+  would *demonstrate* load-independence has NOT been run; what changed is the mechanism and the
+  measurement.
+- A compile-and-run could fail with `Text file busy` under parallel load. This was the POSIX
+  fork/exec race, not a defect in the program being launched: `fork` copies the file-descriptor
+  table, so a child momentarily holds another thread's write handle to a different executable while
+  close-on-exec has not yet fired. Bounded retry on `ETXTBSY` only. Measured 2026-09-21 at four test
+  threads: two failures before, none after.
+- A contract refusal described its bound as a "time budget" after that bound had become a
+  deterministic resource counter, which tells a reader to retry on a quieter machine when the
+  verdict will not change. It now names the work budget, and the string is a named constant so its
+  regression test cannot drift from production.
+- A counterexample's trust was decided by searching the refusal text for the word "replayed", so the
+  native lane's models — independently re-evaluated, but described in different words — were
+  reported as untrustworthy.
+- Extracting the bundle validator into a constant had placed it between
+  `#[allow(clippy::too_many_arguments)]` and the function that attribute guarded, orphaning it onto
+  the constant.
 - `tools/host_exec_guard.py` decided on raw command **text** instead of resolved **targets**, which
   failed in both directions: it missed `rm -rf "$VAR"`, `$HOME/…`, `${HOME}/…`, `-fr`, `-r -f`,
   `--recursive --force`, and `$(…)` substitution, while wrongly blocking every absolute path
@@ -33,6 +115,16 @@ see `docs/CLAIMS.md` item 21 and the phased blueprint.
   a gate failure.
 
 ### Known open
+- **Certificate coverage is not correspondence.** A witnessed obligation means a stranger can
+  re-check that *that CNF* is unsatisfiable. Nothing binds the CNF to its `.smt2`, or the `.smt2` to
+  the source. `docs/PROOF_CORRESPONDENCE.md`.
+- **Out-of-fragment obligations carry no witness at all.** `bvsdiv`, `bvurem`, `bvsrem`, `bvudiv`,
+  `bvashr` and `sign_extend` have no machine-checked bit-blast, so the native lane declines and z3
+  decides alone. This is REG-002, and it is now counted and named in the verdict rather than silent.
+- **Certificates are DRAT, not LRAT with hints**, so a *verified* checker such as `cake_lpr` cannot
+  yet accept Anubis output.
+- **Semantic refusals carry no source location.** Their span is still start-of-file, so the JSON
+  `location` field is omitted rather than reported as `1:1`. `docs/CLAIMS.md`.
 - **The enforcement lanes are not total.** Confidentiality and integrity cover a subset of the AST
   while the effect and capability lanes cover all of it; carrier-routed programs can pass `check` and
   violate at runtime. Tracked as `docs/CLAIMS.md` item 21.

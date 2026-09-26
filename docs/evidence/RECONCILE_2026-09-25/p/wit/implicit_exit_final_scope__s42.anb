@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q: S) {
+    let s = q.k;
+    if s > 100 { let t = Err(0)?; }
+    s = 0;
+    return Ok(s);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

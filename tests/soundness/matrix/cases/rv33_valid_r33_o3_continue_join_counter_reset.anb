@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h(p: S) -> i64 {
+    let t = 0;
+    let i = 0;
+    loop {
+        i = i + 1;
+        if i > 2 { break }
+        let v = match i { 1 => { t = p; continue }, _ => { t = 0; 0 } };
+    }
+    print(t);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let r = h(p);
+}

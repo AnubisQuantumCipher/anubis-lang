@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(v) { println(v); return true; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let x = 0;
+    let i = 0;
+    while show(x) && i < 2 {
+        x = p.pub_n;
+        i = i + 1;
+    }
+}

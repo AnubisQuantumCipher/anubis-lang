@@ -1,0 +1,6 @@
+fn main() {
+    let h = |x| x * 2;
+    let steps = [h, h, h];
+    let pipeline = reduce(steps, |acc, f| compose(f, acc), identity);
+    print(pipeline(3));
+}

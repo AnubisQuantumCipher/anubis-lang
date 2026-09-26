@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(c) { return c(); }
+fn wrap(g, x) { return run(|| g(x)); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print([wrap(|s| s, 1), wrap(|s| s, 2), wrap(|s| s, 3), wrap(|s| s, 4), wrap(|s| s, 5), wrap(|s| s.pub_n, p), wrap(|s| s, 6)]);
+}

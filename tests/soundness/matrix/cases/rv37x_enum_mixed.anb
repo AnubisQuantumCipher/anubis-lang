@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+enum E { A(T), B(i64) }
+impl T { fn show(self, o) -> str { return "t ${self.v}"; } }
+impl U { fn show(self, o) -> str { return "u ${o}"; } }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let u0 = U { inner: p };
+  let e = if p.pub_n > 1 { E::A(u0) } else { E::B(7) };
+  let x = match e { E::A(t) => t, E::B(n) => T { v: n } };
+  println(x.show(p));
+}

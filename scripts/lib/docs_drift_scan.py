@@ -80,6 +80,15 @@ LIVE_STAMP_FILES = {
 # describe "the pinned binary" WITHOUT naming which pin gets no exemption — it is unfalsifiable in
 # the same way "as of" was, and the fix is to name the pin.
 PIN_BOUND = re.compile(r"anubis-[0-9a-f]{12}")
+CURRENT_MARKER = re.compile(r"\b(?:current|live)\b", re.I)
+
+# This is a named current claim, not an incidental N/N in a dated table. Require
+# exactly one anchor so removing or renaming the row cannot silently reduce the
+# aggregate stamp count. A bare inventory count avoids implying a gate PASS.
+LIVE_LANGUAGE_INVENTORY = re.compile(
+    r"^\|\s*\*\*Language core\*\*\s*\|\s*Current fixture inventory:\s*\*\*(\d+)\*\*",
+    re.I,
+)
 
 DATED_LINE = re.compile(
     r"seal date|seal-date|historical|snapshot of|on this seal|"
@@ -166,7 +175,12 @@ FIXPOINT_EVIDENCE = re.compile(
 
 
 def is_dated(line: str) -> bool:
-    return bool(DATED_LINE.search(line)) or bool(PIN_BOUND.search(line))
+    # A current/live claim cannot borrow an exemption from a historical clause
+    # or a named old pin on the same line. Split the claims instead, preserving
+    # the dated record.
+    return (bool(DATED_LINE.search(line)) or bool(PIN_BOUND.search(line))) and not bool(
+        CURRENT_MARKER.search(line)
+    )
 
 
 def extract_pair_after(line: str, keyword: re.Pattern[str]) -> str | None:
@@ -227,6 +241,27 @@ def scan(
             failures.append(f"UNREADABLE_OWNED_DOC {rel}: {exc}")
             continue
         lines = text.splitlines()
+        if rel == "docs/CLAIMS.md":
+            anchors = []
+            anchor_in_fence = False
+            for line in lines:
+                if line.lstrip().startswith("```"):
+                    anchor_in_fence = not anchor_in_fence
+                elif not anchor_in_fence and (m := LIVE_LANGUAGE_INVENTORY.search(line)):
+                    anchors.append(m)
+            if len(anchors) != 1:
+                failures.append(
+                    "LIVE_CLAIM_ANCHOR docs/CLAIMS.md language-core-inventory "
+                    f"expected one row, found {len(anchors)}"
+                )
+            else:
+                stamps += 1
+                claimed = int(anchors[0].group(1))
+                if claimed != measured["language"]:
+                    failures.append(
+                        "STAMP_DRIFT docs/CLAIMS.md language-core-inventory "
+                        f"claimed {claimed} measured {measured['language']}"
+                    )
         in_fence = False
         historical_section = False
         for i, line in enumerate(lines, 1):

@@ -1,0 +1,33 @@
+struct Acc { n: i64, tag: str }
+impl Acc {
+    fn m0(self, v: i64) -> Acc { if v == 0 { return self.m1(v + 0); } if v == 1 { return self.m1(v + 1); } if v == 2 { return self.m1(v + 2); } if v == 3 { return self.m1(v + 3); } if v == 4 { return self.m1(v + 4); } if v == 5 { return self.m1(v + 5); } if v == 6 { return self.m1(v + 6); } if v == 7 { return self.m1(v + 7); } if v == 8 { return self.m1(v + 8); } if v == 9 { return self.m1(v + 9); } return self; }
+    fn m1(self, v: i64) -> Acc { if v == 0 { return self.m2(v + 0); } if v == 1 { return self.m2(v + 1); } if v == 2 { return self.m2(v + 2); } if v == 3 { return self.m2(v + 3); } if v == 4 { return self.m2(v + 4); } if v == 5 { return self.m2(v + 5); } if v == 6 { return self.m2(v + 6); } if v == 7 { return self.m2(v + 7); } if v == 8 { return self.m2(v + 8); } if v == 9 { return self.m2(v + 9); } return self; }
+    fn m2(self, v: i64) -> Acc { if v == 0 { return self.m3(v + 0); } if v == 1 { return self.m3(v + 1); } if v == 2 { return self.m3(v + 2); } if v == 3 { return self.m3(v + 3); } if v == 4 { return self.m3(v + 4); } if v == 5 { return self.m3(v + 5); } if v == 6 { return self.m3(v + 6); } if v == 7 { return self.m3(v + 7); } if v == 8 { return self.m3(v + 8); } if v == 9 { return self.m3(v + 9); } return self; }
+    fn m3(self, v: i64) -> Acc { if v == 0 { return self.m4(v + 0); } if v == 1 { return self.m4(v + 1); } if v == 2 { return self.m4(v + 2); } if v == 3 { return self.m4(v + 3); } if v == 4 { return self.m4(v + 4); } if v == 5 { return self.m4(v + 5); } if v == 6 { return self.m4(v + 6); } if v == 7 { return self.m4(v + 7); } if v == 8 { return self.m4(v + 8); } if v == 9 { return self.m4(v + 9); } return self; }
+    fn m4(self, v: i64) -> Acc { if v == 0 { return Acc { n: 0, tag: "x" }; } if v == 1 { return Acc { n: 1, tag: "x" }; } if v == 2 { return Acc { n: 2, tag: "x" }; } if v == 3 { return Acc { n: 3, tag: "x" }; } if v == 4 { return Acc { n: 4, tag: "x" }; } if v == 5 { return Acc { n: 5, tag: "x" }; } if v == 6 { return Acc { n: 6, tag: "x" }; } if v == 7 { return Acc { n: 7, tag: "x" }; } if v == 8 { return Acc { n: 8, tag: "x" }; } if v == 9 { return Acc { n: 9, tag: "x" }; } return self; }
+    fn show(self) -> str { return self.tag + str(self.n); }
+}
+fn main() {
+    let mut acc = Acc { n: 0, tag: "t" };
+    acc = acc.m0(0);
+    acc = acc.m0(1);
+    acc = acc.m0(2);
+    acc = acc.m0(0);
+    acc = acc.m0(1);
+    acc = acc.m0(2);
+    acc = acc.m0(0);
+    acc = acc.m0(1);
+    acc = acc.m0(2);
+    acc = acc.m0(0);
+    acc = acc.m0(1);
+    acc = acc.m0(2);
+    acc = acc.m0(0);
+    acc = acc.m0(1);
+    acc = acc.m0(2);
+    acc = acc.m0(0);
+    acc = acc.m0(1);
+    acc = acc.m0(2);
+    acc = acc.m0(0);
+    acc = acc.m0(1);
+    println(acc.show());
+}

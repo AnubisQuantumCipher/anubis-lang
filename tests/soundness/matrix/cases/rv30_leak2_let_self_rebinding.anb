@@ -1,0 +1,21 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct B { n: i64 }
+impl S {
+    fn describe(self) {
+        return str(self);
+    }
+}
+impl B {
+    fn describe(self) {
+        return "B" + str(self.n);
+    }
+    fn show(self, other) {
+        let self = other;
+        return self.describe();
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    print(B { n: 1 }.show(p));
+}

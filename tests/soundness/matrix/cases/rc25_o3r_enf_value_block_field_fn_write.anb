@@ -1,0 +1,15 @@
+struct B { g: i64 }
+struct C { b: B }
+fn h1(n) {
+    return n;
+}
+fn h2(n) {
+    let s: secret<i64> = 42;
+    return s;
+}
+fn main() {
+    let n = 3;
+    let b = B { g: h1 };
+    let y = if n > 1 { b.g = h2; 0 } else { 0 };
+    print(b.g(n));
+}

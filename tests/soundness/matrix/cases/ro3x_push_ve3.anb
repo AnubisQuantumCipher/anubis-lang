@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [0];
+    match p.pub_n {
+        _ => { push(xs, p.pub_n) }
+    }
+    println(xs);
+}

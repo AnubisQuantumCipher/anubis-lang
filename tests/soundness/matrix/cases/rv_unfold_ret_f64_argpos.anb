@@ -1,0 +1,9 @@
+fn widen(v: i64) -> f64 {
+    return v;
+}
+fn f(n) requires(n == 3) {
+    println(n);
+}
+fn main() {
+    f(widen(7) / 2);
+}

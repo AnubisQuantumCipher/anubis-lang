@@ -1,0 +1,106 @@
+// A parser with one function per precedence level: level i parses level i+1 operands
+// joined by operator ops[i]; the last level parses a number or a parenthesized expression.
+enum Ast {
+    Num(i64),
+    Bin(str, Ast, Ast),
+}
+
+fn peek(toks, p) {
+    if p < len(toks) {
+        return toks[p];
+    }
+    return "";
+}
+
+fn level1(toks, p) {
+    let r = level2(toks, p);
+    let mut node = r[0];
+    let mut q = r[1];
+    while peek(toks, q) == "+" {
+        let r2 = level2(toks, q + 1);
+        node = Ast::Bin("+", node, r2[0]);
+        q = r2[1];
+    }
+    return [node, q];
+}
+
+fn level2(toks, p) {
+    let r = level3(toks, p);
+    let mut node = r[0];
+    let mut q = r[1];
+    while peek(toks, q) == "-" {
+        let r2 = level3(toks, q + 1);
+        node = Ast::Bin("-", node, r2[0]);
+        q = r2[1];
+    }
+    return [node, q];
+}
+
+fn level3(toks, p) {
+    let r = level4(toks, p);
+    let mut node = r[0];
+    let mut q = r[1];
+    while peek(toks, q) == "*" {
+        let r2 = level4(toks, q + 1);
+        node = Ast::Bin("*", node, r2[0]);
+        q = r2[1];
+    }
+    return [node, q];
+}
+
+fn level4(toks, p) {
+    let r = level5(toks, p);
+    let mut node = r[0];
+    let mut q = r[1];
+    while peek(toks, q) == "/" {
+        let r2 = level5(toks, q + 1);
+        node = Ast::Bin("/", node, r2[0]);
+        q = r2[1];
+    }
+    return [node, q];
+}
+
+fn level5(toks, p) {
+    let r = level6(toks, p);
+    let mut node = r[0];
+    let mut q = r[1];
+    while peek(toks, q) == "%" {
+        let r2 = level6(toks, q + 1);
+        node = Ast::Bin("%", node, r2[0]);
+        q = r2[1];
+    }
+    return [node, q];
+}
+
+fn level6(toks, p) {
+    let r = level7(toks, p);
+    let mut node = r[0];
+    let mut q = r[1];
+    while peek(toks, q) == "&" {
+        let r2 = level7(toks, q + 1);
+        node = Ast::Bin("&", node, r2[0]);
+        q = r2[1];
+    }
+    return [node, q];
+}
+
+fn level7(toks, p) {
+    if peek(toks, p) == "(" {
+        let r = level1(toks, p + 1);
+        return [r[0], r[1] + 1];
+    }
+    return [Ast::Num(int(peek(toks, p))), p + 1];
+}
+
+fn size(a) {
+    return match a {
+        Ast::Num(x) => 1,
+        Ast::Bin(o, l, r) => 1 + size(l) + size(r),
+    };
+}
+
+fn main() {
+    let toks = ["(", "1", "+", "2", ")", "*", "3"];
+    let r = level1(toks, 0);
+    print("nodes: " + str(size(r[0])));
+}

@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mk(n) { let xs = []; push(xs, S { k: 42, pub_n: n }); return xs; }
+fn main() { print(mk(1)); }

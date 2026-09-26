@@ -1,0 +1,10 @@
+fn go(n: i64) requires(n > 0) {
+    let mut x = n;
+    let t = x * 2305843009213693952;
+    println(t);
+    x = 1;
+    println(x);
+}
+fn main() {
+    go(5);
+}

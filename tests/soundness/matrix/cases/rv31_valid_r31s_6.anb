@@ -1,0 +1,405 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn b0(f, x) {
+    let a = b1(|y| f(y), x);
+    let c = if len(x) > 100 { b1(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b1(f, x) {
+    let a = b2(|y| f(y), x);
+    let c = if len(x) > 100 { b2(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b2(f, x) {
+    let a = b3(|y| f(y), x);
+    let c = if len(x) > 100 { b3(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b3(f, x) {
+    let a = b4(|y| f(y), x);
+    let c = if len(x) > 100 { b4(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b4(f, x) {
+    let a = b5(|y| f(y), x);
+    let c = if len(x) > 100 { b5(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b5(f, x) {
+    let a = b6(|y| f(y), x);
+    let c = if len(x) > 100 { b6(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b6(f, x) {
+    let a = b7(|y| f(y), x);
+    let c = if len(x) > 100 { b7(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b7(f, x) {
+    let a = b8(|y| f(y), x);
+    let c = if len(x) > 100 { b8(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b8(f, x) {
+    let a = b9(|y| f(y), x);
+    let c = if len(x) > 100 { b9(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b9(f, x) {
+    let a = b10(|y| f(y), x);
+    let c = if len(x) > 100 { b10(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b10(f, x) {
+    let a = b11(|y| f(y), x);
+    let c = if len(x) > 100 { b11(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b11(f, x) {
+    let a = b12(|y| f(y), x);
+    let c = if len(x) > 100 { b12(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b12(f, x) {
+    let a = b13(|y| f(y), x);
+    let c = if len(x) > 100 { b13(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b13(f, x) {
+    let a = b14(|y| f(y), x);
+    let c = if len(x) > 100 { b14(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b14(f, x) {
+    let a = b15(|y| f(y), x);
+    let c = if len(x) > 100 { b15(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b15(f, x) {
+    let a = b16(|y| f(y), x);
+    let c = if len(x) > 100 { b16(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b16(f, x) {
+    let a = b17(|y| f(y), x);
+    let c = if len(x) > 100 { b17(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b17(f, x) {
+    let a = b18(|y| f(y), x);
+    let c = if len(x) > 100 { b18(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b18(f, x) {
+    let a = b19(|y| f(y), x);
+    let c = if len(x) > 100 { b19(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b19(f, x) {
+    let a = b20(|y| f(y), x);
+    let c = if len(x) > 100 { b20(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b20(f, x) {
+    let a = b21(|y| f(y), x);
+    let c = if len(x) > 100 { b21(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b21(f, x) {
+    let a = b22(|y| f(y), x);
+    let c = if len(x) > 100 { b22(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b22(f, x) {
+    let a = b23(|y| f(y), x);
+    let c = if len(x) > 100 { b23(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b23(f, x) {
+    let a = b24(|y| f(y), x);
+    let c = if len(x) > 100 { b24(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b24(f, x) {
+    let a = b25(|y| f(y), x);
+    let c = if len(x) > 100 { b25(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b25(f, x) {
+    let a = b26(|y| f(y), x);
+    let c = if len(x) > 100 { b26(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b26(f, x) {
+    let a = b27(|y| f(y), x);
+    let c = if len(x) > 100 { b27(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b27(f, x) {
+    let a = b28(|y| f(y), x);
+    let c = if len(x) > 100 { b28(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b28(f, x) {
+    let a = b29(|y| f(y), x);
+    let c = if len(x) > 100 { b29(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b29(f, x) {
+    let a = b30(|y| f(y), x);
+    let c = if len(x) > 100 { b30(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b30(f, x) {
+    let a = b31(|y| f(y), x);
+    let c = if len(x) > 100 { b31(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b31(f, x) {
+    let a = b32(|y| f(y), x);
+    let c = if len(x) > 100 { b32(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b32(f, x) {
+    let a = b33(|y| f(y), x);
+    let c = if len(x) > 100 { b33(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b33(f, x) {
+    let a = b34(|y| f(y), x);
+    let c = if len(x) > 100 { b34(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b34(f, x) {
+    let a = b35(|y| f(y), x);
+    let c = if len(x) > 100 { b35(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b35(f, x) {
+    let a = b36(|y| f(y), x);
+    let c = if len(x) > 100 { b36(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b36(f, x) {
+    let a = b37(|y| f(y), x);
+    let c = if len(x) > 100 { b37(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b37(f, x) {
+    let a = b38(|y| f(y), x);
+    let c = if len(x) > 100 { b38(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b38(f, x) {
+    let a = b39(|y| f(y), x);
+    let c = if len(x) > 100 { b39(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b39(f, x) {
+    let a = b40(|y| f(y), x);
+    let c = if len(x) > 100 { b40(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b40(f, x) {
+    let a = b41(|y| f(y), x);
+    let c = if len(x) > 100 { b41(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b41(f, x) {
+    let a = b42(|y| f(y), x);
+    let c = if len(x) > 100 { b42(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b42(f, x) {
+    let a = b43(|y| f(y), x);
+    let c = if len(x) > 100 { b43(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b43(f, x) {
+    let a = b44(|y| f(y), x);
+    let c = if len(x) > 100 { b44(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b44(f, x) {
+    let a = b45(|y| f(y), x);
+    let c = if len(x) > 100 { b45(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b45(f, x) {
+    let a = b46(|y| f(y), x);
+    let c = if len(x) > 100 { b46(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b46(f, x) {
+    let a = b47(|y| f(y), x);
+    let c = if len(x) > 100 { b47(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b47(f, x) {
+    let a = b48(|y| f(y), x);
+    let c = if len(x) > 100 { b48(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b48(f, x) {
+    let a = b49(|y| f(y), x);
+    let c = if len(x) > 100 { b49(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b49(f, x) {
+    let a = b50(|y| f(y), x);
+    let c = if len(x) > 100 { b50(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b50(f, x) {
+    let a = b51(|y| f(y), x);
+    let c = if len(x) > 100 { b51(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b51(f, x) {
+    let a = b52(|y| f(y), x);
+    let c = if len(x) > 100 { b52(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b52(f, x) {
+    let a = b53(|y| f(y), x);
+    let c = if len(x) > 100 { b53(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b53(f, x) {
+    let a = b54(|y| f(y), x);
+    let c = if len(x) > 100 { b54(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b54(f, x) {
+    let a = b55(|y| f(y), x);
+    let c = if len(x) > 100 { b55(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b55(f, x) {
+    let a = b56(|y| f(y), x);
+    let c = if len(x) > 100 { b56(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b56(f, x) {
+    let a = b57(|y| f(y), x);
+    let c = if len(x) > 100 { b57(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b57(f, x) {
+    let a = b58(|y| f(y), x);
+    let c = if len(x) > 100 { b58(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b58(f, x) {
+    let a = b59(|y| f(y), x);
+    let c = if len(x) > 100 { b59(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b59(f, x) {
+    let a = b60(|y| f(y), x);
+    let c = if len(x) > 100 { b60(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b60(f, x) {
+    let a = b61(|y| f(y), x);
+    let c = if len(x) > 100 { b61(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b61(f, x) {
+    let a = b62(|y| f(y), x);
+    let c = if len(x) > 100 { b62(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b62(f, x) {
+    let a = b63(|y| f(y), x);
+    let c = if len(x) > 100 { b63(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b63(f, x) {
+    let a = b64(|y| f(y), x);
+    let c = if len(x) > 100 { b64(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b64(f, x) {
+    let a = b65(|y| f(y), x);
+    let c = if len(x) > 100 { b65(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b65(f, x) {
+    let a = b66(|y| f(y), x);
+    let c = if len(x) > 100 { b66(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b66(f, x) {
+    let a = b67(|y| f(y), x);
+    let c = if len(x) > 100 { b67(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b67(f, x) {
+    let a = b68(|y| f(y), x);
+    let c = if len(x) > 100 { b68(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b68(f, x) {
+    let a = b69(|y| f(y), x);
+    let c = if len(x) > 100 { b69(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b69(f, x) {
+    let a = b70(|y| f(y), x);
+    let c = if len(x) > 100 { b70(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b70(f, x) {
+    let a = b71(|y| f(y), x);
+    let c = if len(x) > 100 { b71(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b71(f, x) {
+    let a = b72(|y| f(y), x);
+    let c = if len(x) > 100 { b72(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b72(f, x) {
+    let a = b73(|y| f(y), x);
+    let c = if len(x) > 100 { b73(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b73(f, x) {
+    let a = b74(|y| f(y), x);
+    let c = if len(x) > 100 { b74(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b74(f, x) {
+    let a = b75(|y| f(y), x);
+    let c = if len(x) > 100 { b75(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b75(f, x) {
+    let a = b76(|y| f(y), x);
+    let c = if len(x) > 100 { b76(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b76(f, x) {
+    let a = b77(|y| f(y), x);
+    let c = if len(x) > 100 { b77(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b77(f, x) {
+    let a = b78(|y| f(y), x);
+    let c = if len(x) > 100 { b78(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b78(f, x) {
+    let a = b79(|y| f(y), x);
+    let c = if len(x) > 100 { b79(|y| f([y]), x) } else { 0 };
+    return a + c;
+}
+fn b79(f, x) {
+    return len(f(x));
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    print(b0(|z| z, xs) + 0);
+    print(b0(|z| z, xs) + 1);
+}

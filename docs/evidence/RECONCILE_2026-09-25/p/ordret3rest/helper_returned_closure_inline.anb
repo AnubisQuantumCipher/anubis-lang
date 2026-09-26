@@ -1,0 +1,20 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct B { g: i64 }
+fn pr(x) {
+    print(x);
+    return 0;
+}
+fn pr2(a, x) {
+    print(x);
+    return 0;
+}
+fn mk() {
+    return |x| { print(x); 0 };
+}
+fn mkb() {
+    return B { g: |x| { print(x); 0 } };
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let z = each([p.k], mk());
+}

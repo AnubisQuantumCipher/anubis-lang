@@ -1,0 +1,21 @@
+struct Account { k: secret<i64>, owner: str }
+struct Invoice { id: i64, total: i64, account: Account }
+struct Tag { label: str }
+impl Invoice {
+    fn summary(self) -> str {
+        return "invoice ${self.id}: ${self.total}";
+    }
+}
+impl Tag {
+    fn summary(self) -> str {
+        return "tag ${self}";
+    }
+}
+fn main() {
+    let acct = Account { k: 42, owner: "ann" };
+    let t = Tag { label: "urgent" };
+    println(t.summary());
+    let x = [Invoice { id: 1, total: 10, account: acct }];
+    let x = x[0];
+    println(x.summary());
+}

@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { k: i64, pub_n: i64 }
+fn mk_t() -> T {
+    return T { k: 1, pub_n: 1 };
+}
+fn mk_s() -> S {
+    return S { k: 42, pub_n: 3 };
+}
+fn main() {
+    let n = 3;
+    let c = n > 1;
+    let g = if !c { mk_t } else { mk_s };
+    print(g().k);
+}

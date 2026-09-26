@@ -1,0 +1,23 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f0(x) { return [x]; }
+fn f1(x) { return f0(f0(x)); }
+fn f2(x) { return f1(f1(x)); }
+fn f3(x) { return f2(f2(x)); }
+fn f4(x) { return f3(f3(x)); }
+fn f5(x) { return f4(f4(x)); }
+fn f6(x) { return f5(f5(x)); }
+fn f7(x) { return f6(f6(x)); }
+fn f8(x) { return f7(f7(x)); }
+fn f9(x) { return f8(f8(x)); }
+fn f10(x) { return f9(f9(x)); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(len(f10(p)));
+    print(len(f10(p)));
+    print(len(f10(p)));
+    print(len(f10(p)));
+    print(len(f10(p)));
+    print(len(f10(p)));
+    print(len(f10(p)));
+    print(len(f10(p)));
+}

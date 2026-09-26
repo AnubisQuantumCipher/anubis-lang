@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Over-rejection guard for D10: a PLAIN field read off the same unannotated factory must still
+// ACCEPT. The return type is recovered as `P`, but P.k carries no flow qualifier.
+struct P { k: i64 }
+fn mk() { return P { k: 7 }; }
+fn main() { let a = mk(); print(a.k); }

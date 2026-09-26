@@ -1,0 +1,2 @@
+fn half(a: i64) -> i64 requires(a >= 0) requires(a <= 100) ensures(result <= a) { return a / 2; }
+fn main() { print(half(10)); }

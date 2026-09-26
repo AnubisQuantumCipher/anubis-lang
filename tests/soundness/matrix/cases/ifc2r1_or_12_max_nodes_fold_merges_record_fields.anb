@@ -1,0 +1,78 @@
+// Staff directory: every user has a secret PIN. The roster report prints names and roles only.
+struct User {
+    name: str,
+    role: str,
+    email: str,
+    dept: str,
+    pin: secret<i64>,
+}
+
+fn roster(users) {
+    let mut admins = 0;
+    for u in users {
+        print(u.name + " (" + u.role + ")");
+        if u.role == "admin" {
+            admins = admins + 1;
+        }
+    }
+    print("admins: " + str(admins));
+}
+
+fn main() {
+    let pin: secret<i64> = 42;
+    let users = [
+        User { name: "ana", role: "admin", email: "ana@corp.example", dept: "ops", pin: pin },
+        User { name: "ben", role: "staff", email: "ben@corp.example", dept: "ops", pin: 1001 },
+        User { name: "cho", role: "staff", email: "cho@corp.example", dept: "ops", pin: 1002 },
+        User { name: "dev", role: "staff", email: "dev@corp.example", dept: "ops", pin: 1003 },
+        User { name: "eli", role: "staff", email: "eli@corp.example", dept: "ops", pin: 1004 },
+        User { name: "fay", role: "staff", email: "fay@corp.example", dept: "ops", pin: 1005 },
+        User { name: "gus", role: "staff", email: "gus@corp.example", dept: "ops", pin: 1006 },
+        User { name: "hal", role: "admin", email: "hal@corp.example", dept: "ops", pin: 1007 },
+        User { name: "ivy", role: "staff", email: "ivy@corp.example", dept: "ops", pin: 1008 },
+        User { name: "jon", role: "staff", email: "jon@corp.example", dept: "ops", pin: 1009 },
+        User { name: "kai", role: "staff", email: "kai@corp.example", dept: "ops", pin: 1010 },
+        User { name: "lea", role: "staff", email: "lea@corp.example", dept: "ops", pin: 1011 },
+        User { name: "max", role: "staff", email: "max@corp.example", dept: "ops", pin: 1012 },
+        User { name: "nia", role: "staff", email: "nia@corp.example", dept: "ops", pin: 1013 },
+        User { name: "oli", role: "admin", email: "oli@corp.example", dept: "ops", pin: 1014 },
+        User { name: "pat", role: "staff", email: "pat@corp.example", dept: "ops", pin: 1015 },
+        User { name: "quin", role: "staff", email: "quin@corp.example", dept: "ops", pin: 1016 },
+        User { name: "ray", role: "staff", email: "ray@corp.example", dept: "ops", pin: 1017 },
+        User { name: "sam", role: "staff", email: "sam@corp.example", dept: "ops", pin: 1018 },
+        User { name: "tia", role: "staff", email: "tia@corp.example", dept: "ops", pin: 1019 },
+        User { name: "uma", role: "staff", email: "uma@corp.example", dept: "ops", pin: 1020 },
+        User { name: "vic", role: "admin", email: "vic@corp.example", dept: "ops", pin: 1021 },
+        User { name: "wes", role: "staff", email: "wes@corp.example", dept: "ops", pin: 1022 },
+        User { name: "xin", role: "staff", email: "xin@corp.example", dept: "ops", pin: 1023 },
+        User { name: "yan", role: "staff", email: "yan@corp.example", dept: "ops", pin: 1024 },
+        User { name: "zoe", role: "staff", email: "zoe@corp.example", dept: "ops", pin: 1025 },
+        User { name: "abe", role: "staff", email: "abe@corp.example", dept: "ops", pin: 1026 },
+        User { name: "bea", role: "staff", email: "bea@corp.example", dept: "ops", pin: 1027 },
+        User { name: "cal", role: "admin", email: "cal@corp.example", dept: "ops", pin: 1028 },
+        User { name: "dot", role: "staff", email: "dot@corp.example", dept: "ops", pin: 1029 },
+        User { name: "ed", role: "staff", email: "ed@corp.example", dept: "ops", pin: 1030 },
+        User { name: "flo", role: "staff", email: "flo@corp.example", dept: "ops", pin: 1031 },
+        User { name: "gil", role: "staff", email: "gil@corp.example", dept: "ops", pin: 1032 },
+        User { name: "hope", role: "staff", email: "hope@corp.example", dept: "ops", pin: 1033 },
+        User { name: "ian", role: "staff", email: "ian@corp.example", dept: "ops", pin: 1034 },
+        User { name: "jay", role: "admin", email: "jay@corp.example", dept: "ops", pin: 1035 },
+        User { name: "kim", role: "staff", email: "kim@corp.example", dept: "ops", pin: 1036 },
+        User { name: "lou", role: "staff", email: "lou@corp.example", dept: "ops", pin: 1037 },
+        User { name: "mo", role: "staff", email: "mo@corp.example", dept: "ops", pin: 1038 },
+        User { name: "ned", role: "staff", email: "ned@corp.example", dept: "ops", pin: 1039 },
+        User { name: "ora", role: "staff", email: "ora@corp.example", dept: "ops", pin: 1040 },
+        User { name: "pia", role: "staff", email: "pia@corp.example", dept: "ops", pin: 1041 },
+        User { name: "rex", role: "admin", email: "rex@corp.example", dept: "ops", pin: 1042 },
+        User { name: "sue", role: "staff", email: "sue@corp.example", dept: "ops", pin: 1043 },
+        User { name: "tom", role: "staff", email: "tom@corp.example", dept: "ops", pin: 1044 },
+        User { name: "val", role: "staff", email: "val@corp.example", dept: "ops", pin: 1045 },
+        User { name: "wyn", role: "staff", email: "wyn@corp.example", dept: "ops", pin: 1046 },
+        User { name: "yul", role: "staff", email: "yul@corp.example", dept: "ops", pin: 1047 },
+        User { name: "zed", role: "staff", email: "zed@corp.example", dept: "ops", pin: 1048 },
+        User { name: "amy", role: "admin", email: "amy@corp.example", dept: "ops", pin: 1049 },
+        User { name: "bo", role: "staff", email: "bo@corp.example", dept: "ops", pin: 1050 },
+        User { name: "cy", role: "staff", email: "cy@corp.example", dept: "ops", pin: 1051 }
+    ];
+    roster(users);
+}

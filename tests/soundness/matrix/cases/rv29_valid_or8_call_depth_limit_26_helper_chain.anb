@@ -1,0 +1,84 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f0(x) {
+    return f1(x) + 1;
+}
+fn f1(x) {
+    return f2(x) + 1;
+}
+fn f2(x) {
+    return f3(x) + 1;
+}
+fn f3(x) {
+    return f4(x) + 1;
+}
+fn f4(x) {
+    return f5(x) + 1;
+}
+fn f5(x) {
+    return f6(x) + 1;
+}
+fn f6(x) {
+    return f7(x) + 1;
+}
+fn f7(x) {
+    return f8(x) + 1;
+}
+fn f8(x) {
+    return f9(x) + 1;
+}
+fn f9(x) {
+    return f10(x) + 1;
+}
+fn f10(x) {
+    return f11(x) + 1;
+}
+fn f11(x) {
+    return f12(x) + 1;
+}
+fn f12(x) {
+    return f13(x) + 1;
+}
+fn f13(x) {
+    return f14(x) + 1;
+}
+fn f14(x) {
+    return f15(x) + 1;
+}
+fn f15(x) {
+    return f16(x) + 1;
+}
+fn f16(x) {
+    return f17(x) + 1;
+}
+fn f17(x) {
+    return f18(x) + 1;
+}
+fn f18(x) {
+    return f19(x) + 1;
+}
+fn f19(x) {
+    return f20(x) + 1;
+}
+fn f20(x) {
+    return f21(x) + 1;
+}
+fn f21(x) {
+    return f22(x) + 1;
+}
+fn f22(x) {
+    return f23(x) + 1;
+}
+fn f23(x) {
+    return f24(x) + 1;
+}
+fn f24(x) {
+    return f25(x) + 1;
+}
+fn f25(x) {
+    print(x.pub_n);
+    return x.pub_n;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f0(p));
+}

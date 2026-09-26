@@ -1,0 +1,57 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn work(xs) {
+    let mut a = [];
+    let mut b = {};
+    let mut c = [];
+    for x0 in xs {
+        a = [x0, b];
+        b = { "l0": c, "r": a };
+        c = [a, [b]];
+        for x1 in xs {
+            a = [x1, b];
+            b = { "l1": c, "r": a };
+            c = [a, [b]];
+            for x2 in xs {
+                a = [x2, b];
+                b = { "l2": c, "r": a };
+                c = [a, [b]];
+                for x3 in xs {
+                    a = [x3, b];
+                    b = { "l3": c, "r": a };
+                    c = [a, [b]];
+                    for x4 in xs {
+                        a = [x4, b];
+                        b = { "l4": c, "r": a };
+                        c = [a, [b]];
+                        for x5 in xs {
+                            a = [x5, b];
+                            b = { "l5": c, "r": a };
+                            c = [a, [b]];
+                            for x6 in xs {
+                                a = [x6, b];
+                                b = { "l6": c, "r": a };
+                                c = [a, [b]];
+                                for x7 in xs {
+                                    a = [x7, b];
+                                    b = { "l7": c, "r": a };
+                                    c = [a, [b]];
+                                    for x8 in xs {
+                                        a = [x8, b];
+                                        b = { "l8": c, "r": a };
+                                        c = [a, [b]];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return len(a) + len(b) + len(c);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    println(str(work(xs)));
+}

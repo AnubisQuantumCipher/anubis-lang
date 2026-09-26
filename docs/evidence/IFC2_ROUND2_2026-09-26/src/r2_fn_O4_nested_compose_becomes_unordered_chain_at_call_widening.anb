@@ -1,0 +1,14 @@
+fn run_on(xs, f) {
+    return map(xs, f);
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let add_s = |x| x + s;
+    let show = |x| {
+        println(x);
+        x
+    };
+    let pipeline = compose(add_s, compose(show, |x| x * 2));
+    let sealed = run_on([5, 6], pipeline);
+    println("ok");
+}

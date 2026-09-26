@@ -1,0 +1,11 @@
+fn wrap(f) {
+    |z| f(z) + 1
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let base_pub = |z| z;
+    let base_sec = |z| z + k;
+    let s = wrap(wrap(wrap(wrap(base_sec))));
+    let p = wrap(wrap(wrap(wrap(base_pub))));
+    println(p(0));
+}

@@ -1,0 +1,2 @@
+fn pick<T>(a: T) -> T { return a; }
+fn main() { print(pick(1)); }

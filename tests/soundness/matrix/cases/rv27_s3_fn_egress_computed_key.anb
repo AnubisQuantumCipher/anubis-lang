@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn g(s) { let m2 = {"z": 1}; m2[str(s)] = 1; print(keys(m2)); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    g(p);
+}

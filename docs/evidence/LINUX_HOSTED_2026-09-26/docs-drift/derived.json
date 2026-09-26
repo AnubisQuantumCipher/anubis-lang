@@ -1,0 +1,45 @@
+{
+  "lean": {
+    "command": "for each formal/**/*.lean: strip /- ... -/ block comments; count lines matching '^\\s*theorem '; modules = files with \u22651 such theorem",
+    "modules": 16,
+    "theorems": 199
+  },
+  "quantities": {
+    "builtins": {
+      "command": "LIVE five-function union in compiler/src/backends/run.rs: emit_builtin_call (match arms + matches!), is_builtin_name, is_proof_input_builtin, is_poc_kit_builtin, is_non_run_builtin (surface names only \u2014 not format! helper ids)",
+      "value": 213
+    },
+    "language_fixtures": {
+      "command": "find tests/fixtures/language_core -name '*.anb' | wc -l",
+      "value": 271
+    },
+    "lean_modules": {
+      "command": "for each formal/**/*.lean: strip /- ... -/ block comments; count lines matching '^\\s*theorem '; modules = files with \u22651 such theorem",
+      "value": 16
+    },
+    "lean_theorems": {
+      "command": "for each formal/**/*.lean: strip /- ... -/ block comments; count lines matching '^\\s*theorem '; modules = files with \u22651 such theorem",
+      "value": 199
+    },
+    "native_corpus": {
+      "command": "python3 scripts/lib/native_corpus_inventory.py --count",
+      "value": 968
+    },
+    "security_fixtures": {
+      "command": "find examples/security -name '*.anb' | wc -l",
+      "value": 356
+    },
+    "stdlib_doc_ok": {
+      "command": "ls tests/fixtures/stdlib/doc_ok/*.anb 2>/dev/null | wc -l",
+      "value": 23
+    },
+    "stdlib_failclosed": {
+      "command": "ls tests/fixtures/stdlib/*should_fail_closed.anb 2>/dev/null | wc -l",
+      "value": 104
+    },
+    "stdlib_modules": {
+      "command": "ls -1 compiler/stdlib/std/ | wc -l",
+      "value": 13
+    }
+  }
+}

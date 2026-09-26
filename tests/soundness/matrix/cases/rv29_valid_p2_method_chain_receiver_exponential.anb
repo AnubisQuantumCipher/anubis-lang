@@ -1,0 +1,15 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Rep { items: list<S>, title: string }
+impl Rep {
+    fn add(self, x) {
+        return Rep { items: concat(self.items, [x]), title: self.title };
+    }
+    fn retitle(self, t) {
+        return Rep { items: self.items, title: t };
+    }
+}
+fn main() {
+    let r = Rep { items: [], title: "r" }.add(S { k: 40, pub_n: 0 }).retitle("t1").add(S { k: 42, pub_n: 2 }).retitle("t3").add(S { k: 44, pub_n: 4 }).retitle("t5").add(S { k: 46, pub_n: 6 }).retitle("t7").add(S { k: 48, pub_n: 8 }).retitle("t9").add(S { k: 50, pub_n: 10 }).retitle("t11").add(S { k: 52, pub_n: 12 }).retitle("t13").add(S { k: 54, pub_n: 14 }).retitle("t15").add(S { k: 56, pub_n: 16 }).retitle("t17").add(S { k: 58, pub_n: 18 }).retitle("t19");
+    print(r.title);
+    print(len(r.items));
+}

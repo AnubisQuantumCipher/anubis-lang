@@ -1,0 +1,11 @@
+fn go(n: i64) requires(n > 0) {
+    let t = n * 2305843009213693952;
+    println(t);
+    if n > 1 {
+        return;
+    }
+    println(n);
+}
+fn main() {
+    go(5);
+}

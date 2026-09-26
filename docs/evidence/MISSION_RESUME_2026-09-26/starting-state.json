@@ -1,0 +1,312 @@
+{
+  "base": "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01",
+  "worktree": "/home/sicarii/Work/anubis-mission-20260926",
+  "revisions": {
+    "e34d0c89": {
+      "commit": "e34d0c89c2181e8bd02ff52b0ab5d50cf97bac4b",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "e34d0c89c2181e8bd02ff52b0ab5d50cf97bac4b",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "e34d0c89c2181e8bd02ff52b0ab5d50cf97bac4b"
+        ],
+        "rc": 0,
+        "stdout": "e34d0c89c2181e8bd02ff52b0ab5d50cf97bac4b\n7cdf21b810f677161c3ad38815dbd89878a40586 9ca8b80fe0506f3683c6f8fa360dd2f2e058ea11\nMerge PR #43: phase8/slice1 production-linked SecurityLabel correspondence (operator-authorized trust-surface sign-off)\n",
+        "stderr": ""
+      }
+    },
+    "7220c4b1": {
+      "commit": "7220c4b15e6c6bfd5527e9197b3c7dcb2c008965",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "7220c4b15e6c6bfd5527e9197b3c7dcb2c008965",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "7220c4b15e6c6bfd5527e9197b3c7dcb2c008965"
+        ],
+        "rc": 0,
+        "stdout": "7220c4b15e6c6bfd5527e9197b3c7dcb2c008965\n24cb82aad0816349f7fffe2a86ebb75ca0d506ca\nsolver: bound space too, and stop overclaiming what a passing check retains\n",
+        "stderr": ""
+      }
+    },
+    "13373e31": {
+      "commit": "13373e314d4b7d7e728ec63bc12e967c7acfcff8",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "13373e314d4b7d7e728ec63bc12e967c7acfcff8",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "13373e314d4b7d7e728ec63bc12e967c7acfcff8"
+        ],
+        "rc": 0,
+        "stdout": "13373e314d4b7d7e728ec63bc12e967c7acfcff8\n7220c4b15e6c6bfd5527e9197b3c7dcb2c008965\nmiddle: resolve place-assigned fn identity through obj.f() in the secret/taint sink check\n",
+        "stderr": ""
+      }
+    },
+    "029d5538": {
+      "commit": "029d5538151a545f3418b1d6e8932370d60a2e13",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "029d5538151a545f3418b1d6e8932370d60a2e13",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "029d5538151a545f3418b1d6e8932370d60a2e13"
+        ],
+        "rc": 0,
+        "stdout": "029d5538151a545f3418b1d6e8932370d60a2e13\n13373e314d4b7d7e728ec63bc12e967c7acfcff8\nmiddle: recover unannotated struct-factory return and array-literal element types\n",
+        "stderr": ""
+      }
+    },
+    "84296cef": {
+      "commit": "84296cef66c2d7aadf0c02393bf6d16324a7e29c",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "84296cef66c2d7aadf0c02393bf6d16324a7e29c",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "84296cef66c2d7aadf0c02393bf6d16324a7e29c"
+        ],
+        "rc": 0,
+        "stdout": "84296cef66c2d7aadf0c02393bf6d16324a7e29c\n029d5538151a545f3418b1d6e8932370d60a2e13\nmiddle: check contract requires carried through a function-valued parameter\n",
+        "stderr": ""
+      }
+    },
+    "c87ad1cf": {
+      "commit": "c87ad1cfa8d279435a094304515e9d9edb8ead5e",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "c87ad1cfa8d279435a094304515e9d9edb8ead5e",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "c87ad1cfa8d279435a094304515e9d9edb8ead5e"
+        ],
+        "rc": 0,
+        "stdout": "c87ad1cfa8d279435a094304515e9d9edb8ead5e\n84296cef66c2d7aadf0c02393bf6d16324a7e29c\ndocs: item-21 Family-1 receipt, closure note, and stamp reconciliation\n",
+        "stderr": ""
+      }
+    },
+    "e516b1f3": {
+      "commit": "e516b1f3e7c18b18848cf974aa62f380aa836bb3",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "e516b1f3e7c18b18848cf974aa62f380aa836bb3",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "e516b1f3e7c18b18848cf974aa62f380aa836bb3"
+        ],
+        "rc": 0,
+        "stdout": "e516b1f3e7c18b18848cf974aa62f380aa836bb3\n8548248c2848786cd79e50a49a85c1faa71ff0df\nanalysis: IFC v2, an information-flow interpreter that mirrors the runtime, runs in every Safe-mode check; runtime traps print no operand; IFC v2 review round 1's cases\n",
+        "stderr": ""
+      }
+    },
+    "f7e906d1": {
+      "commit": "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01",
+      "ancestor_of_resume_base": {
+        "command": [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "summary": {
+        "command": [
+          "git",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%s",
+          "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01"
+        ],
+        "rc": 0,
+        "stdout": "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01\ne516b1f3e7c18b18848cf974aa62f380aa836bb3\ndocs: record IFC v2 (e516b1f3): design, decisions D6-D8, defects and claims, landing evidence; matrix history\n",
+        "stderr": ""
+      }
+    }
+  },
+  "observations": [
+    {
+      "command": [
+        "git",
+        "status",
+        "--short",
+        "--branch"
+      ],
+      "rc": 0,
+      "stdout": "## codex/mission-round2-20260926\n M compiler/src/middle/ifc2/builtins.rs\n M tests/soundness/matrix/registry.tsv\n?? compiler/tests/ifc2_minmax.rs\n?? docs/evidence/IFC2_ROUND2_2026-09-26/\n?? tests/soundness/matrix/cases/ifc2r2_minmax_max_by_argument.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_max_by_constant_log.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_max_by_pair.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_max_by_public_key.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_max_by_released_key.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_max_by_unknown_length.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_min_by_argument.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_min_by_constant_log.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_min_by_pair.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_min_by_public_key.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_min_by_released_key.anb\n?? tests/soundness/matrix/cases/ifc2r2_minmax_min_by_unknown_length.anb\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "worktree",
+        "list",
+        "--porcelain"
+      ],
+      "rc": 0,
+      "stdout": "worktree /home/sicarii/Projects/anubis-lang\nHEAD 84e72f5ab5af828a4c6f9ef252f8e07a3f9d8ae6\nbranch refs/heads/mission/anubis-1.0\n\nworktree /home/sicarii/.cache/anubis-mainref\nHEAD e34d0c89c2181e8bd02ff52b0ab5d50cf97bac4b\nbranch refs/heads/main\n\nworktree /home/sicarii/.cache/anubis-wt/7220c4b1\nHEAD 7220c4b15e6c6bfd5527e9197b3c7dcb2c008965\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/codex-alias-gates\nHEAD 2990eab2c6ad856fd2f1bfc25fa77c3e6a60b92a\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/codex-alias-stack-guard\nHEAD 2990eab2c6ad856fd2f1bfc25fa77c3e6a60b92a\nbranch refs/heads/codex/alias-stack-guard-20260925\n\nworktree /home/sicarii/.cache/anubis-wt/codex-bands\nHEAD 2990eab2c6ad856fd2f1bfc25fa77c3e6a60b92a\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/codex-closure-cycle\nHEAD 2990eab2c6ad856fd2f1bfc25fa77c3e6a60b92a\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/codex-linux-ci\nHEAD f3bd05c0792d90b53447eec37018e2c89bf74241\nbranch refs/heads/codex/linux-native-ci-20260925\n\nworktree /home/sicarii/.cache/anubis-wt/codex-mission-docs\nHEAD 2282d92f48446ce0d59e871bd9e23ea93c734afb\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/codex-ordinary-captures\nHEAD 2990eab2c6ad856fd2f1bfc25fa77c3e6a60b92a\nbranch refs/heads/codex/ordinary-captures-20260925\n\nworktree /home/sicarii/.cache/anubis-wt/crash10\nHEAD 95a7104d77c2a1fbdfb2f05b907ac7bd0d64beef\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/crashfix\nHEAD b889eddd112e7d7544345c7c6ed21ff8e85082a3\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/esc\nHEAD 209b5fe7ae4bf6af9ac623238bf17771386f2bbb\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/ifc2\nHEAD d6801d4db2774100093d3b6815fe5a1391f9a2e1\nbranch refs/heads/ifc2/semantic-foundation-wip\n\nworktree /home/sicarii/.cache/anubis-wt/ifc2land\nHEAD b807e0a7cdd759b094a65810f3a90fa923bad6dc\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/modreq\nHEAD 2047df106d508b47f7533118e14a8168854d3738\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/ord3\nHEAD 3ea971bfab55c43ace5092ae0c30fef58e114a25\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/ord3x\nHEAD 8548248c2848786cd79e50a49a85c1faa71ff0df\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/ordret\nHEAD 328cfd06c0ed4d798aaf961c0d1962443931b37d\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/pathprec\nHEAD d90082d07ca436b34c58ed7fcdbcbed5a6b1f568\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/r38b\nHEAD afca48e489fbaca59b153d95bac9ecab7f342efa\ndetached\n\nworktree /home/sicarii/.cache/anubis-wt/sortchk\nHEAD fb57f472f5ec0e7a1e16e978974661dffb3e072d\ndetached\n\nworktree /home/sicarii/Work/anubis-mission-20260926\nHEAD f7e906d1a31533e485aaeeac3ca1c2d1d0877c01\nbranch refs/heads/codex/mission-round2-20260926\n\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "remote",
+        "-v"
+      ],
+      "rc": 0,
+      "stdout": "origin\thttps://github.com/AnubisQuantumCipher/anubis-lang.git (fetch)\norigin\thttps://github.com/AnubisQuantumCipher/anubis-lang.git (push)\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "uname",
+        "-a"
+      ],
+      "rc": 0,
+      "stdout": "Linux 83 7.2.6-1-aarch64-ARCH #1 SMP PREEMPT_DYNAMIC Mon Sep 14 19:31:34 UTC 2026 aarch64 GNU/Linux\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "systemd-detect-virt"
+      ],
+      "rc": 0,
+      "stdout": "qemu\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustc",
+        "-Vv"
+      ],
+      "rc": 0,
+      "stdout": "rustc 1.97.0-nightly (82bee9650 2026-05-09)\nbinary: rustc\ncommit-hash: 82bee965077a631d6fbdee4014f2ec535535aaa3\ncommit-date: 2026-05-09\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.0-nightly\nLLVM version: 22.1.4\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "cargo",
+        "-V"
+      ],
+      "rc": 0,
+      "stdout": "cargo 1.97.0-nightly (a343accce 2026-05-08)\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "z3",
+        "--version"
+      ],
+      "rc": 0,
+      "stdout": "Z3 version 4.16.0 - 64 bit\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "project-vault",
+        "status"
+      ],
+      "rc": 0,
+      "stdout": "{\n  \"repository\": \"/home/sicarii/iPad/TryOmarchy/Repository\",\n  \"mounted\": true,\n  \"initial_archive_transfer_active\": false,\n  \"latest_snapshot\": null,\n  \"cleanup_enabled\": false,\n  \"automatic_snapshot_deletion\": false,\n  \"catalog\": \"/home/sicarii/.local/state/project-vault/catalog.sqlite\"\n}\n",
+      "stderr": ""
+    }
+  ],
+  "tart": null,
+  "bwrap": "/usr/bin/bwrap",
+  "kvm_present": true
+}

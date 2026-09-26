@@ -157,10 +157,9 @@ pub fn decode_journal_u32s(journal: &[u8]) -> Result<Vec<u32>> {
         ));
     }
     let mut out = Vec::with_capacity(journal.len() / 4);
-    for chunk in journal.chunks_exact(4) {
-        let mut b = [0u8; 4];
-        b.copy_from_slice(chunk);
-        out.push(u32::from_le_bytes(b));
+    let (words, _) = journal.as_chunks::<4>();
+    for word in words {
+        out.push(u32::from_le_bytes(*word));
     }
     Ok(out)
 }

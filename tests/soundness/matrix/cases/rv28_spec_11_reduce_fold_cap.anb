@@ -1,0 +1,2 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() { let p = S { k: 42, pub_n: 3 }; let r = reduce([1, 2, 3, 4, 5, 6], |acc, x| { let m = { "a": acc }; m }, { "b": p }); print(r["a"]["a"]["a"]["a"]["a"]["a"]["b"]); }

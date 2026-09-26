@@ -1,0 +1,1 @@
+fn main() { let fs = [write_file]; let f = pop(fs); f("/home/sicarii/.cache/anubis-item21/reconcile/tmp/t14_r6b_pop_extract_builtin.txt", "x"); }

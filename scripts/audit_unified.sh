@@ -158,6 +158,14 @@ gate() {
   GATE_RESULTS+=("{\"gate\":\"$name\",\"status\":\"$status\",\"detail\":\"$detail\"}")
   GATE_NAMES+=("$name")
   printf '%-6s %-40s %s\n' "$status" "$name" "$detail" | tee -a "$LOG"
+  # A failing gate's logs stay on the runner: show the end of each one its detail names where the
+  # job log shows it (a gate with a self-test names two, and only the second held the cause).
+  if [[ "$status" == "FAIL" ]]; then
+    local logf
+    for logf in $(grep -oE '[A-Za-z0-9_.-]+\.log' <<<"$detail" | sort -u); do
+      tail -n 60 "$OUT/$logf" 2>/dev/null | sed "s/^/  $name: /" || true
+    done
+  fi
 }
 
 echo "=== ANUBIS UNIFIED GATE SUITE ===" | tee "$LOG"
@@ -188,6 +196,9 @@ if cargo test --all >"$OUT/g3_test.log" 2>&1; then
   gate "G3_test" "PASS" "${TEST_COUNT:-?} tests passed"
 else
   gate "G3_test" "FAIL" "test failures (see g3_test.log)"
+  # g3_test.log stays on the runner: name the failing tests where the job log shows them.
+  grep -E '^test .* FAILED$|panicked at|^failures:$|^    [A-Za-z0-9_:]+$|^error(\[|:)|signal: |overflowed' \
+    "$OUT/g3_test.log" | head -80 | sed 's/^/  g3: /' || true
 fi
 
 # ── G4: cargo build --release ──

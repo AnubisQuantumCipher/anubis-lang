@@ -1,0 +1,13 @@
+fn upd(m, c) {
+    if c {
+        m.f = 7;
+    }
+    m
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let mut m = {"a": 1};
+    m.f.g = 5;
+    let r = upd(m, s > 100);
+    println(len(r));
+}

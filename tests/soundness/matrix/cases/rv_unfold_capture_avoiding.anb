@@ -1,0 +1,11 @@
+fn le(x: i64, y: i64) -> bool {
+    return x <= y;
+}
+fn g(a: i64, b: i64) requires(le(a, b)) {
+    println(a);
+}
+fn main() {
+    let y = 10;
+    let x = 5;
+    g(y, x);
+}

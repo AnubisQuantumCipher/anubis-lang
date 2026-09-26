@@ -1,0 +1,54 @@
+{
+  "pin": "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+  "pin_sha256": "0504173ba4771dfb6ce9aa0c4365088bd86fabdf1f9875d83065e39207826df6",
+  "rows": [
+    {
+      "source": "out/minmax-repeatability/precision-baseline/singleton.anb",
+      "sha256": "a35595c03723c93aae6221e9ec178ba0271751b850c0406bdcd285cde086a585",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "out/minmax-repeatability/precision-baseline/singleton.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis check out/minmax-repeatability/precision-baseline/singleton.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-054116-safe\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `s` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`\n",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `s` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`\n"
+    },
+    {
+      "source": "out/minmax-repeatability/precision-baseline/singleton.anb",
+      "sha256": "a35595c03723c93aae6221e9ec178ba0271751b850c0406bdcd285cde086a585",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "ifc2-report",
+        "out/minmax-repeatability/precision-baseline/singleton.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis ifc2-report out/minmax-repeatability/precision-baseline/singleton.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`\n",
+      "stderr": "Error: 1 information-flow finding(s)\n"
+    },
+    {
+      "source": "out/minmax-repeatability/precision-baseline/winner.anb",
+      "sha256": "cb565016e44a8c6d2e35e6b21120c804b2ca8782140b07e98ad3695ecd3ff436",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "out/minmax-repeatability/precision-baseline/winner.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis check out/minmax-repeatability/precision-baseline/winner.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-054116-safe-2\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `m` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `m` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n"
+    },
+    {
+      "source": "out/minmax-repeatability/precision-baseline/winner.anb",
+      "sha256": "cb565016e44a8c6d2e35e6b21120c804b2ca8782140b07e98ad3695ecd3ff436",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "ifc2-report",
+        "out/minmax-repeatability/precision-baseline/winner.anb"
+      ],
+      "rc": 1,
+      "stdout": "anubis ifc2-report out/minmax-repeatability/precision-baseline/winner.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+      "stderr": "Error: 1 information-flow finding(s)\n"
+    }
+  ]
+}

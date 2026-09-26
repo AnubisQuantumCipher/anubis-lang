@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct B { g: i64 }
+fn zero(x) {
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let c = p.pub_n > 1;
+    let b = B { g: zero };
+    let y = if c { b.g = zero;
+    1 } else { 2 };
+    let z = b.g(p.k);
+}

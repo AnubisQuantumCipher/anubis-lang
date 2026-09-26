@@ -1,0 +1,36 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T0 { v: i64 }
+struct U { w: i64 }
+struct T1 { f: T0 }
+struct W { f: U }
+impl T0 {
+    fn conv(self) -> T0 {
+        return T0 { v: 1 };
+    }
+    fn write(self, e) {
+        return 0;
+    }
+}
+impl T1 {
+    fn conv(self) -> W {
+        return W { f: U { w: 3 } };
+    }
+}
+impl U {
+    fn write(self, e) {
+        println(str(e));
+        return 0;
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mode = 2;
+    let mut x: T1 = T1 { f: T0 { v: 1 } };
+    if mode > 1 {
+        x = x.conv();
+    }
+    let y: T0 = x.f;
+    let x: T0 = T0 { v: 5 };
+    let r = y.write(p);
+    println(r);
+}

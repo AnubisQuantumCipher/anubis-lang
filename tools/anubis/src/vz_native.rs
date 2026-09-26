@@ -38,6 +38,8 @@
 //! enforcing.
 
 use anyhow::{anyhow, Result};
+// Only the macOS/aarch64 Virtualization.framework backend hashes transcripts and canaries.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use sha2::{Digest, Sha256};
 
 /// The hardware confinement posture the native backend derives from a program's proven effect set.

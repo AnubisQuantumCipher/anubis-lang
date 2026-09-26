@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 123456;
+    let xs = range(0, s % 5 + 2);
+    println("start");
+    let y = apply(abs, xs);
+    println("done");
+}

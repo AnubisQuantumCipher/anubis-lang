@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn sum_by(rows, f) {
+    let t = 0;
+    for r in rows { t = t + f(r); }
+    return t;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    println(sum_by(xs, |r| r.pub_n + 0) + sum_by(xs, |r| r.pub_n + 1) + sum_by(xs, |r| r.pub_n + 2) + sum_by(xs, |r| r.pub_n + 3) + sum_by(xs, |r| r.pub_n + 4) + sum_by(xs, |r| r.pub_n + 5) + sum_by(xs, |r| r.pub_n + 6) + sum_by(xs, |r| r.pub_n + 7) + sum_by(xs, |r| r.pub_n + 8) + sum_by(xs, |r| r.pub_n + 9) + sum_by(xs, |r| r.pub_n + 10) + sum_by(xs, |r| r.pub_n + 11) + sum_by(xs, |r| r.pub_n + 12) + sum_by(xs, |r| r.pub_n + 13) + sum_by(xs, |r| r.pub_n + 14) + sum_by(xs, |r| r.pub_n + 15) + sum_by(xs, |r| r.pub_n + 16));
+}

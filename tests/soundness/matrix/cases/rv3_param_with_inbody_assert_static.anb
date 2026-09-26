@@ -1,0 +1,12 @@
+fn h(x: i64) requires(x > 0) {
+    println(x);
+}
+fn g(a: i64, b: i64) {
+    h(1);
+    assert(a > -5);
+    let t = b * 2305843009213693952;
+    println(t);
+}
+fn main() {
+    g(1, 5);
+}

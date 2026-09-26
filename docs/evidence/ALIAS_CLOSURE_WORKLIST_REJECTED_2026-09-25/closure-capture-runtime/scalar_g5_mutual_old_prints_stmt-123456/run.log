@@ -1,0 +1,25 @@
+anubis run: compiling native binary (first build ~1–3s)...
+anubis run: compile done
+{
+  "artifact": "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g5_mutual_old_prints_stmt-123456/native/anubis_run",
+  "artifact_sha256": "b43e2d8aa25ca1b480aa32e28ea1e389b3fa0d543a8600242e4c19f3be6297e3",
+  "exit_code": 0,
+  "input": "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g5_mutual_old_prints_stmt-123456/scalar_g5_mutual_old_prints_stmt.anb",
+  "mode": "safe",
+  "report": "run",
+  "rust_source": "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-runtime/scalar_g5_mutual_old_prints_stmt-123456/native/anubis_run.rs",
+  "rust_source_sha256": "893cf0c330afe67a41a30cf7d0747da5eb5c2a9b9678e604a112b85d88837a8b",
+  "schema_version": "1.0",
+  "source_hash": "5dab8f342e3f9e5f2d435ed9c500bff3463f13c5a18c93e18d8dde565f967114",
+  "status": "PASS",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_sha256": "e150a1ec81e8e93e1eae2c3a77e66ec6dbd6a3b460f89c1d08aecf422ee401a0",
+  "tool": "anubis",
+  "truth": {
+    "contracts_verified": true,
+    "ordinary_execution": true,
+    "proof_execution_claimed": false,
+    "receipt_verified": false,
+    "unverified_bypass": false
+  }
+}

@@ -1,0 +1,13 @@
+fn addb(m, c) {
+    if c {
+        m["b"] = 7;
+    }
+    m
+}
+fn main() {
+    let k: secret<i64> = 123456;
+    let mut m = {"a": 1};
+    m["b"]["c"] = 5;
+    let r = addb(m, k > 100);
+    println(len(r));
+}

@@ -1,0 +1,2 @@
+program-evidence.v3 skipped: no native artifact
+Error: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `m` flows to egress `println` without declassify() — release a private value with declassify(value, policy=…, reason=…) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`

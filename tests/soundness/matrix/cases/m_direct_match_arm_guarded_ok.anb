@@ -1,0 +1,2 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() { let x = 1; match x { 1 => { f(x); } _ => { } } }

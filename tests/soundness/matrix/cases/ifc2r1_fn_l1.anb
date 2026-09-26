@@ -1,0 +1,12 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let pos = position([1, 5, 9], |x| {
+        println(x);
+        x + 41 == k
+    });
+    let tw = take_while([1, 5, 9], |x| {
+        println("tw");
+        x + 41 != k
+    });
+    println("done");
+}

@@ -1,0 +1,6 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let xs = sort([[s, 1], [100, 2]]);
+    let first = xs[0];
+    println(first[1]);
+}

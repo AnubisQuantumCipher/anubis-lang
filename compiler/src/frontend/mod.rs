@@ -1802,7 +1802,35 @@ struct Parser {
     /// Monotonic counter for compiler-generated temporaries (e.g. compound-assignment index
     /// hoisting). Names use the `__anubis_ca_N` prefix, which user source cannot collide with.
     temp_counter: usize,
+    /// Current syntactic nesting depth (expressions, statements, patterns). Bounded by
+    /// `MAX_PARSE_DEPTH` so hostile or generated input gets a diagnostic instead of exhausting the
+    /// stack: every recursive parse path goes through `enter_nested`.
+    depth: usize,
+    /// Set once the depth bound (or the chain bound) is hit. The parser then skips to end of input
+    /// and suppresses follow-on diagnostics, so the single "nested too deeply" (or "chain too long")
+    /// error is the one reported.
+    depth_exceeded: bool,
+    /// One entry per active chain context (`parse_expr`, `parse_primary`, an interpolated string):
+    /// the links it has built so far, and the longest chain of any sub-expression it has finished.
+    /// See `MAX_CHAIN`.
+    chain: Vec<(usize, usize)>,
+    /// The longest chain on any path through the expression the last closed context built.
+    chain_last: usize,
 }
+
+/// Maximum syntactic nesting the parser accepts. Far above hand-written code, and low enough that
+/// the parser and every later recursive pass (resolution, analysis, lowering) stay within the
+/// default main-thread stack on an AST of this depth. Deeper input is rejected with a diagnostic.
+const MAX_PARSE_DEPTH: usize = 256;
+
+/// Maximum operator and postfix links on one path through an expression: binary operators, `as`
+/// casts, `.field`, `[index]`, calls and `?`. The parser builds these chains in loops, not by
+/// recursion, so `MAX_PARSE_DEPTH` does not see them, and `1 + 1 + ... + 1` or `f(x)(x)...(x)` could
+/// build a tree 100,000 deep that later recursive passes (a clone, a drop) overflow the stack on.
+/// The bound is on the longest path, counted across nesting: a context's chain is its own links plus
+/// the longest chain of the sub-expressions under them, so `(a + ... + a) + ... + a` counts both.
+/// Far above hand-written code; deeper input is rejected with a diagnostic.
+const MAX_CHAIN: usize = 8192;
 
 impl Parser {
     fn new(tokens: Vec<SpannedToken>) -> Self {
@@ -1822,6 +1850,10 @@ impl Parser {
             diagnostics: vec![],
             no_struct: false,
             temp_counter: 0,
+            depth: 0,
+            depth_exceeded: false,
+            chain: Vec::new(),
+            chain_last: 0,
         }
     }
 
@@ -2271,6 +2303,15 @@ impl Parser {
 
     /// Parse a single (non-or) pattern.
     fn parse_pattern_atom(&mut self) -> Pattern {
+        if !self.enter_nested() {
+            return Pattern::Wildcard;
+        }
+        let p = self.parse_pattern_atom_inner();
+        self.leave_nested();
+        p
+    }
+
+    fn parse_pattern_atom_inner(&mut self) -> Pattern {
         // List pattern `[p, p, …]`.
         if self.check_token(&Token::LBracket) {
             self.bump();
@@ -2613,6 +2654,15 @@ impl Parser {
         let mut stmts: Vec<Stmt> = Vec::new();
         let mut tail: Option<Box<Expr>> = None;
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            // A bare `;` here is an empty statement / a terminator a preceding statement did not
+            // consume (`if c { .. } else { .. };`). Skip it before any expression parse, so it never
+            // reaches `parse_primary` — which now reports an unexpected token, and would otherwise
+            // reject this valid shape. A `;` in a REQUIRED expression position (a binary RHS,
+            // `let x = 1 + ;`) is reached through `parse_expr` directly and still errors.
+            if self.check_token(&Token::Semi) {
+                self.bump();
+                continue;
+            }
             // Statement-introducing keywords are always statements. `if` is included so a bare
             // no-else `if` (a guard) parses as a statement; a trailing `if/else` is recovered as
             // the block's value by `Expr::Block` lowering (via split_tail_expr).
@@ -3145,6 +3195,12 @@ impl Parser {
         let _ = self.expect_token(Token::LBrace, "expected `{`");
         let mut body = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            // Skip a stray/empty `;` an earlier statement left unconsumed, before `parse_stmt`
+            // reaches `parse_primary` (which now reports an unexpected token on it).
+            if self.check_token(&Token::Semi) {
+                self.bump();
+                continue;
+            }
             if let Some(stmt) = self.parse_stmt() {
                 body.push(stmt);
             } else {
@@ -3156,6 +3212,15 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
+        if !self.enter_nested() {
+            return None;
+        }
+        let s = self.parse_stmt_inner();
+        self.leave_nested();
+        s
+    }
+
+    fn parse_stmt_inner(&mut self) -> Option<Stmt> {
         // A statement-position `@name { ... }` whose name is not a real block attribute used to
         // report "expected : in struct lit": the lexer DROPS `@`, so `@reserach { ... }` reaches the
         // parser as `reserach { ... }`, which looks exactly like a struct literal. A one-letter typo
@@ -3546,9 +3611,13 @@ impl Parser {
     }
 
     fn parse_expr(&mut self, min_prec: u8) -> Expr {
+        self.chain_open();
         let mut lhs = self.parse_primary();
         loop {
             if self.check_keyword("as") {
+                if !self.chain_link() {
+                    break;
+                }
                 self.bump();
                 let ty = self.parse_cast_type();
                 lhs = Expr::Cast {
@@ -3563,6 +3632,9 @@ impl Parser {
             if prec < min_prec {
                 break;
             }
+            if !self.chain_link() {
+                break;
+            }
             self.bump();
             let rhs = self.parse_expr(prec + 1);
             lhs = Expr::Binary {
@@ -3571,6 +3643,7 @@ impl Parser {
                 rhs: Box::new(rhs),
             };
         }
+        self.chain_close();
         lhs
     }
 
@@ -3585,6 +3658,7 @@ impl Parser {
         if !s.contains("${") {
             return Expr::StrLiteral(s);
         }
+        self.chain_open();
         let chars: Vec<char> = s.chars().collect();
         // Seed with "" so the whole concatenation is string-typed even if it starts with a value.
         let mut parts: Vec<Expr> = vec![Expr::StrLiteral(String::new())];
@@ -3657,24 +3731,39 @@ impl Parser {
         }
         // An interpolation with no parts at all (e.g. the empty string `""`) is the empty string.
         if parts.is_empty() {
+            self.chain_close();
             return Expr::StrLiteral(String::new());
         }
         let mut acc = parts.remove(0);
         for p in parts {
+            if !self.chain_link() {
+                break;
+            }
             acc = Expr::Binary {
                 op: "+".into(),
                 lhs: Box::new(acc),
                 rhs: Box::new(p),
             };
         }
+        self.chain_close();
         acc
     }
 
     /// Parse a standalone expression from an interpolation fragment, forwarding any diagnostics.
     fn parse_embedded_expr(&mut self, src: &str) -> Expr {
         let mut sub = Parser::new(lex_spanned(src));
+        // Nested interpolation (`"${ "${ .. }" }"`) re-enters through a fresh parser; carry the
+        // depth so the bound covers it too.
+        sub.depth = self.depth;
         let e = sub.parse_expr(0);
+        if sub.depth_exceeded && !self.depth_exceeded {
+            self.depth_exceeded = true;
+            self.pos = self.tokens.len().saturating_sub(1);
+        }
         self.diagnostics.extend(sub.diagnostics);
+        // After the bound flag: a fragment that already reported a chain too long is not reported
+        // again by the string around it.
+        self.chain_nested(sub.chain_last);
         e
     }
 
@@ -3731,6 +3820,17 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Expr {
+        if !self.enter_nested() {
+            return Expr::Other("nested-too-deep".into());
+        }
+        self.chain_open();
+        let e = self.parse_primary_inner();
+        self.chain_close();
+        self.leave_nested();
+        e
+    }
+
+    fn parse_primary_inner(&mut self) -> Expr {
         // Prefix unary operators: `-expr` (negation) and `!expr` (logical not).
         if self.check_token(&Token::Minus) {
             self.bump();
@@ -3791,6 +3891,10 @@ impl Parser {
             };
         }
         let Some(mut tok) = self.bump() else {
+            self.diagnostic(
+                "unexpected end of input where an expression was expected",
+                self.current_span(),
+            );
             return Expr::Other("eof".into());
         };
         // Soft research keywords (`symbolic`/`unified`/`taint_source`/`declassify`/`tainted`/
@@ -4039,13 +4143,26 @@ impl Parser {
                 Expr::ArrayLiteral { elements }
             }
             Token::LBrace => self.parse_map_literal(tok.span),
-            other => Expr::Other(format!("{:?}", other)),
+            // An unexpected token in expression position is a parse error, not a silently tolerated
+            // placeholder: without a diagnostic, `parse_source` returns Ok and `check` reports
+            // `verdict:"pass"` on malformed source (`let x = );`, `let x = 1 + ;`, `"${1 + }"`).
+            // Record it so the DIAGNOSTICS_JSON invariant holds: a check that did not parse fails.
+            other => {
+                self.diagnostic(
+                    format!("unexpected token in expression: {:?}", other),
+                    tok.span,
+                );
+                Expr::Other(format!("{:?}", other))
+            }
         };
         // Unified postfix chain: `.field` and `[index]` interleaved and repeated, so
         // `a[i].b`, `a.b[i]`, `a.b.c[i].d`, and `foo().bar[0]` all parse.
         let mut e = primary;
         loop {
             if self.check_token(&Token::Dot) {
+                if !self.chain_link() {
+                    break;
+                }
                 self.bump();
                 if let Some((field, fspan)) = self.expect_ident("expected field name after `.`") {
                     e = Expr::FieldAccess {
@@ -4057,6 +4174,9 @@ impl Parser {
                     break;
                 }
             } else if self.check_token(&Token::LBracket) {
+                if !self.chain_link() {
+                    break;
+                }
                 self.bump();
                 let index = self.with_struct_allowed(|p| p.parse_expr(0));
                 let _ = self.expect_token(Token::RBracket, "expected `]` after index");
@@ -4067,6 +4187,9 @@ impl Parser {
             } else if self.check_token(&Token::LParen) {
                 // Application of a callee expression: `expr(args)` — e.g. `obj.f(x)`, `arr[i](x)`,
                 // `f(a)(b)`.
+                if !self.chain_link() {
+                    break;
+                }
                 let args = self.parse_call_args();
                 e = Expr::CallExpr {
                     callee: Box::new(e),
@@ -4074,6 +4197,9 @@ impl Parser {
                 };
             } else if self.check_token(&Token::Question) {
                 // Error-propagation postfix: `expr?`.
+                if !self.chain_link() {
+                    break;
+                }
                 self.bump();
                 e = Expr::Try(Box::new(e));
             } else {
@@ -4393,7 +4519,92 @@ impl Parser {
         }
     }
 
+    /// Enter one level of syntactic nesting. Returns false (after reporting once and skipping to
+    /// end of input so every enclosing loop terminates) when the bound is exceeded; the caller then
+    /// returns a placeholder without recursing. Pair every `true` with `leave_nested`.
+    fn enter_nested(&mut self) -> bool {
+        if self.depth_exceeded {
+            return false;
+        }
+        if self.depth >= MAX_PARSE_DEPTH {
+            let span = self.current_span();
+            self.diagnostic(
+                format!("program is nested too deeply (more than {MAX_PARSE_DEPTH} levels)"),
+                span,
+            );
+            self.depth_exceeded = true;
+            self.pos = self.tokens.len().saturating_sub(1);
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    fn leave_nested(&mut self) {
+        self.depth -= 1;
+    }
+
+    /// Open a chain context (see `MAX_CHAIN`). Pair every call with `chain_close`.
+    fn chain_open(&mut self) {
+        self.chain.push((0, 0));
+    }
+
+    /// Close the innermost chain context: its longest chain (its own links plus the longest chain
+    /// under them) becomes `chain_last` and is folded into the enclosing context.
+    fn chain_close(&mut self) {
+        let (own, nested) = self.chain.pop().unwrap_or((0, 0));
+        self.chain_last = own.saturating_add(nested);
+        self.chain_nested(self.chain_last);
+    }
+
+    /// Fold a finished sub-expression's longest chain into the innermost context.
+    fn chain_nested(&mut self, links: usize) {
+        if let Some(top) = self.chain.last_mut() {
+            top.1 = top.1.max(links);
+        }
+        self.chain_within_bound();
+    }
+
+    /// Count one more link in the innermost context. Returns false, without building the link, once
+    /// the bound is exceeded (reported once, then the parser skips to end of input exactly as for
+    /// the nesting bound, so every enclosing loop terminates).
+    fn chain_link(&mut self) -> bool {
+        if self.depth_exceeded {
+            return false;
+        }
+        if let Some(top) = self.chain.last_mut() {
+            top.0 += 1;
+        }
+        self.chain_within_bound()
+    }
+
+    fn chain_within_bound(&mut self) -> bool {
+        if self.depth_exceeded {
+            return false;
+        }
+        let Some(&(own, nested)) = self.chain.last() else {
+            return true;
+        };
+        if own.saturating_add(nested) <= MAX_CHAIN {
+            return true;
+        }
+        let span = self.current_span();
+        self.diagnostic(
+            format!(
+                "expression chain is too long (more than {MAX_CHAIN} operators, casts, calls, field \
+                 accesses or indexes on one path)"
+            ),
+            span,
+        );
+        self.depth_exceeded = true;
+        self.pos = self.tokens.len().saturating_sub(1);
+        false
+    }
+
     fn diagnostic(&mut self, message: impl Into<String>, span: Span) {
+        if self.depth_exceeded {
+            return;
+        }
         self.diagnostics.push(ParseDiagnostic {
             message: message.into(),
             span,
@@ -4504,14 +4715,56 @@ pub fn parse_source_detailed(source: &str) -> ParseOutput {
 pub fn parse_source(source: &str) -> Result<AST, String> {
     let output = parse_source_detailed(source);
     if !output.diagnostics.is_empty() {
-        Err(output
+        // The first ones, then a count: every message joined made an 8.6 MB evidence field (written
+        // four times) for a 480 KB malformed file.
+        let more = output
+            .diagnostics
+            .len()
+            .saturating_sub(MAX_JOINED_PARSE_ERRORS);
+        let mut messages: Vec<String> = output
             .diagnostics
             .iter()
-            .map(|d| d.message.as_str())
-            .collect::<Vec<_>>()
-            .join("; "))
+            .take(MAX_JOINED_PARSE_ERRORS)
+            .map(|d| d.message.clone())
+            .collect();
+        if more > 0 {
+            messages.push(format!(
+                "… and {more} more parse error{}",
+                if more == 1 { "" } else { "s" }
+            ));
+        }
+        Err(messages.join("; "))
     } else {
         Ok(output.ast)
+    }
+}
+
+/// Every line start of a source, so many offsets are located without walking the source from its
+/// start each time (`line_col` does, which is quadratic over a file with many errors).
+pub struct LineIndex<'s> {
+    source: &'s str,
+    starts: Vec<usize>,
+}
+
+impl<'s> LineIndex<'s> {
+    pub fn new(source: &'s str) -> Self {
+        let starts = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        LineIndex { source, starts }
+    }
+
+    /// Exactly `line_col(source, byte_offset)`.
+    pub fn line_col(&self, byte_offset: usize) -> (usize, usize) {
+        let clamped = byte_offset.min(self.source.len());
+        let line = self.starts.partition_point(|&s| s <= clamped).max(1);
+        let start = self.starts[line - 1];
+        let column = self.source[start..]
+            .char_indices()
+            .take_while(|(i, _)| start + i < clamped)
+            .count()
+            + 1;
+        (line, column)
     }
 }
 
@@ -4540,6 +4793,26 @@ pub fn line_col(source: &str, byte_offset: usize) -> (usize, usize) {
 /// followed by the offending source line and a caret underline sized to the span. The
 /// diagnostic `message` is preserved verbatim so `ANUBIS_*` codes and `ERROR_CONTAINS`
 /// substrings still match on the rendered text.
+/// Characters of a source line shown on each side of the column a diagnostic points at. A longer
+/// line is cut to this window (`…` marks the cut), so the rendering stays small whatever the line.
+const RENDER_WINDOW: usize = 80;
+/// Parse diagnostics rendered in full; the rest are counted. Error recovery can report one error
+/// per token of a malformed file, and each rendering repeats its line: a 6 KB file of nested
+/// blocks produced 5210 errors and 49.6 MB of text, and 3000 levels needed a 1.3 GB allocation.
+const MAX_RENDERED_PARSE_ERRORS: usize = 20;
+/// Parse error messages joined into `parse_source`'s error; the rest are counted.
+const MAX_JOINED_PARSE_ERRORS: usize = 200;
+
+/// A source character as a diagnostic shows it: a control character (an escape sequence in a hostile
+/// file would otherwise drive the terminal or log that shows it) as `\u{..}`, a tab as a space.
+fn shown_char(c: char) -> String {
+    match c {
+        '\t' => " ".into(),
+        c if c.is_control() => format!("\\u{{{:x}}}", c as u32),
+        c => c.to_string(),
+    }
+}
+
 pub fn render_parse_diagnostic(source: &str, diag: &ParseDiagnostic, path: Option<&str>) -> String {
     let (line, col) = line_col(source, diag.span.start);
     let file = path.unwrap_or("<anubis>");
@@ -4551,31 +4824,53 @@ pub fn render_parse_diagnostic(source: &str, diag: &ParseDiagnostic, path: Optio
         .map(|s| s.chars().take_while(|&c| c != '\n').count())
         .unwrap_or(1)
         .max(1);
+    // The window of the line around the column (1-based `col` counts characters).
+    let chars: Vec<char> = src_line.chars().collect();
+    let at = col.saturating_sub(1).min(chars.len());
+    let from = at.saturating_sub(RENDER_WINDOW);
+    let to = (at + RENDER_WINDOW).min(chars.len());
+    let lead = if from > 0 { "…" } else { "" };
+    let tail = if to < chars.len() { "…" } else { "" };
+    let shown: String = chars[from..to].iter().map(|&c| shown_char(c)).collect();
+    let before: usize = chars[from..at]
+        .iter()
+        .map(|&c| shown_char(c).chars().count())
+        .sum();
     let gutter = line.to_string();
     let pad = " ".repeat(gutter.len());
-    let caret_pad = " ".repeat(col.saturating_sub(1));
-    let carets = "^".repeat(underline_len);
+    let caret_pad = " ".repeat(before + lead.chars().count());
+    let carets = "^".repeat(underline_len.min(to.saturating_sub(at).max(1)));
     format!(
-        "{file}:{line}:{col}: error: {msg}\n {pad} |\n {gutter} | {src_line}\n {pad} | {caret_pad}{carets}",
+        "{file}:{line}:{col}: error: {msg}\n {pad} |\n {gutter} | {lead}{shown}{tail}\n {pad} | {caret_pad}{carets}",
         msg = diag.message
     )
 }
 
-/// Render every diagnostic from a parse, rustc-style, or `None` when the source parses cleanly.
+/// Render the diagnostics from a parse, rustc-style, or `None` when the source parses cleanly: the
+/// first `MAX_RENDERED_PARSE_ERRORS` in full, then how many more there are.
 /// This is the user-facing counterpart to `parse_source`'s `"; "`-joined error string.
 pub fn render_parse_errors(source: &str, path: Option<&str>) -> Option<String> {
     let output = parse_source_detailed(source);
     if output.diagnostics.is_empty() {
         return None;
     }
-    Some(
-        output
-            .diagnostics
-            .iter()
-            .map(|d| render_parse_diagnostic(source, d, path))
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    )
+    let mut rendered: Vec<String> = output
+        .diagnostics
+        .iter()
+        .take(MAX_RENDERED_PARSE_ERRORS)
+        .map(|d| render_parse_diagnostic(source, d, path))
+        .collect();
+    let more = output
+        .diagnostics
+        .len()
+        .saturating_sub(MAX_RENDERED_PARSE_ERRORS);
+    if more > 0 {
+        rendered.push(format!(
+            "… and {more} more parse error{}",
+            if more == 1 { "" } else { "s" }
+        ));
+    }
+    Some(rendered.join("\n\n"))
 }
 
 #[cfg(test)]
@@ -4609,6 +4904,93 @@ mod diagnostic_render_tests {
         assert!(rendered.contains("let x = ;"));
         // caret sits under column 13 (12 spaces of padding then a single caret)
         assert!(rendered.contains("|             ^"));
+    }
+
+    /// A long line is shown as a window around the column, with the caret still under it.
+    #[test]
+    fn render_parse_diagnostic_windows_a_long_line() {
+        let src = format!("fn main() {{ let x = {}; }}\n", "1 + ".repeat(1000) + ")");
+        let at = src.rfind(')').unwrap();
+        let diag = ParseDiagnostic {
+            message: "unexpected token".into(),
+            span: Span {
+                start: at,
+                end: at + 1,
+            },
+        };
+        let rendered = render_parse_diagnostic(&src, &diag, None);
+        assert!(rendered.len() < 1000, "{}", rendered.len());
+        let lines: Vec<&str> = rendered.lines().collect();
+        let text = lines[2].split(" | ").nth(1).unwrap();
+        let caret = lines[3].split(" | ").nth(1).unwrap();
+        let col = caret.chars().position(|c| c == '^').unwrap();
+        assert_eq!(text.chars().nth(col), Some(')'), "{rendered}");
+    }
+
+    /// Control characters in the source are shown escaped, with the caret still under its column.
+    #[test]
+    fn render_parse_diagnostic_escapes_control_characters() {
+        let src = "fn main() { let s = \"\u{1b}]0;x\u{7}\"; let = 1; }\n";
+        let at = src.find("let =").unwrap() + 4;
+        let diag = ParseDiagnostic {
+            message: "expected a name".into(),
+            span: Span {
+                start: at,
+                end: at + 1,
+            },
+        };
+        let rendered = render_parse_diagnostic(src, &diag, None);
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "{rendered:?}"
+        );
+        assert!(rendered.contains("\\u{1b}]0;x\\u{7}"), "{rendered}");
+        let lines: Vec<&str> = rendered.lines().collect();
+        let text = lines[2].split(" | ").nth(1).unwrap();
+        let caret = lines[3].split(" | ").nth(1).unwrap();
+        let col = caret.chars().position(|c| c == '^').unwrap();
+        assert_eq!(text.chars().nth(col), Some('='), "{rendered}");
+    }
+
+    /// The joined parse error counts past the first 200.
+    #[test]
+    fn parse_source_error_counts_past_two_hundred() {
+        let src = format!("fn main() {{ {} }}\n", "let = ; ".repeat(400));
+        let err = parse_source(&src).unwrap_err();
+        assert!(
+            err.contains("more parse errors"),
+            "{}",
+            &err[err.len() - 80..]
+        );
+        assert!(err.matches("; ").count() <= MAX_JOINED_PARSE_ERRORS);
+    }
+
+    /// The line index locates every offset exactly as `line_col` does.
+    #[test]
+    fn line_index_agrees_with_line_col() {
+        let src = "fn main() {\n  é 日本 x\n\n\tlet = ;\r\n}";
+        let index = LineIndex::new(src);
+        for off in 0..=src.len() + 3 {
+            assert_eq!(index.line_col(off), line_col(src, off), "offset {off}");
+        }
+    }
+
+    /// A cascade of errors renders the first ones and counts the rest.
+    #[test]
+    fn render_parse_errors_counts_past_the_first_twenty() {
+        let src = format!("fn main() {{ {} }}\n", "let = ; ".repeat(200));
+        let all = parse_source_detailed(&src).diagnostics.len();
+        assert!(all > MAX_RENDERED_PARSE_ERRORS);
+        let rendered = render_parse_errors(&src, Some("t.anb")).unwrap();
+        assert_eq!(
+            rendered.matches("error:").count(),
+            MAX_RENDERED_PARSE_ERRORS
+        );
+        let more = all - MAX_RENDERED_PARSE_ERRORS;
+        assert!(
+            rendered.ends_with(&format!("… and {more} more parse errors")),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -4781,5 +5163,171 @@ mod list_type_annotation_tests {
             struct_field_ty("struct S { m: Map<int, string> }\n", "S", "m"),
             "Map<int, string>"
         );
+    }
+}
+
+#[cfg(test)]
+mod robustness_tests {
+    use super::*;
+
+    fn diags(src: &str) -> Vec<String> {
+        parse_source_detailed(src)
+            .diagnostics
+            .into_iter()
+            .map(|d| d.message)
+            .collect()
+    }
+
+    /// Hostile or generated nesting must produce a diagnostic, never exhaust the stack. Each shape
+    /// below reaches a different recursive parse path (primary, statement, pattern, interpolation
+    /// sub-parser); 200_000 levels aborted the process with a stack overflow before the bound.
+    #[test]
+    fn deep_nesting_is_a_diagnostic_not_a_stack_overflow() {
+        let n = 200_000;
+        let shapes = [
+            format!(
+                "fn main() {{ let x = {}1{}; }}",
+                "(".repeat(n),
+                ")".repeat(n)
+            ),
+            format!("fn main() {{ let x = {}1; }}", "-".repeat(n)),
+            format!(
+                "fn main() {{ let x = {}1{}; }}",
+                "[".repeat(n),
+                "]".repeat(n)
+            ),
+            format!(
+                "fn main() {{ {}print(1); {}}}",
+                "if 1 == 1 { ".repeat(n),
+                "} ".repeat(n)
+            ),
+            format!(
+                "fn main() {{ match [1] {{ {}x{} => {{ }} _ => {{ }} }} }}",
+                "[".repeat(n),
+                "]".repeat(n)
+            ),
+            format!(
+                "fn main() {{ let s = {}1{}; }}",
+                "\"${ ".repeat(2000),
+                " }\"".repeat(2000)
+            ),
+        ];
+        // The parser recurses a bounded number of frames, but each is large in an unoptimized test
+        // build; run on a thread with an explicit stack so the test measures the bound, not the
+        // harness's default test-thread stack.
+        let handle = std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(move || {
+                for src in &shapes {
+                    let d = diags(src);
+                    assert_eq!(d.len(), 1, "exactly one diagnostic, got {d:?}");
+                    assert!(d[0].contains("nested too deeply"), "got {d:?}");
+                }
+            })
+            .unwrap();
+        handle.join().unwrap();
+    }
+
+    /// A chain longer than `MAX_CHAIN` is one diagnostic, in every form the parser builds by a loop,
+    /// and across nesting: two chains of 5000 on one path exceed 8192 though neither does alone.
+    #[test]
+    fn long_chains_are_rejected_once() {
+        let handle = std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                let n = MAX_CHAIN + 8;
+                let over = [
+                    format!("fn main() {{ let x = 1{}; print(x); }}", " + 1".repeat(n)),
+                    format!(
+                        "fn main() {{ let x = 1{}; print(x); }}",
+                        " as i64".repeat(n)
+                    ),
+                    format!(
+                        "fn main() {{ let id = |x| x; print(id{}); }}",
+                        "(id)".repeat(n)
+                    ),
+                    format!(
+                        "fn main() {{ let s = S {{ a: 1 }}; print(s{}); }}",
+                        ".a".repeat(n)
+                    ),
+                    format!("fn main() {{ let v = [1]; print(v{}); }}", "[0]".repeat(n)),
+                    format!("fn main() {{ print(\"{}\"); }}", "${1}".repeat(n)),
+                    format!("fn main() {{ print(\"${{1{}}}\"); }}", " + 1".repeat(n)),
+                    format!(
+                        "fn main() {{ let x = (1{}){}; print(x); }}",
+                        " + 1".repeat(5000),
+                        " + 1".repeat(5000)
+                    ),
+                ];
+                for src in &over {
+                    let d = diags(src);
+                    assert_eq!(d.len(), 1, "{d:?}");
+                    assert!(d[0].contains("expression chain is too long"), "{d:?}");
+                }
+                let within = [
+                    format!(
+                        "fn main() {{ let x = 1{}; print(x); }}",
+                        " + 1".repeat(MAX_CHAIN - 8)
+                    ),
+                    format!(
+                        "fn main() {{ let x = 1{}; let y = 1{}; print(x + y); }}",
+                        " + 1".repeat(5000),
+                        " + 1".repeat(5000)
+                    ),
+                ];
+                for src in &within {
+                    assert!(diags(src).is_empty());
+                }
+            })
+            .unwrap();
+        handle.join().unwrap();
+    }
+
+    /// Nesting below the bound still parses cleanly.
+    #[test]
+    fn nesting_below_the_bound_still_parses() {
+        let n = MAX_PARSE_DEPTH - 16;
+        let handle = std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(move || {
+                let src = format!(
+                    "fn main() {{ let x = {}1{}; print(x); }}",
+                    "(".repeat(n),
+                    ")".repeat(n)
+                );
+                assert!(diags(&src).is_empty());
+                let src = format!(
+                    "fn main() {{ {}print(1); {}}}",
+                    "if 1 == 1 { ".repeat(n / 2),
+                    "} ".repeat(n / 2)
+                );
+                assert!(diags(&src).is_empty());
+            })
+            .unwrap();
+        handle.join().unwrap();
+    }
+
+    /// Malformed expressions are parse errors, not silently tolerated placeholders (a check used
+    /// to report `verdict: pass` on these), while a stray `;` after a statement stays valid.
+    #[test]
+    fn malformed_expressions_are_diagnosed_and_stray_semicolons_are_not() {
+        for bad in [
+            "fn main() { let x = ); }",
+            "fn main() { let x = 1 + ; }",
+            "fn main() { let s = \"a ${ 1 + } b\"; }",
+            "fn main() { let x = 1 +",
+        ] {
+            assert!(!diags(bad).is_empty(), "expected a diagnostic for {bad:?}");
+        }
+        for ok in [
+            "fn main() { print(1);; let y = 2; ; print(y); }",
+            "fn f() { let g = |x| { if x == 1 { 1 } else { 0 }; }; g(0); }",
+        ] {
+            assert!(
+                diags(ok).is_empty(),
+                "unexpected diagnostic for {ok:?}: {:?}",
+                diags(ok)
+            );
+        }
     }
 }

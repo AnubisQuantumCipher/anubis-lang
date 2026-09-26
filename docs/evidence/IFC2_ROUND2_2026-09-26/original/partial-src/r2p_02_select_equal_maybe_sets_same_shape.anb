@@ -1,0 +1,19 @@
+fn mk(present) {
+    let m = {"x": 0};
+    if present {
+        m["a"] = 1;
+    }
+    m
+}
+fn pick(c, m1, m2) {
+    let m = if c { m1 } else { m2 };
+    m
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let n = len(args());
+    let m1 = mk(n == 0);
+    let m2 = mk(n == 5);
+    let m = pick(s > 100, m1, m2);
+    println(has_key(m, "a"));
+}

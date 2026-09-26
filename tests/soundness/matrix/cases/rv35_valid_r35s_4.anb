@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(ys) {
+    let [g] = ys;
+    print(g.pub_n);
+    return 0;
+}
+fn main() {
+    let q = S { k: 42, pub_n: 1 };
+    let r = run([q]);
+}

@@ -1,0 +1,8 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let xs = [];
+    for i in 0..7 {
+        push(xs, s);
+    }
+    apply(|a, b, c, d, e, f, g| print(g), xs);
+}

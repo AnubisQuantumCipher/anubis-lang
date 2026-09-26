@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn count_from(ps, i) {
+    if i >= len(ps) {
+        return 0;
+    }
+    let pr = ps[i];
+    return pr[0] + count_from(ps, i + 1);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    print(count_from(enumerate(xs), 0));
+}

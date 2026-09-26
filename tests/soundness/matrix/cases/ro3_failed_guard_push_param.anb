@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn nope(v) { return false; }
+fn f(v) {
+    let xs = [0];
+    match 3 {
+        3 if nope(push(xs, v)) => { return [7]; }
+        _ => { return xs; }
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p.k));
+}

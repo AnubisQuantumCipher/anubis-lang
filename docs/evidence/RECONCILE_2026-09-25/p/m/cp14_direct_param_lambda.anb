@@ -1,0 +1,3 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp14_direct_param_lambda.txt", x); return 0; }
+fn app(xs) { xs[0]("a"); return 0; }
+fn main() { app([|x| leak(x)]); }

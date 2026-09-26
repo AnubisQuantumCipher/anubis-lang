@@ -1,0 +1,84 @@
+name: anubis-linux-native-ordinary
+
+# Supplemental native execution only. Existing hosted-gate-witness, G1–G31,
+# Tart/VZ, crash/fuzz, Metal, and release requirements are unchanged.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-ordinary:
+    name: linux-native-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            z3_asset: z3-4.15.4-x64-glibc-2.39
+            z3_sha: a41b690e89c343931471506cdc6d957b6044a200fd2d240cc017432afdff7d3e
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            z3_asset: z3-4.15.4-arm64-glibc-2.34
+            z3_sha: 9e832578e28d9ed51a79b97948728a874854a3c38ee49e7aae05e7d6e0e93508
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: nightly-2026-05-10
+          components: rustfmt, clippy
+      - name: Install Linux build tools and checksum-pinned Z3
+        env:
+          Z3_ASSET: ${{ matrix.z3_asset }}
+          Z3_SHA: ${{ matrix.z3_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev unzip
+          mkdir -p out/linux-native
+          z3_dir="$RUNNER_TEMP/anubis-linux-z3"
+          mkdir -p "$z3_dir"
+          curl --fail --location --retry 3 --output "$z3_dir/z3.zip" \
+            "https://github.com/Z3Prover/z3/releases/download/z3-4.15.4/$Z3_ASSET.zip"
+          printf '%s  %s\n' "$Z3_SHA" "$z3_dir/z3.zip" | sha256sum -c -
+          unzip -q "$z3_dir/z3.zip" -d "$z3_dir"
+          echo "$z3_dir/$Z3_ASSET/bin" >> "$GITHUB_PATH"
+          printf '%s  %s\n' "$Z3_SHA" "$Z3_ASSET.zip" > out/linux-native/z3-archive.sha256
+      - name: Build and run the reviewed ordinary allowlist under verified cgroup limits
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: bash scripts/ci/linux_scope.sh "$EXPECTED_ARCH"
+      - name: Retain job outcome even if setup or the bounded service failed
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          mkdir -p out/linux-native
+          python3 - <<'PY'
+          import json, os, pathlib
+          keys = ["JOB_STATUS", "EXPECTED_ARCH", "GITHUB_SHA", "GITHUB_RUN_ID",
+                  "GITHUB_RUN_ATTEMPT", "GITHUB_REPOSITORY", "GITHUB_REF",
+                  "GITHUB_EVENT_NAME", "SOURCE_HEAD_SHA"]
+          pathlib.Path("out/linux-native/job.json").write_text(
+              json.dumps({k: os.environ.get(k) for k in keys}, indent=2) + "\n")
+          PY
+      - name: Upload ordinary receipt and complete bounded-job logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-native-ordinary-${{ matrix.arch }}
+          path: out/linux-native/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,14 @@
+// Proposed REJECT control: same factory lambda syntax, different captured data.
+// Not executed by the design task.
+struct S { k: secret<i64>, pub_n: i64 }
+fn make(x) { return |z| print(x); }
+fn f(p) {
+    let clean = make(p.pub_n);
+    let unsafe_c = make(p.k);
+    clean(0);
+    unsafe_c(0);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    f(p);
+}

@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show_pub(s) { return "n=${s.pub_n}"; }
+fn show_short(s) { return "S"; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut f = show_short;
+    let o = Some(2);
+    if let Some(v) = o {
+        let chosen = if v > 1 { show_pub } else { show_short };
+        f = chosen;
+    }
+    println(f(p));
+}

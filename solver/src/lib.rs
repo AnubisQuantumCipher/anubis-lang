@@ -112,8 +112,23 @@ pub const MAX_CERT_WORK: u64 = 50_000_000;
 /// Wall-clock net per obligation. NOT the primary bound — [`DEFAULT_BUDGET`] is, precisely because it
 /// is deterministic (a verdict must not depend on machine load). This exists only for the shape the
 /// conflict budget cannot bound: a very large CNF where each conflict is cheap but propagation is
-/// slow. Overridable with `ANUBIS_NATIVE_TIME_BUDGET_MS`; `0` disables it (fully deterministic).
-pub const DEFAULT_TIME_BUDGET_MS: u64 = 10_000;
+/// Wall-clock budget for one native decision, in milliseconds. **Zero by
+/// default, which means no wall clock at all.**
+///
+/// A verdict that changes with machine load is not evidence. The same program
+/// checked on a busy machine must not be less proved than on an idle one, and
+/// with a 10s budget it was: the repository's own fixture record shows one
+/// fixture returning rc=1 at load 4.9 and rc=0 at load 3.7 from the same pinned
+/// binary, and this suite's `run_tests` fail a different subset on each parallel
+/// run for the same reason.
+///
+/// Search is still bounded, just by WORK rather than by CLOCK: `DEFAULT_BUDGET`
+/// conflicts, `MAX_BLAST_GATES` gates, `MAX_CNF_CLAUSES` clauses and
+/// `MAX_CERT_WORK` certificate steps are all deterministic ceilings, so a
+/// decision still terminates — it simply terminates at the same place every
+/// time. Set `ANUBIS_NATIVE_TIME_BUDGET_MS` to opt a wall clock back in for an
+/// interactive session; doing so makes that session's verdicts unreproducible.
+pub const DEFAULT_TIME_BUDGET_MS: u64 = 0;
 
 /// Read a `u64` env override, falling back to `default` when unset or unparseable.
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -135,7 +150,8 @@ struct NativeLimits {
 }
 
 impl NativeLimits {
-    /// Product defaults, with env overrides applied.
+    /// Product defaults, with env overrides applied. Deterministic unless an
+    /// operator explicitly sets `ANUBIS_NATIVE_TIME_BUDGET_MS`.
     fn from_env() -> NativeLimits {
         let ms = env_u64("ANUBIS_NATIVE_TIME_BUDGET_MS", DEFAULT_TIME_BUDGET_MS);
         NativeLimits {
@@ -209,7 +225,28 @@ pub enum NativeVerdict {
 /// re-satisfy the formula — which would mean a solver defect — this returns `None` (defer), so a
 /// broken model can never be presented as a counterexample. UNSAT needs no model.
 pub fn native_check_sat_model(smt: &str) -> Option<NativeVerdict> {
-    decide(smt, &NativeLimits::from_env())
+    on_solver_stack(|| decide(smt, &NativeLimits::from_env())).flatten()
+}
+
+/// Stack for the solver's own thread. Parsing, sort checking, lowering, bit-blasting and model
+/// evaluation all recurse once per nesting level of the query (bounded by `parse::MAX_SEXP_DEPTH`).
+/// Running them on a dedicated thread makes that bound independent of the CALLER's stack — a test
+/// harness thread (2 MiB) or a debug build — so no accepted query can overflow and abort the process.
+/// The reservation is virtual; only the pages actually used are touched.
+const SOLVER_STACK_BYTES: usize = 256 << 20;
+
+/// Run `f` on a scoped thread with `SOLVER_STACK_BYTES` of stack. `None` if the thread could not be
+/// created or `f` panicked — the caller treats that as a decline (defer to z3), never as a verdict.
+pub(crate) fn on_solver_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("anubis-solver".into())
+            .stack_size(SOLVER_STACK_BYTES)
+            .spawn_scoped(scope, f)
+            .ok()?
+            .join()
+            .ok()
+    })
 }
 
 /// AUTHORITATIVE verdict (Phase-7 TCB minimization). Identical to [`native_check_sat_model`] EXCEPT it
@@ -227,17 +264,20 @@ pub fn native_check_sat_model(smt: &str) -> Option<NativeVerdict> {
 /// design. The un-gated [`native_check_sat_model`] uses the same Unsat-cert check so no Unsat leaves
 /// this crate without a verified certificate.
 pub fn native_check_sat_model_authoritative(smt: &str) -> Option<NativeVerdict> {
-    let limits = NativeLimits::from_env();
-    let formula = parse::parse_smt2(smt)?;
-    if !fragment::is_proven_authoritative(&formula) {
-        return None;
-    }
-    decide_formula(smt, &formula, &limits)
+    on_solver_stack(|| {
+        let limits = NativeLimits::from_env();
+        let formula = parse::parse_smt2_here(smt)?;
+        if !fragment::is_proven_authoritative(&formula) {
+            return None;
+        }
+        decide_formula(smt, &formula, &limits)
+    })
+    .flatten()
 }
 
 /// As [`native_check_sat_model`] with an explicit conflict budget and no wall-clock component.
 pub fn native_check_sat_model_budget(smt: &str, budget: u64) -> Option<NativeVerdict> {
-    decide(smt, &NativeLimits::deterministic(budget))
+    on_solver_stack(|| decide(smt, &NativeLimits::deterministic(budget))).flatten()
 }
 
 /// The proof objects behind an `Unsat`, in formats an OUTSIDE checker can consume.
@@ -293,19 +333,22 @@ fn cert_to_drat(cert: &lrat::UnsatCert) -> String {
 /// asking for artifacts, which is why this threads an out-parameter instead of adding a second
 /// decision path. `None` artifacts mean the verdict was Sat, or the cert was declined/absent.
 pub fn native_prove_with_artifacts(smt: &str) -> Option<(NativeVerdict, Option<ProofArtifacts>)> {
-    let limits = NativeLimits::from_env();
-    let formula = parse::parse_smt2(smt)?;
-    if !fragment::is_proven_authoritative(&formula) {
-        return None;
-    }
-    let mut artifacts = None;
-    let v = decide_formula_inner(smt, &formula, &limits, Some(&mut artifacts))?;
-    Some((v, artifacts))
+    on_solver_stack(|| {
+        let limits = NativeLimits::from_env();
+        let formula = parse::parse_smt2_here(smt)?;
+        if !fragment::is_proven_authoritative(&formula) {
+            return None;
+        }
+        let mut artifacts = None;
+        let v = decide_formula_inner(smt, &formula, &limits, Some(&mut artifacts))?;
+        Some((v, artifacts))
+    })
+    .flatten()
 }
 
-/// Parse, then decide under `limits`.
+/// Parse, then decide under `limits`. Must already be on the solver stack (`on_solver_stack`).
 fn decide(smt: &str, limits: &NativeLimits) -> Option<NativeVerdict> {
-    let formula = parse::parse_smt2(smt)?;
+    let formula = parse::parse_smt2_here(smt)?;
     decide_formula(smt, &formula, limits)
 }
 
@@ -426,6 +469,10 @@ fn decide_formula_inner(
             if formula.eval(&env, &bool_env) != Some(true) {
                 None
             } else {
+                // The replay above checked the FULL assignment, including the variables the
+                // lowering introduced to share operands. Those are internal: the model reported
+                // is over the query's own declared variables only.
+                model.retain(|(name, _, _)| !parse::is_introduced(name));
                 Some(NativeVerdict::Sat(model))
             }
         }

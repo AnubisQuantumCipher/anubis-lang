@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Regression: the closure-analysis limit counts closure bodies, not expression depth (a 40-term sum).
+fn main() {
+    let x = 3;
+    print("t0" + str(x) + "t1" + str(x) + "t2" + str(x) + "t3" + str(x) + "t4" + str(x) + "t5" + str(x) + "t6" + str(x) + "t7" + str(x) + "t8" + str(x) + "t9" + str(x) + "t10" + str(x) + "t11" + str(x) + "t12" + str(x) + "t13" + str(x) + "t14" + str(x) + "t15" + str(x) + "t16" + str(x) + "t17" + str(x) + "t18" + str(x) + "t19" + str(x) + "t20" + str(x) + "t21" + str(x) + "t22" + str(x) + "t23" + str(x) + "t24" + str(x) + "t25" + str(x) + "t26" + str(x) + "t27" + str(x) + "t28" + str(x) + "t29" + str(x) + "t30" + str(x) + "t31" + str(x) + "t32" + str(x) + "t33" + str(x) + "t34" + str(x) + "t35" + str(x) + "t36" + str(x) + "t37" + str(x) + "t38" + str(x) + "t39" + str(x));
+}

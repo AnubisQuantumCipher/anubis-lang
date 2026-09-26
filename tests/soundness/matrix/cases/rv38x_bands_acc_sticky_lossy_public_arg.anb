@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(p, n) {
+    let f = |q| { print(q); 0 };
+    let fs = [|q| 0];
+    f = fs[0];
+    f(p.pub_n);
+    let r = identity(if n > 0 { let f = fs[0]; f } else { |q| 0 });
+    r(p.pub_n);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p, 5);
+}
