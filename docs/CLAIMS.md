@@ -48,6 +48,13 @@ preserves a declared secret-field negative, its passing public sibling, a
 secret nested-write negative, and a still-refused valid clean nested write.
 Independent review held the scratch D9 v2 implementation for possible
 call-returned-field laundering and stale shapes; no such patch is integrated.
+The [released-field rewrite pair](evidence/D9_RELEASED_FIELD_REWRITE_REGISTRATION_2026-09-26/README.md)
+is now source-bound too. After releasing an old `Row`, a clean public-field
+write and read pass, while a later write to declared secret `k` and its egress
+receive both a direct declared-field refusal and an IFC2 refusal. Independent
+review held the revised scratch v3 before application because its direct
+producer could lose the declared-field obligation on that path. A candidate
+must retain the direct obligation, not rely on IFC2's aggregate failure.
 
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate

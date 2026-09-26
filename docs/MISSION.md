@@ -74,7 +74,8 @@ records dependency-correct review refs without rewriting published history.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The isolated local integration branch `codex/register-round2-20260926` has
-reviewed code through `6b85cf2207e5b3126a18e2df1190a4efa49a2ecc`.
+reviewed code through `5e3f76dfb7ef92faf0bb99c7a42e341a29f5df4b` and
+fixture registrations through `66af64194f6aea52ac474fff9bb4a7f3f5ba2845`.
 The [guard-transfer receipt](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md)
 binds the preceding `88a2903c` code, selected Safe checks, a clean-head
 binary and a complete provisional same-source matrix comparison. Its reached
@@ -131,9 +132,16 @@ uncertified call-returned structs and stale field shapes after nested writes.
 Four matched [factory and nested-write witnesses](evidence/D9_QUALIFIER_V3_REGISTRATION_2026-09-26/README.md)
 are now frozen and source-bound at `fc72526b`: both REJECT controls receive
 typed security refusals, the factory public sibling passes, and the valid
-clean nested write is over-refused. The next executable step is independent
-review and lead-only testing of a revised D9 scratch patch against all frozen
-controls and the unchanged original corpus. The matrix
+clean nested write is over-refused. The
+[released-field rewrite pair](evidence/D9_RELEASED_FIELD_REWRITE_REGISTRATION_2026-09-26/README.md)
+is also frozen in fixture-only commit `66af6419`: the valid public write/read
+passes at the SHA-identified baseline, and the invalid post-release write to
+declared secret `k` gets both direct and IFC2 typed refusals. Independent
+review held the D9 scratch v3 patch before application because its direct
+producer could lose that newly created obligation. The next executable step
+is to obtain and independently review a v4 scratch patch, then lead-test it
+against the frozen D9 pairs on a source-bound build before any code commit.
+The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
 the new fixed-path loader: production diagnostics still lack complete stable
 source locators. Preserve the old `history.tsv` and add compact event history
