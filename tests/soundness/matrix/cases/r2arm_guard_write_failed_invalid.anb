@@ -1,0 +1,10 @@
+fn f(v: i64) -> i64 requires(v > 0) { return v; }
+fn main() {
+    let x = 1;
+    let z = match x {
+        0 => 0,
+        _ if if true { x = 0; false } else { false } => 0,
+        _ => f(x)
+    };
+    print(z);
+}
