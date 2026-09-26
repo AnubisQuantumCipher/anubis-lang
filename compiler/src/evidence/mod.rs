@@ -88,6 +88,30 @@ fn tool_identity() -> String {
     format!("anubis {}", env!("CARGO_PKG_VERSION"))
 }
 
+/// Machine labels for a refuted encoding whose model is not a checked program counterexample.
+/// The proof index and replay record use the same classification so neither can turn a branch-
+/// reachability uncertainty into a native SAT/disproof claim.
+fn undecided_provenance(detail: &str) -> Option<(&'static str, &'static str)> {
+    if detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL {
+        Some((
+            "undecided_overapproximated",
+            "overapproximated_not_replayed",
+        ))
+    } else if detail == crate::middle::BRANCH_REACHABILITY_UNDECIDED_DETAIL {
+        Some((
+            "undecided_branch_reachability",
+            "branch_reachability_not_replayed",
+        ))
+    } else if detail == crate::middle::OVERAPPROX_COMBINED_UNDECIDED_DETAIL {
+        Some((
+            "undecided_value_and_branch_reachability",
+            "value_and_branch_reachability_not_replayed",
+        ))
+    } else {
+        None
+    }
+}
+
 pub fn build_evidence_bundle(
     source: &str,
     mode: &str,
@@ -501,14 +525,14 @@ fn build_evidence_bundle_tree_inner(
                     for (i, c) in solver_checks.iter().enumerate() {
                         let stem = format!("obligation_{i:04}");
                         let _ = std::fs::write(pdir.join(format!("{stem}.smt2")), &c.smt);
-                        // Refuted only over an over-approximated value: the encoded query has a
-                        // model, but that is not a counterexample to the program, so the native
-                        // solver's SAT label would misstate it.
-                        if c.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL {
+                        // A model under over-approximated value or branch reachability is not a
+                        // checked program counterexample. Keep the reason typed in the index;
+                        // a native SAT label would incorrectly present it as a disproof.
+                        if let Some((proof, _)) = undecided_provenance(&c.detail) {
                             index.push(serde_json::json!({
                                 "obligation": c.name,
                                 "status": c.status,
-                                "proof": "undecided_overapproximated",
+                                "proof": proof,
                                 "smt": format!("analysis/proofs/{stem}.smt2"),
                             }));
                             continue;
@@ -604,8 +628,8 @@ fn build_evidence_bundle_tree_inner(
                         == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
                     {
                         serde_json::json!({ "status": "not_encoded", "replay_valid": false })
-                    } else if first.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL {
-                        serde_json::json!({ "status": "overapproximated_not_replayed", "replay_valid": false })
+                    } else if let Some((_, replay_status)) = undecided_provenance(&first.detail) {
+                        serde_json::json!({ "status": replay_status, "replay_valid": false })
                     } else {
                         serde_json::json!({
                             "status": if replay { "counterexample_replayed" } else { "replay_failed" },
@@ -2161,6 +2185,35 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod pca_tests {
     use super::*;
+
+    #[test]
+    fn undecided_evidence_preserves_value_and_branch_provenance() {
+        assert_eq!(
+            undecided_provenance(crate::middle::OVERAPPROX_UNDECIDED_DETAIL),
+            Some((
+                "undecided_overapproximated",
+                "overapproximated_not_replayed"
+            ))
+        );
+        assert_eq!(
+            undecided_provenance(crate::middle::BRANCH_REACHABILITY_UNDECIDED_DETAIL),
+            Some((
+                "undecided_branch_reachability",
+                "branch_reachability_not_replayed"
+            ))
+        );
+        assert_eq!(
+            undecided_provenance(crate::middle::OVERAPPROX_COMBINED_UNDECIDED_DETAIL),
+            Some((
+                "undecided_value_and_branch_reachability",
+                "value_and_branch_reachability_not_replayed"
+            ))
+        );
+        assert_eq!(
+            undecided_provenance(crate::middle::DISPROVED_DETAIL_NATIVE),
+            None
+        );
+    }
 
     /// An ACCEPTED program that handles untrusted input without letting it reach a sink. The three
     /// tests below use it to build a legitimate bundle.

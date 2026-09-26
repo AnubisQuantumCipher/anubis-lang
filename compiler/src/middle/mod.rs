@@ -94,6 +94,15 @@ pub struct TaintTrace {
     pub declassified: bool,
 }
 
+/// Why a solver counterexample may not correspond to an executable call site.
+/// Kept on the obligation itself: two call sites can have identical display names and SMT text.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum OverApproxReason {
+    ValueHavoc,
+    BranchReachability,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SolverObligation {
     pub name: String,
@@ -115,6 +124,10 @@ pub struct SolverObligation {
     /// still uses the full `assumptions` (guards included). `#[serde(default)]` for old-data compat.
     #[serde(default)]
     pub guard_assumptions: Vec<String>,
+    /// Provenance of an over-approximation affecting this exact obligation. This is deliberately
+    /// independent of `name`, which is display text and need not be unique across call sites.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub over_approx_reasons: BTreeSet<OverApproxReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,11 +190,6 @@ pub struct TypedIR {
     pub symbols: Vec<BindingInfo>,
     pub taint_traces: Vec<TaintTrace>,
     pub solver_obligations: Vec<SolverObligation>,
-    /// Names of obligations built over a value the analysis over-approximates (a variable kept as an
-    /// arbitrary integer across a loop or branch join, see `havoc_mark`). A PROOF of such an obligation
-    /// is sound; a counterexample may not be reachable, so `check_obligations` reports a failure as
-    /// undecided (`OVERAPPROX_UNDECIDED_DETAIL`), never as a disproof.
-    pub over_approx_obligations: BTreeSet<String>,
     pub diagnostics: Vec<SemanticDiagnostic>,
     /// Non-blocking warnings (implicit-flow, etc.) — informational, do not fail the check.
     pub warnings: Vec<SemanticDiagnostic>,
@@ -1442,30 +1450,38 @@ fn join_nested_fn_writes(
     scope: &mut BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) {
-    // A statement match's callable pre-join runs before its ordered arm walk. Exclude only arms
-    // whose integer-literal pattern provably cannot match an integer-literal scrutinee; a write in
-    // such an arm must not make a later guard appear able to call the written function. Keep all
-    // possibly matching arms, including guarded ones, so this does not lose a real write.
-    let live_match = if let Stmt::ExprStmt(Expr::Match {
-        scrutinee,
-        arms,
-        span,
-    }) = stmt
-    {
-        let live: Vec<_> = arms
-            .iter()
-            .filter(|arm| !match_position_literal_misses(scrutinee, &arm.pattern))
-            .cloned()
-            .collect();
-        (live.len() != arms.len()).then(|| {
-            Stmt::ExprStmt(Expr::Match {
-                scrutinee: scrutinee.clone(),
-                arms: live,
-                span: *span,
+    // This pre-join visits the statement's expressions before the ordered arm walk. An impossible
+    // literal arm cannot contribute a callable write, whether the match stands alone or is the
+    // initializer/value of a statement. Keep every arm that could match, including guarded arms.
+    let live_match = match stmt {
+        Stmt::ExprStmt(expr) => prune_literal_miss_match(expr).map(Stmt::ExprStmt),
+        Stmt::Let {
+            name,
+            ty,
+            init,
+            span,
+        } => prune_literal_miss_match(init).map(|init| Stmt::Let {
+            name: name.clone(),
+            ty: ty.clone(),
+            init,
+            span: *span,
+        }),
+        Stmt::LetPattern {
+            pattern,
+            init,
+            span,
+        } => prune_literal_miss_match(init).map(|init| Stmt::LetPattern {
+            pattern: pattern.clone(),
+            init,
+            span: *span,
+        }),
+        Stmt::Assign { target, value } => {
+            prune_literal_miss_match(value).map(|value| Stmt::Assign {
+                target: target.clone(),
+                value,
             })
-        })
-    } else {
-        None
+        }
+        _ => None,
     };
     let stmt = live_match.as_ref().unwrap_or(stmt);
     let mut defs: BlockFnDefs<'_> = BTreeMap::new();
@@ -4775,8 +4791,6 @@ struct SemanticContext {
     /// before any local or parameter of the same name — the native runtime's order
     /// (`backends/run.rs` `Expr::Call`: user functions, then locals, then builtins).
     user_fn_names: BTreeSet<String>,
-    /// See `TypedIR::over_approx_obligations`; filled by `mark_over_approx_obligations`.
-    over_approx_obligations: BTreeSet<String>,
     /// Index into `solver_obligations` up to which `mark_over_approx_obligations` has looked.
     over_approx_scan: usize,
     /// SMT names of values an in-body `assert` over which stays runtime-enforced rather than statically
@@ -5379,7 +5393,6 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
             .into_iter()
             .filter(|o| !o.name.starts_with(WITHDRAWN_ASSERT_PREFIX))
             .collect(),
-        over_approx_obligations: ctx.over_approx_obligations,
         diagnostics: vec![],
         warnings: ctx.warnings,
         symbolic_defs: ctx.symbolic_defs,
@@ -9056,6 +9069,7 @@ fn push_wrap_safety_binop(
         vars: vars.into_iter().collect(),
         strings: false,
         guard_assumptions: ctx.active_branch_guards.clone(),
+        over_approx_reasons: BTreeSet::new(),
     });
 }
 
@@ -9916,6 +9930,7 @@ fn discharge_call_requires(
                     vars: vars.into_iter().collect(),
                     strings: false,
                     guard_assumptions: ctx.active_branch_guards.clone(),
+                    over_approx_reasons: BTreeSet::new(),
                 });
             } else if is_bool_modelable_float(clause, &ctx.solver_float_vars) {
                 // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
@@ -9940,6 +9955,7 @@ fn discharge_call_requires(
                     vars: vars.into_iter().collect(),
                     strings: false,
                     guard_assumptions: ctx.active_branch_guards.clone(),
+                    over_approx_reasons: BTreeSet::new(),
                 });
             } else if is_bool_modelable_string(
                 clause,
@@ -9970,6 +9986,7 @@ fn discharge_call_requires(
                     vars: vars.into_iter().collect(),
                     strings: true,
                     guard_assumptions: ctx.active_branch_guards.clone(),
+                    over_approx_reasons: BTreeSet::new(),
                 });
             } else if is_bool_modelable_strlen(clause, &ctx.solver_string_vars) {
                 // Phase-3 str.len: discharge a string-LENGTH precondition at the call site (`h("ab")` against
@@ -10000,6 +10017,7 @@ fn discharge_call_requires(
                         vars: vars.into_iter().collect(),
                         strings: true,
                         guard_assumptions: ctx.active_branch_guards.clone(),
+                        over_approx_reasons: BTreeSet::new(),
                     });
                 } else {
                     all_requires_checkable = false;
@@ -10631,6 +10649,7 @@ fn carrier_unresolved(ctx: &mut SemanticContext, subject: &str, key: String, sta
         vars: Vec::new(),
         strings: false,
         guard_assumptions: Vec::new(),
+        over_approx_reasons: BTreeSet::new(),
     });
 }
 
@@ -10780,6 +10799,60 @@ fn match_position_literal_misses(scrutinee: &Expr, pattern: &crate::frontend::Pa
             }
         }
         _ => false,
+    }
+}
+
+/// Give the pre-analysis write join a view of a direct match that excludes only arms proven
+/// impossible by an exact integer-literal mismatch. The source AST is unchanged and every
+/// potentially reachable arm (including guards) remains visible to the normal analyzer.
+fn prune_literal_miss_match(expr: &Expr) -> Option<Expr> {
+    let Expr::Match {
+        scrutinee,
+        arms,
+        span,
+    } = expr
+    else {
+        return None;
+    };
+    let live: Vec<_> = arms
+        .iter()
+        .filter(|arm| !match_position_literal_misses(scrutinee, &arm.pattern))
+        .cloned()
+        .collect();
+    (live.len() != arms.len()).then(|| Expr::Match {
+        scrutinee: scrutinee.clone(),
+        arms: live,
+        span: *span,
+    })
+}
+
+/// Expand only argument-free expression functions in a branch predicate. Their registered body is
+/// a single expression with no free variables, so no parameter coercion, capture, or caller-local
+/// binding changes its value. This is for path facts after the original condition's calls have
+/// already been discharged; it never skips evaluation of the source condition. Nested boolean
+/// connectives are rebuilt so `known_false() && x > 0` is seen as a complete false condition.
+fn unfold_branch_bool_helpers(expr: &Expr, ctx: &SemanticContext, depth: u32) -> Expr {
+    if depth > 4 {
+        return expr.clone();
+    }
+    match expr {
+        Expr::Call { callee, args } if args.is_empty() => {
+            if let Some(body) = unfold_expr_fn(callee, args, ctx, depth) {
+                unfold_branch_bool_helpers(&body, ctx, depth + 1)
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Binary { op, lhs, rhs } if op == "&&" || op == "||" => Expr::Binary {
+            op: op.clone(),
+            lhs: Box::new(unfold_branch_bool_helpers(lhs, ctx, depth + 1)),
+            rhs: Box::new(unfold_branch_bool_helpers(rhs, ctx, depth + 1)),
+        },
+        Expr::Unary { op, expr: inner } if op == "!" => Expr::Unary {
+            op: op.clone(),
+            expr: Box::new(unfold_branch_bool_helpers(inner, ctx, depth + 1)),
+        },
+        _ => expr.clone(),
     }
 }
 
@@ -11200,17 +11273,61 @@ fn discharge_calls_in_expr(
         Expr::If {
             cond, then, else_, ..
         } => {
+            havoc_match_position_expr_writes(ctx, assumptions, cond);
             discharge_calls_in_expr(ctx, assumptions, scope, cond);
-            let snap = assumptions.len();
-            let snap_g = ctx.active_branch_guards.len();
-            push_branch_path_condition(ctx, assumptions, cond, false);
+            let path_cond = unfold_branch_bool_helpers(cond, ctx, 0);
+            let condition_modeled = path_condition_smt(ctx, &path_cond).is_some();
+            let fact_snapshot = assumptions.clone();
+            let guard_snapshot = ctx.active_branch_guards.clone();
+            let model_int = ctx.solver_int_vars.clone();
+            let model_float = ctx.solver_float_vars.clone();
+            let model_string = ctx.solver_string_vars.clone();
+            let model_widths = ctx.symbolic_widths.clone();
+            let model_shadowed = ctx.shadowed_string_preds.clone();
+            push_branch_path_condition(ctx, assumptions, &path_cond, false);
+            let then_mark = ctx.solver_obligations.len();
             discharge_calls_in_expr(ctx, assumptions, scope, then);
-            assumptions.truncate(snap);
-            ctx.active_branch_guards.truncate(snap_g);
-            push_branch_path_condition(ctx, assumptions, cond, true);
+            if !condition_modeled {
+                for obl in &mut ctx.solver_obligations[then_mark..] {
+                    if obl.name.starts_with("requires@") {
+                        obl.over_approx_reasons
+                            .insert(OverApproxReason::BranchReachability);
+                    }
+                }
+            }
+            *assumptions = fact_snapshot.clone();
+            ctx.active_branch_guards = guard_snapshot.clone();
+            ctx.solver_int_vars = model_int.clone();
+            ctx.solver_float_vars = model_float.clone();
+            ctx.solver_string_vars = model_string.clone();
+            ctx.symbolic_widths = model_widths.clone();
+            ctx.shadowed_string_preds = model_shadowed.clone();
+            push_branch_path_condition(ctx, assumptions, &path_cond, true);
+            let else_mark = ctx.solver_obligations.len();
             discharge_calls_in_expr(ctx, assumptions, scope, else_);
-            assumptions.truncate(snap);
-            ctx.active_branch_guards.truncate(snap_g);
+            if !condition_modeled {
+                for obl in &mut ctx.solver_obligations[else_mark..] {
+                    if obl.name.starts_with("requires@") {
+                        obl.over_approx_reasons
+                            .insert(OverApproxReason::BranchReachability);
+                    }
+                }
+            }
+            *assumptions = fact_snapshot;
+            ctx.active_branch_guards = guard_snapshot;
+            ctx.solver_int_vars = model_int;
+            ctx.solver_float_vars = model_float;
+            ctx.solver_string_vars = model_string;
+            ctx.symbolic_widths = model_widths;
+            ctx.shadowed_string_preds = model_shadowed;
+            // Any branch write may reach the expression's consumer. Invalidate entry facts
+            // after the branch-local states have been restored.
+            let mut written = BTreeSet::new();
+            expr_assigned_roots(then, &mut written);
+            expr_assigned_roots(else_, &mut written);
+            for name in &written {
+                invalidate_binding_facts(ctx, assumptions, name);
+            }
         }
         // A `match` scrutinee is unconditionally evaluated — recurse it. Each ARM body runs only when its
         // pattern matches (and its guard holds), so it is discharged under a SCOPED path condition: a
@@ -11536,12 +11653,23 @@ fn discharge_calls_in_expr(
                         ),
                     );
                 }
+                // The shadowed block is refused without a normal walk, but its assignments can
+                // still change an enclosing binding before the next call. Retaining a pre-block
+                // defining fact here would certify that later call against a stale value.
+                let mut written = BTreeSet::new();
+                collect_assigned_roots(stmts, &mut written);
+                if let Some(t) = tail {
+                    expr_assigned_roots(t, &mut written);
+                }
+                for name in &written {
+                    invalidate_binding_facts(ctx, assumptions, name);
+                }
                 return;
             }
             // Scope every fact + solver-var/width entry we add to this block: restored on exit so nothing
             // leaks to a sibling branch or to the code after the enclosing `if`.
-            let snap = assumptions.len();
-            let snap_g = ctx.active_branch_guards.len();
+            let fact_snapshot = assumptions.clone();
+            let guard_snapshot = ctx.active_branch_guards.clone();
             let mut added_int: Vec<String> = Vec::new();
             let mut added_float: Vec<String> = Vec::new();
             let mut added_string: Vec<String> = Vec::new();
@@ -11649,11 +11777,11 @@ fn discharge_calls_in_expr(
                     // proved `g`'s `requires`, so the program was ACCEPTED with its precondition
                     // unchecked. Witnessed by `value_block_nested_if_requires_discharge_rejects`.
                     //
-                    // Two things make this descendable where the loop forms below still are not.
-                    // First, an `if` carries no loop-carried writes, and any embedded write was
-                    // already de-modeled by the enclosing `invalidate_embedded_writes`, so no fact
-                    // relied on here can be stale. Second, the branch guard is exactly the
-                    // `push_branch_path_condition` machinery this walker already uses.
+                    // An `if` carries no loop-carried writes. Its condition's embedded writes
+                    // are de-modeled before discharge; body writes are invalidated at the join.
+                    // The branch guard uses the same scoped path-condition machinery as the
+                    // statement analyzer, with an explicit unknown-reachability outcome when the
+                    // complete condition cannot be encoded.
                     //
                     // A modelable guard is a scoped path fact. An unmodelable guard still may
                     // execute either body: visit its calls under the enclosing facts, but mark
@@ -11666,19 +11794,33 @@ fn discharge_calls_in_expr(
                     // scoping above for free — the recurring lesson that a second walker over the
                     // same construct is how these lanes drift apart.
                     Stmt::If { cond, then, else_ } => {
-                        // The condition itself is evaluated unconditionally.
+                        // A write in the condition runs before either body. Havoc it before the
+                        // lightweight call walk, which cannot model writes within one expression
+                        // in evaluation order. This is conservative for a call preceding the write.
+                        havoc_match_position_expr_writes(ctx, assumptions, cond);
                         discharge_calls_in_expr(ctx, assumptions, scope, cond);
+                        // An expression-only, argument-free helper has exactly its returned
+                        // expression's boolean value. Expand it even inside a boolean connective,
+                        // while declining arbitrary calls and argument coercions.
+                        let path_cond = unfold_branch_bool_helpers(cond, ctx, 0);
+                        let condition_modeled = path_condition_smt(ctx, &path_cond).is_some();
+                        let branch_assumptions = assumptions.clone();
+                        let branch_guards = ctx.active_branch_guards.clone();
+                        let model_int = ctx.solver_int_vars.clone();
+                        let model_float = ctx.solver_float_vars.clone();
+                        let model_string = ctx.solver_string_vars.clone();
+                        let model_widths = ctx.symbolic_widths.clone();
+                        let model_shadowed = ctx.shadowed_string_preds.clone();
                         for (body, negate) in [(Some(then), false), (else_.as_ref(), true)] {
                             let Some(body) = body else { continue };
-                            let a0 = assumptions.len();
-                            let g0 = ctx.active_branch_guards.len();
-                            let model_int = ctx.solver_int_vars.clone();
-                            let model_float = ctx.solver_float_vars.clone();
-                            let model_string = ctx.solver_string_vars.clone();
-                            let model_widths = ctx.symbolic_widths.clone();
-                            let model_shadowed = ctx.shadowed_string_preds.clone();
-                            push_branch_path_condition(ctx, assumptions, cond, negate);
-                            let condition_modeled = assumptions.len() > a0;
+                            *assumptions = branch_assumptions.clone();
+                            ctx.active_branch_guards = branch_guards.clone();
+                            ctx.solver_int_vars = model_int.clone();
+                            ctx.solver_float_vars = model_float.clone();
+                            ctx.solver_string_vars = model_string.clone();
+                            ctx.symbolic_widths = model_widths.clone();
+                            ctx.shadowed_string_preds = model_shadowed.clone();
+                            push_branch_path_condition(ctx, assumptions, &path_cond, negate);
                             let obl_mark = ctx.solver_obligations.len();
                             let blk = Expr::Block {
                                 stmts: body.clone(),
@@ -11686,19 +11828,30 @@ fn discharge_calls_in_expr(
                             };
                             discharge_calls_in_expr(ctx, assumptions, scope, &blk);
                             if !condition_modeled {
-                                for obl in &ctx.solver_obligations[obl_mark..] {
+                                for obl in &mut ctx.solver_obligations[obl_mark..] {
                                     if obl.name.starts_with("requires@") {
-                                        ctx.over_approx_obligations.insert(obl.name.clone());
+                                        obl.over_approx_reasons
+                                            .insert(OverApproxReason::BranchReachability);
                                     }
                                 }
                             }
-                            assumptions.truncate(a0);
-                            ctx.active_branch_guards.truncate(g0);
-                            ctx.solver_int_vars = model_int;
-                            ctx.solver_float_vars = model_float;
-                            ctx.solver_string_vars = model_string;
-                            ctx.symbolic_widths = model_widths;
-                            ctx.shadowed_string_preds = model_shadowed;
+                        }
+                        *assumptions = branch_assumptions;
+                        ctx.active_branch_guards = branch_guards;
+                        ctx.solver_int_vars = model_int;
+                        ctx.solver_float_vars = model_float;
+                        ctx.solver_string_vars = model_string;
+                        ctx.symbolic_widths = model_widths;
+                        ctx.shadowed_string_preds = model_shadowed;
+                        // Both branches may reach the next statement. Their writes cannot leave
+                        // the pre-if value's fact or modelability alive at the join.
+                        let mut written = BTreeSet::new();
+                        collect_assigned_roots(then, &mut written);
+                        if let Some(else_body) = else_ {
+                            collect_assigned_roots(else_body, &mut written);
+                        }
+                        for name in &written {
+                            invalidate_binding_facts(ctx, assumptions, name);
                         }
                     }
                     // The remaining statement-position forms — `while`/`for`/`loop`/`match` —
@@ -11719,8 +11872,19 @@ fn discharge_calls_in_expr(
             if let Some(t) = tail {
                 discharge_calls_in_expr(ctx, assumptions, scope, t);
             }
-            assumptions.truncate(snap);
-            ctx.active_branch_guards.truncate(snap_g);
+            // The block's local defining facts leave scope. A body write can also remove an
+            // entry fact, so truncating by length would retain a later local/path fact in its
+            // place. Restore the exact entry state, then invalidate roots the block may write.
+            let mut written = BTreeSet::new();
+            collect_assigned_roots(stmts, &mut written);
+            if let Some(t) = tail {
+                expr_assigned_roots(t, &mut written);
+            }
+            *assumptions = fact_snapshot;
+            ctx.active_branch_guards = guard_snapshot;
+            for name in &written {
+                invalidate_binding_facts(ctx, assumptions, name);
+            }
             for n in &added_int {
                 ctx.solver_int_vars.remove(n);
             }
@@ -12336,7 +12500,13 @@ fn whole_expression_writes(
         | Stmt::SpecBlock { .. } => Vec::new(),
     };
     for e in exprs {
-        apply_whole_writes(scope, whole::expr_writes(e, scope, ctx));
+        // The whole-value write join also runs before the ordered match walk. A literal arm that
+        // cannot run must not make an outer callable appear mutated through this second carrier.
+        let filtered = prune_literal_miss_match(e);
+        apply_whole_writes(
+            scope,
+            whole::expr_writes(filtered.as_ref().unwrap_or(e), scope, ctx),
+        );
     }
 }
 
@@ -13530,6 +13700,7 @@ fn analyze_stmts(
                             vars: vars.into_iter().collect(),
                             strings: false,
                             guard_assumptions: ctx.active_branch_guards.clone(),
+                            over_approx_reasons: BTreeSet::new(),
                         });
                     } else if is_bool_modelable_float(expr, &ctx.solver_float_vars) {
                         // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged in QF_FP.
@@ -13560,6 +13731,7 @@ fn analyze_stmts(
                             vars: vars.into_iter().collect(),
                             strings: false,
                             guard_assumptions: ctx.active_branch_guards.clone(),
+                            over_approx_reasons: BTreeSet::new(),
                         });
                     } else if is_bool_modelable_string(
                         expr,
@@ -13604,6 +13776,7 @@ fn analyze_stmts(
                                 vars: vars.into_iter().collect(),
                                 strings: true,
                                 guard_assumptions: ctx.active_branch_guards.clone(),
+                                over_approx_reasons: BTreeSet::new(),
                             });
                         }
                     } else if is_bool_modelable_strlen(expr, &ctx.solver_string_vars) {
@@ -13639,6 +13812,7 @@ fn analyze_stmts(
                                 vars: vars.into_iter().collect(),
                                 strings: true,
                                 guard_assumptions: ctx.active_branch_guards.clone(),
+                                over_approx_reasons: BTreeSet::new(),
                             });
                         }
                     }
@@ -19462,13 +19636,24 @@ impl SymbolicEngine {
             }];
         }
 
-        let overapprox = |check: SolverCheck| -> SolverCheck {
+        let overapprox = |check: SolverCheck, obl: &SolverObligation| -> SolverCheck {
             if check.status == "FAIL"
                 && counterexample_was_replayed(&check)
-                && ir.over_approx_obligations.contains(&check.name)
+                && !obl.over_approx_reasons.is_empty()
             {
+                let detail = match (
+                    obl.over_approx_reasons
+                        .contains(&OverApproxReason::ValueHavoc),
+                    obl.over_approx_reasons
+                        .contains(&OverApproxReason::BranchReachability),
+                ) {
+                    (true, true) => OVERAPPROX_COMBINED_UNDECIDED_DETAIL,
+                    (true, false) => OVERAPPROX_UNDECIDED_DETAIL,
+                    (false, true) => BRANCH_REACHABILITY_UNDECIDED_DETAIL,
+                    (false, false) => unreachable!(),
+                };
                 SolverCheck {
-                    detail: OVERAPPROX_UNDECIDED_DETAIL.into(),
+                    detail: detail.into(),
                     model: None,
                     ..check
                 }
@@ -19590,9 +19775,8 @@ impl SymbolicEngine {
                     check.detail = UNDECIDED_DETAIL.into();
                     check.model = None;
                 }
-                check
+                overapprox(check, obl)
             })
-            .map(overapprox)
             .collect()
     }
 }
@@ -20853,8 +21037,14 @@ pub const UNRESOLVED_REQUIRES_PREFIX: &str = "requires-unresolved@";
 /// Detail for an obligation that was never encoded (see [`UNRESOLVED_REQUIRES_PREFIX`]). Distinct from
 /// [`UNDECIDED_DETAIL`], which reports that z3 ran and returned `unknown`: no solver ran here, so no work
 /// budget is involved and raising one cannot help. Classified by exact equality, never by prose.
+pub const UNRESOLVED_PRECONDITION_DETAIL: &str = "undecided without a solver: this precondition could \
+     not be encoded (an argument or clause is not modelable, or the function value escapes where the \
+     checker cannot follow it), so it was neither proved nor disproved; failing closed rather than \
+     assuming it holds. Make the argument modelable, guard the call, or state the precondition on the \
+     enclosing function";
+
 /// Detail for an obligation the solver refuted, but only over a value the analysis over-approximates
-/// (see `TypedIR::over_approx_obligations`): the solver's model satisfies the ENCODED query, yet the
+/// (see `SolverObligation::over_approx_reasons`): the solver's model satisfies the ENCODED query, yet the
 /// encoding admits values execution may never produce, so this is not a checked counterexample. It is
 /// reported as undecided. Classified by exact equality, never by prose.
 pub const OVERAPPROX_UNDECIDED_DETAIL: &str = "undecided: the solver found a candidate counterexample, \
@@ -20862,11 +21052,16 @@ pub const OVERAPPROX_UNDECIDED_DETAIL: &str = "undecided: the solver found a can
      is modeled as an arbitrary integer there), so it may not be reachable and is not a disproof. State \
      a loop invariant, guard the use, or narrow the value explicitly";
 
-pub const UNRESOLVED_PRECONDITION_DETAIL: &str = "undecided without a solver: this precondition could \
-     not be encoded (an argument or clause is not modelable, or the function value escapes where the \
-     checker cannot follow it), so it was neither proved nor disproved; failing closed rather than \
-     assuming it holds. Make the argument modelable, guard the call, or state the precondition on the \
-     enclosing function";
+/// A candidate counterexample found inside a branch whose complete condition was not encoded.
+/// An encodable conjunct is still useful as a fact, but it cannot establish that the branch runs.
+pub const BRANCH_REACHABILITY_UNDECIDED_DETAIL: &str = "undecided: the solver found a candidate \
+     counterexample in a branch whose complete condition the checker could not encode; the branch \
+     may not execute, so this is not a checked disproof";
+
+/// Both the value and the branch deciding whether it is used were over-approximated.
+pub const OVERAPPROX_COMBINED_UNDECIDED_DETAIL: &str = "undecided: the solver found a candidate \
+     counterexample over an over-approximated value in a branch whose complete condition could not \
+     be encoded; the execution may not reach that value or branch, so this is not a checked disproof";
 
 /// The `.smt` recorded for an unencoded obligation: comment lines only, so no consumer can mistake it
 /// for a query (it contains no `check-sat`), and the evidence bundle can still publish what was not
@@ -20892,7 +21087,10 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
         return AssertionFailKind::Other;
     }
     // Exact equality, not a substring: an unencoded obligation is undecided by construction.
-    if check.detail == UNRESOLVED_PRECONDITION_DETAIL || check.detail == OVERAPPROX_UNDECIDED_DETAIL
+    if check.detail == UNRESOLVED_PRECONDITION_DETAIL
+        || check.detail == OVERAPPROX_UNDECIDED_DETAIL
+        || check.detail == BRANCH_REACHABILITY_UNDECIDED_DETAIL
+        || check.detail == OVERAPPROX_COMBINED_UNDECIDED_DETAIL
     {
         return AssertionFailKind::Undecided;
     }
@@ -21466,7 +21664,10 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
         // "within solver budget" is only true when a solver ran; an unencoded obligation never
         // reached one.
         let any_unencoded = fails.iter().any(|c| {
-            c.detail == UNRESOLVED_PRECONDITION_DETAIL || c.detail == OVERAPPROX_UNDECIDED_DETAIL
+            c.detail == UNRESOLVED_PRECONDITION_DETAIL
+                || c.detail == OVERAPPROX_UNDECIDED_DETAIL
+                || c.detail == BRANCH_REACHABILITY_UNDECIDED_DETAIL
+                || c.detail == OVERAPPROX_COMBINED_UNDECIDED_DETAIL
         });
         (
             "ANUBIS_ASSERTION_UNDECIDED",
@@ -21526,9 +21727,13 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                     }
                 }
             }
-            AssertionFailKind::Undecided if c.detail == OVERAPPROX_UNDECIDED_DETAIL => {
+            AssertionFailKind::Undecided
+                if c.detail == OVERAPPROX_UNDECIDED_DETAIL
+                    || c.detail == BRANCH_REACHABILITY_UNDECIDED_DETAIL
+                    || c.detail == OVERAPPROX_COMBINED_UNDECIDED_DETAIL =>
+            {
                 out.push_str(
-                    "\n    (a candidate counterexample exists only over an over-approximated value — not a disproof)",
+                    "\n    (a candidate counterexample depends on over-approximated value or branch reachability — not a disproof)",
                 );
                 out.push_str(&format!("\n    detail: {}", c.detail));
             }
@@ -21901,7 +22106,7 @@ fn body_calls_contracted_fn(body: &[Stmt], ctx: &SemanticContext) -> bool {
     hit
 }
 
-/// Record, by name, every obligation built since the last scan whose assertion or assumptions mention a
+/// Mark every obligation built since the last scan whose assertion or assumptions mention a
 /// currently havoced variable (see `havoc_mark`). Called at every statement boundary of
 /// `analyze_stmts` and after each function body, so the havoc state it reads is the one the obligation
 /// was built under (or a later, more havoced one — which only makes it more conservative).
@@ -21926,7 +22131,6 @@ fn mark_over_approx_obligations(ctx: &mut SemanticContext) {
     // index marks into `solver_obligations` across nested analysis, so this must never shift indices.
     let deferred: BTreeSet<String> = havoced.union(&ctx.assert_deferred_vars).cloned().collect();
     let len = ctx.solver_obligations.len();
-    let mut over = Vec::new();
     for obl in &mut ctx.solver_obligations[start..len] {
         if obl.name.starts_with("assert:")
             && depends_on_havoc(
@@ -21952,10 +22156,9 @@ fn mark_over_approx_obligations(ctx: &mut SemanticContext) {
                 HavocDependence::Closure,
             )
         {
-            over.push(obl.name.clone());
+            obl.over_approx_reasons.insert(OverApproxReason::ValueHavoc);
         }
     }
-    ctx.over_approx_obligations.extend(over);
     ctx.over_approx_scan = len;
 }
 
@@ -25359,6 +25562,7 @@ fn push_ensures_obligations(
                 vars: vars.into_iter().collect(),
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
+                over_approx_reasons: BTreeSet::new(),
             });
         } else if is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
             // Phase-3 QF_FP: a float postcondition over the modelable subset (`+ - * /`, comparisons) is
@@ -25388,6 +25592,7 @@ fn push_ensures_obligations(
                 vars: vars.into_iter().collect(),
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
+                over_approx_reasons: BTreeSet::new(),
             });
         } else if is_bool_modelable_string(
             &concrete,
@@ -25418,6 +25623,7 @@ fn push_ensures_obligations(
                 vars: vars.into_iter().collect(),
                 strings: true,
                 guard_assumptions: ctx.active_branch_guards.clone(),
+                over_approx_reasons: BTreeSet::new(),
             });
         } else if is_bool_modelable_strlen(&concrete, &ctx.solver_string_vars) {
             // Phase-3 str.len: a string-LENGTH postcondition (`ensures(len(result) >= 3)`) discharges in
@@ -25443,6 +25649,7 @@ fn push_ensures_obligations(
                 vars: vars.into_iter().collect(),
                 strings: true,
                 guard_assumptions: ctx.active_branch_guards.clone(),
+                over_approx_reasons: BTreeSet::new(),
             });
         } else {
             // A postcondition the solver cannot faithfully model. Contracts are NOT runtime-enforced,
@@ -28731,6 +28938,7 @@ fn verify_while_invariants(
             vars: vars.into_iter().collect(),
             strings: false,
             guard_assumptions: ctx.active_branch_guards.clone(),
+            over_approx_reasons: BTreeSet::new(),
         });
     };
 
@@ -28899,6 +29107,7 @@ fn verify_while_invariants_float(
             vars,
             strings: false,
             guard_assumptions: ctx.active_branch_guards.clone(),
+            over_approx_reasons: BTreeSet::new(),
         });
     };
 
@@ -38112,7 +38321,6 @@ fn empty_ir() -> TypedIR {
         hir: Hir::default(),
         mir: vec![],
         solver_obligations: vec![],
-        over_approx_obligations: BTreeSet::new(),
         symbols: vec![],
         taint_traces: vec![],
         diagnostics: vec![],

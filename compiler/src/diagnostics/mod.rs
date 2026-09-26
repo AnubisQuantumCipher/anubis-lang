@@ -749,6 +749,8 @@ fn decided_under_z3_budget(check: &SolverCheck) -> bool {
         || check.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
         // Refused for over-approximation, not for running out of budget.
         || check.detail == crate::middle::OVERAPPROX_UNDECIDED_DETAIL
+        || check.detail == crate::middle::BRANCH_REACHABILITY_UNDECIDED_DETAIL
+        || check.detail == crate::middle::OVERAPPROX_COMBINED_UNDECIDED_DETAIL
     {
         return false;
     }
@@ -890,6 +892,27 @@ pub fn render_jsonl(checks: &[SolverCheck]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_reachability_uncertainty_is_structured_as_undecided() {
+        for detail in [
+            crate::middle::BRANCH_REACHABILITY_UNDECIDED_DETAIL,
+            crate::middle::OVERAPPROX_COMBINED_UNDECIDED_DETAIL,
+        ] {
+            let check = SolverCheck {
+                name: "requires@f:(bvsgt anb_x (_ bv0 64))".into(),
+                status: "FAIL".into(),
+                detail: detail.into(),
+                model: None,
+                smt: "(set-logic QF_BV)\n(check-sat)".into(),
+            };
+            let diagnostic = diagnostic_of(&check);
+            assert_eq!(diagnostic.code, "ANUBIS_ASSERTION_UNDECIDED");
+            assert_eq!(diagnostic.status, Status::Undecided);
+            assert!(diagnostic.counterexample.is_none());
+            assert!(diagnostic.budget.is_none());
+        }
+    }
 
     #[test]
     fn printable_shows_hidden_characters() {
