@@ -7,7 +7,7 @@
 [![CI](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/AnubisQuantumCipher/anubis-lang?include_prereleases&sort=semver&label=release)](https://github.com/AnubisQuantumCipher/anubis-lang/releases/latest)
 ![Built with Rust](https://img.shields.io/badge/built_with-Rust-000000?logo=rust&logoColor=white)
-![Native SMT solver](https://img.shields.io/badge/native_SMT_solver-0_external_deps-1f6feb)
+![Native SMT solver](https://img.shields.io/badge/native_SMT_solver-bounded_fragment-1f6feb)
 ![Apple Silicon](https://img.shields.io/badge/target-Apple_Silicon-black?logo=apple)
 ![License](https://img.shields.io/badge/license-BUSL--1.1-blue)
 ![Status](https://img.shields.io/badge/status-pre--1.0_·_evidence--native-orange)
@@ -56,10 +56,11 @@ flowchart TD
 
 ## The counterexample it hands you
 
-A type system tells you a *shape* is wrong. Anubis tells you the *value* that is wrong.
+For supported solver obligations, Anubis can show values in a counterexample to the encoded claim.
 
-A ring buffer's slots-in-use is `tail - head`. Correct in mathematics; a bug in fixed-width code —
-once the buffer wraps and `tail < head`, the count goes negative. So you state the invariant:
+A ring buffer might compute slots in use as `tail - head`. For an input where
+`tail < head`, the modeled signed difference is negative, so a claimed
+nonnegative count fails. State that invariant explicitly:
 
 ```rust
 fn ring_used(head: u32, tail: u32) -> u32
@@ -69,8 +70,8 @@ fn ring_used(head: u32, tail: u32) -> u32
 }
 ```
 
-`anubis check` does not shrug and say "unproven." It **disproves** the claim with the wraparound
-state your tests never hit:
+For this supported obligation, `anubis check` **disproves** the claim with an
+input where `tail < head`:
 
 ```
 $ anubis check examples/showcase/ring_buffer_underflow.anb
@@ -160,19 +161,30 @@ bash scripts/run_formal_gate.sh        # the Lean theorem check
 **3. Hosted CI is a bounded witness, not the sealed Apple/VZ result.** The
 `hosted-gate-witness` job installs the pinned Lean toolchain and evaluates the named 31-gate roster.
 Every host-verifiable gate must pass; `G9_poc_kit` remains exactly `EXTERNAL`, and G14 is limited to
-its non-executing host-isolation witness. A green badge therefore means `HOSTED_PASS`, not a Tart/VZ
-seal or require-Metal proof. Those lanes are deliberately out of CI until a dedicated hardened
-runner exists; see [`docs/CI_TRUST_BOUNDARY.md`](docs/CI_TRUST_BOUNDARY.md). Check the exact report
-and commit rather than inferring scope from the badge:
+its non-executing host-isolation witness. A successful `hosted-gate-witness` report records
+`HOSTED_PASS`, not a Tart/VZ seal or require-Metal proof. Those lanes are deliberately out of CI
+until a dedicated hardened runner exists; see
+[`docs/CI_TRUST_BOUNDARY.md`](docs/CI_TRUST_BOUNDARY.md). Check the report and exact commit;
+the badge alone does not identify either:
 
 ```bash
-gh run list --workflow anubis-ci --status completed --limit 1 --json conclusion,displayTitle
+gh run list --workflow anubis-ci --branch main --status completed --limit 1 --json conclusion,displayTitle
 bash scripts/audit_unified.sh --profile hosted --out out/hosted  # the hosted contract locally
 ```
 
 The phase-by-phase arc lives in [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md); the
 authoritative open-issue list — the one that wins over every other document, including this one — is
 [`docs/CLAIMS.md`](docs/CLAIMS.md).
+
+**Development status (2026-09-26).** Work beyond this main-based preview remains in
+[draft PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44). Its IFC v2,
+soundness matrix, and native Linux lane are not part of this main-branch release. The earlier
+zero-silent-accept result covered only cases registered at its historical source pin. Later
+registrations and open precision defects are tracked on the draft branch; this main tree's
+known residuals are in [`docs/CLAIMS.md`](docs/CLAIMS.md). A bounded ordinary Linux lane passed
+on an earlier PR head, but that is not a full Linux release witness or a result for the latest
+head. Neither the Anubis 1.0 product finish line nor the full trust-chain finish line
+(production-linked correspondence and full self-hosting) has been met.
 
 ---
 

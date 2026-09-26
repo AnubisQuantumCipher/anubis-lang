@@ -2,9 +2,10 @@
 
 ## Build from source
 
-This preview's supported native and virtualization workflow is Apple Silicon. A native Linux
-workflow is being developed in [draft PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44)
-and has not passed its platform gate. Install the pinned Rust toolchain from
+This preview's supported native and virtualization workflow is Apple Silicon. A bounded ordinary
+Linux lane passed on an earlier head of [draft PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44),
+but full Linux platform and release gates remain open, and that result does not attest the latest
+PR head. Install the pinned Rust toolchain from
 `rust-toolchain.toml`; install Z3 for cross-checking and obligations outside the native solver's
 supported fragment. `doctor` probes Z3 and optional RISC0/Metal dependencies; its `target` and
 `ready` fields do not establish Linux support.

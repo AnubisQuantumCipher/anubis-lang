@@ -44,7 +44,7 @@ Behavior:
   boundary as `build`/`run`; a command name or raw flag alone cannot bypass mode classification.
 - `doctor`: reports binary version, git, rustc, RISC0 versions, patched `risc0-circuit-rv32im` path + existence + Metal HAL, `R0_DISABLE_METAL` status, Apple Silicon, Tier-2, smoke checks, evidence scripts/schemas. Supports `--require-risc0`, `--require-metal`, `--metal-reference`, `--evidence`, `--json`.
 - `capabilities --apple-native`: emits the machine-readable Apple-native capability matrix. It separates ready RISC0/Metal proof lanes from the plan-emitter-ready UMPG surface and planned CoreML/Neural Engine control-plane lanes.
-- `entitlements <file.anb>`: derives a macOS App Sandbox / entitlement **profile** from the program's proven effect set (same spine as `vz confine`). Sealed into evidence as `entitlement_profile.json` + optional `program.entitlements` plist; re-derived on `verify` (forged permissive profiles fail closed). **Derived profile, not enforced until signed** — every key has `apple_enforced_claim: false`; codesign is `needs_human`.
+- `entitlements <file.anb>`: derives a macOS App Sandbox / entitlement **profile** from the checker's effect analysis (same spine as `vz confine`). Effect completeness remains a known assurance boundary. Sealed into evidence as `entitlement_profile.json` + optional `program.entitlements` plist; re-derived on `verify` (forged permissive profiles fail closed). **Derived profile, not enforced until signed** — every key has `apple_enforced_claim: false`; codesign is `needs_human`.
 - `runtime-probe`: emits capability evidence for host/toolchain/RISC0/Metal readiness. It does not claim proof execution or receipt verification.
 - `runtime-plan`: parses and typechecks source, then emits a plan-only UMPG-style DAG with typed operations, dependencies, device placement, weakest-link trust policy, and the exact Metal reference path/config source. It is not receipt execution evidence.
 - All commands accept `--metal-reference` (or env `ANUBIS_RISC0_METAL_REFERENCE`) for the risc0 metal-hybrid reference tree. Evidence records the config source.
@@ -308,7 +308,8 @@ anubis research-pack scaffold <id> --out DIR [--engagement-id ID]
 anubis research-pack validate <id> --source program.anb [--json]
 ```
 Per-capability honesty: `LAB_REAL` / `LAB_REAL_HMAC` / `PLAN_ONLY` / `PARTIAL` / `NOT_IMPLEMENTED`.  
-Validate fails closed if proven effects are outside the pack allow-list.
+Validate refuses when analyzed effect requirements fall outside the pack allow-list; this does
+not establish that the analysis found every effect on every path.
 
 ### Crypto doctor (RWC surface inventory)
 ```bash
