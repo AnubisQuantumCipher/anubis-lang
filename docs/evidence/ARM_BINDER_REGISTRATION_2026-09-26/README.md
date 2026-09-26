@@ -4,6 +4,13 @@ Fixture and registry commit:
 `e4f9bcb70530ace15033fd5e3db17e77c1d9753f`. The focused checker
 results and each fixture's SHA-256 are in [results.tsv](results.tsv); the
 binary identity and source-input comparison are in [manifest.json](manifest.json).
+Required valid call-position controls were frozen in
+`801766852e6c3e730ba5b4f0a3f2bc75efff2d5d`, before a compiler repair.
+Their source hashes and checker outcomes are in [controls.tsv](controls.tsv).
+The pinned baseline accepted the satisfied scrutinee, guard, and if-let calls,
+the short-circuited false guard, and the later guard after an unguarded wildcard
+arm. All are `ACCEPT` requirements for the repair, not permission to turn a
+violated call into a refusal by rejecting these valid forms too.
 Independent review found that the scrutinee and wildcard-guard cases have no
 sibling binder, so their family was corrected from the initially registered
 `M-ARM-BINDER` to `M-CALL-POSITION` in
@@ -25,7 +32,7 @@ control checked clean. The result classes and nonzero exit codes are recorded
 per case in the TSV; no parser or type error was credited as a rejection.
 
 These cases were appended to the canonical matrix registry and their focused
-observations to its append-only history. The history append contains only the
+observations to its append-only history. Each history append contains only the
 new rows, not another copy of the whole matrix. The checker ran on ordinary
 Safe source only. Neither program execution nor the full matrix, crash,
 research, fuzz, or disposable-guest lanes ran for this receipt. Runtime

@@ -3,11 +3,15 @@
   "binary_sha256": "c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7",
   "binary_source_commit": "b835b94b44fa8705dd973eb1133f862706fd04a8",
   "command_template": "anubis check tests/soundness/matrix/cases/{id}{.direct}.anb",
+  "control_fixture_commit": "801766852e6c3e730ba5b4f0a3f2bc75efff2d5d",
+  "control_results": "controls.tsv",
+  "control_source_input_diff_command": "git diff --quiet b835b94b44fa8705dd973eb1133f862706fd04a8..801766852e6c3e730ba5b4f0a3f2bc75efff2d5d -- .cargo compiler solver tools/anubis Cargo.toml Cargo.lock rust-toolchain.toml vendor build.rs",
+  "control_source_input_diff_exit": 0,
   "fixture_commit": "e4f9bcb70530ace15033fd5e3db17e77c1d9753f",
-  "results": "results.tsv",
   "registry_family_correction_commit": "6a816dad7d9c07bd19310169d39be0fd7ef1460d",
+  "results": "results.tsv",
   "schema": "anubis-focused-matrix/1",
-  "scope": "new r2arm registration rows only; no guest-only matrix execution or runtime witness",
-  "source_input_diff_command": "git diff --quiet b835b94b44fa8705dd973eb1133f862706fd04a8..e4f9bcb70530ace15033fd5e3db17e77c1d9753f -- compiler/src tools/anubis/src solver/src Cargo.lock vendor",
+  "scope": "new r2arm registration rows and required valid controls only; no guest-only matrix execution or runtime witness",
+  "source_input_diff_command": "git diff --quiet b835b94b44fa8705dd973eb1133f862706fd04a8..e4f9bcb70530ace15033fd5e3db17e77c1d9753f -- .cargo compiler solver tools/anubis Cargo.toml Cargo.lock rust-toolchain.toml vendor build.rs",
   "source_input_diff_exit": 0
 }

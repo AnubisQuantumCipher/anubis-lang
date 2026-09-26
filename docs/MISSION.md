@@ -66,6 +66,22 @@ matrix is the reference for open defects.
 
 See the last section of this file's history in git, and the next-dependency line below.
 
+**Next dependency (2026-09-26, after the `80176685` control freeze):**
+The [focused match/if-let registration](evidence/ARM_BINDER_REGISTRATION_2026-09-26/README.md)
+records distinct open binder-collision and omitted call-position mechanisms,
+with satisfied, short-circuited, and unreachable valid controls checked on the
+unchanged pinned compiler inputs. Implement the statement-position contract
+transfer in its isolated worktree, then classify every registered verdict on a
+source-bound candidate and independently review the actual diff. Preserve the
+valid controls; a blanket unresolved result is not completion. The separate
+arm-binder draft remains unintegrated after review found valid-program
+over-refusals and shadow-identity ambiguity. Draft PR #44 still requires
+dependency-correct splitting and human review; the main-based front-page
+correction PR #45 and ETXTBSY extraction PR #46 are separate. Hosted, guest,
+platform, final workspace, product and trust-chain gates remain independently
+required. Continue the [requirement map](mission/REQUIREMENTS.md) after this
+dependency rather than treating registration as closure.
+
 **Next dependency (2026-09-26, after b835b94b):** finish source-bound CLI and
 platform validation of the [bool result-kind slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md).
 Then implement and independently review the
