@@ -2384,3 +2384,6 @@ r2arm_contract_call_guard_satisfied	M-CALL-POSITION	slice	ACCEPT	carrier	taken m
 r2arm_iflet_scrutinee_call_satisfied	M-CALL-POSITION	slice	ACCEPT	carrier	if-let scrutinee evaluates f(1), satisfying its requires; positive twin of f(-1) scrutinee leak.
 r2arm_contract_call_guard_short_circuit	M-CALL-POSITION	slice	ACCEPT	carrier	false left operand short-circuits match guard before f(-1); violated precondition is unreachable.
 r2arm_contract_call_guard_after_wildcard	M-CALL-POSITION	slice	ACCEPT	carrier	first unguarded wildcard arm always matches; later guard f(-1) never executes.
+r2arm_outer_fact_after_match_scrutinee_call	M-CALL-POSITION	slice	ACCEPT	carrier	outer let x=1 remains valid after pure f(1) in match scrutinee; wildcard arm calls g(x), whose requires(x>0) is satisfied.
+r2arm_outer_fact_after_match_guard_call	M-CALL-POSITION	slice	ACCEPT	carrier	outer let x=1 remains valid after pure pred(1) in taken match guard; arm calls g(x), whose requires(x>0) is satisfied.
+r2arm_outer_fact_after_iflet_scrutinee_call	M-CALL-POSITION	slice	ACCEPT	carrier	outer let x=1 remains valid after pure f(1) in if-let scrutinee; Some arm calls g(x), whose requires(x>0) is satisfied.
