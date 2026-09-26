@@ -1,0 +1,2 @@
+fn f(x: i64) -> bool requires(x > 0) { println("BAD"); return true; }
+fn main() { println("START"); match 1 { _ if (if true { return; f(-1) } else { false }) => { } _ => { } } }
