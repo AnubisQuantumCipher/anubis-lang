@@ -15,13 +15,23 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — native Linux gate remains open.** The
+**UPDATE 2026-09-26 — bounded native Linux lane passed; platform completion remains open.** The
 [first hosted native run](evidence/LINUX_HOSTED_2026-09-26/README.md) failed:
 AArch64 timed out during the CLI build; x86_64 completed its commands but exceeded
 the declared unchanged-memory-event condition. Both owned services were collected.
 The follow-up selects native Clang and preserves primary errors and resource
-observations; local harness controls pass, but no hosted improvement is yet established.
-The original failures and strict gates remain intact.
+observations. [Hosted run 36224977907](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36224977907)
+at branch head `a00387d9` passed its bounded ordinary allowlist on x86_64 and AArch64;
+the downloaded receipts and logs were checked against their hashes. The original
+failures and strict limits remain part of the record. This lane does not cover a full
+workspace run, full soundness matrix, mandated guest work, or Omarchy installation.
+
+**UPDATE 2026-09-26 — round-2 findings registered; new match-arm precondition hole.**
+[The registration receipt](evidence/ROUND2_REGISTRATION_2026-09-26.md) maps the
+historical round-2 leak sources into the matrix without changing their intended outcomes.
+Two min/max cases and two new match-arm cases still silently check clean on the pinned
+full-Safe CLI; direct and renamed-binder controls disprove the violated `requires`,
+while a satisfied call remains accepted. No full current matrix verdict is claimed.
 
 **UPDATE 2026-09-26 — bool result-kind correction; min/max still withheld.** The
 [bool-commit slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md) corrects the
@@ -46,8 +56,9 @@ and the defect stays open. The valid fixture remains required to pass.
 **UPDATE 2026-09-26 — IFC v2 runs in every Safe-mode check (`e516b1f3`).** An information-flow
 interpreter that evaluates the program the way the runtime executes it ([design](mission/IFC_V2.md))
 runs beside the other lanes; a program is refused if any lane finds a flow. After its first
-independent review (107 confirmed findings, all fixed and registered), the whole matrix has no
-silent accept (58 before) and the corpus verdicts are unchanged. Behaviour change: the core
+independent review (107 confirmed findings, all fixed and registered), the matrix at
+`e516b1f3` had no silent accept among registered cases (58 before) and the corpus
+verdicts were unchanged. Behaviour change: the core
 runtime's fail-closed trap messages no longer print their operands (index, key, count, path, the
 unmatched value), which could be secret; they still name the operand's type, and some messages in
 the crypto and exploit-kit runtimes still print operands (the next unit). Its second review round
@@ -131,12 +142,12 @@ instrument; do not substitute mutable `./target/release/anubis`.
 | Surface | Observation | Repro / boundary |
 |---|---|---|
 | **Security fixtures** | Lead gate **356/356 PASS**. Live disk inventory **356** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
-| **Language core** | **259/259 PASS** — current live count; the earlier 252/252 and 253/253 receipts remain historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
+| **Language core** | Current fixture inventory: **271** `.anb` files. This is a disk count, not a current full-suite pass result. See the dated W1 measurements and float-lane residual below. | `find tests/fixtures/language_core -name '*.anb'` |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **199 theorems / 16 modules** (comment-stripped; 2026-08-18, after Phase-8 Slice-1 added `Anubis.SecurityLabel`, 37 theorems including a full-record `join_full_idempotent`) |
-| **Native authoritative** | **PASS over 968 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | Current inventory: **968 files**; no source-current G18 PASS is recorded here. The [Phase 4 receipt](evidence/PHASE_4_COMPLETION_2026-08-15.md) reports a historical 937-file run with zero mismatches and disagreements. | `bash scripts/run_native_authoritative_gate.sh`; [A-GATE-1](mission/DEFECTS.md) notes that G18's default-versus-`=1` mismatch leg compares the same mode. A new independent comparison is still needed. |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -629,7 +640,7 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
     a function-valued formal merely because the receiver expression mentioned a formal, which
     accounted for the three method-shaped flips.
 
-    Verdict-diff measured at this close on the then-current pin: security 311/311; language
+    Historical verdict-diff measured at this close on its named pin: security 311/311; language
     244/244. Zero accept→reject flips.
 
 ### The singleton contract policy — documented residual (2026-07-27)
@@ -674,7 +685,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
     precondition rejects. Getting that backwards is what flipped nine fixtures in the first spine
     attempt.
 
-    Verdict-diff measured at this close on the then-current pin: security 311/311; language
+    Historical verdict-diff measured at this close on its named pin: security 311/311; language
     244/244. Zero accept→reject flips.
 
 12. **The bare-builtin carrier defeats the LETHAL TRIFECTA detector — CLOSED (2026-07-27).**
@@ -939,7 +950,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
 
     The audited source-bound rerun at `out/phase1_host_seal_audited_20260730T154003Z` mechanically
     returned `SEAL_PASS` with 18/18 declared gates on pin `anubis-4dc5a51df23b`. It is **not promoted
-    to a whole-tree seal**: native-authoritative enumerated **937 files** from the live disk (historical) while the
+    to a whole-tree seal**: native-authoritative enumerated **937 files** from that historical run's working tree while the
     docs gate enumerated **916 tracked files**. Five untracked `.anb` files explain the difference;
     silently narrowing either side or staging unrelated showcase work is forbidden. The discrepancy
     was a technical HOLD pending trust-surface sign-off.
@@ -1534,9 +1545,9 @@ and cannot verify later repairs.
     | compiler lib | **766/766** — source-current W1 suite, including recursive malformed-slot tests |
     | tool unit suite | **351/351** plus all integration harnesses green |
     | security corpus | **337/337** (historical) — includes the ten annotated list/map/generic/parameter fixtures |
-    | language corpus | **271/271** |
+    | language corpus | **259/259** — historical W1 measurement; corrected after `c0f5b884` overwrote this dated row |
     | stdlib fail-closed | **104/104**, `timed_out=0` |
-    | native-authoritative | current corpus **937 files**; this W1 receipt (historical) graded 916 files, 0 mismatches, 0 disagreements |
+    | native-authoritative | a later inventory had **937 files**; this historical W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
     | formal | **162 theorems / 15 modules**, machine-checked; no `sorry`/`admit`/free `axiom` |
     | immutable candidate | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; source-tree verification PASS |
 
@@ -1790,8 +1801,9 @@ and cannot verify later repairs.
     **UPDATE 2026-09-24 (night) — the whole-struct lane as an abstract interpreter (`0731ecf7`).**
     - The lane is now `middle/whole.rs`: one walker and one sequential abstract interpreter, calls
       specialized at the call site, and one classification of every builtin that fails closed.
-    - It closes FV-OPEN-5 and the 45 routes review round 26 found. Review rounds 27–35 found 537
-      defects in nine versions of the rewrite; all are matrix cases and all are fixed.
+    - It closes FV-OPEN-5 and the 45 routes review round 26 found. Review rounds 27–35 reported 537
+      findings across nine uncommitted versions of the rewrite; 531 cases were added to the matrix.
+      The same receipt documented 36 new wrong-class refusals, so "all fixed" was incorrect.
     - Matrix at this pin: 1108 cases, 1009 PASS, 23 silent accepts (all `open_*`; the pre-change pin
       has 295 on the same matrix), 76 wrong-class (documented refusals).
     - **Still OPEN:** implicit flow (IFC-PC-EGRESS), closures through containers, expressions,
@@ -1811,19 +1823,21 @@ and cannot verify later repairs.
 
     **UPDATE 2026-09-24 (later) — lowering and check-time fixes (`d70eb2ed`, `6fe90617`).**
     - A closure that names a function as a value now compiles.
-    - Recursive fan-out no longer blows up check time: 40 functions went from about 33 s to
-      about 5 s.
+    - The `6fe90617` code receipt measured the 40-function fan-out case at 23 s before
+      and 5.0 s after. This timing was not repeated for this correction.
     - The secret lane's fallback scan resolves arguments through the caller's scope.
-    - Matrix at this pin: 509 cases, 448 PASS, 20 silent accepts (all `open_*`; the pre-change pin
-      has 173 on the same matrix), 41 wrong-class.
+    - Matrix at this pin: 509 cases, 448 PASS, 20 silent accepts (all `open_*`; immediate
+      predecessor `anubis-lamfn1` had 25 on this matrix; 173 belonged to older
+      `anubis-sortchk12`), 41 wrong-class.
 
     **UPDATE 2026-09-24 — whole-struct secrets, field-value calls, alias-lane unknowns
     (`3b90cd4b`, `c527a48d`).**
     - `3b90cd4b` fixed a runtime defect: a struct string index read the first field
       (RT-STRIDX).
     - `c527a48d` closed 52 more silent accepts over nine more adversarial review rounds.
-    - Matrix at this pin: 489 cases, 432 PASS, 16 silent accepts (all `open_whole2_*`; the
-      pre-change pin has 161 on the same matrix), 41 wrong-class.
+    - Matrix at this pin: 489 cases, 432 PASS, 16 silent accepts (all `open_whole2_*`;
+      immediate predecessor `anubis-stridx1` had 68 on this matrix; 161 belonged to
+      older `anubis-sortchk12`), 41 wrong-class.
     - **Still OPEN:** those 16 (FV-OPEN-3), PERF-FANOUT and RT-LAMBDA-FNNAME.
 
     **UPDATE 2026-09-23 (later) — callee values, follow-up (`8424dc0c`).** Six more adversarial
@@ -1933,9 +1947,9 @@ and cannot verify later repairs.
     | compiler library | **766/766 PASS** |
     | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
     | security | **337/337 PASS** (historical) |
-    | language | **271/271 PASS** |
+    | language | **259/259 PASS** — historical W1 measurement; corrected after `c0f5b884` overwrote this dated row |
     | stdlib fail-closed | **104/104 PASS** |
-    | native-authoritative | current corpus **937 files**; this W1 receipt (historical) graded 916 files, 0 mismatches |
+    | native-authoritative | a later inventory had **937 files**; this historical W1 receipt graded 916 files, 0 mismatches |
     | formal inventory | **162 theorems / 15 modules**, gate PASS |
     | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
 
@@ -2913,7 +2927,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Evidence bundle + tamper detection | package gate path `scripts/run_package_gate.sh` (seal history); unit evidence/tamper tests | Re-run package gate for live CI claims |
 | RISC0 receipt path (in-process) | prove/verify path + A15 gate history; shape + `Receipt::verify` API | Hosted Metal proving **not claimed** |
 | Metal parity (local Apple Silicon) | local Tier-2 parity history in A15 / doctor | Not hosted GPU prove |
-| Language core (fixtures + repro) | **271/271** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
+| Language core (fixtures + repro) | **271/271** on historical `anubis-ifc2land-3` pin at `e516b1f3`; [source-bound receipt](evidence/IFC2_2026-09-26/README.md) and [gate log](evidence/IFC2_2026-09-26/verify.txt). This is not a current-source pass. | Seal must set `ANUBIS_BIN` to the same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures; vault contacts `run` EXIT=0 post-PTAH | Research/exploit needs `--allow-research` + VZ where required; **proof/shell constructs are non-run by design** (CLAIMS open §2 (B)); (R) preflight false-rejects **closed**; *check ≠ run for proof/shell* is a named product residual, not a checker gap |
 | Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical narrative in `docs/language/ROADMAP.md` | **Named residual:** published reds empty ≠ Class D / D1–D6 closed; green board is not COMPLETE |

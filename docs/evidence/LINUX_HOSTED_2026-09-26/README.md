@@ -1,4 +1,4 @@
-# Linux hosted failure evidence and follow-up
+# Linux hosted failure evidence and bounded follow-up success
 
 The first native Linux push run [36220630178](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36220630178), at `f48a5c9aa63125b9a069c4837bd42693a95a812c`, failed on both architectures. These are retained failures, not a Linux completion receipt.
 
@@ -18,4 +18,27 @@ The existing Cargo/test command roster, default features, concurrency, resource 
 - [Docs drift](docs-drift.txt): `PASS (38 stamps checked, 0 drift)` after the claims and inventory updates.
 - [Independent review](INDEPENDENT_REVIEW.md): no blocking finding; reviewed file hashes match the local validation receipt. The reviewer did not execute tests or services.
 
-The enclosing documentation commit does not alter the tested code. Full mission acceptance, release readiness, guest seals and a successful hosted native Linux result remain open.
+The enclosing documentation commit does not alter the tested code. The following hosted
+result was obtained afterward; full mission acceptance, release readiness and guest
+seals remain open.
+
+## Hosted follow-up at `a00387d9`
+
+[Run 36224977907](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36224977907)
+completed successfully for both `linux-native-x86_64` and `linux-native-aarch64`.
+The pull-request merge commit used by the runner has the same Git tree as source
+head `a00387d9097d60bafe076abed0133f0558e71b72`. Both receipts report
+`LINUX_NATIVE_ORDINARY_PASS` under the unchanged cgroup limits and ordinary
+command allowlist. Downloaded receipt logs matched every recorded SHA-256;
+all named commands returned zero, none timed out, source and binary snapshots
+were unchanged, memory-event counters were unchanged, and each owned service
+was removed without a teardown error. [The compact checked summary](success-summary.json)
+records the source, toolchain and receipt identities without copying raw logs or
+runner-local paths into this commit. The duplicate [push run](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36224975780)
+also completed successfully on both architectures.
+
+This is the first successful hosted witness for this *bounded ordinary Linux
+lane*. It is not a full workspace test, full soundness matrix, Omarchy
+installation, disposable-guest replay, VM/Metal seal, or release witness.
+The initial failed run and its primary timeout and memory-event observations
+remain part of the record.

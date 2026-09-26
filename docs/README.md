@@ -102,21 +102,23 @@ answer a tier-1 question, that is a bug in this map — please say so.
 These are not aspirations; they are enforced by
 [`scripts/run_docs_drift_gate.sh`](../scripts/run_docs_drift_gate.sh) as gate **G16**:
 
-1. **Live quantities are re-derived by command, not typed by hand.** Fixture counts, builtin counts,
-   and Lean theorem/module counts in the owned docs are re-measured from the tree on every gate run;
-   a stale number fails the build.
-2. **Coverage can only go up.** The number of stamps the scanner checks is ratcheted in
-   [`docs/.docs_drift_coverage_floor`](.docs_drift_coverage_floor). Lowering it requires editing that
-   file in a visible commit — because an exemption is the one edit that makes a gate greener by
-   making it check less.
-3. **Named absolute claims are rejected.** A published banlist of unfalsifiable phrasings ("total",
-   "closed forever", "no defects") fails the gate unless the surrounding text scopes or negates them.
-4. **A dated seal is not a current claim.** Anything written as "as of *date*" or under a
-   content-addressed binary pin describes that artifact, not today's tree.
+1. **Owned inventory numbers are checked against commands.** The docs gate re-measures fixture
+   file counts, builtin names, and Lean theorem/module inventories from the tree. Those counts
+   are written in prose and checked for drift; a test PASS needs its separate gate receipt.
+2. **Coverage changes require an explicit review.** The scanner's stamp floor is recorded in
+   [`docs/.docs_drift_coverage_floor`](.docs_drift_coverage_floor). Removing a counted claim
+   requires a visible correction and provenance; a floor decrease is not evidence that all
+   remaining claims are covered.
+3. **Named absolute claims are rejected.** The scanner has a published banlist for
+   unfalsifiable proof and soundness phrasing; such claims are not made here.
+4. **A dated seal is not a current claim.** An explicitly historical measurement or named
+   content-addressed pin describes that artifact, not today's tree. A date alone does not
+   exempt a current claim from the scanner.
 
-If you are adding a doc that carries a live number, add it to `LIVE_FILES` in
-[`scripts/lib/docs_drift_scan.py`](../scripts/lib/docs_drift_scan.py) so the number is checked. A
-doc that is not in that list is not protected from drift.
+If you are adding a doc that carries a live number, add it to `LIVE_FILES` for
+the owned semantic scan and `LIVE_STAMP_FILES` for numeric claim checks in
+[`scripts/lib/docs_drift_scan.py`](../scripts/lib/docs_drift_scan.py). A doc absent
+from the numeric set is not protected against stale numeric stamps.
 
 ---
 

@@ -1,5 +1,10 @@
 # IFC v2 round-2 evidence recovery — 2026-09-26
 
+Later integration update: the [registration receipt](../ROUND2_REGISTRATION_2026-09-26.md)
+maps the historical leak carriers into the soundness matrix and records focused
+current checker observations. The recovery facts below remain historical; the
+registration does not turn the complete round into a current green result.
+
 This is a provenance recovery and source-review report, not a current compiler verdict or a
 closure claim. No recovered program, historical harness, compiler, or crash probe was executed.
 The lead supplied worktree baseline `f7e906d1`; this worker did not use Git, build, stage, or
