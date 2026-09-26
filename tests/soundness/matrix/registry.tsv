@@ -2420,3 +2420,6 @@ r2arm_enum_expr_named_dead_valid	M-ARM-ENUM-EXPR-PRECISION	slice	ACCEPT	carrier	
 r2arm_enum_expr_named_live_invalid	M-ARM-ENUM-EXPR-PRECISION	slice	REJECT	carrier	Value-position match named enum payload a=2 reaches violated f(-1); paired rejection control.
 r2arm_guard_write_failed_valid	M-MATCH-GUARD-WRITE	shared	ACCEPT	carrier	Failed match guard assigns outer x=1 before the fallthrough arm calls f(x); runtime reaches a satisfied requires, but the frozen checker is undecided.
 r2arm_guard_write_failed_invalid	M-MATCH-GUARD-WRITE	shared	REJECT	carrier,direct	Failed match guard assigns outer x=0 before fallthrough f(x); a direct f(0) twin disproves while the frozen match checker is undecided.
+r2arm_guard_write_stale_nonmatch_invalid	M-MATCH-GUARD-WRITE	shared	REJECT	carrier	An earlier literal nonmatch concerns the saved scrutinee and must not become a fact about x after a failed guard writes x=0.
+r2arm_guard_write_binder_shadow_invalid	M-MATCH-GUARD-WRITE	shared	REJECT	carrier	The pattern binder x shadows outer x; assigning that binder in a failed guard leaves the outer x=0 before fallthrough f(x).
+r2arm_guard_write_call_invalid	M-MATCH-GUARD-WRITE	shared	REJECT	carrier	A contracted f(0) in a guard executes even when that guard ultimately returns false and its arm body is skipped.
