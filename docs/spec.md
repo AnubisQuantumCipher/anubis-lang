@@ -46,7 +46,11 @@ Sovereign by default. Judgment native. Hybrid power (CPU + Metal + prove). Agent
 - symbolic, assume, assert + path constraint export to SMT and Z3-backed obligation checks with counterexample models.
 - Evidence bundles via `anubis build --bounty`.
 - `anubis report <bundle>` prints the Markdown bounty report.
-- `anubis validate <bundle>` and `anubis verify <bundle>` validate hashes and PASS verdicts.
+- `anubis verify <bundle>` checks the bundle's recorded claim and reports its
+  verdict. A checked counterexample can be a valid `FAIL` claim; that is not
+  permission to use the program as a verified dependency. `anubis validate
+  <bundle>` retains its PASS-artifact requirement. Hash checks alone do not
+  authenticate an unsigned bundle's origin.
 - `anubis doctor --json` emits toolchain readiness for automation.
 
 ## Backends (v0.1)

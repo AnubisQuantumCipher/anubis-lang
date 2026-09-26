@@ -1,8 +1,15 @@
-# Anubis packages (Phase 6) — proof-carrying dependencies
+# Anubis packages (Phase 6) — current verified-dependency boundary
 
-Phase 6 adds a package manager that **pins exact versions and content hashes**,
-**verifies signed evidence for every dependency**, and **mounts packages as modules**
-so Phase 1–5 machinery (imports, typing, taint, effects, stdlib) applies uniformly.
+The package manager can resolve and lock exact versions and content hashes. Verified
+dependency admission also checks a Safe PASS PCA, source identity, and signer policy.
+The current PCA producer analyzes an entry snapshot; it has no checked witness
+that every imported, mounted, or transitive source was analyzed. Until that link
+exists, verified admission refuses packages with additional source modules,
+imports, declared package dependencies, Research/Exploit code or mode elevators,
+and advertised ZK receipts. `package publish` applies the same source and mode
+preflight before sealing. These refusals preserve security but leave valid package
+workloads unsupported; they are open product and precision gates in
+[the claims registry](../CLAIMS.md).
 
 ## Manifest (`Anubis.toml`)
 
@@ -64,8 +71,9 @@ anubis keygen --out ./keys
 anubis package publish --root ./my_pkg --key ./keys/signing.key
 ```
 
-Publish typechecks the package, seals + signs evidence into `evidence/`, then copies
-the tree into the registry.
+For an admissible single-module Safe package with no imports or dependencies,
+publish typechecks, seals and signs evidence into `evidence/`, then copies the
+tree into the registry. Other shapes fail before publication.
 
 ## Trust store
 
@@ -85,10 +93,14 @@ Project-local allow-list (union with the global trust store):
 signers = ["<ed25519-verifying-key-hex>"]
 ```
 
-**Source binding:** after PCA + signature verify, Anubis requires
-`evidence/source.anubis` to match the package module source(s) the consumer
-loads. A package that ships a benign signed claim and a different `src/lib.anb`
-fails with `ANUBIS_DEP_PROOF_UNVERIFIED` (swap-source attack closed).
+**Source binding:** for an admitted single-module package,
+`evidence/source.anubis` must be byte-identical to its source module. A second
+module is refused, even when an evidence bundle has a valid multi-file Merkle
+root: that root does not show that both modules were resolved into the analyzed
+program. The source walker rejects linked and oversized modules. This is a
+bounded file check, not an immutable snapshot of a concurrently changing
+directory; resolver-to-analysis correspondence and package filesystem races
+remain open.
 
 Unsigned dependency evidence is **rejected** unless **both**:
 
@@ -97,7 +109,9 @@ Unsigned dependency evidence is **rejected** unless **both**:
 
 ## Proof composition
 
-Each published package ships a signed evidence bundle (PCA + `MANIFEST.sha256`).
+An admitted published package carries signed Safe PASS evidence (PCA +
+`MANIFEST.sha256`). `verify` accepting an honest FAIL claim does not make that
+claim an admissible dependency proof.
 
 Consumer resolve path:
 
@@ -106,33 +120,48 @@ Consumer resolve path:
 3. Verify content hash
 4. Verify PCA (`verify_pca`) + Ed25519 signature
 5. Require signer ∈ trust store
-6. Mount package `src/` as a module root (`import math;` → `math/lib.anb`)
+6. Mount the accepted package as a module root for the consumer
 
-**Transitive closure:** `anubis package lock` walks every package's `[dependencies]` recursively.
-Cycles fail with `ANUBIS_DEP_CYCLE`. Conflicting versions of the same name fail with
-`ANUBIS_DEP_VERSION_CONFLICT`. The lock lists the full closure; `dep_closure.json` marks
-`direct` vs transitive.
+This sequence admits only the source shape described above. An unsigned package
+requires the explicit dual opt-in described earlier; a rehashed unsigned bundle
+has no authenticated origin.
 
-**Summary IR (`summaries.json`):** each published package seals `pub fn` effects, param taint,
-and return annotations. Consumers re-derive and require exact match (fail-closed). Enforcement
-at call sites is live re-typecheck of mounted modules (same Phase 1–5 machinery). Return-type-only
-taint follows Phase-3 interproc limits.
+**Transitive closure:** `anubis package lock` walks each manifest's
+`[dependencies]` recursively and records direct/transitive relationships.
+Cycles and conflicting versions have named failures. That resolution capability
+is not a verified proof-composition witness: packages that themselves declare
+dependencies currently fail `ANUBIS_DEP_PROOF_UNVERIFIED`. The full compiler
+library run at this source failed
+`phase6_package_tests::phase6_transitive_path_deps_lock_and_mount` for exactly
+that refusal; the other reported library results do not turn this gate green.
+
+**Summary IR (`summaries.json`):** published packages seal `pub fn` effects,
+parameter taint, and return annotations. Consumers re-derive the available
+summary and require a match. This does not prove completeness of imported code
+or every cross-package call obligation. Verified admission stays within the
+single-module Safe boundary above.
 
 **Registries:** default local `~/.anubis/registry`; override with
 `math = { version = "^1", registry = "file:///path/to/reg" }` or `ANUBIS_REGISTRY_URL` /
 `https://…` (`versions.txt` + tree or `.tar.gz`).
 
-Top-level `anubis build --evidence` with dependencies writes `dep_closure.json` listing
-verified packages (name, version, content hash, signer). That file is included in
-`MANIFEST.sha256`, so the top-level PCA signature transitively binds the verified closure.
+Top-level `anubis build --evidence` with admitted dependencies records
+`dep_closure.json` (package identity, content hash, signer) under
+`MANIFEST.sha256`. The record is evidence of the resolver's reported closure;
+it does not establish complete semantic correspondence between that graph and
+the analyzed program.
 
 ### Source Merkle root
 
 `build_evidence_bundle` / `build_evidence_bundle_tree`:
 
 - **Single file:** `source_hash = sha256(source)` (pre-Phase-6 goldens stable)
-- **Multi file:** Merkle root over sorted `(path, bytes)` leaves; listing in
-  `source-merkle-leaves.json`
+- **Multi file:** Merkle root over sorted `(path, bytes)` leaves; current
+  `anubis-source-merkle-leaves-v2` descriptors point to manifest-covered
+  `source-leaves/*.bin` bytes. Verification re-derives the supplied root and
+  `source.anubis` snapshot. Older descriptor-only multi-file bundles cannot
+  pass current PCA/PASS-artifact validation; recover the original source and
+  issue new evidence. The Merkle root alone does not prove import resolution.
 
 ## CLI
 
@@ -144,7 +173,7 @@ anubis package publish --root . --key ./keys/signing.key
 anubis trust add-signer <pk> --name team
 anubis trust list
 
-# check / run / build automatically resolve + proof-check deps when Anubis.toml has [dependencies]
+# check / run / build resolve and apply current admission policy to declared deps
 anubis check src/main.anb
 anubis run src/main.anb
 anubis build src/main.anb --evidence --out out/

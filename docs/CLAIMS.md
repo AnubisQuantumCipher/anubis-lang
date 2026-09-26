@@ -15,6 +15,25 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — evidence and package source boundaries remain open.**
+The local stack through `8869116a` now records solver replay per obligation,
+refuses undecided solver outcomes as proof, counts PCA v3's real obligations,
+checks sealed evidence and signatures, and re-derives a Merkle root from the
+supplied multi-file leaf bytes. These are implemented code units, not a release
+seal. The leaf root does not prove that package imports or transitive dependencies
+were resolved into the analyzed source. Verified dependency admission therefore
+refuses those valid package shapes; the local compiler-library run reported
+**958 passed, 1 failed**, with the failure
+`phase6_package_tests::phase6_transitive_path_deps_lock_and_mount` at that
+refusal. The provisional matrix runner deliberately returns `INCOMPLETE`; it
+does not establish a current zero-silent-accept claim. The evidence verifier
+still relies on producer-reported build PASS rows, and an intact honest FAIL
+claim can satisfy evidence integrity without authorizing the program. A
+source-bound CLI build, final full workspace suite, hosted head, and required
+guest/platform witnesses remain open. The current state and next dependency
+are indexed in [MISSION.md](MISSION.md); detailed finding IDs are in
+[the Stage-A inventory](mission/DEFECTS.md).
+
 **UPDATE 2026-09-26 — bounded native Linux lane passed; platform completion remains open.** The
 [first hosted native run](evidence/LINUX_HOSTED_2026-09-26/README.md) failed:
 AArch64 timed out during the CLI build; x86_64 completed its commands but exceeded

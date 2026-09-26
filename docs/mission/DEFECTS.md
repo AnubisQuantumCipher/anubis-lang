@@ -31,6 +31,26 @@ its question; S3 precision/over-rejection or crash on input; S4 correctness/qual
 | A-SOLVER-1 | S1 | when native declines, z3 `unsat` is accepted with no certificate (REG-002) | review 03 | reported |
 | A-CI-1 | S2 | Native Linux has a bounded ordinary allowlist witness on both hosted architectures; the full platform, guest, and release gates remain open. | [Hosted failures and follow-up](../evidence/LINUX_HOSTED_2026-09-26/README.md) | partial: initial AArch64 timeout and x86_64 memory-event refusal retained; follow-up `a00387d9` passes its named hosted lane |
 
+### Assurance-chain reconciliation on local stack `8869116a` (2026-09-26)
+
+The earlier mapper rows remain historical findings. The table records which
+mechanism changed locally and which claim remains open; it does not turn an
+earlier hosted or source-bound binary witness into a result for this head.
+
+| id | current code/evidence | current state |
+|---|---|---|
+| A-EVID-1 | `47be70a8`; `compiler/src/evidence/mod.rs:139`; `tools/anubis/src/evidence_verify.rs:805` | Per-obligation replay statuses are implemented and the consumer checks the sealed ordered record. Concrete replay of array-valued counterexample models remains incomplete; final source-bound CLI and corpus checks remain open. |
+| A-EVID-2 | `compiler/src/evidence/mod.rs:1289` | **Open:** PCA still fills `solver_backend` from a constant `z3` string; this does not identify the actual authority for each obligation. |
+| A-EVID-3 | `49671337`; `compiler/src/middle/mod.rs:146`; PCA schema v3 | Typed UNKNOWN/unrecognized outcomes are refused instead of counted as proof; this code unit is implemented. A clean final source-bound CLI and full workspace witness remain open. |
+| A-EVID-4 | `compiler/src/evidence/mod.rs:139`; `tools/anubis/src/evidence_verify.rs:805` | **Open:** ordered replay records have identities tied to emitted checks, but stable source-location/call-chain obligation IDs and full proof-index correspondence are not established. |
+| A-EVID-SOURCE-CLOSURE | `4a64f3fa`; `compiler/src/evidence/mod.rs:2697` | Supplied multi-file leaf bytes and their snapshot relation are re-derived. **Open:** no proof that the resolver supplied every imported/module/dependency source. Historical descriptor-only multi-file bundles no longer pass current PCA/PASS validation and need a documented reissue path. |
+| A-PKG-CLOSURE | `610fe01e`; `compiler/src/package/proof.rs:44`, `:177`, `:302`; `compiler/src/lib.rs:13815` | **Open precision/product gate:** verified admission refuses imports, additional modules and transitive dependencies. A local full compiler-library run reported 958 passed and `phase6_transitive_path_deps_lock_and_mount` failed at `ANUBIS_DEP_PROOF_UNVERIFIED`; the package closure must bind the actual mounted graph before this valid test is restored. |
+| A-PKG-TOCTOU | `compiler/src/package/proof.rs:44` | **Open:** package source files are checked and later mounted from a mutable directory; the admission result is not yet bound to an immutable consumer snapshot. |
+| A-EVID-BUILD-ROW | `compiler/src/evidence/mod.rs:1126` | **Open:** a bundle's build-log PASS is producer-reported and hash-checked but not independently replayed as a build result. |
+| A-EVID-REPORT-OK | `tools/anubis/src/evidence_verify.rs:1207` | **Open:** top-level evidence `ok` can describe intact evidence for an honest FAIL program. Consumers must inspect the typed PCA verdict separately before deployment. |
+| A-EVID-CERT-STRICT | `tools/anubis/src/evidence_verify.rs:1207` | **Open:** `--strict` does not require a checked certificate for every required solver obligation; the full proof-policy acceptance gate is separate. |
+| A-MATRIX-EXPECT | `8869116a`; `tests/soundness/matrix/run.sh:20` | Runner produces source-bound provisional receipts but always exits `INCOMPLETE`; reviewed typed expectations and safe history publication are still required before matrix PASS is possible. |
+
 ## Frontend / language (02)
 
 | id | sev | defect | evidence | state |
