@@ -1,0 +1,7 @@
+{
+  "bounty_ready": false,
+  "bundle": "out/evidence-20260926-090425-safe",
+  "check_error": "ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:\n  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))\n  counterexample:\n    x = 0x0000000000000001  (1)\n    y = 0x0000000000000000  (0)",
+  "source_hash": "83050822ce7bbff42980022dd26f6a9fd7d01e99797bb946ce40487f940c5958",
+  "verdict": "FAIL"
+}
