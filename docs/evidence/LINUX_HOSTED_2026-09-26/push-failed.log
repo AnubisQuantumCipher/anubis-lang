@@ -1,0 +1,36 @@
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	﻿2026-09-26T05:23:38.8144120Z ##[group]Run bash scripts/ci/linux_scope.sh "$EXPECTED_ARCH"
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8144691Z ^[[36;1mbash scripts/ci/linux_scope.sh "$EXPECTED_ARCH"^[[0m
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8185575Z shell: /usr/bin/bash -e {0}
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8186121Z env:
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8186379Z   CARGO_HOME: /home/runner/.cargo
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8186696Z   CARGO_INCREMENTAL: 0
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8186961Z   CARGO_TERM_COLOR: always
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8187243Z   EXPECTED_ARCH: aarch64
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:38.8187536Z ##[endgroup]
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1308808Z RuntimeError: unexpected descendants remain in bounded service: [2900, 11617, 11665]
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1318732Z Running as unit: anubis-linux-native-36220630178-1-ARM64.service
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1319656Z Finished with result: exit-code
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1319937Z Main processes terminated with: code=exited/status=1
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1320234Z Service runtime: 1h 1.220s
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1320714Z CPU time consumed: 1h 59min 20.122s
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1320961Z Memory peak: 5.5G
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1321216Z Memory swap peak: 0B
+linux-native-aarch64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:23:40.1340990Z ##[error]Process completed with exit code 1.
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	﻿2026-09-26T05:23:30.2043049Z ##[group]Run bash scripts/ci/linux_scope.sh "$EXPECTED_ARCH"
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2043511Z ^[[36;1mbash scripts/ci/linux_scope.sh "$EXPECTED_ARCH"^[[0m
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2108963Z shell: /usr/bin/bash -e {0}
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2109222Z env:
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2109424Z   CARGO_HOME: /home/runner/.cargo
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2109681Z   CARGO_INCREMENTAL: 0
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2109900Z   CARGO_TERM_COLOR: always
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2110134Z   EXPECTED_ARCH: x86_64
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T05:23:30.2110525Z ##[endgroup]
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6968695Z RuntimeError: memory control events changed during run
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6979322Z Running as unit: anubis-linux-native-36220630178-1-X64.service
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6980011Z Finished with result: exit-code
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6980529Z Main processes terminated with: code=exited/status=1
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6981077Z Service runtime: 42min 53.361s
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6981538Z CPU time consumed: 1h 23min 7.873s
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6981974Z Memory peak: 4.0M
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6982399Z Memory swap peak: 0B
+linux-native-x86_64	Build and run the reviewed ordinary allowlist under verified cgroup limits	2026-09-26T06:06:23.6998372Z ##[error]Process completed with exit code 1.

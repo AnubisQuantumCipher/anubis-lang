@@ -29,7 +29,7 @@ its question; S3 precision/over-rejection or crash on input; S4 correctness/qual
 | A-EVID-4 | S4 | obligation identity = kind prefix + raw SMT text, no source location; proof files keyed by position; no cross-check of proofs.json vs solver.json | review 03 | reported |
 | A-LEAN-1 | S1/S5 | only `SecurityLabel` is byte-for-byte linked to Rust (G31); `BitBlast` linked by theorem-name grep; 14 modules checked only for compiling; 5 security/effect models fully disconnected from the compiler | review 03 | reported |
 | A-SOLVER-1 | S1 | when native declines, z3 `unsat` is accepted with no certificate (REG-002) | review 03 | reported |
-| A-CI-1 | S2 | one workflow, one macOS job; no Linux CI; VM/Metal lanes operator-run outside CI | .github/workflows | reported |
+| A-CI-1 | S2 | Native Linux workflow exists, but successful native receipts remain open; VM/Metal lanes still require their own witnesses. | [Hosted failures and follow-up](../evidence/LINUX_HOSTED_2026-09-26/README.md) | partial: workflow present; initial AArch64 timeout and x86_64 memory-event refusal retained; follow-up hosted outcome pending |
 
 ## Frontend / language (02)
 

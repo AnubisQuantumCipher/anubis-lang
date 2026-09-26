@@ -15,6 +15,14 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — native Linux gate remains open.** The
+[first hosted native run](evidence/LINUX_HOSTED_2026-09-26/README.md) failed:
+AArch64 timed out during the CLI build; x86_64 completed its commands but exceeded
+the declared unchanged-memory-event condition. Both owned services were collected.
+The follow-up selects native Clang and preserves primary errors and resource
+observations; local harness controls pass, but no hosted improvement is yet established.
+The original failures and strict gates remain intact.
+
 **UPDATE 2026-09-26 — bool result-kind correction; min/max still withheld.** The
 [bool-commit slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md) corrects the
 runtime result kind in `b835b94b`; focused full-Safe library controls pass and

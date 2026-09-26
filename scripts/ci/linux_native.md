@@ -25,10 +25,36 @@ memory/swap/CPU/process limits. It refuses missing controls and does not fall
 back to an unbounded command. The launcher requires service collection after
 `systemd-run --wait`; a query failure or surviving unit fails the job. The
 launcher retains its immediate exit status and teardown query status on failure.
+It preserves the payload's primary error when a nonzero service exit is observed;
+launcher status and teardown errors are separate diagnostics. A completed service
+collection does not turn a failed payload into a success.
 Its exit/signal trap stops only the owned unit; required cleanup still makes the
 job fail, even when cleanup succeeds. A forced kill that bypasses the trap leaves
 no finalized PASS receipt; the service also has its independent runtime limit.
 These are resource controls, not a VM, security sandbox, or Tart-equivalent seal.
+
+The sanitized payload explicitly sets `CC` to an absolute `clang` invocation path
+and `CXX` to an absolute `clang++` invocation path. Invocation basenames are retained
+because Clang uses the driver name to select C++ behavior; symlink resolution is
+used separately for executable identity. The receipt records the selection policy,
+both invocation and resolved paths, `--version`, SHA-256 and native ELF identity.
+It checks those records against the payload environment and checks the executable
+identities before and after commands and at payload completion. These are observed
+compiler identities, not upstream-authorized digests. `CARGO_BUILD_JOBS=2`,
+`RAYON_NUM_THREADS=2`, Rust release/default features and the exact test roster remain
+unchanged. Improved build time or memory use is a hypothesis for a fresh hosted run;
+selecting Clang does not establish either outcome.
+
+The driver records `memory.events` and `memory.peak` at payload and command boundaries
+and on failure, before outer service teardown. Failed reads remain visible and
+cannot produce a PASS. The unchanged-counter gate remains strict; a `max` event is
+memory-cap pressure and is not by itself evidence of an OOM kill. A timeout remains
+the primary command error even if descendants are still exiting. After killing
+the command's process group, leader waiting and descendant draining share a finite
+exit-drain budget. Remaining descendants and bounded status/command observations
+from the owned cgroup are retained separately, and no later command runs. Outer
+owned-service cleanup and successful collection remain mandatory. Memory, swap,
+CPU, process, core-dump, command-timeout and service-timeout limits are unchanged.
 
 All builds finish before the driver freezes the CLI and test executables and
 records their hashes and native ELF architecture. It checks them before and after

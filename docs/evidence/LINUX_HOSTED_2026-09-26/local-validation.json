@@ -1,0 +1,36 @@
+{
+  "scope": "Static syntax, unchanged policy functions/properties, and focused harmless harness controls; no native CI payload run",
+  "base": "ba4b7ec84b24e667f0c43c492c8388b16f717c98",
+  "files": {
+    "scripts/ci/linux_native.py": "642b3e790173a86759a12c84a32943fb1c87ff32ccfd84b6e91c8f9ef2bb2d3f",
+    "scripts/ci/linux_scope.sh": "be9177284a3877f913c200d349034174988019bff1d497cdb38a8383b3750893",
+    "scripts/ci/test_linux_native.py": "7d61e7f046fba42c4171d01d47f2e7ea7018ce5f38c57750414a05f7bbd726d6",
+    "scripts/ci/linux_native.md": "ad060c466487f0b93eb6e6c00834b1d0a3ccb5c86c80a91d2d9abffc4fb3e33b"
+  },
+  "unchanged_functions": {
+    "build_commands": true,
+    "validate_limits": true,
+    "test_result": true,
+    "classified_tests": true
+  },
+  "unchanged_systemd_properties": [
+    "state=\"$(systemctl show \"$unit.service\" --property=LoadState --value 2>>\"$out/teardown.stderr.log\")\"",
+    "state=\"$(systemctl show \"$unit.service\" --property=LoadState --value 2>>\"$out/teardown.stderr.log\")\"",
+    "initial=\"$(systemctl show \"$unit.service\" --property=LoadState --value 2>\"$out/admission.stderr.log\")\"",
+    "--property=\"WorkingDirectory=$repo\" --property=MemoryMax=6000000000 \\",
+    "--property=MemorySwapMax=0 --property=CPUQuota=200% --property=TasksMax=512 \\",
+    "--property=RuntimeMaxSec=5400 --property=TimeoutStopSec=15 \\",
+    "--property=KillMode=control-group --property=LimitCORE=0 \\"
+  ],
+  "python_ast": "PASS",
+  "bash_syntax": "PASS",
+  "changed_source_whitespace": "PASS",
+  "harness_exit_code": 0,
+  "harness_log": "harness-tests.txt",
+  "non_claims": [
+    "hosted pass",
+    "native build performance improvement",
+    "full mission completion",
+    "release readiness"
+  ]
+}
