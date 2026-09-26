@@ -74,8 +74,8 @@ records dependency-correct review refs without rewriting published history.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The isolated local integration branch `codex/register-round2-20260926` has
-reviewed compiler code through `365da05dbd4637323f646f95ec204d571a7ddcb1`,
-captured-bridge receipt/log correction through `1ca7e5b93cf7db62ddc9392d0240c57ff1d3d728`,
+reviewed compiler code through `ee4f13bb499059f51055f5a3b451abe15c5920ca`,
+captured-bridge receipt/log correction through `cca4941582bb081d403b89afb941907b1fe7bb04`,
 fixture registrations through `e6b4fb7e86286c6314595284c0e014ca6bd49813`,
 and the reviewed captured-build design at
 `f7ea19097320a23fac3120359e2f226a034ee905`. The current branch has no
@@ -141,9 +141,15 @@ pre-desugaring mode summaries now prevent unused and overridden trait
 defaults from vanishing before the Safe classifier. Focused tests, compiler
 Clippy and format passed; the initial parser-invalid test failure and its
 correction are retained. No production CLI consumer, native publication or
-package/evidence admission was verified. The next CLI dependency is a typed
-solver-stream tool-error outcome, then independently reviewed staged-publisher
-and CLI units with imported contract twins;
+package/evidence admission was verified. The subsequent
+[solver-stream receipt](evidence/CAPTURED_SOLVER_STREAM_2026-09-26/README.md)
+binds `ee4f13bb`, focused lead tests, Clippy, format and final static review.
+The private captured path now returns a typed integrity failure for malformed
+streams while retaining distinct wire `FAIL` and `UNKNOWN` rows. An
+expected-obligation-to-row inventory check and typed classification of
+producer tool errors are still required before the public CLI can rely on
+this result. Then independently review staged-publisher and CLI units with
+imported contract twins;
 the valid transitive package still fails at `ANUBIS_DEP_PROOF_UNVERIFIED`.
 
 The next soundness implementation dependency is a typed distinction between protected

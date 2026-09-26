@@ -1,0 +1,81 @@
+{
+  "schema": "anubis.captured-solver-stream-local/1",
+  "source_commit": "ee4f13bb499059f51055f5a3b451abe15c5920ca",
+  "source_sha256": {
+    "compiler/src/middle/mod.rs": "2713859ad873ce5f744b6a5d1161d1a1f808cb685b2d30970110004b03e7ba99",
+    "compiler/src/resolve/captured.rs": "938ce72588a05e1dfb3391dc58f7f9f70f7f9dda08c1e12fd51fdb21e1c04258"
+  },
+  "gates": [
+    {
+      "command": "cargo test -p anubis-compiler typed_stream_integrity_never_turns_a_malformed_row_into_a_verdict -- --nocapture",
+      "exit_code": 0,
+      "status": "PASS",
+      "observed_test_result": "1 passed; 0 failed; 0 ignored",
+      "log": "focused-middle.log"
+    },
+    {
+      "command": "cargo test -p anubis-compiler resolve::captured::tests -- --nocapture",
+      "exit_code": 0,
+      "status": "PASS",
+      "observed_test_result": "26 passed; 0 failed; 0 ignored",
+      "log": "focused-captured.log"
+    },
+    {
+      "command": "cargo clippy -p anubis-compiler --all-targets -- -D warnings",
+      "exit_code": 0,
+      "status": "PASS",
+      "log": "clippy.log"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "status": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "status": "PASS"
+    },
+    {
+      "command": "bash scripts/run_docs_drift_gate.sh --out <isolated-output>",
+      "exit_code": 0,
+      "status": "PASS",
+      "observed_result": "Overall: PASS (36 stamps checked, 0 drift)",
+      "report": "docs-drift-report.json",
+      "report_sha256": "51a92fbff078b2b96f7868f82b027172e86f8f9bb10d262dd7c86a352e9616b6"
+    }
+  ],
+  "raw_log_sha256": {
+    "focused-middle.log": "53e1097986051a0042014b46f4a966c84bff6e981929a91295a0598a20c25d88",
+    "focused-captured.log": "71f6e6b9a3b16b5b32ba587404d855397360370f3ba72dc6e6d70a91ff9b3dce",
+    "clippy.log": "d3b490c9a0f20b5b1ffd4581f21adea1e4ae23e90bb7bcb2f38fe66a6131aa0e"
+  },
+  "retained_log_sha256": {
+    "focused-middle.log": "6a2d3aa10d03219bda183b50a22c2ae8f54fe83b53a90fe641e20006f1a09220",
+    "focused-captured.log": "8b28cb070bb4562b7376736eb0c969af0f8e7020c2c291bf5871b7c64677d038",
+    "clippy.log": "f3b4a18e1d85f26e01827897b378e4057df7b80e982031edb2c3ff49f781d019"
+  },
+  "log_normalization": "Complete stdout/stderr message lines; private home-directory prefix replaced with <HOME>/ and terminal blank lines trimmed",
+  "independent_final_diff_review": {
+    "report": "INDEPENDENT_REVIEW.md",
+    "sha256": "bc6d849a9a10601995486a9ec2bcfaf29145b57f827562a90bca9aa532448d76",
+    "status": "GO for bounded internal diff; HOLD for obligation completeness and public typed outcome"
+  },
+  "toolchain": {
+    "cargo": "cargo 1.97.0-nightly (a343accce 2026-05-08)",
+    "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+    "cargo_build_jobs": 2,
+    "cargo_target": "isolated local target directory, not a published binary pin",
+    "scope": "systemd user scope, MemoryMax=8G, MemorySwapMax=0"
+  },
+  "not_run": [
+    "public CLI captured build",
+    "native artifact",
+    "evidence or package admission",
+    "full workspace suite",
+    "full soundness matrix",
+    "hosted source-matched CI",
+    "disposable-guest seal"
+  ],
+  "open_boundary": "The typed internal validator does not compare returned rows with expected obligations or authenticate proofs. Existing producer tool errors can still arrive as wire FAIL and must not be called disproved."
+}
