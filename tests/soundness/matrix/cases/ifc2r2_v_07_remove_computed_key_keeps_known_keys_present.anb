@@ -1,0 +1,14 @@
+fn seta(m, c) {
+    if c {
+        m["a"] = [];
+    }
+    m
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let mut m = {"a": [], "b": []};
+    let key = str("a");
+    let v = remove(m, key);
+    let r = seta(m, k > 100);
+    println(len(r));
+}

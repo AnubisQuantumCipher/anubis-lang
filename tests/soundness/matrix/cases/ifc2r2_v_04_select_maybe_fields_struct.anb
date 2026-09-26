@@ -1,0 +1,12 @@
+struct P { a: list<i64>, b: list<i64> }
+fn pick(c, x, y) {
+    if c { x } else { y }
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let c = len(args()) > 100;
+    let p1 = if c { P { a: [] } } else { P { a: [], b: [] } };
+    let p2 = if c { P { a: [], b: [] } } else { P { a: [] } };
+    let p = pick(k > 100, p1, p2);
+    println(len(p));
+}

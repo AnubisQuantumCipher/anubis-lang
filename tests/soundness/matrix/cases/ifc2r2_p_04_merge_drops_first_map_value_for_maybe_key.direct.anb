@@ -1,0 +1,10 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let a = {"k": s};
+    let mut b = {"x": 0};
+    if len(args()) > 5 {
+        b["k"] = 1;
+    }
+    let m = merge(a, b);
+    println(m["k"]);
+}

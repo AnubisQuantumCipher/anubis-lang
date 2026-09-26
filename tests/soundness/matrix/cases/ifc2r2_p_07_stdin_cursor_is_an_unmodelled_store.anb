@@ -1,0 +1,10 @@
+fn main() {
+    let s: secret<i64> = 42;
+    if s > 100 {
+        let skipped = input();
+    }
+    let line = input();
+    if line == "x" {
+        println("first line");
+    }
+}

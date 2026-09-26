@@ -1,0 +1,11 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let x = {"a": [], "b": []};
+    let y = {"b": [], "a": []};
+    let m = match s > 100 {
+        true => x,
+        _ => y,
+    };
+    let ks = keys(m);
+    println(ks[0]);
+}
