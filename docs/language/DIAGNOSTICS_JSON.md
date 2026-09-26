@@ -2,6 +2,7 @@
 
 Status: normative for the fields it defines. Emitted by `anubis check --message-format=json`.
 Date: 2026-09-21.
+Updated: 2026-09-26 (typed solver-outcome admission).
 
 A refusal only a human can read is a refusal an agent must guess at, and an agent
 that guesses reaches for the cheapest edit rather than the correct one. This
@@ -110,6 +111,14 @@ undecided emits three codes, not one, because a headline standing in for
 heterogeneous findings is strictly less informative than the findings it
 introduces.
 
+`obligation.source_occurrence_id`, when present, distinguishes rows in one
+exact entry-source solver stream. It binds the entry bytes, mode, verified flag,
+full-stream ordinal, and SMT text. It is absent for multi-file checks and
+synthetic stream errors. It is **not** a semantic callsite ID, a cache key, or a
+promise of stability across formatting, compiler versions, configuration, or
+dependency changes. The analyzer still needs per-file expression provenance
+before it can issue stable obligation IDs.
+
 `defect_locus: compiler` means **do not edit the program**. An agent that
 repairs source in response to a solver disagreement makes the tree worse and
 destroys the evidence of the disagreement. `environment` means the same and
@@ -121,6 +130,17 @@ epistemic kind, and a residual bucket held a native-versus-z3 cross-check alarm,
 a vacuous contract, a missing z3 and a malformed query side by side — so all
 four rendered as `restate_or_raise_budget`. The format told an agent to weaken a
 contract in response to a soundness alarm.
+
+The current checker classifies solver wire statuses into typed states at
+admission; `SolverCheck.status` and some reason details remain text, so this is
+not yet typed provenance end to end. An emitted `UNKNOWN`
+is an `ANUBIS_ASSERTION_UNDECIDED` refusal for every obligation family, including
+wrap safety. An invalid wire status or a missing/malformed solver-check stream is
+`ANUBIS_SOLVER_STATUS_INVALID` or `ANUBIS_SOLVER_STREAM_INVALID`, respectively:
+both are `solver_trust` / `refused` with `defect_locus: compiler` and
+`agent_action: investigate_compiler`. A malformed solver response is
+`ANUBIS_SOLVER_PROTOCOL_ERROR`, an `environment` / `refused` result with
+`agent_action: fix_environment`. These are distinct from a checked disproof.
 
 ### `anubis.summary`
 
@@ -164,11 +184,10 @@ certificates: 9/10 obligations carry a re-checkable witness; 1 trusted to the so
 a failure discharges nothing.
 
 - `not_discharged` — checks that reached neither a recognised discharge nor a
-  failure. An `UNKNOWN` wrap-safety obligation is the live case: it is
-  deliberately outside the fail-closed set, so it passes the run without being
-  decided. Without this field the denominator quietly shrank to fit its
-  numerator and printed `3/3` for a run where a fourth obligation was never
-  decided at all.
+  `FAIL` row. An `UNKNOWN` is counted here **and refuses the check**; this field
+  accounts for missing discharge, never grants permission to pass. Without it
+  the denominator could shrink to fit its numerator while an undecided
+  obligation remained.
 - `witnesses_retained` — **whether anything was actually written.** `false` on a
   plain `check`, which verifies each refutation in process and discards it;
   `true` when `--evidence` retained them.
@@ -176,6 +195,8 @@ a failure discharges nothing.
 **Absent, never zero, when nothing was discharged.** A program with nothing to
 prove has not failed to witness anything, and `0/0` would read as "nothing was
 witnessed" rather than "nothing was attempted".
+The exact sole `solver:no-obligations` marker is reporting metadata, not a
+discharged contract; it adds no obligation or certificate to coverage.
 
 **The retention distinction is the important one.** An earlier version of this
 document said "a witness for it exists in the evidence bundle" and the verdict
@@ -226,9 +247,11 @@ Three rules a consumer must honour:
 `{file, line, column, span_start, span_end}`, with `line` and `column` 1-based.
 
 **Optional, and its absence is informative.** Only the compiler's own structured
-span is ever reported. The parse lane fills it. The semantic lanes currently do
-not, because their span is start-of-file rather than the violating construct —
-a known, named residual recorded in `docs/CLAIMS.md`.
+span is ever reported. The parse lane fills it. Single-file semantic refusals
+now retain a span when the analyzer supplied one that is valid for the entry
+source. Unspanned findings, solver obligations, and multi-file findings remain
+unlocated until expression and per-file resolver provenance reaches the
+diagnostic stream; `docs/CLAIMS.md` tracks that residual.
 
 Emitting `1:1` there would be the mislead-with-authority failure that made an
 earlier CLI fix worth reverting, except aimed at an agent that will act on it
@@ -287,8 +310,7 @@ The schema string carries the major version. Within `anubis-diagnostics/1`:
 - **no field is removed or repurposed**, and no member is given a new meaning.
 
 Anything that would break those emits `anubis-diagnostics/2`. An optional field
-that is currently always absent — `location` on a semantic refusal,
-`budget.consumed` — appearing later is an addition, not a break.
+appearing later is an addition, not a break.
 
 Codes in `code` are stable identifiers. A code is retired rather than reused.
 
@@ -298,7 +320,7 @@ Codes in `code` are stable identifiers. A code is retired rather than reused.
 
 Named so nobody reads more into it than it says.
 
-- **Semantic refusals have no location.** §7.
+- **Many semantic refusals and solver obligations still have no location.** §7.
 - **`budget.consumed` is never populated.** §8.
 - **No suggestions.** §9.
 - **Only the `check` command emits it.** `build`, `prove` and `evidence-verify`
