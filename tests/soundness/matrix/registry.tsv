@@ -2387,3 +2387,4 @@ r2arm_contract_call_guard_after_wildcard	M-CALL-POSITION	slice	ACCEPT	carrier	fi
 r2arm_outer_fact_after_match_scrutinee_call	M-CALL-POSITION	slice	ACCEPT	carrier	outer let x=1 remains valid after pure f(1) in match scrutinee; wildcard arm calls g(x), whose requires(x>0) is satisfied.
 r2arm_outer_fact_after_match_guard_call	M-CALL-POSITION	slice	ACCEPT	carrier	outer let x=1 remains valid after pure pred(1) in taken match guard; arm calls g(x), whose requires(x>0) is satisfied.
 r2arm_outer_fact_after_iflet_scrutinee_call	M-CALL-POSITION	slice	ACCEPT	carrier	outer let x=1 remains valid after pure f(1) in if-let scrutinee; Some arm calls g(x), whose requires(x>0) is satisfied.
+r2arm_contract_guard_after_literal_match	M-CALL-POSITION	slice	ACCEPT	carrier	constant match scrutinee selects first literal arm; later guard calling f(-1) is unreachable.
