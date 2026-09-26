@@ -12194,33 +12194,63 @@ fn whole_expression_writes(
         | Stmt::SpecBlock { .. } => Vec::new(),
     };
     for e in exprs {
-        for (root, src, list, map, captures) in whole::expr_writes(e, scope, ctx) {
-            if let Some(b) = scope.get_mut(&root) {
-                if let Some(src) = src {
-                    whole::whole_mark(&mut b.whole_struct, src);
-                }
-                b.whole_list &= list;
-                b.whole_map &= map;
-                // A function or closure written there (`g = id1` in an arm): every one the name
-                // may be now (the ordinary lane's `fn_alias` / identities do not see this write).
-                if captures.is_some() {
-                    b.whole_captures = captures;
-                }
+        apply_whole_writes(scope, whole::expr_writes(e, scope, ctx));
+    }
+}
+
+/// Apply writes the whole-struct lane's interpretation found (`whole::expr_writes`,
+/// `whole::stmt_writes`, a loop's exits): the monotone mark of what each name may hold, whether it
+/// is still a list and a map, and — when a function or closure is written (`g = id1` in an arm) —
+/// every one the name may be now (the ordinary lane's `fn_alias` / identities do not see such a
+/// write).
+fn apply_whole_writes(scope: &mut BTreeMap<String, ScopeBinding>, writes: Vec<whole::ExprWrite>) {
+    for (root, src, list, map, captures) in writes {
+        if let Some(b) = scope.get_mut(&root) {
+            if let Some(src) = src {
+                whole::whole_mark(&mut b.whole_struct, src);
+            }
+            b.whole_list &= list;
+            b.whole_map &= map;
+            if captures.is_some() {
+                b.whole_captures = captures;
             }
         }
     }
 }
 
+/// `writes` with only their marks: the functions they carry reach the binding through a join
+/// (`merge_whole_captures_over`), which a later write of the captures would undo.
+fn without_captures(writes: Vec<whole::ExprWrite>) -> Vec<whole::ExprWrite> {
+    writes
+        .into_iter()
+        .map(|(root, src, list, map, _)| (root, src, list, map, None))
+        .collect()
+}
+
+/// `scope` with `writes` applied: one more path of a join (the lane's interpretation of the
+/// statement, from the scope the statement started with).
+fn whole_write_path(
+    before: &BTreeMap<String, ScopeBinding>,
+    writes: &[whole::ExprWrite],
+) -> BTreeMap<String, ScopeBinding> {
+    let mut path = before.clone();
+    apply_whole_writes(&mut path, writes.to_vec());
+    path
+}
+
 /// A loop body is analyzed once: give the names the loop writes what they may hold at the head of
 /// any iteration (the whole-struct lane iterates the loop to a fixpoint: `whole::loop_carried`), and
 /// what they may then be as a function when a later iteration adds to it (a function a body writes
-/// after a call reads the name).
+/// after a call reads the name). Returns what the loop leaves in the names it writes, from its
+/// `break`s and its exit, for the join after it: the body's end state is not every state the loop
+/// leaves with (`if c { g = h; break; } g = zero;`, R39C-1).
 fn seed_loop_carried_whole(
     stmt: &Stmt,
     scope: &mut BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
-) {
-    for (n, src, captures) in whole::loop_carried(stmt, scope, ctx) {
+) -> Vec<whole::ExprWrite> {
+    let (heads, exits) = whole::loop_carried(stmt, scope, ctx);
+    for (n, src, captures) in heads {
         if let Some(b) = scope.get_mut(&n) {
             if let Some(src) = src {
                 whole::whole_mark(&mut b.whole_struct, src);
@@ -12230,6 +12260,38 @@ fn seed_loop_carried_whole(
             }
         }
     }
+    exits
+}
+
+/// The whole-struct lane's twin of [`relabel_shadowing_join`]: a path that shadowed an outer name
+/// after assigning it (`if c { g = h; let g = zero; }`) reached the join without the outer binding,
+/// and the joins, which keep a path by span, dropped what it assigned (R39C-2). The lane's
+/// interpretation of the statement from `before` restores a shadowed name where its block ends
+/// ([`whole::stmt_writes`]): what it leaves in the shadowed names. `None` when no path shadowed one.
+fn whole_shadow_writes(
+    stmt: &Stmt,
+    before: &BTreeMap<String, ScopeBinding>,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+    ctx: &SemanticContext,
+) -> Option<Vec<whole::ExprWrite>> {
+    let shadowed: BTreeSet<&String> = before
+        .iter()
+        .filter(|(name, outer)| {
+            paths.iter().any(|path| {
+                path.get(*name)
+                    .is_some_and(|b| b.info.span != outer.info.span)
+            })
+        })
+        .map(|(name, _)| name)
+        .collect();
+    if shadowed.is_empty() {
+        return None;
+    }
+    let writes: Vec<whole::ExprWrite> = whole::stmt_writes(stmt, before, ctx)
+        .into_iter()
+        .filter(|w| shadowed.contains(&w.0))
+        .collect();
+    (!writes.is_empty()).then_some(writes)
 }
 
 /// What a closure stored by `let` or assignment closes over (see `ScopeBinding::whole_captures`): a
@@ -14582,12 +14644,26 @@ fn analyze_stmts(
                     snap_scope.clone()
                 };
                 restore_block_scope(scope, &snap_scope);
+                // A branch that shadowed a name after assigning it: the lane's interpretation of the
+                // `if` is one more path (R39C-2).
+                let shadow_writes =
+                    whole_shadow_writes(stmt, &snap_scope, &[&then_scope, &else_scope], ctx);
+                let shadow_path = shadow_writes
+                    .as_deref()
+                    .map(|w| whole_write_path(&snap_scope, w));
+                let mut whole_paths = vec![&then_scope, &else_scope];
+                whole_paths.extend(shadow_path.as_ref());
                 // What the lane's own interpretation found a binding may be as a function, on any path.
-                merge_whole_captures_over(scope, &[&then_scope, &else_scope], ctx);
+                merge_whole_captures_over(scope, &whole_paths, ctx);
                 // Control-flow-merge for taint (may-taint): a reassignment to a tainted value in
                 // EITHER branch survives so a later sink sees it — closing the branch reassignment
                 // fail-open a bare restore left open.
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
+                // The shadowing path's whole-struct marks, which that merge keeps by span too
+                // (`if c { q = p; let q = 0; } print(q)`); its functions joined above.
+                if let Some(writes) = shadow_writes {
+                    apply_whole_writes(scope, without_captures(writes));
+                }
                 // Fn-value-alias branch-merge (soundness hunt2 [08]): a reassignment `f = leak` inside
                 // a branch set `f`'s `fn_alias` on that branch's scope, which `restore_block_scope`
                 // discarded — so `let f = safe; if c { f = leak; } f(k)` resolved `f` to `safe` and
@@ -14772,7 +14848,7 @@ fn analyze_stmts(
                 invariant,
             } => {
                 // Seeded before the condition, which runs at every iteration.
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 // Implicit-flow: secret while-condition + public assign = same binary-extraction as `if`.
                 {
                     let mut assigned = BTreeSet::new();
@@ -14862,8 +14938,10 @@ fn analyze_stmts(
                 ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // What the lane's own interpretation found a binding may be as a function, on any path.
-                merge_whole_captures_over(scope, &[&snap_scope, &body_scope], ctx);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(scope, &[&snap_scope, &body_scope, &whole_exit], ctx);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
                 // through a `break` with what the label walk found there (`loop_exits`: a label live
                 // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
@@ -14871,6 +14949,7 @@ fn analyze_stmts(
                 let mut exit_paths = vec![&snap_scope, &body_scope];
                 exit_paths.extend(&loop_exits);
                 merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
                 // A body that can leave early also leaves with what it held at a `break`/`continue`.
@@ -15020,7 +15099,7 @@ fn analyze_stmts(
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 // The head of an iteration: what the lane's interpretation of the loop found the
                 // names it writes may be there (a path of the join below: `snap_scope` is taken
                 // before it).
@@ -15067,8 +15146,14 @@ fn analyze_stmts(
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // What the lane's own interpretation found a binding may be as a function, on any path.
-                merge_whole_captures_over(scope, &[&snap_scope, &head_scope, &body_scope], ctx);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(
+                    scope,
+                    &[&snap_scope, &head_scope, &body_scope, &whole_exit],
+                    ctx,
+                );
                 // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
                 // through a `break` with what the label walk found there (`loop_exits`: a label live
                 // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
@@ -15076,6 +15161,7 @@ fn analyze_stmts(
                 let mut exit_paths = vec![&snap_scope, &body_scope];
                 exit_paths.extend(&loop_exits);
                 merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
                 // A body that can leave early also leaves with what it held at a `break`/`continue`.
@@ -15116,7 +15202,7 @@ fn analyze_stmts(
                 );
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 // The head of an iteration: what the lane's interpretation of the loop found the
                 // names it writes may be there (a path of the join below: `snap_scope` is taken
                 // before it).
@@ -15138,8 +15224,14 @@ fn analyze_stmts(
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // What the lane's own interpretation found a binding may be as a function, on any path.
-                merge_whole_captures_over(scope, &[&snap_scope, &head_scope, &body_scope], ctx);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(
+                    scope,
+                    &[&snap_scope, &head_scope, &body_scope, &whole_exit],
+                    ctx,
+                );
                 // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
                 // through a `break` with what the label walk found there (`loop_exits`: a label live
                 // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
@@ -15147,6 +15239,7 @@ fn analyze_stmts(
                 let mut exit_paths = vec![&snap_scope, &body_scope];
                 exit_paths.extend(&loop_exits);
                 merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
                 // A body that can leave early also leaves with what it held at a `break`/`continue`.
@@ -15527,7 +15620,7 @@ fn analyze_stmts(
                 invalidate_binding_facts(ctx, assumptions, var);
                 let keep = keepable_written_ints(ctx, &[body]);
                 havoc_loop_written_keep(ctx, assumptions, body, &keep);
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 // The head of an iteration: what the lane's interpretation of the loop found the
                 // names it writes may be there (a path of the join below: `snap_scope` is taken
                 // before it).
@@ -15682,8 +15775,14 @@ fn analyze_stmts(
                 ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
-                // What the lane's own interpretation found a binding may be as a function, on any path.
-                merge_whole_captures_over(scope, &[&snap_scope, &head_scope, &body_scope], ctx);
+                // What the lane's own interpretation found a binding may be as a function, on any path:
+                // the loop also leaves from a `break` (R39C-1).
+                let whole_exit = whole_write_path(&snap_scope, &whole_exits);
+                merge_whole_captures_over(
+                    scope,
+                    &[&snap_scope, &head_scope, &body_scope, &whole_exit],
+                    ctx,
+                );
                 // Taint merge: the loop may run (body_scope) or not (snap_scope), and it may leave
                 // through a `break` with what the label walk found there (`loop_exits`: a label live
                 // at a `break` was lost when only the body's end state joined; IFC-JOIN-BREAK-SHADOW);
@@ -15691,6 +15790,7 @@ fn analyze_stmts(
                 let mut exit_paths = vec![&snap_scope, &body_scope];
                 exit_paths.extend(&loop_exits);
                 merge_taint_over(scope, &exit_paths);
+                apply_whole_writes(scope, without_captures(whole_exits));
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
                 // A body that can leave early also leaves with what it held at a `break`/`continue`.
@@ -18693,6 +18793,10 @@ fn fn_identities_carried_by_value_d(
 /// snapshot/restore (no cross-body merge — a loop-carried label escaping to the block tail is a named
 /// fail-open residual, unchanged from the pre-slice opaque behavior). `Assume`-inner, non-`Var`
 /// assign LHS, and research/exploit/spec blocks (mode-elevated) are left to their existing handling.
+/// The whole-struct lane is kept as `analyze_stmts` keeps it: a statement's own expressions' writes
+/// (`whole_expression_writes`), an assignment's marks and functions, and after a nested statement
+/// what the lane's interpretation of it leaves (`whole::stmt_writes`, a loop's exits) — its
+/// restore dropped them (R39C-3, R39C-4).
 fn walk_block_effects(
     stmts: &[Stmt],
     tail: Option<&Expr>,
@@ -18702,6 +18806,7 @@ fn walk_block_effects(
     ctx: &mut SemanticContext,
 ) {
     for (i, stmt) in stmts.iter().enumerate() {
+        whole_expression_writes(stmt, scope, ctx);
         // No join below keeps a nested write; the functions it may assign are kept here.
         join_nested_fn_writes(stmt, scope, ctx);
         // Without an explicit tail, the block's last statement is its value (the runtime's
@@ -18790,7 +18895,7 @@ fn walk_block_effects(
                 }
             }
             Stmt::Assign {
-                target: Expr::Var(name),
+                target: target @ Expr::Var(name),
                 value,
             } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
@@ -18815,6 +18920,19 @@ fn walk_block_effects(
                 .is_some();
                 let fal = fn_alias_of(value, scope, ctx);
                 let fn_may = fn_may_of(value, scope, ctx);
+                // The whole-struct lane, as the statement assignment keeps it: the mark of what the
+                // name now holds, whether it is still a list and a map, and the closure and functions
+                // it stands for (R39C-3: `let q = 0; q = p; print(q)` in a value block).
+                let mark = whole::assign_mark_in(target, value, scope, ctx);
+                let list = whole::is_list_expr(value, scope, ctx);
+                let map = whole::is_map_expr(value, scope, ctx);
+                let arity = closure_arity_of(value, scope, ctx);
+                let cl: Option<Box<Expr>> = match value {
+                    Expr::Lambda { .. } => Some(Box::new(value.clone())),
+                    Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                    _ => None,
+                };
+                let captures = whole_captures_of(value, cl.is_some(), scope, ctx);
                 if let Some(b) = scope.get_mut(name) {
                     b.set_taint_label(security_label::SecurityLabel::from_legacy_taint(
                         t.is_some(),
@@ -18823,6 +18941,14 @@ fn walk_block_effects(
                     b.set_secret_label(security_label::SecurityLabel::from_legacy_secret(s));
                     b.fn_alias = fal;
                     b.fn_may = fn_may;
+                    if let Some((_, src)) = mark {
+                        whole::whole_mark(&mut b.whole_struct, src);
+                    }
+                    b.whole_list &= list;
+                    b.whole_map &= map;
+                    b.closure_arity = arity;
+                    b.closure_lambda = cl;
+                    b.whole_captures = captures;
                 }
             }
             Stmt::Assign { target, value } => {
@@ -18879,10 +19005,13 @@ fn walk_block_effects(
                     walk_block_effects(else_body, None, mode, scope, effects, ctx);
                 }
                 *scope = snap;
+                // What the branches leave (the restore joined nothing).
+                let writes = whole::stmt_writes(stmt, scope, ctx);
+                apply_whole_writes(scope, writes);
             }
             Stmt::While { cond, body, .. } => {
                 // Seeded before the condition, which runs at every iteration.
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(body, &mut assigned);
@@ -18899,6 +19028,8 @@ fn walk_block_effects(
                 seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                // What the loop leaves, from its `break`s and its exit (the restore joined nothing).
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::WhileLet { expr, body, .. } => {
                 {
@@ -18914,17 +19045,19 @@ fn walk_block_effects(
                 }
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 let snap = scope.clone();
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::Loop { body, .. } => {
                 let snap = scope.clone();
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 seed_loop_carried_fn_values(body, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::For {
                 var, source, body, ..
@@ -18960,12 +19093,13 @@ fn walk_block_effects(
                     }
                 }
                 let snap = scope.clone();
-                seed_loop_carried_whole(stmt, scope, ctx);
+                let whole_exits = seed_loop_carried_whole(stmt, scope, ctx);
                 seed_loop_carried_fn_values(body, scope, ctx);
                 // M1: see `seed_loop_var_callable` — seeded in this walker AND in `analyze_stmts`.
                 seed_loop_var_callable(var, source, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
+                apply_whole_writes(scope, whole_exits);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
@@ -18973,6 +19107,8 @@ fn walk_block_effects(
                     walk_block_effects(b, None, mode, scope, effects, ctx);
                     *scope = snap;
                 }
+                let writes = whole::stmt_writes(stmt, scope, ctx);
+                apply_whole_writes(scope, writes);
             }
             _ => {}
         }

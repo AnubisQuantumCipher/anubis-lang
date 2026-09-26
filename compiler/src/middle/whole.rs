@@ -801,18 +801,8 @@ fn join_local(a: &Local, b: &Local) -> Local {
         (Local::Any(xs), other) | (other, Local::Any(xs)) => {
             let mut v = xs.clone();
             match other {
-                Local::Any(ys) => {
-                    for y in ys {
-                        if !v.contains(y) {
-                            v.push(y.clone());
-                        }
-                    }
-                }
-                _ => {
-                    if !v.contains(other) {
-                        v.push(other.clone());
-                    }
-                }
+                Local::Any(ys) => add_fns(&mut v, ys.clone()),
+                _ => add_fns(&mut v, vec![other.clone()]),
             }
             Local::Any(v)
         }
@@ -823,11 +813,14 @@ fn join_local(a: &Local, b: &Local) -> Local {
 fn join_locals(a: &Locals, b: &Locals) -> Locals {
     let mut out = a.clone();
     for (n, lb) in b {
-        let v = match a.get(n) {
-            Some(la) => join_local(la, lb),
-            None => lb.clone(),
-        };
-        out.insert(n.clone(), v);
+        match out.get_mut(n) {
+            // The same on both paths (most names, at most joins): kept as it is, not rebuilt.
+            Some(la) if *la == *lb => {}
+            Some(la) => *la = join_local(la, lb),
+            None => {
+                out.insert(n.clone(), lb.clone());
+            }
+        }
     }
     out
 }
@@ -1431,18 +1424,83 @@ fn seeded_in<'e>(es: impl IntoIterator<Item = &'e Expr>, env: &Env) -> At {
     top().with(bound)
 }
 
+/// What [`loop_carried`] finds for a loop: each name of the scope at the head of any iteration (what
+/// it holds, and what it may then be as a function when that is more than before the loop), and
+/// what the loop leaves in each name of the scope it writes — where its `break`s and its own exit
+/// leave, as [`expr_writes`] gives a write (its captures as `carried_captures` gives them).
+pub(super) type LoopCarried = (
+    Vec<(String, Option<WholeSrc>, Option<Captures>)>,
+    Vec<ExprWrite>,
+);
+
 /// What each name of `scope` written by the loop statement `stmt` may hold at the head of any of its
 /// iterations, and what it may then be as a function when that is more than before the loop
 /// (`carried_captures`). The statement walk in `mod.rs` analyzes a loop body once, so a value, or a
 /// function, that reaches a name late in one iteration and is read early in the next is seeded from
-/// here.
+/// here. And what the loop leaves in the names it writes: the statement walk joins the body's end
+/// state, where a function written just before a `break` may be overwritten on the path that goes
+/// on (`if c { g = h; break; } g = zero;`: R39C-1); the interpretation leaves the loop from every
+/// `break` and from its own exit.
 pub(super) fn loop_carried(
     stmt: &Stmt,
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
-) -> Vec<(String, Option<WholeSrc>, Option<Captures>)> {
+) -> LoopCarried {
     let env = Env::new(ctx, scope);
     let stmts = std::slice::from_ref(stmt);
+    let (written, in_place) = stmts_written(stmts);
+    let bound: Vec<(String, Local)> = written
+        .iter()
+        .filter_map(|n| scope_local(n, &env).map(|l| (n.clone(), l)))
+        .collect();
+    let before: Locals = bound.iter().cloned().collect();
+    let at = top().with(bound);
+    *env.heads.borrow_mut() = Some(Locals::new());
+    let fx = interp_uncached(stmts, None, &env, &at, Run::LOOP_BODY);
+    let heads = env.heads.borrow_mut().take().unwrap_or_default();
+    // Once per loop, when a name needs it (not once per name): which names every write follows.
+    let seen = std::cell::OnceCell::new();
+    let carried = |n: &str, l: &Local| {
+        before.get(n).and_then(|pre| {
+            let seen_n = || {
+                seen.get_or_init(|| {
+                    seen_names(
+                        |f| visit::each_stmt(stmts, f),
+                        |f| visit::each_expr_in_stmts(stmts, f),
+                        &written,
+                        &in_place,
+                        &env,
+                    )
+                })
+                .contains(n)
+            };
+            carried_captures(n, pre, l, seen_n, &env)
+        })
+    };
+    let heads = heads
+        .into_iter()
+        .filter(|(n, _)| scope.contains_key(n))
+        .map(|(n, l)| {
+            let captures = carried(&n, &l);
+            (n, local_src(&l), captures)
+        })
+        .collect();
+    let exits = fx
+        .at
+        .locals
+        .iter()
+        .filter(|(n, _)| scope.contains_key(*n) && written.contains(*n))
+        .map(|(n, l)| {
+            let k = local_kind(l);
+            (n.clone(), local_src(l), k.list, k.map, carried(n, l))
+        })
+        .collect();
+    (heads, exits)
+}
+
+/// The names a statement list writes — assignments' roots, in its value blocks too, and the
+/// variable an in-place list builtin names — and those among them an in-place builtin writes.
+fn stmts_written(stmts: &[Stmt]) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut names = BTreeSet::new();
     stmt_roots(stmts, &mut names);
     let mut in_place = BTreeSet::new();
@@ -1456,32 +1514,67 @@ pub(super) fn loop_carried(
         }
         _ => {}
     });
-    let written = names.clone();
-    let bound: Vec<(String, Local)> = names
-        .into_iter()
-        .filter_map(|n| scope_local(&n, &env).map(|l| (n, l)))
+    (names, in_place)
+}
+
+/// The writes a statement makes to the caller's variables, as the lane's own interpretation runs it
+/// from where it starts: what each name it writes holds where the statement ends (every branch and
+/// arm joined, a name a branch's `let` shadowed restored where the branch ends, a loop left from its
+/// `break`s and its exit), whether it is still known to be a list and a map, and what it may be as
+/// a function — the `expr_writes` of a statement; a name the statement leaves as it found it is not
+/// among them. For the paths the statement walks in `mod.rs` drop: a branch that shadows a name after
+/// assigning it (`if c { g = h; let g = zero; }`: their joins keep a path by span; R39C-2), and a
+/// statement nested in a value block, whose walker restores the scope and joins nothing (R39C-4).
+pub(super) fn stmt_writes(
+    stmt: &Stmt,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Vec<ExprWrite> {
+    let stmts = std::slice::from_ref(stmt);
+    let (written, in_place) = stmts_written(stmts);
+    if written.is_empty() {
+        return Vec::new();
+    }
+    let env = Env::new(ctx, scope);
+    let bound: Vec<(String, Local)> = written
+        .iter()
+        .filter_map(|n| scope_local(n, &env).map(|l| (n.clone(), l)))
         .collect();
-    let before: Locals = bound.iter().cloned().collect();
     let at = top().with(bound);
-    *env.heads.borrow_mut() = Some(Locals::new());
-    let _ = interp_uncached(stmts, None, &env, &at, Run::LOOP_BODY);
-    let heads = env.heads.borrow_mut().take().unwrap_or_default();
-    heads
-        .into_iter()
-        .filter(|(n, _)| scope.contains_key(n))
-        .map(|(n, l)| {
-            let captures = before.get(&n).and_then(|pre| {
-                let seen = writes_seen(
-                    &n,
-                    |f| visit::each_stmt(stmts, f),
-                    |f| visit::each_expr_in_stmts(stmts, f),
-                    &written,
-                    in_place.contains(&n),
-                    &env,
-                );
-                carried_captures(&n, pre, &l, seen, &env)
+    let fx = interp_uncached(stmts, None, &env, &at, Run::LOOP_BODY);
+    let mut seen: Option<BTreeSet<String>> = None;
+    fx.at
+        .locals
+        .iter()
+        .filter(|(n, l)| written.contains(*n) && at.locals.get(*n) != Some(*l))
+        .filter_map(|(n, l)| {
+            let b = scope.get(n)?;
+            let k = local_kind(l);
+            let mut fns = fn_parts(l);
+            let captures = (!fns.is_empty()).then(|| {
+                // Sure when no value may be there but the functions found, or when every value the
+                // statement writes to the name is one the lane follows ([`seen_names`]).
+                let sure = !has_src(l)
+                    || seen
+                        .get_or_insert_with(|| {
+                            seen_names(
+                                |f| visit::each_stmt(stmts, f),
+                                |f| visit::each_expr_in_stmts(stmts, f),
+                                &written,
+                                &in_place,
+                                &env,
+                            )
+                        })
+                        .contains(n);
+                closure_value_half(&mut fns, sure, b);
+                let names = b
+                    .whole_captures
+                    .as_ref()
+                    .map(|c| c.0.clone())
+                    .unwrap_or_default();
+                Captures(names, Some(Rc::new(Bound { fns, sure })))
             });
-            (n, local_src(&l), captures)
+            Some((n.clone(), local_src(l), k.list, k.map, captures))
         })
         .collect()
 }
@@ -1491,10 +1584,17 @@ pub(super) fn loop_carried(
 /// (`pre`): a function or closure only a later iteration holds (`g = if c { let t = h; t } else { g }`
 /// read before it in the body: the ordinary lane's identities do not see a block's alias), or a value
 /// half where there was none. Sure when no value may be at the head but the functions found, or when
-/// every value the loop writes to the name is one the lane follows (`seen`: the interpretation gives
-/// a branch, arm or block a value half beside its functions whatever they yield). `None`: nothing to
-/// add.
-fn carried_captures(n: &str, pre: &Local, head: &Local, seen: bool, env: &Env) -> Option<Captures> {
+/// every value the loop writes to the name is one the lane follows (`seen`, [`seen_names`]: the
+/// interpretation gives a branch, arm or block a value half beside its functions whatever they
+/// yield). `None`: nothing to add. The same for what the loop leaves in the name (`head`: the
+/// interpretation's state after the loop).
+fn carried_captures(
+    n: &str,
+    pre: &Local,
+    head: &Local,
+    seen: impl FnOnce() -> bool,
+    env: &Env,
+) -> Option<Captures> {
     let b = env.scope.get(n)?;
     let mut fns = fn_parts(head);
     if fns.is_empty() {
@@ -1502,7 +1602,7 @@ fn carried_captures(n: &str, pre: &Local, head: &Local, seen: bool, env: &Env) -
     }
     let before = fn_parts(pre);
     let grew = fns.iter().any(|f| !before.contains(f));
-    let sure = !has_src(head) || seen;
+    let sure = !has_src(head) || seen();
     if !grew && (sure || has_src(pre)) {
         return None;
     }
@@ -1515,40 +1615,68 @@ fn carried_captures(n: &str, pre: &Local, head: &Local, seen: bool, env: &Env) -
     Some(Captures(names, Some(Rc::new(Bound { fns, sure }))))
 }
 
-/// Whether every value the statements `each_stmt` visits (and the expressions `each_expr` visits,
-/// for the names they bind) write to the name `n` of the caller's scope is a function the lane's
-/// interpretation follows, or no function at all ([`leaves_seen`]). The interpretation itself gives a
-/// branch, arm or block a value half beside the functions it yields, and a name of the scope read
-/// as both halves when it may be several functions (`scope_local`), so its result cannot say this.
-/// Only plain assignments `n = v` outside lambdas write it (never an in-place builtin: `in_place`),
-/// the name surely held only functions before (`resolve_local`, with no value half), and each `v`
-/// is read with every name written there (`written`) and every name bound there outside `v` (a
-/// `let`, a pattern's binder, a lambda's parameter, a loop variable but a counter over a range that
-/// no name of the scope shares) untrusted — `v` binds its own. A write into a part of `n`, or one a
-/// lambda makes, is not followed.
-fn writes_seen<'a>(
-    n: &str,
+/// The names every value of which, in the statements `each_stmt` visits (and the expressions
+/// `each_expr` visits, for the names they bind), is a function the lane's interpretation follows or
+/// no function at all ([`leaves_seen`]): a name of the caller's scope the statements write
+/// (`written`), or a name they bind. The interpretation itself gives a branch, arm or block a value
+/// half beside the functions it yields, and a name of the scope read as both halves when it may be
+/// several functions (`scope_local`), so its result cannot say this.
+///
+/// The greatest set `T` of names such that each one
+/// - is bound there only by `let`s and by plain assignments `n = v` outside lambdas, or is a counter
+///   over a range that no name of the scope shares (never a pattern's binder, a lambda's parameter,
+///   another loop variable, an in-place builtin's list (`in_place`), a write into a part of it or
+///   one a lambda makes);
+/// - held only functions the lane follows before the statements, if it is a name of the scope
+///   (`resolve_local`, with no value half);
+/// - has every `let`'s initializer and every assigned value seen by `leaves_seen` with the names of
+///   `T` trusted and every other name written or bound there untrusted (a value binds its own).
+///
+/// Sound by induction over the steps of any run: before the statements each name of `T` of the
+/// scope holds only such values, and a step binding one evaluates a value reading only names of `T`
+/// (which hold such values by the hypothesis), names bound outside the statements, lambdas and
+/// values holding no function. So a name read before its write in the same iteration
+/// (`g = if c { let t = h; t } else { g }`, `let t = a; a = b; b = t;`, `let next = ..; state =
+/// next;` in a loop) is trusted exactly when every write to it and to what it reads is (R39C-6,
+/// R39P-O4, R39P-O5; a name written or bound there was untrusted outright, and the joined binding
+/// kept a value half a call computed from). Found by dropping names from the candidates until every
+/// remaining one holds: at most as many passes over the writes as there are names.
+fn seen_names<'a>(
     each_stmt: impl Fn(&mut dyn FnMut(&'a Stmt, bool)),
     each_expr: impl Fn(&mut dyn FnMut(&'a Expr)),
     written: &BTreeSet<String>,
-    in_place: bool,
+    in_place: &BTreeSet<String>,
     env: &Env,
-) -> bool {
-    if in_place || resolve_local(n, env, &top()).is_none_or(|l| has_src(&l)) {
-        return false;
-    }
-    let mut binders: BTreeMap<String, bool> = BTreeMap::new();
-    let mut untrusted: Vec<String> = Vec::new();
-    let mut ranged: Vec<(String, bool)> = Vec::new();
-    each_stmt(&mut |s, _| match s {
-        Stmt::Let { name, .. } => untrusted.push(name.clone()),
+) -> BTreeSet<String> {
+    // Every value bound to each name there: a `let`'s initializer, a plain assignment's value, or
+    // `None` for a write the lane does not follow (into a part of it, or in a lambda).
+    let mut values: BTreeMap<String, Vec<Option<&'a Expr>>> = BTreeMap::new();
+    let mut untrusted: BTreeSet<String> = in_place.clone();
+    let mut counters: BTreeSet<String> = BTreeSet::new();
+    each_stmt(&mut |s, in_lambda| match s {
+        Stmt::Let { name, init, .. } => values.entry(name.clone()).or_default().push(Some(init)),
+        Stmt::Assign { target, value } => {
+            if let Some(r) = place_root(target) {
+                let plain = !in_lambda && matches!(target, Expr::Var(_));
+                values
+                    .entry(r.to_string())
+                    .or_default()
+                    .push(plain.then_some(value));
+            }
+        }
         Stmt::LetPattern { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
             untrusted.extend(pattern.bound_names())
         }
+        // A counter holds no function, unless a name of the scope shares it (a value may read that
+        // name, outside the loop); an element may be one the interpretation lost.
         Stmt::For { var, source, .. } => {
-            // A counter holds no function; an element may be one the interpretation lost.
-            let seen = matches!(source, crate::frontend::ForSource::Range { .. });
-            ranged.push((var.clone(), seen));
+            if matches!(source, crate::frontend::ForSource::Range { .. })
+                && !env.scope.contains_key(var.as_str())
+            {
+                counters.insert(var.clone());
+            } else {
+                untrusted.insert(var.clone());
+            }
         }
         _ => {}
     });
@@ -1562,27 +1690,54 @@ fn writes_seen<'a>(
         Expr::Lambda { params, .. } => untrusted.extend(params.iter().cloned()),
         _ => {}
     });
-    // A name bound more than once is trusted only if every binding is, and a loop variable named
-    // like a name of the scope never is (`v` may read that name, outside the loop).
-    for (v, seen) in ranged {
-        let seen = seen && !env.scope.contains_key(v.as_str());
-        let e = binders.entry(v).or_insert(true);
-        *e &= seen;
+    let mut trusted: BTreeSet<String> = values
+        .keys()
+        .chain(counters.iter())
+        .filter(|n| !untrusted.contains(*n))
+        .filter(|n| {
+            values
+                .get(*n)
+                .is_none_or(|vs| vs.iter().all(Option::is_some))
+        })
+        .filter(|n| {
+            !env.scope.contains_key(n.as_str())
+                || resolve_local(n, env, &top()).is_some_and(|l| !has_src(&l))
+        })
+        .cloned()
+        .collect();
+    let mut bound: BTreeMap<String, bool> = untrusted.iter().map(|n| (n.clone(), false)).collect();
+    for n in values.keys().chain(counters.iter()) {
+        bound.insert(n.clone(), trusted.contains(n));
     }
-    for v in untrusted {
-        binders.insert(v, false);
-    }
-    let mut seen = true;
-    each_stmt(&mut |s, in_lambda| {
-        if let Stmt::Assign { target, value } = s {
-            if place_root(target) == Some(n) {
-                seen &= !in_lambda
-                    && matches!(target, Expr::Var(v) if v == n)
-                    && leaves_seen(value, &binders, written, env);
+    let mut unseen: BTreeSet<String> = written
+        .iter()
+        .filter(|n| !trusted.contains(*n))
+        .cloned()
+        .collect();
+    loop {
+        // A name failing with these trusted fails with fewer: drop every one that fails at once.
+        let failing: Vec<String> = trusted
+            .iter()
+            .filter(|n| {
+                !values
+                    .get(*n)
+                    .into_iter()
+                    .flatten()
+                    .all(|v| v.is_some_and(|v| leaves_seen(v, &bound, &unseen, env)))
+            })
+            .cloned()
+            .collect();
+        if failing.is_empty() {
+            return trusted;
+        }
+        for n in failing {
+            trusted.remove(&n);
+            bound.insert(n.clone(), false);
+            if written.contains(&n) {
+                unseen.insert(n);
             }
         }
-    });
-    seen
+    }
 }
 
 /// What a name of the caller's scope may be as a function where a statement's paths meet again (an
@@ -3818,6 +3973,7 @@ pub(super) fn expr_writes(
             }
         }
     });
+    let mut seen: Option<BTreeSet<String>> = None;
     view.locals
         .iter()
         .filter(|(n, _)| scope.contains_key(*n))
@@ -3831,16 +3987,19 @@ pub(super) fn expr_writes(
                     .map(|c| c.0.clone())
                     .unwrap_or_default();
                 // Sure when no value may be there but the functions found, or when every value the
-                // expression writes to the name is one the lane follows ([`writes_seen`]).
+                // expression writes to the name is one the lane follows ([`seen_names`]).
                 let sure = !has_src(l)
-                    || writes_seen(
-                        n,
-                        |f| visit::each_stmt_in_expr(expr, f),
-                        |f| visit::each_expr(expr, f),
-                        &written,
-                        in_place.contains(n),
-                        &env,
-                    );
+                    || seen
+                        .get_or_insert_with(|| {
+                            seen_names(
+                                |f| visit::each_stmt_in_expr(expr, f),
+                                |f| visit::each_expr(expr, f),
+                                &written,
+                                &in_place,
+                                &env,
+                            )
+                        })
+                        .contains(n);
                 Captures(names, Some(Rc::new(Bound { fns, sure })))
             });
             (n.clone(), local_src(l), k.list, k.map, captures)
@@ -4376,10 +4535,14 @@ fn fn_parts(l: &Local) -> Vec<Local> {
     match l {
         Local::Src(..) => Vec::new(),
         Local::Any(ls) => {
-            let mut out = Vec::new();
+            // Kept distinct once, over all of them (`add_fns` per part indexed the list again for
+            // every part).
+            let mut parts = Vec::new();
             for x in ls {
-                add_fns(&mut out, fn_parts(x));
+                parts.extend(fn_parts(x));
             }
+            let mut out = Vec::new();
+            add_fns(&mut out, parts);
             out
         }
         other => vec![other.clone()],
@@ -6028,12 +6191,58 @@ fn merge_walked(into: &mut Option<Rc<Walked>>, from: &Option<Rc<Walked>>) {
     }
 }
 
-/// Add `more` to `fns`, each once.
+/// Add `more` to `fns`, each once, in order.
+///
+/// Many locals added to a long list (a name standing for many closures: nested loops choosing among
+/// them, R39C-5) are looked up by key ([`local_key`]): equal locals share a key, so an equal one is
+/// found where its key first occurs, and joining two long lists takes time about linear in their
+/// length rather than quadratic. Only locals of one key that are not equal (a lambda over other
+/// captured values, value halves) are compared one by one.
 fn add_fns(fns: &mut Vec<Local>, more: Vec<Local>) {
+    if more.len() <= 2 || fns.len() + more.len() <= SHORT_LOCALS {
+        for l in more {
+            if !fns.contains(&l) {
+                fns.push(l);
+            }
+        }
+        return;
+    }
+    let mut first: std::collections::HashMap<LocalKey, usize> =
+        std::collections::HashMap::with_capacity(fns.len() + more.len());
+    for (i, l) in fns.iter().enumerate() {
+        first.entry(local_key(l)).or_insert(i);
+    }
     for l in more {
-        if !fns.contains(&l) {
+        let key = local_key(&l);
+        let present = match first.get(&key) {
+            Some(&i) => fns[i..].contains(&l),
+            None => false,
+        };
+        if !present {
+            first.entry(key).or_insert(fns.len());
             fns.push(l);
         }
+    }
+}
+
+/// Lists up to this long, or a few locals added, are kept distinct by comparing each pair
+/// (`add_fns`): cheaper than indexing.
+const SHORT_LOCALS: usize = 16;
+
+/// What two equal locals always share (`Local::eq`): a closure's lambda and whether it reads the
+/// caller's scope, a function's name (hashed); every other local shares one key.
+type LocalKey = (u8, usize, u64);
+
+fn local_key(l: &Local) -> LocalKey {
+    use std::hash::{Hash, Hasher};
+    match l {
+        Local::Closure(c) => (0, c.id, u64::from(c.use_scope)),
+        Local::Named(n) => {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            n.hash(&mut h);
+            (1, n.len(), h.finish())
+        }
+        Local::Src(..) | Local::Opaque(_) | Local::Any(_) => (2, 0, 0),
     }
 }
 
