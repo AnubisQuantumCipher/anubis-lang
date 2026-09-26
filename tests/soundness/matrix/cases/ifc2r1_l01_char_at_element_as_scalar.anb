@@ -1,0 +1,6 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let fs = [|| k];
+    let g = char_at(fs, 0);
+    print(g());
+}

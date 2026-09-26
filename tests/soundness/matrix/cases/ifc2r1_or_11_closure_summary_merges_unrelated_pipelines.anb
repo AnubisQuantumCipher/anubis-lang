@@ -1,0 +1,14 @@
+// Composable transforms: `then(f, g)` chains two stages. One pipeline mixes in a secret salt
+// (its result is only range-checked); the other is public and printed.
+fn then(f, g) {
+    return |x| g(f(x));
+}
+
+fn main() {
+    let salt: secret<i64> = 42;
+    let salted = then(then(then(then(|x| x + salt, |x| x * 2), |x| x + 1), |x| x % 1000), |x| x - 3);
+    let h = salted(5);
+    assert(h > -1000000);
+    let plain = then(then(then(then(|x| x + 7, |x| x * 2), |x| x + 1), |x| x % 1000), |x| x - 3);
+    print(plain(5));
+}

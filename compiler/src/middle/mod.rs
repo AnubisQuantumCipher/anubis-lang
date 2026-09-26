@@ -18,6 +18,7 @@ mod contract_carrier;
 /// wrap-safety read an early-return guard the programmer already wrote.
 pub mod diverge;
 pub(crate) mod effects;
+mod ifc2;
 mod infer_params;
 pub mod loopctl;
 pub mod proptest;
@@ -5100,6 +5101,22 @@ pub fn last_analysis_by_reserve() -> bool {
     analysis_limit::by_reserve()
 }
 
+/// IFC v2's findings alone, as (code, message): a developer measurement of one lane, not a check
+/// (`anubis ifc2-report`; `check` runs every lane). Empty for a program that is not Safe mode.
+pub fn ifc2_findings(ast: &AST, mode: Mode) -> Vec<(String, String)> {
+    if mode != Mode::Safe {
+        return Vec::new();
+    }
+    // One request under the checker's stack and memory guard, like `check`.
+    match analysis_limit::check(|| Ok::<_, String>(ifc2::check(&ast.items))) {
+        Ok(found) => found
+            .into_iter()
+            .map(|f| (f.code.to_string(), f.message))
+            .collect(),
+        Err(limit) => vec![("ANUBIS_ANALYSIS_LIMIT".into(), limit)],
+    }
+}
+
 pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
     // One request: an analysis limit reached anywhere in it refuses it (`analysis_limit`).
     analysis_limit::check(|| typecheck_request(ast, mode, verified))
@@ -5239,6 +5256,22 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
     ctx.cap_summary = capability::program_summary(&ast.items);
     ctx.escaping_contracted_fns = compute_escaping_contracted_fns(&ast.items, &ctx);
     ctx.fn_valued_field_names = compute_fn_valued_field_names(&ast.items, &ctx);
+    // IFC v2 (`ifc2`): the information-flow interpreter that mirrors the runtime runs beside the
+    // other lanes in every Safe-mode check; a program is refused if any lane finds a flow. Flow
+    // checks are Safe-mode only. Its findings join the enforcing diagnostics after the limit
+    // truncation below (they are independent of the other lanes' analysis limit).
+    let ifc2_found: Vec<SemanticDiagnostic> = if mode == Mode::Safe {
+        ifc2::check(&ast.items)
+            .into_iter()
+            .map(|f| SemanticDiagnostic {
+                code: Some(f.code.into()),
+                message: format!("[ifc2] {}", f.message),
+                span: None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -5265,6 +5298,7 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
     }
     let independent = std::mem::take(&mut ctx.independent_after_limit);
     ctx.diagnostics.extend(independent);
+    ctx.diagnostics.extend(ifc2_found);
     if !ctx.diagnostics.is_empty() {
         let messages = ctx
             .diagnostics

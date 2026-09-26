@@ -1,0 +1,8 @@
+fn main() {
+    let k: secret<i64> = 42
+    let i = 0
+    while i < k {
+        print("tick")
+        i = i + 1
+    }
+}

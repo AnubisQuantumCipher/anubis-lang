@@ -1,0 +1,22 @@
+// Event loop of a PIN-locked device: the PIN check sits in a match guard.
+enum Ev {
+    Try(i64),
+    Tick,
+    Quit,
+}
+
+fn main() {
+    let pin: secret<i64> = 42;
+    let events = [Ev::Tick, Ev::Try(1234), Ev::Tick, Ev::Try(7), Ev::Quit];
+    let mut unlocked: secret<bool> = false;
+    for ev in events {
+        match ev {
+            Ev::Try(g) if g == pin => {
+                unlocked = true;
+            }
+            Ev::Try(_) => 0,
+            Ev::Tick => print("tick"),
+            Ev::Quit => print("bye"),
+        }
+    }
+}

@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let mut log = [];
+    while let Some(x) = if s > 100 { push(log, 1); break } else { None } {
+    }
+    println(len(log));
+}

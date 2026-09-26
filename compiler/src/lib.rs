@@ -26,7 +26,7 @@ pub use middle::research_profile;
 pub use middle::research_profile::{
     proven_effects_from_source, proven_effects_via_typecheck, ProvenEffectSet,
 };
-pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
+pub use middle::{ifc2_findings, typecheck, typecheck_ex, SymbolicEngine, TaintPass};
 // Completion Blueprint Phase 8 Slice 1 — production-linked correspondence observer
 // and its row count. Consumed by `compiler/tests/security_label_correspondence_observer.rs`
 // (integration test that only sees `pub` items) and by any external harness that wants to

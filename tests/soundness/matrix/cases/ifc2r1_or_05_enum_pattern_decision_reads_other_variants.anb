@@ -1,0 +1,22 @@
+// A robot command queue; one command carries the operator's secret PIN.
+enum Cmd {
+    Auth(i64),
+    Move(i64),
+    Quit,
+}
+
+fn main() {
+    let pin: secret<i64> = 42;
+    let cmds = [Cmd::Move(0), Cmd::Auth(pin), Cmd::Move(3), Cmd::Quit];
+    let mut authed: secret<bool> = false;
+    for c in cmds {
+        match c {
+            Cmd::Move(0) => print("stay"),
+            Cmd::Move(n) => print("move"),
+            Cmd::Auth(p) => {
+                authed = p == 1234;
+            }
+            Cmd::Quit => print("quit"),
+        }
+    }
+}

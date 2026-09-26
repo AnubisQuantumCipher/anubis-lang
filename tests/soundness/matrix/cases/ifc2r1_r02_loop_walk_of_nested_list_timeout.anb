@@ -1,0 +1,11 @@
+fn main() {
+    let v = [0];
+    for i in 0..40 {
+        v = [v];
+    }
+    let g = v;
+    for i in 0..40 {
+        g = g[0];
+    }
+    print(g);
+}

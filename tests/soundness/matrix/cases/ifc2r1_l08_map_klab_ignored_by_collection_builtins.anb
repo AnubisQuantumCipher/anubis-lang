@@ -1,0 +1,5 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let m = {k: 1, "42": 2};
+    print(len(map(m, |x| 0)));
+}

@@ -559,6 +559,14 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Developer measurement: IFC v2's information-flow findings alone (not a check; `check` runs
+    /// every lane). Exit 1 when it finds a flow.
+    #[command(hide = true)]
+    Ifc2Report {
+        /// Input .anb file
+        input: PathBuf,
+    },
+
     /// Internal child process for risky local RISC0 proving.
     #[command(hide = true)]
     Risc0ProveChild {
@@ -1460,6 +1468,7 @@ define_command_vz_policy! {
             Commands::Fmt { .. } => None,
             Commands::Build { .. } => None,
             Commands::Check { .. } => None,
+            Commands::Ifc2Report { .. } => None,
             Commands::Fuzz { .. } => None,
             Commands::BountyReport { .. } => None,
             Commands::EngageInit { .. } => None,
@@ -2702,6 +2711,30 @@ fn cli_main() -> Result<()> {
                 println!("build complete");
             }
             Ok(())
+        }
+        Commands::Ifc2Report { input } => {
+            let source = std::fs::read_to_string(&input)
+                .map_err(|e| anyhow!("reading {}: {e}", input.display()))?;
+            let (ast, _ws) = load_program_items(&input, &source)?;
+            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+            println!(
+                "anubis ifc2-report {} (IFC v2 alone; not a check)",
+                input.display()
+            );
+            if mode != Mode::Safe {
+                println!("not a Safe-mode program: IFC v2 does not run");
+                return Ok(());
+            }
+            let found = anubis_compiler::ifc2_findings(&ast, mode);
+            for (code, message) in &found {
+                println!("{code}: [ifc2] {message}");
+            }
+            if found.is_empty() {
+                println!("no information flow found");
+                Ok(())
+            } else {
+                Err(anyhow!("{} information-flow finding(s)", found.len()))
+            }
         }
         Commands::Check {
             input,

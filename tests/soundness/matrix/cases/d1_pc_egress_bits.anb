@@ -1,0 +1,10 @@
+fn main() {
+    let k: secret<i64> = 42
+    for j in 0..8 {
+        if (k >> j) & 1 == 1 {
+            print("1")
+        } else {
+            print("0")
+        }
+    }
+}

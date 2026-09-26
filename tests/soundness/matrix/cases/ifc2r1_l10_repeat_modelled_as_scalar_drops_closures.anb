@@ -1,0 +1,6 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let f = |x| print(x);
+    let fs = repeat([f], 1);
+    fs[0](s);
+}

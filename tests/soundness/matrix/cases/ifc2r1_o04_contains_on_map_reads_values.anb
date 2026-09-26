@@ -1,0 +1,7 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let m = {"a": k};
+    if contains(m, "a") {
+        print("has a");
+    }
+}

@@ -1,0 +1,42 @@
+// A binary search tree of accounts: public ids as keys, secret balances as values.
+// Built in a loop; the report walks the tree and prints only the ids and a count.
+enum Tree {
+    Leaf,
+    Node(i64, secret<i64>, Tree, Tree),
+}
+
+fn insert(t, k, v) {
+    return match t {
+        Tree::Leaf => Tree::Node(k, v, Tree::Leaf, Tree::Leaf),
+        Tree::Node(k2, v2, l, r) => if k < k2 {
+            Tree::Node(k2, v2, insert(l, k, v), r)
+        } else {
+            Tree::Node(k2, v2, l, insert(r, k, v))
+        },
+    };
+}
+
+fn keys(t) {
+    return match t {
+        Tree::Leaf => [],
+        Tree::Node(k, v, l, r) => keys(l) + [k] + keys(r),
+    };
+}
+
+fn size(t) {
+    return match t {
+        Tree::Leaf => 0,
+        Tree::Node(k, v, l, r) => size(l) + 1 + size(r),
+    };
+}
+
+fn main() {
+    let base: secret<i64> = 42;
+    let ids = [50, 20, 80, 10, 30, 70, 90, 60, 40, 15];
+    let mut t = Tree::Leaf;
+    for id in ids {
+        t = insert(t, id, base + id);
+    }
+    print("accounts: " + str(declassify(size(t), "count", "the number of accounts is public")));
+    print(declassify(keys(t), "ids", "account ids are public"));
+}

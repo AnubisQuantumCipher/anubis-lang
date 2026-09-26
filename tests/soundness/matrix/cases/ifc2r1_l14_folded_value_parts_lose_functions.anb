@@ -1,0 +1,23 @@
+fn call_deep(x, v) {
+    let g = x[0][0][0][0][0];
+    g(v)
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let noop = |y| 0;
+    let n = [[[[[noop]]]]];
+    call_deep(n, []);
+    call_deep(n, [1]);
+    call_deep(n, [1, 1]);
+    call_deep(n, [1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1, 1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1, 1, 1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    call_deep(n, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    let p = [[[[[|y| print(y)]]]]];
+    call_deep(p, s);
+}

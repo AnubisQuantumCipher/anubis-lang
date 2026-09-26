@@ -1,0 +1,11 @@
+fn tick(i: i64) -> i64 {
+    println("tick");
+    i
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let mut xs = [];
+    while tick(len(push(xs, 0))) < s {
+    }
+    println("done");
+}
