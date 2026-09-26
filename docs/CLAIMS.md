@@ -101,6 +101,16 @@ comparison passed, but the production checker does not call the adapter.
 Verified transitive package admission and source-closure evidence remain
 open; this is no release or platform witness.
 
+**UPDATE 2026-09-26 — captured Safe compilation comparison staged.**
+Local code commit `339a960a` has a
+[source-bound local receipt](evidence/CAPTURED_SAFE_COMPILATION_BRIDGE_2026-09-26/README.md).
+The private API derives a combined AST and compilation-only graph from one
+captured byte set; a changed-on-disk import body does not alter the Rust source
+lowered from that capture. Focused resolver tests, compiler-library Clippy and
+format checks pass on the identified code commit. The production CLI does not
+call this API, and neither package admission nor source-closure evidence is
+established by it. The existing valid transitive-package refusal remains open.
+
 **UPDATE 2026-09-26 — request-local solver symbols, selected verdicts stable.**
 Local code commit `e7187a31` has a
 [source-bound local receipt](evidence/REQUEST_LOCAL_SOLVER_SYMBOLS_2026-09-26.md).

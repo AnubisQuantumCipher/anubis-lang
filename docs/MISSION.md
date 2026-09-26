@@ -74,7 +74,7 @@ records dependency-correct review refs without rewriting published history.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The isolated local integration branch `codex/register-round2-20260926` has
-reviewed code through `5e3f76dfb7ef92faf0bb99c7a42e341a29f5df4b` and
+reviewed code through `339a960a1da0acd7aa65e23f7469a4ae77f77007` and
 fixture registrations through `15bb53a55ce369128853f5012b38b6c210f0ff14`.
 The [guard-transfer receipt](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md)
 binds the preceding `88a2903c` code, selected Safe checks, a clean-head
@@ -119,14 +119,22 @@ binds `5e3f76df`: both named Clippy configurations now pass, a Safe
 `run --input-json` twin works, and unsupported proof commands return explicit
 errors. This does not change the evidence claim scope or supply a proof run.
 
+The [captured Safe compilation comparison](evidence/CAPTURED_SAFE_COMPILATION_BRIDGE_2026-09-26/README.md)
+now pairs its combined AST with a compilation-only source graph from one
+captured input. Source-bound focused resolver tests, compiler-library Clippy,
+and workspace format check pass on `339a960a`; a same-named changed-body
+control confirms that lowering uses the saved import. This private API is not
+used by the CLI and grants no package or evidence admission. Its next
+dependency is a reviewed CLI consumer with a versioned checker-input boundary;
+the valid transitive package still fails at `ANUBIS_DEP_PROOF_UNVERIFIED`.
+
 The next soundness implementation dependency is a typed distinction between protected
 struct fields and whole-value secrecy, carried through direct reads, calls,
 aliases, returns, joins and writes. Preserve the negative controls and compare
 all frozen forms on the same source-bound pins before claiming restored
 precision. In parallel, connect the
 [captured source graph](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md)
-to checker/lowering and package admission; the valid transitive package still
-fails at `ANUBIS_DEP_PROOF_UNVERIFIED`. The D9 scratch v2 patch remains
+to the production CLI without extending package admission prematurely. The D9 scratch v2 patch remains
 withheld after independent review found possible label laundering through
 uncertified call-returned structs and stale field shapes after nested writes.
 Four matched [factory and nested-write witnesses](evidence/D9_QUALIFIER_V3_REGISTRATION_2026-09-26/README.md)
@@ -138,16 +146,14 @@ is also frozen in fixture-only commit `66af6419`: the valid public write/read
 passes at the SHA-identified baseline, and the invalid post-release write to
 declared secret `k` gets both direct and IFC2 typed refusals. Independent
 review held the D9 scratch v3 patch before application because its direct
-producer could lose that newly created obligation. The next executable step
-is to obtain and independently review a v4 scratch patch, then lead-test it
-against the frozen D9 pairs on a source-bound build before any code commit.
+producer could lose that newly created obligation.
 The further [secret-PC/public-field pair](evidence/D9_PC_PUBLIC_FIELD_REGISTRATION_2026-09-26/README.md)
 is registered in fixture-only commit `15bb53a5`. The pinned baseline
 over-refuses its public-guard twin and refuses the secret-guard source through
 a generic direct root finding plus IFC2. Independent static review held v4
 because the new field-shape shortcut could lose that direct finding without
-creating a true implicit-flow obligation. A v5 scratch transfer is now the
-next D9 implementation dependency; review it before lead-only build and
+creating a true implicit-flow obligation. A v5 scratch transfer is frozen for
+independent review; review it before lead-only build and
 same-source selected checks. The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
 the new fixed-path loader: production diagnostics still lack complete stable
@@ -156,7 +162,9 @@ only after that gate is reviewed. `docs/CLAIMS.md` is the defect authority.
 
 No current full workspace, hosted, disposable-guest, independent clean-room,
 protected-branch, product-release, or full trust-chain result is claimed.
-The separate main-based front-page correction and the
+The separate main-based front-page correction is a reviewed, gated local
+docs-only stack through `90ebeaa34a38bf6286298700a71fafec76038864`;
+it has not been pushed or opened as a PR. It and the
 [PR #44 review stack](mission/PR44_LOCAL_SPLIT_2026-09-26.md) remain local;
 protected integration needs human review
 and its applicable authorization.
