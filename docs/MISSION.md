@@ -67,14 +67,16 @@ matrix is the reference for open defects.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The latest reviewed code commit on the isolated local integration branch is
-`1280e21edfb5f89d68d3f088020083bffff4d086`; this docs-only checkpoint follows it.
+`03212a4c71037caa3645d8148d5c0fba46445c99`; this docs-only checkpoint follows it.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
 caller-supplied [source-graph identity primitive](mission/VERIFIED_SOURCE_GRAPH_DESIGN_2026-09-26.md).
 The new [bounded byte reader](evidence/SOURCE_GRAPH_READER_2026-09-26.md)
-captures a private tree on Linux under an explicit trusted-procfs assumption,
-but the resolver, checker, lowering and verifier are not yet bound to that
+captures a private tree on Linux under an explicit trusted-procfs assumption.
+The [private captured-project resolver](evidence/CAPTURED_PROJECT_RESOLVER_2026-09-26.md)
+parses those bytes and refuses nested imports explicitly, but the public
+checker, lowering, package admission and verifier are not yet bound to that
 captured graph. The valid transitive package fixture therefore still fails at
 `ANUBIS_DEP_PROOF_UNVERIFIED`; this is an open precision/product gate.
 
@@ -96,9 +98,9 @@ required suite witness. No disposable Tart, hosted, full workspace,
 independent rebuild or release gate is claimed for this head.
 
 Next, restore the required valid guard-write fallthrough while retaining the
-invalid control and correct pre/post-write facts. Independently validate the
-reviewed private captured-project resolver, then connect captured bytes to
-checker/lowering input with one immutable program input, and only then to versioned package
+invalid control and correct pre/post-write facts. Independently connect
+captured bytes to checker/lowering input with one immutable program input,
+and only then to versioned package
 and evidence closure claims before restoring transitive verified admission.
 The honest FAIL-bundle verifier also needs source-derived sidecar and security
 context checks while preserving historical PCA verification; revised draft

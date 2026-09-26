@@ -27,6 +27,16 @@ also UNDECIDED while its direct twin is DISPROVED. No silent accept was
 reproduced for that guard-write shape. The full matrix runner remains
 `INCOMPLETE`, and no hosted or release result belongs to this local head.
 
+**UPDATE 2026-09-26 — private captured-project resolver staged.**
+Local commit `03212a4c` has a
+[scoped resolver receipt](evidence/CAPTURED_PROJECT_RESOLVER_2026-09-26.md).
+The final private parser consumes captured project bytes, preserves import
+locations, and refuses nested imports explicitly after review found the
+top-level-only collector would omit them. It has no production caller or
+package/evidence admission authority. Checker, lowering and versioned
+source-closure binding are still required before a verified transitive
+package can be accepted.
+
 **Earlier update 2026-09-26 — private captured-byte reader, no admission claim.**
 Local code commit `4ba7455f1fbb2f696685a0ad202c43ebf51e04dc`
 has a [scoped reader receipt](evidence/SOURCE_GRAPH_READER_2026-09-26.md).
