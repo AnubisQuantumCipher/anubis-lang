@@ -1,0 +1,15 @@
+struct T { n: i64 }
+fn add(xs, u) { push(xs, u); return 0; }
+fn grow(xs) { add(xs, T { n: 9 }); return xs; }
+fn setf(w) { w.n = 5; return 0; }
+fn setw(w) { setf(w); return w; }
+fn main() {
+    let ys = [T { n: 1 }];
+    let zs = grow(ys);
+    println(len(zs));
+    println(len(ys));
+    let w = T { n: 1 };
+    let v = setw(w);
+    println(v.n);
+    println(w.n);
+}

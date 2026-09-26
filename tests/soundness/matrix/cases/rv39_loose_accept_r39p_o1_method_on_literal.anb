@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Point { x: i64, y: i64 }
+impl Point { fn show(self) -> string { return "${self}"; } }
+struct Team { lead: S, size: i64 }
+impl Team {
+    fn same(self) -> Team { return self; }
+    fn next(self) -> Team { return Team { lead: self.lead, size: self.size + 1 }; }
+    fn show(self) -> string { return "team of ${self.size}"; }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let t = Team { lead: p, size: 1 }.next();
+    println(t.show());
+}

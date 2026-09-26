@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+struct T { n: i64 }
+struct U { n: i64 }
+impl T { fn pick(self) { return other; } fn run(self, s) { return 0; } }
+impl U { fn pick(self) { return show; } fn run(self, s) { println(s); return 0; } }
+fn mku() -> T { return U { n: 1 }; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    mku().run(p);
+}

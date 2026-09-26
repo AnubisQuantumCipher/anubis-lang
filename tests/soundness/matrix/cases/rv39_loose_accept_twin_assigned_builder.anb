@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Label { text: string }
+impl Label { fn describe(self) -> string { return "${self}"; } }
+struct Session { user: S, retries: i64, verbose: bool }
+impl Session {
+    fn with_retries(self, n: i64) -> Session { self.retries = n; return self; }
+    fn with_verbose(self, v: bool) -> Session { self.verbose = v; return self; }
+    fn describe(self) -> string { return "retries=${self.retries} verbose=${self.verbose}"; }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut s = Session { user: p, retries: 0, verbose: false };
+    s = s.with_retries(3);
+    s = s.with_verbose(true);
+    println(s.describe());
+}

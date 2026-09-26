@@ -1905,6 +1905,10 @@ pub(super) struct Retype {
     /// it surely holds as a part (`literal_bound`): asked again at every receiver.
     joined: RefCell<BTreeMap<String, bool>>,
     literal: RefCell<BTreeMap<String, Option<String>>>,
+    /// The names a `let` binds under a declared type (`let x: T = ..`): the checker types such a
+    /// binding by its annotation, which nothing checks (TY-UNENFORCED), where it would type the
+    /// value itself by what it is built from (`init_retypes`).
+    declared: BTreeSet<String>,
     /// Which functions and methods return their own type (asked again at every read of a name
     /// assigned by one): per function and type, the formals whose arguments must keep it (`None`:
     /// it does not return one); per method and type, whether it does.
@@ -1935,8 +1939,12 @@ type OwnFormals = Option<Vec<(usize, bool)>>;
 pub(super) enum Via {
     /// It is that name's value (`let y = x`, a branch of one).
     Whole,
-    /// It is a part of that name's value (`x.f`, `x[i]`, a method's or a builtin's result on it, a
-    /// pattern binder or loop variable over it).
+    /// It is the receiver of a method whose result it is (`x.step()`, `x.a().b()`): its own type is
+    /// the method's result for that name's own type (`init_retypes` judges the method, the edge
+    /// that name's own type), and its parts may be that name's parts.
+    Recv,
+    /// It is a part of that name's value (`x.f`, `x[i]`, a builtin's result on it, a method's
+    /// result read as a part, a pattern binder or loop variable over it).
     Part,
     /// Its parts are built from that name's value (`[x]`, `W { f: x }`); its own type is not.
     Element,
@@ -2047,9 +2055,13 @@ fn scope_type(n: &str, env: &Env) -> Option<String> {
 
 /// Whether the parts of `root` may not be what their declared types say: it is written into, or its
 /// own type may be stale (when it has none known, whether its parts may be of other types:
-/// `container_parts_stale`).
+/// `container_parts_stale`). A name that never holds a struct, nor anything that may hold one
+/// (`Retype::scalars`), has no parts.
 fn parts_stale(root: &str, env: &Env, depth: usize, seen: &mut Seen) -> bool {
     let r = &env.ctx.whole_retype;
+    if r.scalars.contains(root) {
+        return false;
+    }
     r.written.contains_key(root)
         || match scope_type(root, env) {
             Some(t) => stale_type_in(root, &t, env, depth, seen, false),
@@ -2288,10 +2300,15 @@ fn stale_type_in(n: &str, ty: &str, env: &Env, depth: usize, seen: &mut Seen, lo
     let r = &ctx.whole_retype;
     let lets: &[Expr] = r.inits.get(n).map(Vec::as_slice).unwrap_or_default();
     let twice = lets.len() + usize::from(r.binders.contains(n)) > 1;
+    let declared = r.declared.contains(n);
     let inits = if depth > 0 && twice {
-        r.binders_read.contains(n) || lets.iter().any(|i| init_retypes(i, ty, true, env, loose))
+        r.binders_read.contains(n)
+            || lets
+                .iter()
+                .any(|i| init_retypes(i, ty, true, declared, env, loose))
     } else {
-        lets.iter().any(|i| init_retypes(i, ty, false, env, loose))
+        lets.iter()
+            .any(|i| init_retypes(i, ty, false, declared, env, loose))
     };
     inits
         || (r.self_parts.contains(n) && container_parts_stale(n, env, depth + 1, seen))
@@ -2301,6 +2318,13 @@ fn stale_type_in(n: &str, ty: &str, env: &Env, depth: usize, seen: &mut Seen, lo
         || r.bound.get(n).is_some_and(|roots| {
             roots.iter().any(|(root, via)| match via {
                 Via::Whole => stale_type_in(root, ty, env, depth + 1, seen, loose),
+                // A method's receiver: for the value's own type, the receiver's own type (what
+                // the method returns for it is `init_retypes`' question); for its parts, the
+                // receiver's.
+                Via::Recv => match scope_type(root, env).filter(|_| loose) {
+                    Some(t) => stale_type_in(root, &t, env, depth + 1, seen, true),
+                    None => parts_stale(root, env, depth + 1, seen),
+                },
                 Via::Part => parts_stale(root, env, depth + 1, seen),
                 Via::Element => !loose && parts_stale(root, env, depth + 1, seen),
             })
@@ -2326,7 +2350,14 @@ const NO_NAME: &str = "\u{1}none";
 /// (`name_keeps`), and a `V(x) => x` arm whose scrutinee's every `V` payload is one
 /// (`payload_keeps`). `as_join`: the only value too (the `let` is one of several bindings of its
 /// name, and the type asked about may be another's: `stale_type_in`).
-fn init_retypes(init: &Expr, ty: &str, as_join: bool, env: &Env, loose: bool) -> bool {
+fn init_retypes(
+    init: &Expr,
+    ty: &str,
+    as_join: bool,
+    declared: bool,
+    env: &Env,
+    loose: bool,
+) -> bool {
     let mut count = 0usize;
     each_leaf(init, &mut |_| count += 1);
     let join = as_join || count != 1;
@@ -2334,8 +2365,15 @@ fn init_retypes(init: &Expr, ty: &str, as_join: bool, env: &Env, loose: bool) ->
     each_leaf(init, &mut |leaf| {
         // A call's value is typed from the callee's declared result, or from the `let`'s own
         // declared type, and the runtime checks neither for a struct (TY-UNENFORCED): as the only
-        // value too, it must be known to be a `ty`, as a join's value must.
-        let join = join || matches!(leaf, Leaf::Value(v) if typed_call(v, env.ctx));
+        // value too, it must be known to be a `ty`, as a join's value must. So is a name, a
+        // builtin's result, a variant, a map or list literal or a closure under a `let`'s declared
+        // type (`declared`: `let x: T = identity(u)`, `let x: T = E::A(1)`), which the checker
+        // takes for the value's.
+        let join = join
+            || matches!(leaf, Leaf::Value(v) if typed_call(v, env.ctx)
+                || (declared && matches!(v, Expr::Var(_) | Expr::Call { .. }
+                    | Expr::EnumConstruct { .. } | Expr::MapLiteral { .. }
+                    | Expr::ArrayLiteral { .. } | Expr::Lambda { .. })));
         retyped |= match leaf {
             Leaf::Unseen => join,
             Leaf::Payload(scrutinee, variant) if loose => {
@@ -2359,22 +2397,28 @@ fn init_retypes(init: &Expr, ty: &str, as_join: bool, env: &Env, loose: bool) ->
                 None => !lets_keep(x, ty, env.ctx, loose),
             },
             Leaf::Value(Expr::Var(x)) => scope_type(x, env).is_some_and(|t| t != ty),
-            // A join's method call on a name the scope gives `ty`, of a method of `ty` returning
-            // its own type (whether the receiver may be stale is asked through its `Via::Part` edge,
-            // in the same walk).
-            Leaf::Value(v @ Expr::CallExpr { callee: method, .. })
-                if join
-                    && matches!(method.as_ref(), Expr::FieldAccess { base, .. }
-                    if matches!(base.as_ref(), Expr::Var(x)
-                        if !binds_in(init, x) && scope_type(x, env).as_deref() == Some(ty))) =>
+            // A place under a `let`'s declared type: one whose own declared type is another struct
+            // type (whether that one may be stale is asked through the edge to its root). One of
+            // no known type stays taken as given (TY-UNENFORCED).
+            Leaf::Value(v @ (Expr::FieldAccess { .. } | Expr::Index { .. }))
+                if declared && !join =>
             {
-                let Expr::FieldAccess { base, .. } = method.as_ref() else {
-                    return;
-                };
-                let Expr::Var(x) = base.as_ref() else {
-                    return;
-                };
-                !keeps_type(v, x, ty, env.ctx, 0, loose)
+                place_struct_type(v, env.scope, &env.ctx.place_types())
+                    .is_some_and(|t| t.split('<').next().unwrap_or("").trim() != ty)
+            }
+            // A join's method call on a receiver known to be an `R` (`recv_type`: whether it may be
+            // stale is asked through the edge the binding has to it, `Via::Recv` or a place root's
+            // `Via::Part`, in the same walk), every impl of which for `R` returns a `ty`
+            // (`method_returns`: the runtime dispatches on the receiver's type). What the result's
+            // parts may be is asked through the edges to the receiver and the arguments, and
+            // `WROTE`.
+            Leaf::Value(Expr::CallExpr { callee, .. })
+                if join
+                    && matches!(callee.as_ref(), Expr::FieldAccess { base, field, .. }
+                    if recv_type(base, init, env, loose, 0)
+                        .is_some_and(|r| method_returns(&r, field, ty, env.ctx, loose))) =>
+            {
+                false
             }
             Leaf::Value(v) if loose => join && !sure_value(v, ty, env.ctx),
             Leaf::Value(v) => join && !keeps_type(v, NO_NAME, ty, env.ctx, 0, false),
@@ -2399,6 +2443,40 @@ fn typed_call(v: &Expr, ctx: &SemanticContext) -> bool {
         Expr::CallExpr { .. } => true,
         _ => false,
     }
+}
+
+/// The struct type a method's receiver in `init` is known to be, where what the binding is bound
+/// from asks whether that may be stale (`type_roots`): a name the scope gives one, not bound again
+/// in `init` (`Via::Recv`); a struct literal; or a method call on such a receiver, every impl of
+/// which for its type returns the method's declared result (`method_returns`; `Via::Recv` again).
+/// A place's declared type is not used (round 39 cross-check, unsound refinement U2).
+fn recv_type(base: &Expr, init: &Expr, env: &Env, loose: bool, depth: u32) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    let bare = |t: &str| t.split('<').next().unwrap_or("").trim().to_string();
+    let t = match base {
+        Expr::Var(x) if !binds_in(init, x) => scope_type(x, env)?,
+        Expr::StructLiteral { name, .. } => bare(name),
+        // (No place: a field's or position's declared type is not checked by the runtime, and the
+        // root's `Via::Part` edge asks only whether the root is written or retyped — not whether
+        // a literal put another type there: TY-UNENFORCED.)
+        Expr::CallExpr { callee, .. } => {
+            let Expr::FieldAccess { base, field, .. } = callee.as_ref() else {
+                return None;
+            };
+            let r = recv_type(base, init, env, loose, depth + 1)?;
+            let t = bare(env.ctx.method_ret_types.get(field)?);
+            if !env.ctx.struct_fields.contains_key(&t)
+                || !method_returns(&r, field, &t, env.ctx, loose)
+            {
+                return None;
+            }
+            t
+        }
+        _ => return None,
+    };
+    env.ctx.struct_fields.contains_key(&t).then_some(t)
 }
 
 /// A value `each_leaf` reaches.
@@ -2481,6 +2559,14 @@ fn sure_value(e: &Expr, ty: &str, ctx: &SemanticContext) -> bool {
         Expr::Index { base, .. } => {
             matches!(base.as_ref(), Expr::Var(r) if list_keeps(r, ty, ctx))
         }
+        // The builtin (no user function or local of its name: `typed_call`) `first` / `last` of
+        // a list every element of which is one (an empty list stops the program), and what
+        // `identity` is given.
+        Expr::Call { callee, args } if !typed_call(e, ctx) => match callee.as_str() {
+            "first" | "last" => args.first().is_some_and(|a| elems_keep(a, ty, ctx)),
+            "identity" => args.first().is_some_and(|a| sure_value(a, ty, ctx)),
+            _ => false,
+        },
         _ => keeps_type(e, NO_NAME, ty, ctx, 0, true),
     }
 }
@@ -2765,17 +2851,21 @@ fn first_segment(place: &Expr) -> Option<String> {
 fn type_roots(v: &Expr, ctx: &SemanticContext, via: Via, out: &mut Vec<(String, Via)>) {
     let part = via.max(Via::Part);
     // A call's result as a value: its own type is the callee's result, its parts may be what the
-    // callee writes into a part of.
-    let parts = if via == Via::Whole { Via::Element } else { via };
+    // callee writes into a part of, or what it is given (it may return that, or build its result
+    // from it).
+    let parts = if via <= Via::Recv { Via::Element } else { via };
     match v {
         Expr::Var(x) => out.push((x.clone(), via)),
         Expr::FieldAccess { base, .. } | Expr::Index { base, .. } => {
             type_roots(base, ctx, part, out)
         }
-        Expr::CallExpr { callee, .. } => {
+        Expr::CallExpr { callee, args } => {
             match callee.as_ref() {
                 Expr::FieldAccess { base, field, .. } => {
-                    type_roots(base, ctx, part, out);
+                    // The receiver (`init_retypes` judges the method for its type); read as a part,
+                    // a part of it.
+                    let recv = if via <= Via::Recv { Via::Recv } else { part };
+                    type_roots(base, ctx, recv, out);
                     // A method that writes into a part, or a function a field holds (no impl
                     // declares the name).
                     if !ctx.whole_methods.contains_key(field)
@@ -2787,22 +2877,36 @@ fn type_roots(v: &Expr, ctx: &SemanticContext, via: Via, out: &mut Vec<(String, 
                 // A function value called (`f(x)(y)`) may be any function.
                 _ => out.push((WROTE.to_string(), parts)),
             }
+            for a in args {
+                type_roots(a, ctx, parts, out);
+            }
         }
         // A builtin may return an element; a user function without a declared result may return
-        // what it is given.
+        // what it is given. One with a declared result has that type, but its parts may be what it
+        // is given.
         Expr::Call { callee, args } => {
             let user = ctx.whole_fns.contains_key(callee);
-            if !user || !ctx.fn_ret_types.contains_key(callee) {
-                for a in args {
-                    type_roots(a, ctx, part, out);
-                }
+            let given = if !user || !ctx.fn_ret_types.contains_key(callee) {
+                part
+            } else {
+                parts
+            };
+            for a in args {
+                type_roots(a, ctx, given, out);
             }
             // A user function that writes into a part, or a function value (`let g = setf;
-            // g(w, x)`, a closure): any function but a builtin.
+            // g(w, x)`, a closure): any function but a builtin — or a builtin handing back what a
+            // function it is given returns (`call`, `apply`, `map`, `reduce`), given one that may
+            // write into a part (`callback_writes`).
             let value = !user
                 && !crate::backends::run::is_builtin_name(callee)
                 && crate::frontend::builtin_variant_enum(callee).is_none();
-            if value || (user && ctx.whole_part_writers.contains(callee)) {
+            let hof = !user
+                && !value
+                && callback_args(callee, args)
+                    .iter()
+                    .any(|a| callback_writes(a, ctx));
+            if value || hof || (user && ctx.whole_part_writers.contains(callee)) {
                 out.push((WROTE.to_string(), parts));
             }
         }
@@ -2902,7 +3006,9 @@ fn keeps_type(v: &Expr, n: &str, ty: &str, ctx: &SemanticContext, depth: u32, lo
         },
         // `state = step(state)`: a function every return of which is a `ty` (a literal, or a
         // formal, never bound again in its body, given one — or an element of a formal given a list
-        // of them).
+        // of them). A name every binding of which is one (`name_keeps`) is one: what its parts
+        // may be is asked through the edge the binding has to what the call is given
+        // (`type_roots`).
         Expr::Call { callee, args } => match fn_returns_own(callee, ty, ctx, loose) {
             Some(formals) => formals.iter().all(|&(i, elems)| {
                 args.get(i).is_some_and(|a| {
@@ -2910,6 +3016,7 @@ fn keeps_type(v: &Expr, n: &str, ty: &str, ctx: &SemanticContext, depth: u32, lo
                         elems_keep(a, ty, ctx)
                     } else {
                         keeps_type(a, n, ty, ctx, depth + 1, loose)
+                            || matches!(a, Expr::Var(x) if name_keeps(x, ty, ctx))
                     }
                 })
             }),
@@ -3052,12 +3159,17 @@ fn own_value(
                 None if !loose || params.contains(x) || ctx.whole_fns.contains_key(x) => {
                     return None
                 }
-                // A local always holding a `ty` built here (`let mut v = T { .. }; v.f = x; v`).
+                // A local always holding a `ty` built here (`let mut v = T { .. }; v.f = x; v`), or
+                // stepped by a method of `ty` returning one (`acc = acc.add(n)`).
                 None if own_locals(params, body, ctx, |v, set| match v {
                     Expr::StructLiteral { name, .. } => {
                         name.split('<').next().unwrap_or("").trim() == ty
                     }
                     Expr::Var(y) => set.contains(y),
+                    Expr::CallExpr { callee, .. } => matches!(callee.as_ref(),
+                        Expr::FieldAccess { base, field, .. }
+                            if matches!(base.as_ref(), Expr::Var(y) if set.contains(y))
+                                && method_returns_own(ty, field, ctx, loose)),
                     _ => false,
                 })
                 .contains(x) =>
@@ -3111,6 +3223,20 @@ fn own_value(
             own_value(then, (params, body), ty, ctx, need, depth + 1, loose)?;
             own_value(else_, (params, body), ty, ctx, need, depth + 1, loose)
         }
+        // A method call on such a value (`t.next()`, `T { .. }.next()`), every impl of which for
+        // `ty` returns one — or on a literal of another type, every impl of which for that type
+        // returns a `ty` (`method_returns`): the runtime dispatches on the receiver's type.
+        Expr::CallExpr { callee, .. } => {
+            let Expr::FieldAccess { base, field, .. } = callee.as_ref() else {
+                return None;
+            };
+            if let Expr::StructLiteral { name, .. } = base.as_ref() {
+                let r = name.split('<').next().unwrap_or("").trim();
+                return method_returns(r, field, ty, ctx, loose).then_some(());
+            }
+            own_value(base, (params, body), ty, ctx, need, depth + 1, loose)?;
+            method_returns_own(ty, field, ctx, loose).then_some(())
+        }
         // A call of such a function: each formal it needs is given a literal of `ty` or a formal
         // of this one (one whose elements it needs, a formal whose elements this one returns).
         Expr::Call { callee, args } => {
@@ -3137,9 +3263,20 @@ fn own_value(
 /// the body, a local always holding one given `self` (`own_locals`), or another such method of
 /// either). Memoized.
 fn method_returns_own(ty: &str, m: &str, ctx: &SemanticContext, loose: bool) -> bool {
+    method_returns(ty, m, ty, ctx, loose)
+}
+
+/// Whether every value the method `m` of `recv_ty` returns is a `ty`: `method_returns_own` when
+/// they are one type, and otherwise what it returns other than its receiver (a literal of `ty`,
+/// a local always holding one, a free function returning one given literals). Memoized.
+fn method_returns(recv_ty: &str, m: &str, ty: &str, ctx: &SemanticContext, loose: bool) -> bool {
     let key = (
         m.to_string(),
-        format!("{}{}", ty, if loose { "|loose" } else { "" }),
+        if recv_ty == ty {
+            format!("{}{}", ty, if loose { "|loose" } else { "" })
+        } else {
+            format!("{}>{}{}", recv_ty, ty, if loose { "|loose" } else { "" })
+        },
     );
     if let Some(v) = ctx.whole_retype.method_own.borrow().get(&key) {
         return *v;
@@ -3151,7 +3288,7 @@ fn method_returns_own(ty: &str, m: &str, ctx: &SemanticContext, loose: bool) -> 
     let result = ctx.whole_methods.get(m).is_some_and(|impls| {
         let bodies: Vec<(&Vec<String>, &Vec<Stmt>)> = impls
             .iter()
-            .filter(|(t, _)| t == ty)
+            .filter(|(t, _)| t == recv_ty)
             .map(|(_, (params, body))| (params, body))
             .collect();
         !bodies.is_empty()
@@ -3159,18 +3296,20 @@ fn method_returns_own(ty: &str, m: &str, ctx: &SemanticContext, loose: bool) -> 
                 let out = body_returns(body);
                 // The receiver: the first formal, recognized only as `self` (the runtime binds the
                 // receiver there, as `callee_at` does; a formal named `self` in another position is
-                // an argument), while the body never binds it again.
+                // an argument), while the body never binds it again — a `ty` only when the method
+                // is one of `ty`'s.
                 let recv = params
                     .first()
                     .map(String::as_str)
-                    .filter(|r| *r == "self" && !rebinds(body, r));
-                let locals = if loose {
-                    own_locals(params, body, ctx, |v, set| {
-                        own_method_value(v, ty, recv, set, ctx, 0, true)
-                    })
-                } else {
-                    BTreeSet::new()
-                };
+                    .filter(|r| recv_ty == ty && *r == "self" && !rebinds(body, r));
+                // The locals always holding a `ty`; for a method's parts (not `loose`), only
+                // copies of the receiver stepped by such methods (`let mut c = self; c.n = 1; c`:
+                // its parts are the receiver's, and what the method writes, `WROTE`), never a
+                // literal's.
+                let locals = own_locals(params, body, ctx, |v, set| {
+                    (loose || matches!(v, Expr::Var(_) | Expr::CallExpr { .. }))
+                        && own_method_value(v, ty, recv, set, ctx, 0, loose)
+                });
                 !out.is_empty()
                     && out.iter().all(|r| {
                         r.as_ref()
@@ -3794,6 +3933,15 @@ pub(super) fn assigned_shapes(
     for (n, init) in let_inits {
         retype.inits.entry(n).or_default().push(init.clone());
     }
+    // The names a `let` binds under a declared type (`Retype::declared`).
+    visit::each_stmt(body, &mut |s, _| {
+        if let Stmt::Let {
+            name, ty: Some(_), ..
+        } = s
+        {
+            retype.declared.insert(name.clone());
+        }
+    });
     // The names bound other than by a `let`.
     fn other_binders(stmts: &[Stmt], out: &mut BTreeSet<String>) {
         for s in stmts {
@@ -3928,8 +4076,11 @@ pub(super) fn assigned_shapes(
         // branch (`let x = if c { T { .. } } else { x }`, `… else { x.step() }`): those edges stay
         // (`stale_type_in`) — unless the value binds the name again itself (`match o { Some(x) =>
         // x, .. }`), where it reads that binder. The only value computed from it
-        // (`let x = x.step()`) was typed from that binding. An assignment reading itself
-        // (`x = x.step(y)`) is judged by `keeps_type`.
+        // (`let x = x.step()`) was typed from that binding — as the method's result for that
+        // binding's type, which the edge to the receiver (`Via::Recv`) asks of every binding of the
+        // name (the method judged for the type in scope may not be the one the receiver runs:
+        // `for x in ls { let x = x.step(); .. }`). An assignment reading itself (`x = x.step(y)`)
+        // is judged by `keeps_type`.
         let joined = *by_let && {
             let mut count = 0usize;
             each_leaf(value, &mut |_| count += 1);
@@ -3937,7 +4088,7 @@ pub(super) fn assigned_shapes(
         };
         for n in names {
             let keep = |r: &String, v: &Via| {
-                r != n || (*by_let && (*v == Via::Whole || joined) && !binds_in(value, n.as_str()))
+                r != n || (*by_let && (*v <= Via::Recv || joined) && !binds_in(value, n.as_str()))
             };
             let rs: Vec<(String, Via)> =
                 roots.iter().filter(|(r, v)| keep(r, v)).cloned().collect();
@@ -3985,24 +4136,6 @@ pub(super) fn assigned_shapes(
             break;
         }
     }
-    // Whose parts may change: written, assigned, or bound from one of these.
-    retype.changes = retype
-        .written
-        .keys()
-        .chain(retype.assigned.keys())
-        .cloned()
-        .collect();
-    loop {
-        let before = retype.changes.len();
-        for (n, roots) in &retype.bound {
-            if roots.iter().any(|(r, _)| retype.changes.contains(r)) {
-                retype.changes.insert(n.clone());
-            }
-        }
-        if retype.changes.len() == before {
-            break;
-        }
-    }
     // The names that hold no struct by their values (`Retype::scalars`): the formals the runtime
     // checks for a number on entry (`numeric_formals`), and `let`s of such values.
     let formals: Vec<String> = params.iter().map(|(p, _)| p.clone()).collect();
@@ -4016,6 +4149,28 @@ pub(super) fn assigned_shapes(
         .map(|(p, _)| p.clone())
         .collect();
     retype.scalars = body_names(&formals, &num, body, ctx).scalars;
+    // Whose parts may change: written, assigned, or bound from one of these (a name that never
+    // holds a struct has no parts: a changing counter given to a call changes nothing it returns).
+    retype.changes = retype
+        .written
+        .keys()
+        .chain(retype.assigned.keys())
+        .cloned()
+        .collect();
+    loop {
+        let before = retype.changes.len();
+        for (n, roots) in &retype.bound {
+            if roots
+                .iter()
+                .any(|(r, _)| retype.changes.contains(r) && !retype.scalars.contains(r))
+            {
+                retype.changes.insert(n.clone());
+            }
+        }
+        if retype.changes.len() == before {
+            break;
+        }
+    }
     (not_list, not_map, retype)
 }
 
@@ -4928,88 +5083,134 @@ pub(super) fn compute_builders(ctx: &SemanticContext) -> BTreeMap<String, String
 /// The functions and (`impl`-prefixed) methods a call of which may return a value with a part of
 /// another type than the declared or inferred type gives it, because it writes into a part of a
 /// value (a field or position assignment, an in-place builtin: `let mut c = self; c.f = x; return
-/// c`, `push(out, x); return out`) — directly, by calling one (by name, or naming one as a value),
-/// or by calling a function value it is given or binds (a formal or a local called, a callback a
-/// builtin returns what it returns, a call of a call), which may be one. The parts of what such a
-/// call returns are stale (`type_roots`: `WROTE`); its own type is its result's.
+/// c`, `push(out, x); return out`; or rebinds a name to itself with a value appended, `out = out +
+/// [x]`) — directly, by calling one (by name, or naming one as a value), or by calling a function
+/// value it is given or binds (a formal or a local called, a callback a builtin returns what it
+/// returns, a call of a call), which may be one. The parts of what such a call returns are stale
+/// (`type_roots`: `WROTE`); its own type is its result's.
+///
+/// A write counts only when what it stores may hold a struct (`may_hold_struct`): a number, a
+/// string, a bool, or a container of them leaves a part's declared struct type as good as it was (a
+/// method called on one stops the program). A call whose result the body drops (`dropped_calls`)
+/// counts only as an in-place builtin: a callee is given copies, so it writes into nothing of the
+/// caller's.
 pub(super) fn compute_part_writers(ctx: &SemanticContext) -> BTreeSet<String> {
-    let direct = |params: &[String], body: &[Stmt]| {
+    let held = held_fields(ctx);
+    let num = |t: &str, f: &str| {
+        ctx.whole_num_formals
+            .get(&(t.to_string(), f.to_string()))
+            .cloned()
+            .flatten()
+            .unwrap_or_default()
+    };
+    // Every body: its key (a function's name, or `impl` and a method's name), formals, statements,
+    // number formals, and the calls it drops.
+    let bodies: Vec<(String, BodyOf<'_>)> = ctx
+        .whole_fns
+        .iter()
+        .map(|(f, (ps, b))| (f.clone(), (ps.as_slice(), b.as_slice(), num("", f))))
+        .chain(ctx.whole_methods.iter().flat_map(|(m, impls)| {
+            impls.iter().map(move |(t, (ps, b))| {
+                (
+                    format!("impl {m}"),
+                    (ps.as_slice(), b.as_slice(), num(t, m)),
+                )
+            })
+        }))
+        .collect();
+    let dropped: Vec<BTreeSet<usize>> = bodies
+        .iter()
+        .map(|(_, (_, b, _))| dropped_calls(b))
+        .collect();
+    let direct = |params: &[String],
+                  body: &[Stmt],
+                  num: &BTreeSet<String>,
+                  dropped: &BTreeSet<usize>| {
+        let names = body_names(params, num, body, ctx);
+        let stores = |v: &Expr| may_hold_struct(v, ctx, &held, &names);
         let b = bindings(body);
         let local =
             |n: &str| params.iter().any(|p| p == n) || b.lets.contains(n) || b.other.contains(n);
-        let mut hit = !b.parts.is_empty();
+        let mut hit = b.parts.values().flatten().any(|(_, v)| stores(v));
         visit::each_stmt(body, &mut |s, _| {
-            hit |= matches!(s, Stmt::Assign { target, .. } if !matches!(target, Expr::Var(_)));
+            hit |= match s {
+                // `xs = xs + [x]` stores `x` into `xs` as `push` does.
+                Stmt::Assign {
+                    target: Expr::Var(x),
+                    value: Expr::Binary { op, lhs, rhs },
+                } if op == "+" => {
+                    let own = |e: &Expr| matches!(e, Expr::Var(y) if y == x);
+                    (own(lhs.as_ref()) && stores(rhs.as_ref()))
+                        || (own(rhs.as_ref()) && stores(lhs.as_ref()))
+                }
+                Stmt::Assign { target, value } => !matches!(target, Expr::Var(_)) && stores(value),
+                _ => false,
+            };
         });
         visit::each_expr_in_stmts(body, &mut |e| {
+            let kept = !dropped.contains(&(e as *const Expr as usize));
             hit |= match e {
                 Expr::Call { callee, args } => {
-                    IN_PLACE.contains(&callee.as_str())
-                        || local(callee)
-                        || callback_args(callee, args).iter().any(|a| match a {
-                            // A lambda's body is this body's; a function's name, a writer or not;
-                            // a literal or arithmetic (a `reduce` seed) is no function.
-                            Expr::Lambda { .. }
-                            | Expr::Literal(_)
-                            | Expr::StrLiteral(_)
-                            | Expr::Binary { .. }
-                            | Expr::Unary { .. }
-                            | Expr::ArrayLiteral { .. }
-                            | Expr::MapLiteral { .. }
-                            | Expr::StructLiteral { .. }
-                            | Expr::EnumConstruct { .. } => false,
-                            Expr::Var(x) => local(x),
-                            _ => true,
-                        })
+                    (IN_PLACE.contains(&callee.as_str()) && args.iter().skip(1).any(stores))
+                        || (kept
+                            && (local(callee)
+                                || callback_args(callee, args).iter().any(|a| match a {
+                                    // A lambda's body is this body's; a function's name, a writer
+                                    // or not; a literal or arithmetic (a `reduce` seed) is no
+                                    // function.
+                                    Expr::Lambda { .. }
+                                    | Expr::Literal(_)
+                                    | Expr::StrLiteral(_)
+                                    | Expr::Binary { .. }
+                                    | Expr::Unary { .. }
+                                    | Expr::ArrayLiteral { .. }
+                                    | Expr::MapLiteral { .. }
+                                    | Expr::StructLiteral { .. }
+                                    | Expr::EnumConstruct { .. } => false,
+                                    Expr::Var(x) => local(x),
+                                    _ => true,
+                                })))
                 }
                 // A function value called: a call's result, or a field no impl declares a
                 // method for.
-                Expr::CallExpr { callee, .. } => match callee.as_ref() {
-                    Expr::FieldAccess { field, .. } => !ctx.whole_methods.contains_key(field),
-                    _ => true,
-                },
+                Expr::CallExpr { callee, .. } => {
+                    kept && match callee.as_ref() {
+                        Expr::FieldAccess { field, .. } => !ctx.whole_methods.contains_key(field),
+                        _ => true,
+                    }
+                }
                 _ => false,
             };
         });
         hit
     };
     let mut out: BTreeSet<String> = BTreeSet::new();
-    for (n, (params, body)) in &ctx.whole_fns {
-        if direct(params.as_slice(), body.as_slice()) {
-            out.insert(n.clone());
-        }
-    }
-    for (m, impls) in &ctx.whole_methods {
-        if impls
-            .iter()
-            .any(|(_, (params, body))| direct(params.as_slice(), body.as_slice()))
-        {
-            out.insert(format!("impl {m}"));
+    for ((key, (params, body, num)), dropped) in bodies.iter().zip(&dropped) {
+        if direct(params, body, num, dropped) {
+            out.insert(key.clone());
         }
     }
     loop {
-        let calls = |body: &[Stmt]| {
+        let calls = |body: &[Stmt], dropped: &BTreeSet<usize>| {
             let mut hit = false;
             visit::each_expr_in_stmts(body, &mut |e| {
+                let kept = !dropped.contains(&(e as *const Expr as usize));
                 hit |= match e {
-                    Expr::Call { callee: n, .. } | Expr::Var(n) => out.contains(n),
-                    Expr::CallExpr { callee, .. } => matches!(callee.as_ref(),
-                        Expr::FieldAccess { field, .. } if out.contains(&format!("impl {field}"))),
+                    Expr::Call { callee: n, .. } => kept && out.contains(n),
+                    Expr::Var(n) => out.contains(n),
+                    Expr::CallExpr { callee, .. } => {
+                        kept && matches!(callee.as_ref(),
+                        Expr::FieldAccess { field, .. } if out.contains(&format!("impl {field}")))
+                    }
                     _ => false,
                 };
             });
             hit
         };
         let mut next = out.clone();
-        for (n, (_, body)) in &ctx.whole_fns {
-            if !out.contains(n) && calls(body.as_slice()) {
-                next.insert(n.clone());
-            }
-        }
-        for (m, impls) in &ctx.whole_methods {
-            let key = format!("impl {m}");
-            if !out.contains(&key) && impls.iter().any(|(_, (_, body))| calls(body.as_slice())) {
-                next.insert(key);
+        for ((key, (_, body, _)), dropped) in bodies.iter().zip(&dropped) {
+            if !out.contains(key) && calls(body, dropped) {
+                next.insert(key.clone());
             }
         }
         if next.len() == out.len() {
@@ -5019,6 +5220,47 @@ pub(super) fn compute_part_writers(ctx: &SemanticContext) -> BTreeSet<String> {
     }
 }
 
+/// The calls a body makes as a statement other than the last of its statement list (at any depth:
+/// nested statements, value blocks, closures), by address: what they return is dropped — only a
+/// list's last statement may be what it yields (`tail_values`).
+fn dropped_calls(body: &[Stmt]) -> BTreeSet<usize> {
+    let mut lists: Vec<&[Stmt]> = vec![body];
+    visit::each_stmt(body, &mut |s, _| match s {
+        Stmt::WhileLet { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => lists.push(body),
+        Stmt::If { then, else_, .. } => {
+            lists.push(then);
+            if let Some(e) = else_ {
+                lists.push(e);
+            }
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for b in [gpu, cpu, prove].into_iter().flatten() {
+                lists.push(b);
+            }
+        }
+        _ => {}
+    });
+    visit::each_expr_in_stmts(body, &mut |e| {
+        if let Expr::Block { stmts, .. } = e {
+            lists.push(stmts);
+        }
+    });
+    let mut out = BTreeSet::new();
+    for stmts in lists {
+        for s in stmts.iter().rev().skip(1) {
+            if let Stmt::ExprStmt(e @ (Expr::Call { .. } | Expr::CallExpr { .. })) = s {
+                out.insert(e as *const Expr as usize);
+            }
+        }
+    }
+    out
+}
+
 /// The arguments a builtin may call as a function and return what it returns (`builtin_src`).
 fn callback_args<'e>(callee: &str, args: &'e [Expr]) -> &'e [Expr] {
     match callee {
@@ -5026,6 +5268,65 @@ fn callback_args<'e>(callee: &str, args: &'e [Expr]) -> &'e [Expr] {
         "call" | "apply" => args.get(..1).unwrap_or(&[]),
         _ => &[],
     }
+}
+
+/// Whether a function a builtin calls (`callback_args`) may hand back a value with a part of
+/// another type than its declared type (`type_roots`): a writer (`compute_part_writers`), a
+/// function value a name holds (any function), or a closure that may write into a part or call one
+/// (`expr_may_write`). A builtin is none; a literal or arithmetic (a `reduce` seed) is no function.
+fn callback_writes(a: &Expr, ctx: &SemanticContext) -> bool {
+    match a {
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. } => false,
+        Expr::Var(x) if ctx.whole_fns.contains_key(x) => ctx.whole_part_writers.contains(x),
+        Expr::Var(x) => !crate::backends::run::is_builtin_name(x),
+        Expr::Lambda { body, .. } => expr_may_write(body, ctx),
+        _ => true,
+    }
+}
+
+/// Whether evaluating `e` (a closure's body) may yield a value with a part of another type than its
+/// declared type: it writes into a place, rebinds a name to a `+` of it, stores by an in-place
+/// builtin, calls a writer or a function value (or gives one to a builtin: `callback_writes`; a
+/// closure given is part of `e`, visited once), or names a writer (hands it on). Stores are not
+/// weighed here (`compute_part_writers`' `stores`).
+fn expr_may_write(e: &Expr, ctx: &SemanticContext) -> bool {
+    let mut hit = false;
+    visit::each_stmt_in_expr(e, &mut |s, _| {
+        hit |= matches!(s, Stmt::Assign { target, value }
+            if !matches!(target, Expr::Var(_))
+                || matches!(value, Expr::Binary { op, .. } if op == "+"));
+    });
+    visit::each_expr(e, &mut |x| {
+        hit |= match x {
+            Expr::Call { callee, args } => {
+                IN_PLACE.contains(&callee.as_str())
+                    || ctx.whole_part_writers.contains(callee)
+                    || (!ctx.whole_fns.contains_key(callee)
+                        && !crate::backends::run::is_builtin_name(callee)
+                        && crate::frontend::builtin_variant_enum(callee).is_none())
+                    || callback_args(callee, args)
+                        .iter()
+                        .any(|a| !matches!(a, Expr::Lambda { .. }) && callback_writes(a, ctx))
+            }
+            Expr::Var(n) => ctx.whole_part_writers.contains(n),
+            Expr::CallExpr { callee, .. } => match callee.as_ref() {
+                Expr::FieldAccess { field, .. } => {
+                    !ctx.whole_methods.contains_key(field)
+                        || ctx.whole_part_writers.contains(&format!("impl {field}"))
+                }
+                _ => true,
+            },
+            _ => false,
+        };
+    });
+    hit
 }
 
 /// The secret struct types a well-formed `declassify` anywhere in the program may release whole. A

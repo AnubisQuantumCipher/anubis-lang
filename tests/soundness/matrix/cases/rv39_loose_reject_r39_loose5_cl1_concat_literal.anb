@@ -1,0 +1,22 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+struct U { n: i64 }
+impl T {
+    fn show(self, o) {
+        print(self.n);
+    }
+}
+impl U {
+    fn show(self, o) {
+        print(o);
+    }
+}
+fn grow(xs: list<T>) -> list<T> {
+    xs = xs + [U { n: 2 }];
+    return xs;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let rs = grow([T { n: 1 }]);
+    rs[1].show(p);
+}

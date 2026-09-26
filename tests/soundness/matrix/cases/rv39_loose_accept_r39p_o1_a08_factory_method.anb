@@ -1,0 +1,15 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Badge { label: string }
+impl Badge { fn render(self) -> string { return "${self}"; } }
+struct Account { owner: S, visits: i64 }
+impl Account {
+    fn render(self) -> string { return "visits=${self.visits}"; }
+}
+struct Bank { name: string }
+impl Bank { fn open(self, p: S) -> Account { return Account { owner: p, visits: 1 }; } }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let bank = Bank { name: "b" };
+    let a = bank.open(p);
+    println(a.render());
+}

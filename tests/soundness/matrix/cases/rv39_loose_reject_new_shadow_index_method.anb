@@ -1,0 +1,21 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Session { n: i64 }
+struct Label { n: i64 }
+struct U { n: i64 }
+impl Session {
+    fn step(self) -> Session { return self; }
+    fn show(self, o) { print(self.n); }
+}
+impl Label {
+    fn step(self) -> Session { return U { n: 1 }; }
+}
+impl U {
+    fn show(self, o) { print(o); }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [Label { n: 1 }];
+    let s = xs[0];
+    let s = s.step();
+    s.show(p);
+}

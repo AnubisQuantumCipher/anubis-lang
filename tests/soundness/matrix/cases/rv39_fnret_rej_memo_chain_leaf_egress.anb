@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+fn leaf(n) { return |v| show(v); }
+fn mid(n) { let a = leaf(n); let b = leaf(n + 1); return |v| a(v) + b(v); }
+fn top(n) { let r0 = mid(n); let r1 = mid(n + 1); return |v| r0(v) + r1(v); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let ok = top(0);
+    ok(p);
+}

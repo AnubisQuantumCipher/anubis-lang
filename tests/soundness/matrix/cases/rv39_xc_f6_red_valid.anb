@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn fold3(acc, x) { return acc + 1; }
+fn mkf() { return |acc, x| acc + 1; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let z1 = reduce([p], |acc, x| acc + 1, 0);
+    let z2 = reduce([p], fold3, 0);
+    let z3 = reduce([p], 0, fold3);
+    println(z1 + z2 + z3);
+}

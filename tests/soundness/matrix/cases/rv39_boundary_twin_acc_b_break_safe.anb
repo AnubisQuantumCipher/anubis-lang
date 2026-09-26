@@ -1,0 +1,17 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn zero2(x) { return 2; }
+fn id1(x) { return x; }
+fn mk() { return id1; }
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let g = zero;
+    let i = 0;
+    while i < 5 {
+        if i == 0 { g = if true { let t = zero2; t } else { zero }; break; }
+        g = zero;
+        i = i + 1;
+    }
+    print(g(p));
+}

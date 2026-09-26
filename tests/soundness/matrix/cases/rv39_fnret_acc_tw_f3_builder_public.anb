@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+struct R { n: i64 }
+fn mkr(x) { return R { n: x }; }
+fn mkb() { return mkr; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let z = reduce([1], |acc, x| acc(x), mkb());
+    println(z);
+}
