@@ -126,7 +126,13 @@ captured input. Source-bound focused resolver tests, compiler-library Clippy,
 and workspace format check pass on `339a960a`; a same-named changed-body
 control confirms that lowering uses the saved import. This private API is not
 used by the CLI and grants no package or evidence admission. Its next
-dependency is a reviewed CLI consumer with a versioned checker-input boundary;
+dependency is the [reviewed captured Safe build design](evidence/CAPTURED_SAFE_BUILD_DESIGN_REVIEW_2026-09-26.md),
+then independently reviewed compiler, staged-publisher and CLI units. The
+design review gave GO for implementation only; no production CLI consumer,
+native publication or package/evidence admission was verified. The first
+compiler-side scratch patch is on HOLD after actual-diff review found that
+trait defaults can vanish before its mode guard; preserve pre-desugaring mode
+intent in the revised patch;
 the valid transitive package still fails at `ANUBIS_DEP_PROOF_UNVERIFIED`.
 
 The next soundness implementation dependency is a typed distinction between protected
