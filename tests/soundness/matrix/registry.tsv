@@ -2368,9 +2368,9 @@ r2arm_sibling_binder_drops_requires	M-ARM-BINDER	slice	REJECT	carrier,direct	sib
 r2arm_unrelated_assumption_drops_requires	M-ARM-BINDER	slice	REJECT	carrier,direct	sibling x binder drops violated f(-1) requires through unrelated outer-x assumption; initial pinned checker result in forthcoming evidence receipt.
 r2arm_renamed_binder_preserves_requires	M-ARM-BINDER	slice	REJECT	carrier	renamed sibling binder keeps violated f(x) requires; rejection control; initial pinned checker result in forthcoming evidence receipt.
 r2arm_satisfied_requires_remains_valid	M-ARM-BINDER	slice	ACCEPT	carrier	satisfied f(x) requires remains valid under sibling binder; initial pinned checker result in forthcoming evidence receipt.
-r2arm_contract_call_scrutinee	M-ARM-BINDER	slice	REJECT	carrier,direct	match scrutinee calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control.
-r2arm_contract_call_guard	M-ARM-BINDER	slice	REJECT	carrier,direct	match guard calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control.
-r2arm_iflet_scrutinee_call	M-ARM-BINDER	slice	REJECT	carrier,direct	if-let scrutinee calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control.
+r2arm_contract_call_scrutinee	M-CALL-POSITION	slice	REJECT	carrier,direct	match scrutinee calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control. Family corrected after independent review: no sibling binder is involved.
+r2arm_contract_call_guard	M-CALL-POSITION	slice	REJECT	carrier,direct	match guard calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control. Family corrected after independent review: no sibling binder is involved.
+r2arm_iflet_scrutinee_call	M-CALL-POSITION	slice	REJECT	carrier,direct	if-let scrutinee calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control. Family corrected after independent review: no sibling binder is involved.
 r2arm_same_binder_invalid_match	M-ARM-BINDER	slice	REJECT	carrier	match binding x receives -1 before f(x); pinned baseline ANUBIS_ASSERTION_UNDECIDED, not a checked disproof.
 r2arm_same_binder_invalid_iflet	M-ARM-BINDER	slice	REJECT	carrier	if-let binding x receives -1 before f(x); pinned baseline ANUBIS_ASSERTION_UNDECIDED, not a checked disproof.
 r2arm_same_binder_valid_match	M-ARM-BINDER	slice	ACCEPT	carrier	match binding x receives 1 before f(x); valid control; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
