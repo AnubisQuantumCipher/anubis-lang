@@ -10717,6 +10717,31 @@ fn match_arm_pattern_fact(scrutinee: &Expr, pattern: &crate::frontend::Pattern) 
     }
 }
 
+/// A syntactic write may occur before another call within the same expression. Havoc its root
+/// before discharging calls: this may leave a valid precondition undecided, but cannot prove it
+/// from the value that preceded the write.
+fn havoc_match_position_expr_writes(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    expr: &Expr,
+) -> BTreeSet<String> {
+    let mut written = BTreeSet::new();
+    expr_assigned_roots(expr, &mut written);
+    for name in &written {
+        invalidate_binding_facts(ctx, assumptions, name);
+    }
+    written
+}
+
+fn match_position_irrefutable(pattern: &crate::frontend::Pattern) -> bool {
+    use crate::frontend::Pattern;
+    match pattern {
+        Pattern::Wildcard | Pattern::Binding(_) => true,
+        Pattern::Or(alts) => alts.iter().any(match_position_irrefutable),
+        _ => false,
+    }
+}
+
 /// After analyzing a statement-position `match`/`if let` arm — a position where an arm-body `assert`
 /// is deliberately deferred to runtime rather than solver-proved — keep the CALL-PRECONDITION
 /// obligations the arm pushed and drop the rest.
@@ -11128,9 +11153,9 @@ fn discharge_calls_in_expr(
         // An `if`-EXPRESSION (`let z = if c { g(x) } else { h(y) };`): the condition is unconditional; each
         // branch runs under the (negated) condition — push it as a scoped path condition, exactly like the
         // `Stmt::If` handler, so a guard-provable branch call proves and a guard-unrelated one is caught.
-        // A block-bodied branch (`{ let t = …; g(t) }`) recurses into a `Block` which is left deferred (its
-        // statements need full analysis, not just call discharge), so only simple-expression branches are
-        // reached here — no intra-branch reassignment can stale the pushed condition.
+        // A block-bodied branch recurses into the supported statement forms in the Block walker.
+        // Assignments invalidate facts for their target before a later call is discharged; loop and
+        // pattern-binding statement forms remain outside this lightweight call walk.
         Expr::If {
             cond, then, else_, ..
         } => {
@@ -11556,6 +11581,24 @@ fn discharge_calls_in_expr(
                     Stmt::LetPattern { init, .. } => {
                         discharge_calls_in_expr(ctx, assumptions, scope, init);
                     }
+                    Stmt::Assign { target, value } => {
+                        // Assignment expressions execute both their value and their place
+                        // components. An assignment's write must not leave its old defining
+                        // fact available to a later statement in this value block. Pre-havoc
+                        // writes hidden in either expression because this walker does not model
+                        // their intra-expression evaluation order.
+                        let mut embedded_writes = BTreeSet::new();
+                        expr_assigned_roots(target, &mut embedded_writes);
+                        expr_assigned_roots(value, &mut embedded_writes);
+                        for name in &embedded_writes {
+                            invalidate_binding_facts(ctx, assumptions, name);
+                        }
+                        discharge_calls_in_expr(ctx, assumptions, scope, target);
+                        discharge_calls_in_expr(ctx, assumptions, scope, value);
+                        if let Some(name) = assign_target_root(target) {
+                            invalidate_binding_facts(ctx, assumptions, name);
+                        }
+                    }
                     Stmt::ExprStmt(e) => {
                         discharge_calls_in_expr(ctx, assumptions, scope, e);
                     }
@@ -11601,7 +11644,7 @@ fn discharge_calls_in_expr(
                             ctx.active_branch_guards.truncate(g0);
                         }
                     }
-                    // The remaining statement-position forms — `while`/`for`/`loop`/`match`/`assign` —
+                    // The remaining statement-position forms — `while`/`for`/`loop`/`match` —
                     // carry loop-carried writes or multi-arm binding this lightweight expression
                     // walker does not model; descending soundly needs the statement-level havoc +
                     // frame machinery in `analyze_stmts`. They stay at the pre-existing fail-open.
@@ -13553,6 +13596,15 @@ fn analyze_stmts(
                     scrutinee, arms, ..
                 },
             ) => {
+                // The runtime evaluates the scrutinee before it tries any arm. A call here is not
+                // part of an arm's deferred assert/ensures region, so keep its precondition before
+                // taking the arm-obligation mark below. The runtime passes values by copy and
+                // closures capture snapshots, so an ordinary callee cannot mutate a caller-local
+                // binding; an embedded assignment/in-place operation can, and is de-modeled before
+                // this non-write-sequencing call walk rather than proved from its old value.
+                let scrutinee_writes =
+                    havoc_match_position_expr_writes(ctx, assumptions, scrutinee);
+                discharge_calls_in_expr(ctx, assumptions, scope, scrutinee);
                 analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
                 let st = expr_source(
                     scrutinee,
@@ -13582,6 +13634,18 @@ fn analyze_stmts(
                     reject_implicit_flow_under_secret_pc(mode, ss, &assigned, scope, ctx);
                 }
                 let snap_asm = assumptions.clone();
+                let mut fallthrough_asm = snap_asm.clone();
+                // `match` saves its scrutinee once. Re-encoding the source expression as a pattern
+                // fact is safe only while that expression still denotes the saved value. A
+                // scrutinee or earlier guard that writes one of its inputs requires a saved-value
+                // model we do not yet have; omit the fact rather than assert equality over a later value.
+                let mut scrutinee_fact_safe = scrutinee_writes.is_empty();
+                let mut scrutinee_vars = BTreeSet::new();
+                collect_expr_vars(scrutinee, &mut scrutinee_vars);
+                // A later alternative is tried only when each earlier guardless literal did not
+                // match. Keep these as scoped path facts, not contract premises: an unreachable
+                // later guard must not turn its call into a counterexample or a vacuity error.
+                let mut prior_nonmatch: Vec<Expr> = Vec::new();
                 // Arm bodies are analyzed for SECURITY value-flow only — a `match`/`if let` arm body is a
                 // deferred-to-runtime position for CONTRACTS (an arm-body `assert` is NOT solver-proved, so
                 // a shadowed-binder assert `Some(s) => assert(s=="a")` can never be falsely proved). Roll
@@ -13589,6 +13653,8 @@ fn analyze_stmts(
                 // `qfs_binding_shadow` test locks it in); the scope-level taint/secret/fn_alias tracking we
                 // DO keep (that is the leak fix).
                 let obl_mark = ctx.solver_obligations.len();
+                let mut guard_obligations: Vec<SolverObligation> = Vec::new();
+                let mut terminal_arm_seen = false;
                 let before = scope.clone();
                 // Arms are tried in order: a guard that runs and fails leaves what it wrote to the
                 // arms after it.
@@ -13596,6 +13662,10 @@ fn analyze_stmts(
                 let mut arm_scopes = Vec::new();
                 // An or-pattern arm one alternative at a time ([`sub_arms`]).
                 for (arm, pattern) in sub_arms(arms) {
+                    // Still analyze dead source for ordinary semantic diagnostics, but never
+                    // retain its runtime obligations or merge its effects into reachable paths.
+                    let dead_arm = terminal_arm_seen;
+                    let dead_obl_mark = ctx.solver_obligations.len();
                     let mut arm_scope = tried.clone();
                     seed_effect_pattern(
                         &mut arm_scope,
@@ -13619,7 +13689,74 @@ fn analyze_stmts(
                     for n in pattern.bound_names() {
                         ctx.known_bindings.insert(n);
                     }
+                    let mut arm_asm = fallthrough_asm.clone();
+                    let g0 = ctx.active_branch_guards.len();
+                    if !dead_arm && scrutinee_fact_safe {
+                        for fact in &prior_nonmatch {
+                            push_branch_path_condition(ctx, &mut arm_asm, fact, true);
+                        }
+                        if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                            push_branch_path_condition(ctx, &mut arm_asm, &fact, false);
+                        }
+                    }
+                    let mut restore_after_arm: Vec<(String, BindingMembership)> = Vec::new();
                     if let Some(guard) = &arm.guard {
+                        if !dead_arm {
+                            // A guard executes after its pattern binds, before the body. Discharge its
+                            // calls under the pattern fact. Do not let a same-named outer solver binding
+                            // stand in for an unmodeled pattern binder; unresolved preconditions remain
+                            // typed obligations. Guard obligations are saved separately so the legacy
+                            // arm-body filter cannot erase one because a sibling binds the same name.
+                            let binders: BTreeSet<String> =
+                                pattern.bound_names().into_iter().collect();
+                            let memberships: Vec<(String, BindingMembership)> = binders
+                                .iter()
+                                .map(|name| (name.clone(), capture_binding_membership(ctx, name)))
+                                .collect();
+                            let mut guard_asm = arm_asm.clone();
+                            for name in &binders {
+                                invalidate_binding_facts(ctx, &mut guard_asm, name);
+                            }
+                            let guard_writes =
+                                havoc_match_position_expr_writes(ctx, &mut guard_asm, guard);
+                            let guard_mark = ctx.solver_obligations.len();
+                            discharge_calls_in_expr(ctx, &mut guard_asm, &arm_scope, guard);
+                            let pushed = ctx.solver_obligations.split_off(guard_mark);
+                            guard_obligations.extend(pushed.into_iter().filter(|o| {
+                                o.name.starts_with("requires@")
+                                    || o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX)
+                            }));
+                            ctx.over_approx_scan =
+                                ctx.over_approx_scan.min(ctx.solver_obligations.len());
+                            for (name, membership) in memberships {
+                                if guard_writes.contains(&name) {
+                                    restore_after_arm.push((name, membership));
+                                } else {
+                                    restore_binding_membership(ctx, &name, membership);
+                                }
+                            }
+                            // A failed guard's explicit writes reach the next alternative. They also
+                            // invalidate the current body's pre-write assumptions. Caller-local values
+                            // passed to ordinary functions are copied; they are unchanged by the call.
+                            for name in &guard_writes {
+                                invalidate_binding_facts(ctx, &mut arm_asm, name);
+                                if !binders.contains(name) {
+                                    invalidate_binding_facts(ctx, &mut fallthrough_asm, name);
+                                }
+                            }
+                            if guard_writes.is_empty() {
+                                let mut guard_vars = BTreeSet::new();
+                                collect_expr_vars(guard, &mut guard_vars);
+                                if guard_vars.is_disjoint(&binders) {
+                                    push_branch_path_condition(ctx, &mut arm_asm, guard, false);
+                                }
+                            }
+                            if guard_writes.iter().any(|name| {
+                                !binders.contains(name) && scrutinee_vars.contains(name)
+                            }) {
+                                scrutinee_fact_safe = false;
+                            }
+                        }
                         // Secret guard is a PC even when scrutinee is public.
                         let mut assigned = BTreeSet::new();
                         expr_assigned_roots(&arm.body, &mut assigned);
@@ -13649,15 +13786,16 @@ fn analyze_stmts(
                         }
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
                     }
-                    let mut arm_asm = snap_asm.clone();
-                    // The arm runs only when the scrutinee matches this pattern; for a literal pattern
-                    // that is a modelable equality, so a call whose precondition the guard establishes
-                    // (`match x { 1 => { f(x) } .. }`, `f` requiring `x > 0`) proves rather than being
-                    // over-rejected once we stop discarding its obligation below.
-                    let g0 = ctx.active_branch_guards.len();
-                    if let Some(fact) = match_arm_pattern_fact(scrutinee, &arm.pattern) {
-                        push_branch_path_condition(ctx, &mut arm_asm, &fact, false);
-                    }
+                    // The guard's failed path can reach later alternatives; the arm body cannot.
+                    // Capture modelability after guard evaluation and restore it after the body,
+                    // just as `fallthrough_asm` already excludes body-only assumptions. Otherwise
+                    // an untaken earlier body assignment de-models a variable needed by a later
+                    // guard and falsely refuses its satisfied precondition.
+                    let fallthrough_int = ctx.solver_int_vars.clone();
+                    let fallthrough_float = ctx.solver_float_vars.clone();
+                    let fallthrough_string = ctx.solver_string_vars.clone();
+                    let fallthrough_widths = ctx.symbolic_widths.clone();
+                    let fallthrough_shadowed_preds = ctx.shadowed_string_preds.clone();
                     analyze_value_block(
                         &arm.body,
                         mode,
@@ -13667,13 +13805,37 @@ fn analyze_stmts(
                         &mut arm_asm,
                         ctx,
                     );
+                    ctx.solver_int_vars = fallthrough_int;
+                    ctx.solver_float_vars = fallthrough_float;
+                    ctx.solver_string_vars = fallthrough_string;
+                    ctx.symbolic_widths = fallthrough_widths;
+                    ctx.shadowed_string_preds = fallthrough_shadowed_preds;
+                    for (name, membership) in restore_after_arm {
+                        restore_binding_membership(ctx, &name, membership);
+                    }
                     ctx.active_branch_guards.truncate(g0);
-                    arm_scopes.push(arm_scope);
+                    if dead_arm {
+                        ctx.solver_obligations.truncate(dead_obl_mark);
+                        ctx.over_approx_scan =
+                            ctx.over_approx_scan.min(ctx.solver_obligations.len());
+                    } else {
+                        arm_scopes.push(arm_scope);
+                        if arm.guard.is_none() && scrutinee_fact_safe {
+                            if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                                prior_nonmatch.push(fact);
+                            }
+                        }
+                        if arm.guard.is_none() && match_position_irrefutable(pattern) {
+                            terminal_arm_seen = true;
+                        }
+                    }
                 }
                 *assumptions = snap_asm;
                 let arm_binders: BTreeSet<String> =
                     arms.iter().flat_map(|a| a.pattern.bound_names()).collect();
                 retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
+                ctx.solver_obligations.extend(guard_obligations);
+                ctx.over_approx_scan = ctx.over_approx_scan.min(ctx.solver_obligations.len());
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
                 // What the lane's own interpretation found a binding may be as a function, on any path.
                 merge_whole_captures_over(scope, &refs, ctx);
@@ -13700,6 +13862,12 @@ fn analyze_stmts(
                     ..
                 },
             ) => {
+                // As in `match`, the scrutinee runs before pattern binding and before the
+                // deferred arm-body obligation mark. Keep its call preconditions independently
+                // of the pattern binder; de-model values explicitly written during evaluation.
+                let scrutinee_writes =
+                    havoc_match_position_expr_writes(ctx, assumptions, scrutinee);
+                discharge_calls_in_expr(ctx, assumptions, scope, scrutinee);
                 analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
                 let st = expr_source(
                     scrutinee,
@@ -13752,8 +13920,10 @@ fn analyze_stmts(
                 }
                 let mut then_asm = snap_asm.clone();
                 let g0 = ctx.active_branch_guards.len();
-                if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
-                    push_branch_path_condition(ctx, &mut then_asm, &fact, false);
+                if scrutinee_writes.is_empty() {
+                    if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                        push_branch_path_condition(ctx, &mut then_asm, &fact, false);
+                    }
                 }
                 analyze_value_block(
                     then,

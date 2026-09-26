@@ -10530,6 +10530,110 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn statement_match_positions_emit_passing_requires_obligations() {
+        // Positive acceptance controls for the statement-position match/if-let call walker.
+        // Checking only that these programs have no FAIL verdict would also pass if the walker
+        // silently omitted the requires obligation. This is a solver-backed regression test,
+        // not a source-to-runtime correspondence proof.
+        enum Position {
+            MatchScrutinee,
+            MatchGuard,
+            IfLetScrutinee,
+        }
+        let cases = [
+            (
+                "statement match scrutinee",
+                Position::MatchScrutinee,
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; }
+                   fn caller(a: i64) requires(a > 0) {
+                       match g(a) { _ => { } }
+                   }"#,
+            ),
+            (
+                "statement match guard",
+                Position::MatchGuard,
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; }
+                   fn caller(a: i64) requires(a > 0) {
+                       match a { _ if g(a) > 0 => { }, _ => { } }
+                   }"#,
+            ),
+            (
+                "statement if-let scrutinee",
+                Position::IfLetScrutinee,
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; }
+                   fn caller(a: i64) requires(a > 0) {
+                       if let 1 = g(a) { }
+                   }"#,
+            ),
+        ];
+
+        for (position_name, position, source) in cases {
+            let ast = parse_source(source).expect("positive match-position program must parse");
+            let frontend::Item::Fn { body, .. } = &ast.items[1] else {
+                panic!("{position_name}: expected caller function");
+            };
+            let statement = body.first().expect("caller must contain a statement");
+            let expected_position = match position {
+                Position::MatchScrutinee => matches!(
+                    statement,
+                    frontend::Stmt::ExprStmt(frontend::Expr::Match { scrutinee, .. })
+                        if matches!(scrutinee.as_ref(), frontend::Expr::Call { callee, .. } if callee.as_str() == "g")
+                ),
+                Position::MatchGuard => matches!(
+                    statement,
+                    frontend::Stmt::ExprStmt(frontend::Expr::Match { arms, .. })
+                        if matches!(
+                            arms.first().and_then(|arm| arm.guard.as_ref()),
+                            Some(frontend::Expr::Binary { lhs, .. })
+                                if matches!(lhs.as_ref(), frontend::Expr::Call { callee, .. } if callee.as_str() == "g")
+                        )
+                ),
+                Position::IfLetScrutinee => matches!(
+                    statement,
+                    frontend::Stmt::ExprStmt(frontend::Expr::IfLet { scrutinee, .. })
+                        if matches!(scrutinee.as_ref(), frontend::Expr::Call { callee, .. } if callee.as_str() == "g")
+                ),
+            };
+            assert!(
+                expected_position,
+                "{position_name}: wrong AST position: {statement:?}"
+            );
+
+            let ir = typecheck(ast, frontend::Mode::Safe)
+                .expect("satisfied match-position precondition must typecheck");
+            let obligations: Vec<_> = ir
+                .solver_obligations
+                .iter()
+                .filter(|obligation| obligation.name.starts_with("requires@g:"))
+                .collect();
+            assert_eq!(
+                obligations.len(),
+                1,
+                "{position_name}: expected one emitted requires@g obligation, got {:?}",
+                ir.solver_obligations
+            );
+            let checks = SymbolicEngine::check_obligations(&ir);
+            let requires_checks: Vec<_> = checks
+                .iter()
+                .filter(|check| check.name.starts_with("requires@g:"))
+                .collect();
+            assert_eq!(
+                requires_checks.len(),
+                obligations.len(),
+                "{position_name}: emitted obligation was not checked: {checks:?}"
+            );
+            assert_eq!(
+                requires_checks[0].status, "PASS",
+                "{position_name}: satisfied requires@g must pass: {checks:?}"
+            );
+            assert!(
+                checks.iter().all(|check| check.status == "PASS"),
+                "{position_name}: valid program has a non-PASS obligation: {checks:?}"
+            );
+        }
+    }
+
+    #[test]
     fn match_arm_body_calls_discharge_under_the_pattern_condition() {
         // The last call-site residual's tractable subset: a contracted call in a `match` ARM body/guard is
         // discharged under a SOUND path condition derived from the arm — a literal pattern over the
