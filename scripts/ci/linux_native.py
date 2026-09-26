@@ -16,7 +16,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = Path(__file__).with_name("linux_ordinary_manifest.json")
-SCHEMA = "anubis.linux-native-ordinary.v1"
+SCHEMA = "anubis.linux-native-ordinary.v2"
 CLAIM = "LINUX_NATIVE_ORDINARY_PASS"
 PAYLOAD_COMPLETE = "PAYLOAD_COMPLETE_PENDING_TEARDOWN"
 EXTERNAL = ["full-workspace-and-crash-tests", "full-soundness-matrix", "fuzz-and-stress",
@@ -24,6 +24,8 @@ EXTERNAL = ["full-workspace-and-crash-tests", "full-soundness-matrix", "fuzz-and
 CONTROL_ARGV = ["python3", "-B", "-m", "unittest", "discover", "-s", "scripts/ci",
                 "-p", "test_linux_native.py"]
 TRIPLES = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}
+COMPILER_POLICY = {"CC": "clang", "CXX": "clang++"}
+EXIT_DRAIN_SECONDS = 5
 
 
 def require(ok, message):
@@ -54,6 +56,60 @@ def save(path, value):
 
 def output(argv, **kwargs):
     return subprocess.check_output(argv, text=True, timeout=30, **kwargs).strip()
+
+
+def compiler_identity(invocation, env, arch):
+    invocation = Path(invocation)
+    require(invocation.is_absolute(), "native compiler invocation must be absolute")
+    resolved = invocation.resolve(strict=True)
+    before = digest(resolved)
+    version = output([str(invocation), "--version"], env=env)
+    require(invocation.resolve(strict=True) == resolved and digest(resolved) == before,
+            "native compiler changed during identity observation")
+    return {"invocation_path": str(invocation), "resolved_path": str(resolved),
+            "sha256": before, "version": version, "elf": elf_identity(resolved, arch)}
+
+
+def select_compilers(env, arch):
+    records = {}
+    for variable, name in COMPILER_POLICY.items():
+        found = shutil.which(name, path=env["PATH"])
+        require(found is not None, f"required native compiler is missing: {name}")
+        # Clang selects its C++ driver behavior from argv[0]; do not resolve this path.
+        invocation = Path(os.path.abspath(found))
+        require(invocation.name == name, "native compiler invocation basename changed")
+        env[variable] = str(invocation)
+        records[variable] = compiler_identity(invocation, env, arch)
+    validate_compilers({"compiler_policy": COMPILER_POLICY, "native_compilers": records,
+                        "payload_env": env}, arch)
+    return records
+
+
+def validate_compilers(environment, arch):
+    require(environment.get("compiler_policy") == COMPILER_POLICY, "native compiler policy mismatch")
+    records = environment.get("native_compilers", {})
+    require(set(records) == set(COMPILER_POLICY), "native compiler identity roster mismatch")
+    for variable, name in COMPILER_POLICY.items():
+        item = records[variable]
+        invocation = Path(item.get("invocation_path", ""))
+        resolved = Path(item.get("resolved_path", ""))
+        require(invocation.is_absolute() and invocation.name == name and resolved.is_absolute()
+                and ".." not in invocation.parts and ".." not in resolved.parts
+                and environment.get("payload_env", {}).get(variable) == str(invocation)
+                and re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", ""))
+                and re.search(r"\bclang version \S+", item.get("version", ""))
+                and item.get("elf") == {"class": "ELF64", "byte_order": "little", "machine": arch},
+                f"native compiler identity or environment mismatch: {variable}")
+
+
+def current_compilers(records, arch):
+    current = {}
+    for variable, item in records.items():
+        resolved = Path(item["invocation_path"]).resolve(strict=True)
+        current[variable] = {**item, "resolved_path": str(resolved), "sha256": digest(resolved),
+                             "elf": elf_identity(resolved, arch)}
+    require(current == records, "native compiler identity changed during payload")
+    return current
 
 
 def classified_tests(root, manifest):
@@ -110,9 +166,68 @@ def scope_info(unit, proc=Path("/proc/self/cgroup"), base=Path("/sys/fs/cgroup")
     return scope, {"path": str(scope), "unit": unit, "limits": values}
 
 
+def scope_pids(scope):
+    return {int(x) for p in scope.rglob("cgroup.procs") for x in p.read_text().split()}
+
+
 def quiescent(scope):
-    pids = {int(x) for p in scope.rglob("cgroup.procs") for x in p.read_text().split()}
+    pids = scope_pids(scope)
     require(pids == {os.getpid()}, f"unexpected descendants remain in bounded service: {sorted(pids)}")
+
+
+def drain_scope(scope, deadline):
+    while True:
+        pids = scope_pids(scope)
+        if pids == {os.getpid()}:
+            return {"quiescent": True, "pids": sorted(pids)}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"quiescent": False, "pids": sorted(pids)}
+        time.sleep(min(0.05, remaining))
+
+
+def resource_snapshot(scope):
+    snapshot = {"memory_events": None, "memory_peak_bytes": None, "errors": []}
+    for filename, field in [("memory.events", "memory_events"), ("memory.peak", "memory_peak_bytes")]:
+        try:
+            value = (scope / filename).read_text()
+            require(bool(value.strip()), f"empty {filename}")
+            if field == "memory_peak_bytes":
+                require(value.strip().isdigit(), "invalid memory.peak")
+                value = int(value.strip())
+            snapshot[field] = value
+        except Exception as error:
+            snapshot["errors"].append(f"{filename}: {type(error).__name__}: {error}")
+    return snapshot
+
+
+def residual_processes(scope, proc=Path("/proc"), base=Path("/sys/fs/cgroup")):
+    # Read only PIDs still belonging to this owned cgroup, with bounded per-PID text.
+    relative = "/" + str(scope.relative_to(base))
+    pids = sorted(scope_pids(scope) - {os.getpid()})
+    records = []
+    for pid in pids[:512]:
+        item = {"pid": pid}
+        try:
+            with (proc / str(pid) / "cgroup").open("rb") as handle:
+                membership = handle.read(4096).decode(errors="replace")
+            paths = [line[3:] for line in membership.splitlines() if line.startswith("0::")]
+            require(len(paths) == 1 and (paths[0] == relative or paths[0].startswith(relative + "/")),
+                    "PID left owned cgroup before observation")
+            for filename in ["status", "cmdline"]:
+                with (proc / str(pid) / filename).open("rb") as handle:
+                    item[filename] = handle.read(4096).replace(b"\0", b" ").decode(errors="replace")
+        except Exception as error:
+            item["observation_error"] = f"{type(error).__name__}: {error}"
+        records.append(item)
+    return {"pids": records, "truncated": len(pids) > 512}
+
+
+def validate_resources(snapshot, events):
+    require(isinstance(snapshot, dict) and snapshot.get("errors") == []
+            and snapshot.get("memory_events") == events
+            and type(snapshot.get("memory_peak_bytes")) is int
+            and snapshot["memory_peak_bytes"] >= 0, "resource snapshot missing, failed, or changed")
 
 
 def test_result(path, name):
@@ -176,30 +291,83 @@ class Driver:
     def write(self):
         save(self.out / "receipt.json", self.receipt)
 
+    def resources(self, container, key, strict=True):
+        snapshot = resource_snapshot(self.scope)
+        container[key] = snapshot
+        self.write()
+        if strict:
+            require(not snapshot["errors"], f"resource snapshot failed: {snapshot['errors']}")
+        return snapshot
+
     def command(self, name, argv, timeout):
-        quiescent(self.scope)
         record = {"name": name, "argv": argv, "timeout_seconds": timeout,
-                  "return_code": None, "signal": None, "timed_out": False}
+                  "return_code": None, "signal": None, "timed_out": False,
+                  "secondary_errors": []}
         self.receipt["commands"].append(record)
         self.write()
         start = time.monotonic()
         stdout = self.out / f"{name}.stdout.log"
         stderr = self.out / f"{name}.stderr.log"
-        with stdout.open("wb") as out, stderr.open("wb") as err:
-            child = subprocess.Popen(argv, cwd=ROOT, env=self.env, stdout=out, stderr=err,
-                                     start_new_session=True)
-            try:
-                code = child.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                record["timed_out"] = True
-                os.killpg(child.pid, signal.SIGKILL)
-                code = child.wait()
-        record.update(return_code=code, signal=-code if code < 0 else None,
+        code = None
+        primary = None
+        try:
+            self.resources(record, "resources_before")
+            quiescent(self.scope)
+            current_compilers(self.receipt["environment"]["native_compilers"], self.args.arch)
+            with stdout.open("wb") as out, stderr.open("wb") as err:
+                child = subprocess.Popen(argv, cwd=ROOT, env=self.env, stdout=out, stderr=err,
+                                         start_new_session=True)
+                try:
+                    code = child.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    record["timed_out"] = True
+                    primary = f"{name} timed out after {timeout}s"
+                    deadline = time.monotonic() + EXIT_DRAIN_SECONDS
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except OSError as error:
+                        record["secondary_errors"].append(f"timeout kill: {error}")
+                    try:
+                        code = child.wait(timeout=max(0, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        record["secondary_errors"].append("command leader did not exit within drain budget")
+                        code = child.poll()
+                    record["exit_drain"] = drain_scope(self.scope, deadline)
+                    if not record["exit_drain"]["quiescent"]:
+                        record["secondary_errors"].append("descendants remain after bounded timeout drain")
+                if primary is None and code != 0:
+                    primary = f"{name} failed: exit={code}"
+        except Exception as error:
+            message = f"{type(error).__name__}: {error}"
+            if primary is None:
+                primary = message
+            else:
+                record["secondary_errors"].append(message)
+        record.update(return_code=code, signal=-code if code is not None and code < 0 else None,
                       elapsed_seconds=time.monotonic() - start)
-        record["logs"] = {p.name: digest(p) for p in [stdout, stderr]}
+        record["logs"] = {p.name: digest(p) for p in [stdout, stderr] if p.is_file()}
+        snapshot = self.resources(record, "resources_after", strict=False)
+        closing_errors = list(snapshot["errors"])
+        try:
+            quiescent(self.scope)
+        except Exception as error:
+            closing_errors.append(f"post-command descendants: {type(error).__name__}: {error}")
+        try:
+            current_compilers(self.receipt["environment"]["native_compilers"], self.args.arch)
+        except Exception as error:
+            closing_errors.append(f"post-command compiler identity: {type(error).__name__}: {error}")
+        if closing_errors:
+            if primary is None:
+                primary = closing_errors.pop(0)
+            record["secondary_errors"].extend(closing_errors)
+        if primary is not None:
+            record["error"] = primary
+            try:
+                record["residual_processes"] = residual_processes(self.scope)
+            except Exception as error:
+                record["secondary_errors"].append(f"residual observation: {type(error).__name__}: {error}")
         self.write()
-        quiescent(self.scope)
-        require(code == 0 and not record["timed_out"], f"{name} failed: exit={code}")
+        require(primary is None, primary)
         return stdout
 
     def freeze(self, name, path):
@@ -219,6 +387,8 @@ class Driver:
     def run(self):
         try:
             self.scope, self.receipt["scope"] = scope_info(self.args.unit)
+            initial = self.resources(self.receipt, "resources_before")
+            self.receipt["memory_events_before"] = initial["memory_events"]
             quiescent(self.scope)
             require(resource.getrlimit(resource.RLIMIT_CORE)[0] == 0, "core dumps must be disabled")
             require(platform.system() == "Linux" and platform.machine() == self.args.arch,
@@ -241,6 +411,7 @@ class Driver:
             self.env.update(TMPDIR=str(tmp), CARGO_TARGET_DIR=str(work / "target"),
                             CARGO_BUILD_JOBS="2", RAYON_NUM_THREADS="2", CARGO_INCREMENTAL="0",
                             RUSTUP_TOOLCHAIN=channel, LANG="C.UTF-8")
+            compilers = select_compilers(self.env, self.args.arch)
             rust = output(["rustc", "-vV"], env=self.env)
             triple = TRIPLES[self.args.arch]
             require(f"host: {triple}" in rust, "Rust host target does not match the native runner")
@@ -254,8 +425,8 @@ class Driver:
                 "z3": z3, "z3_binary_sha256": digest(shutil.which("z3", path=self.env["PATH"])),
                 "channel": channel, "target": triple, "tmp_fstype": fstype,
                 "disk_free_bytes": shutil.disk_usage(work).free,
+                "compiler_policy": dict(COMPILER_POLICY), "native_compilers": compilers,
                 "features": "default", "rust_min_stack": "unset", "payload_env": self.env}
-            self.receipt["memory_events_before"] = (self.scope / "memory.events").read_text()
             self.write()
             self.command("harness-controls", CONTROL_ARGV, 120)
             executables = {}
@@ -279,10 +450,12 @@ class Driver:
                     self.check_artifacts()
             self.receipt["source_after"] = source_identity(ROOT)
             require(self.receipt["source_before"] == self.receipt["source_after"], "source changed during run")
-            self.receipt["memory_events_after"] = (self.scope / "memory.events").read_text()
+            closing = self.resources(self.receipt, "resources_after")
+            self.receipt["memory_events_after"] = closing["memory_events"]
             require(self.receipt["memory_events_before"] == self.receipt["memory_events_after"],
                     "memory control events changed during run")
             quiescent(self.scope)
+            self.receipt["native_compilers_after"] = current_compilers(compilers, self.args.arch)
             self.receipt["artifacts_after"] = {
                 name: {"path": item["path"], "sha256": digest(item["path"]),
                        "elf": elf_identity(item["path"], self.args.arch)}
@@ -293,6 +466,13 @@ class Driver:
             return 0
         except Exception as error:
             self.receipt.update(verdict="FAIL", error=f"{type(error).__name__}: {error}")
+            if self.scope is not None:
+                closing = self.resources(self.receipt, "resources_failure", strict=False)
+                self.receipt["memory_events_after"] = closing["memory_events"]
+                try:
+                    self.receipt["residual_processes"] = residual_processes(self.scope)
+                except Exception as diagnostic:
+                    self.receipt["residual_observation_error"] = f"{type(diagnostic).__name__}: {diagnostic}"
             self.write()
             print(self.receipt["error"], flush=True)
             return 1
@@ -325,7 +505,12 @@ def validate(out, expected_sha, expected_arch, require_launcher=True, require_fi
     require(env.get("features") == "default" and env.get("rust_min_stack") == "unset"
             and env.get("tmp_fstype") not in [None, "", "tmpfs", "ramfs"]
             and env.get("payload_env", {}).get("RUSTUP_TOOLCHAIN") == channel
+            and env["payload_env"].get("CARGO_BUILD_JOBS") == "2"
+            and env["payload_env"].get("RAYON_NUM_THREADS") == "2"
             and "RUST_MIN_STACK" not in env["payload_env"], "execution environment mismatch")
+    validate_compilers(env, arch)
+    require(receipt.get("native_compilers_after") == env["native_compilers"],
+            "closing native compiler identities missing or changed")
     require(receipt.get("source_before") == receipt.get("source_after")
             and receipt["source_before"]["commit"] == receipt["expected_sha"], "source binding mismatch")
     source = receipt["source_before"]
@@ -333,9 +518,12 @@ def validate(out, expected_sha, expected_arch, require_launcher=True, require_fi
             and source.get("files") and all(name in source["files"] for name in
                 ["Cargo.lock", "rust-toolchain.toml", "scripts/ci/linux_native.py"]),
             "tracked source manifest missing")
-    require(receipt.get("memory_events_before") is not None
+    require(isinstance(receipt.get("memory_events_before"), str)
+            and bool(receipt["memory_events_before"].strip())
             and receipt["memory_events_before"] == receipt.get("memory_events_after"),
             "memory control events missing or changed")
+    validate_resources(receipt.get("resources_before"), receipt["memory_events_before"])
+    validate_resources(receipt.get("resources_after"), receipt["memory_events_after"])
     require(receipt.get("artifacts_unchanged") is True, "executable mutation or missing closing check")
     require(receipt.get("artifacts_after") == receipt["artifacts"], "executable closing hashes mismatch")
     required_artifacts = {"anubis", *(t["target"] for t in manifest["targets"])}
@@ -351,7 +539,13 @@ def validate(out, expected_sha, expected_arch, require_launcher=True, require_fi
     require([r.get("name") for r in commands] == command_names, "command roster mismatch")
     for record in commands:
         require(record.get("return_code") == 0 and record.get("signal") is None
-                and record.get("timed_out") is False, "failed command in PASS receipt")
+                and record.get("timed_out") is False and not record.get("error")
+                and record.get("secondary_errors") == [], "failed command in PASS receipt")
+        require(record.get("timeout_seconds") ==
+                (120 if record["name"] == "harness-controls" or record["name"].startswith("test-") else 3600),
+                "command timeout differs from approved budget")
+        validate_resources(record.get("resources_before"), receipt["memory_events_before"])
+        validate_resources(record.get("resources_after"), receipt["memory_events_before"])
         logs = record["logs"]
         require(set(logs) == {record["name"] + ".stdout.log", record["name"] + ".stderr.log"},
                 "missing command log")
@@ -384,6 +578,7 @@ def validate(out, expected_sha, expected_arch, require_launcher=True, require_fi
         require(launch.get("exit_code") == 0 and launch.get("unit_removed") is True
                 and launch.get("query_exit_code") == 0
                 and launch.get("launch_exit_code") == "0" and launch.get("cleanup_required") is False
+                and launch.get("teardown_errors") == []
                 and launch.get("load_state_after") == "not-found"
                 and launch.get("unit") == receipt["scope"]["unit"],
                 "bounded service failed or did not tear down")
@@ -418,7 +613,10 @@ def main():
             launch["validation_exit_code"] = 1
             save(args.out / "launcher.json", launch)
             receipt = json.loads((args.out / "receipt.json").read_text())
-            receipt.update(verdict="FAIL", error=f"final validation failed: {error}")
+            receipt["verdict"] = "FAIL"
+            receipt["final_validation_error"] = f"final validation failed: {error}"
+            if not receipt.get("error") or receipt["error"] == "run incomplete":
+                receipt["error"] = receipt["final_validation_error"]
             save(args.out / "receipt.json", receipt)
             raise
         launch["validation_exit_code"] = 0

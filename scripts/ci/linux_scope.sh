@@ -32,18 +32,35 @@ finish() {
   fi
   python3 - "$out/launcher.json" "$shell_rc" "$launch_rc" "$unit" "$state" "$query_rc" "$cleanup" "$stop_rc" <<'PY'
 import json, pathlib, sys
-pathlib.Path(sys.argv[1]).write_text(json.dumps({
+launcher = {
     "exit_code": int(sys.argv[2]), "launch_exit_code": sys.argv[3],
     "unit": sys.argv[4] + ".service", "load_state_after": sys.argv[5],
     "query_exit_code": int(sys.argv[6]), "cleanup_required": sys.argv[7] == "true",
     "stop_exit_code": sys.argv[8],
     "unit_removed": sys.argv[5] == "not-found" and sys.argv[6] == "0",
-}, indent=2) + "\n")
+}
+teardown_errors = []
+if sys.argv[6] != "0":
+    teardown_errors.append("service collection query failed")
+if sys.argv[5] != "not-found":
+    teardown_errors.append("service remains present or its state is unknown")
+if sys.argv[7] != "false":
+    teardown_errors.append("owned service required cleanup")
+launcher["teardown_errors"] = teardown_errors
+pathlib.Path(sys.argv[1]).write_text(json.dumps(launcher, indent=2) + "\n")
 if sys.argv[2] != "0" or sys.argv[3] != "0" or sys.argv[5] != "not-found" or sys.argv[6] != "0" or sys.argv[7] != "false":
     receipt_path = pathlib.Path(sys.argv[1]).with_name("receipt.json")
     if receipt_path.is_file():
         receipt = json.loads(receipt_path.read_text())
-        receipt.update(verdict="FAIL", error="launcher or teardown failed; inspect launcher.json and logs")
+        receipt["verdict"] = "FAIL"
+        receipt["launcher_failure"] = {
+            "exit_code": launcher["exit_code"], "launch_exit_code": launcher["launch_exit_code"],
+            "teardown_errors": teardown_errors,
+        }
+        # A nonzero service exit may be the already-recorded payload timeout/failure.
+        # Never replace that primary error with the later launcher observation.
+        if not receipt.get("error") or receipt["error"] == "run incomplete":
+            receipt["error"] = "launcher or teardown failed; inspect launcher.json and logs"
         receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
 PY
   record_rc=$?
