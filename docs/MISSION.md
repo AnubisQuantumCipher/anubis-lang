@@ -75,7 +75,7 @@ records dependency-correct review refs without rewriting published history.
 
 The isolated local integration branch `codex/register-round2-20260926` has
 reviewed code through `5e3f76dfb7ef92faf0bb99c7a42e341a29f5df4b` and
-fixture registrations through `66af64194f6aea52ac474fff9bb4a7f3f5ba2845`.
+fixture registrations through `15bb53a55ce369128853f5012b38b6c210f0ff14`.
 The [guard-transfer receipt](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md)
 binds the preceding `88a2903c` code, selected Safe checks, a clean-head
 binary and a complete provisional same-source matrix comparison. Its reached
@@ -141,7 +141,14 @@ review held the D9 scratch v3 patch before application because its direct
 producer could lose that newly created obligation. The next executable step
 is to obtain and independently review a v4 scratch patch, then lead-test it
 against the frozen D9 pairs on a source-bound build before any code commit.
-The matrix
+The further [secret-PC/public-field pair](evidence/D9_PC_PUBLIC_FIELD_REGISTRATION_2026-09-26/README.md)
+is registered in fixture-only commit `15bb53a5`. The pinned baseline
+over-refuses its public-guard twin and refuses the secret-guard source through
+a generic direct root finding plus IFC2. Independent static review held v4
+because the new field-shape shortcut could lose that direct finding without
+creating a true implicit-flow obligation. A v5 scratch transfer is now the
+next D9 implementation dependency; review it before lead-only build and
+same-source selected checks. The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
 the new fixed-path loader: production diagnostics still lack complete stable
 source locators. Preserve the old `history.tsv` and add compact event history

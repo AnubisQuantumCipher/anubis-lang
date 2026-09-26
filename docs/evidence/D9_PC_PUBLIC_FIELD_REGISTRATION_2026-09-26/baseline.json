@@ -1,0 +1,63 @@
+{
+  "binary_sha256": "98e8090a07716e4876c65422c368e373d92717456edc235f296d8b687f17aac0",
+  "cases": [
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_public_pc_public_sibling_valid",
+      "source_sha256": "e6feedb919460a12097679dfe907f25f957f24575834bf066ec43c00c7da213e",
+      "stderr_sha256": "ad555194ee96e24914bdee8d1277efd68ebabd09eb5c8b5fafd05b35b014db3e",
+      "stdout_sha256": "9537d15c64bbe4ef55578371083abd6913ede9bf48a65f228463ddc629f201cb",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_secret_pc_public_sibling_invalid",
+      "source_sha256": "1be6593f7b04f6819c75aeafeaac7904d9f18ada543f299e79ffcbf3c1375e94",
+      "stderr_sha256": "775cf529398d69b5f03c8411b6616c89eaabaad2bd2d668c43462c3b185a6e41",
+      "stdout_sha256": "ce31a6ae7e93b2eb06f47190556326da549bbe4389e8d1521886ff88650c8f46",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    }
+  ],
+  "source_commit": "fc72526b5477f6475d33adf3d86ad02a467b1046"
+}

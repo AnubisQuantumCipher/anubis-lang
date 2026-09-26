@@ -55,6 +55,14 @@ receive both a direct declared-field refusal and an IFC2 refusal. Independent
 review held the revised scratch v3 before application because its direct
 producer could lose the declared-field obligation on that path. A candidate
 must retain the direct obligation, not rely on IFC2's aggregate failure.
+The further [secret-PC/public-field pair](evidence/D9_PC_PUBLIC_FIELD_REGISTRATION_2026-09-26/README.md)
+freezes a variable secret-controlled write to public `Row.n` and its public-
+guard twin. On the source-matched baseline the valid twin is over-refused;
+the invalid program receives a generic direct root refusal and IFC2 refusal,
+but no direct implicit-flow diagnostic. Independent static review held the
+unintegrated v4 scratch patch because its clean-field early return could drop
+that direct producer finding. This is a producer-coverage and precision gate,
+not an observed aggregate Safe false accept.
 
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate
