@@ -70,74 +70,49 @@ records dependency-correct review refs without rewriting published history.
 
 ## Current checkpoint and next executable step (2026-09-26)
 
-The latest reviewed implementation code commit on the isolated local integration
-branch is `ebe4f3edf0ae4b9a93c04b26e467de2ca0f8a05b`. It follows the
-fixture-only guard-write registration and its docs receipt. This docs-only
-checkpoint records the captured-combiner build and selected CLI comparison.
-Fixture-only commit `2ca7afff0df115e9fcaf729ef2a34304e72830af`
-follows it, registering the newly witnessed binder leak and independent
-guard controls before any implementation repair.
-It includes the evidence, package-refusal and provisional-matrix units listed
-in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
-builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
-caller-supplied [source-graph identity primitive](mission/VERIFIED_SOURCE_GRAPH_DESIGN_2026-09-26.md).
-The new [bounded byte reader](evidence/SOURCE_GRAPH_READER_2026-09-26.md)
-captures a private tree on Linux under an explicit trusted-procfs assumption.
-The [private captured-project resolver](evidence/CAPTURED_PROJECT_RESOLVER_2026-09-26.md)
-parses those bytes and refuses nested imports explicitly, but the public
-checker, lowering, package admission and verifier are not yet bound to that
-captured graph. The valid transitive package fixture therefore still fails at
-`ANUBIS_DEP_PROOF_UNVERIFIED`; this is an open precision/product gate.
-The [private captured-combine adapter](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md)
-reuses the production module rewrite and preserves trait sidecars, but has no
-production caller. Its clean-head CLI matched the prior pin on selected
-tracked multi-file Safe examples; this is not a package-admission witness.
-The [request-local solver-symbol receipt](evidence/REQUEST_LOCAL_SOLVER_SYMBOLS_2026-09-26.md)
-records same-process and cold-process byte stability in the covered contract
-and match obligations. Its source-bound selected Safe comparison shows no
-typed verdict flips against the preceding code pin; old evidence sidecars
-must still be rederived for the new producer.
+The isolated local integration branch `codex/register-round2-20260926` has
+reviewed code through `6b85cf2207e5b3126a18e2df1190a4efa49a2ecc`.
+The [guard-transfer receipt](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md)
+binds the preceding `88a2903c` code, selected Safe checks, a clean-head
+binary and a complete provisional same-source matrix comparison. Its reached
+shadowed-binder call is now DISPROVED and the required valid failed-guard
+fallthrough is accepted. Four valid performance forms timed out in the full
+candidate run; their cause is unresolved. One OOM-designated form requires
+the mandatory disposable guest for follow-up.
+The historical full matrix remains `INCOMPLETE`, with other silent accepts,
+valid refusals and unbound diagnostic classes.
 
-The [scoped arm-binder receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
-records the preceding `70b200c7` result. The
-[new shadowed-binder registration](evidence/SHADOWED_MATCH_IFLET_REGISTRATION_2026-09-26.md)
-now records a distinct silent accept inside a reached `if let` expression
-in a match arm, with a direct checked disproof and a native `f(0)` witness.
-It also freezes a valid call before a later binder write and a distinct
-stale-prior-nonmatch case. The proposed guard-write transfer remains on HOLD
-pending independent review of its revised binder handling.
-The
-[statement enum-payload receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md)
-and [value-position enum receipt](evidence/ARM_ENUM_EXPR_PRECISION_2026-09-26.md)
-show the frozen valid dead arms accepted and reachable violated twins
-disproved in their respective positions. The latter selected comparison
-has only the expected classified flips on the same registered Safe sources.
-The separately [registered guard-write pair](evidence/MATCH_GUARD_WRITE_REGISTRATION_2026-09-26.md)
-is still undecided in both valid and invalid fallthrough forms, and its
-direct violated twin is disproved. The valid refusal is a precision gate;
-no silent accept was reproduced for that pair.
-[Additional frozen controls](evidence/MATCH_GUARD_WRITE_ADDITIONAL_CONTROLS_2026-09-26.md)
-cover stale facts after a write, binder shadowing, and a contracted call in
-the guard. They preserve the pre-repair typed baseline and runtime paths.
-The full matrix runner remains `INCOMPLETE` by design. The local unfiltered
-compiler-library attempt on the preceding head was interrupted after a
-Research execution test was identified in this Linux guest; it is not a
-required suite witness. No disposable Tart, hosted, full workspace,
-independent rebuild or release gate is claimed for this head.
+The [min/max receipt](evidence/IFC2_MINMAX_CALLBACK_2026-09-26/README.md)
+binds `6b85cf22`, its clean-head binary, selected Safe verdicts and finite
+native witness. The registered min/max leak pair changed from check PASS to
+typed IFC2 refusal. Fixed captured-key comparison, negation, helper and
+padded-argument controls still pass, including normal Safe native execution
+for the padded min/max examples. Two registered valid unannotated `Row` helper
+controls remain refused by D9's public-formal inference; this is an open
+precision defect. The min/max result is selected-source evidence, not an
+updated full-matrix total or a verified-property seal.
 
-Next, restore the required valid guard-write fallthrough while retaining the
-invalid control and correct pre/post-write facts. Independently connect
-captured bytes to checker/lowering input with one immutable program input,
-and only then to versioned package
-and evidence closure claims before restoring transitive verified admission.
-The honest FAIL-bundle verifier also needs source-derived sidecar and security
-context checks with typed legacy scope and a current strict check contract.
-The latest draft remains unintegrated after independent review found a broken
-publish-to-resolve path and incomplete machine-readable scope, invalid-input
-replay, file-roster, and provenance treatment. Continue the distinct
-[min/max precision controls](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md)
-and broader value-position match controls without treating refusal of valid
-code as completion. The canonical defect
-status is [CLAIMS](CLAIMS.md), and the requirement dependencies remain in
-[the requirement map](mission/REQUIREMENTS.md). PR #44 still requires a
-reviewable split and human review before protected-branch integration.
+The first next implementation dependency is to carry the actual qualifier of
+a direct call's unannotated struct argument through D9 without dropping
+secret fields or refusing the registered valid `Row` controls. Freeze the
+baseline outcome on the `6b85cf22` pin, pair secret-egress negatives with the
+valid twins, implement a typed summary, and request independent design/final
+diff review before a source-bound lead build. In parallel, connect the
+[captured source graph](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md)
+to checker/lowering and package admission; the valid transitive package still
+fails at `ANUBIS_DEP_PROOF_UNVERIFIED`. The honest FAIL-bundle verifier v10
+scratch patch is on HOLD after independent review found a rebase that deletes
+the guard fix, an overstated multi-leaf source scope, and a malformed legacy
+downgrade test. A narrow v11 patch must retain the current code and receive
+fresh review before lead testing. The matrix
+[canonical-manifest dependency](mission/REQUIREMENTS.md) remains open: typed
+expectations alone cannot bind diagnostics lacking source locators. Preserve
+the old `history.tsv` and add compact event history only after that gate is
+reviewed. `docs/CLAIMS.md` is the defect authority.
+
+No current full workspace, hosted, disposable-guest, independent clean-room,
+protected-branch, product-release, or full trust-chain result is claimed.
+The separate main-based front-page correction and the
+[PR #44 review stack](mission/PR44_LOCAL_SPLIT_2026-09-26.md) remain local;
+protected integration needs human review
+and its applicable authorization.

@@ -15,6 +15,24 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
+Local code commits `88a2903c` and `6b85cf22` have separate
+[guard-transfer](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md) and
+[min/max callback](evidence/IFC2_MINMAX_CALLBACK_2026-09-26/README.md)
+receipts. The reached shadowed-binder `requires` now DISPROVES, the required
+failed-guard valid twin passes, and the registered min/max leak pair now gets
+typed IFC2 security refusals. The finite prior-pin min/max native witness
+printed a different public callback sequence for two protected values; the
+new pin refuses that source before execution and still runs the fixed-key
+positive controls. This is selected-source evidence, not a full Safe-mode
+soundness seal. The latest full provisional matrix run was on the earlier
+guard pin and remained `INCOMPLETE`; it had other silent accepts, valid
+wrong-class outcomes, and four valid performance timeouts whose cause is
+unresolved. Two registered valid unannotated `Row` helper controls still fail
+with `ANUBIS_SECRET_TO_PUBLIC` on both pins because D9 infers a public
+formal. The honest FAIL-bundle verifier v10 draft is unintegrated after
+independent review found a destructive rebase and source-scope overclaim.
+
 **UPDATE 2026-09-26 — reached shadowed-binder call silently accepted.**
 The [source-bound registration receipt](evidence/SHADOWED_MATCH_IFLET_REGISTRATION_2026-09-26.md)
 for local fixture commit `2ca7afff` records a Safe value-match arm whose
@@ -22,7 +40,8 @@ statement-free `if let` calls `f(0)` through a shadowing binder. The pinned
 checker passes the carrier, disproves direct `f(0)`, and normal Safe native
 execution prints `entered f with 0` on a harmless witness variant. A valid
 call-before-binder-write remains required to pass. The guard-write repair
-drafts have not passed independent review or been integrated.
+drafts had not passed independent review at that registration pin; the later
+scoped repair is recorded above.
 
 **UPDATE 2026-09-26 — private captured-project combiner staged.**
 Local code commit `ebe4f3ed` has a
@@ -142,14 +161,14 @@ the downloaded receipts and logs were checked against their hashes. The original
 failures and strict limits remain part of the record. This lane does not cover a full
 workspace run, full soundness matrix, mandated guest work, or Omarchy installation.
 
-**UPDATE 2026-09-26 — round-2 findings registered; new match-arm precondition hole.**
+**Earlier-pin update 2026-09-26 — round-2 findings registered; new match-arm precondition hole.**
 [The registration receipt](evidence/ROUND2_REGISTRATION_2026-09-26.md) maps the
 historical round-2 leak sources into the matrix without changing their intended outcomes.
-Two min/max cases and two new match-arm cases still silently check clean on the pinned
+At that pin, two min/max cases and two new match-arm cases silently checked clean on the pinned
 full-Safe CLI; direct and renamed-binder controls disprove the violated `requires`,
 while a satisfied call remains accepted. No full current matrix verdict is claimed.
 
-**UPDATE 2026-09-26 — bool result-kind correction; min/max still withheld.** The
+**Earlier-pin update 2026-09-26 — bool result-kind correction; min/max candidate withheld.** The
 [bool-commit slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md) corrects the
 runtime result kind in `b835b94b`; focused full-Safe library controls pass and
 the original native leak is reproduced. The source-attributed CLI build completed

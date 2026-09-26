@@ -1,0 +1,186 @@
+{
+  "baseline_binary_sha256": "16705b9df6e971b31c0b1cf2a3a69a057a66d790d392951341cb53e718dddf35",
+  "baseline_commit": "88a2903c6534843d1c831ac47b11d27e87b1f114",
+  "baseline_manifest_sha256": "ddf363eb5ad75a87601caada423be1c8b3a2f428994953d3dc56694c84c590aa",
+  "candidate_binary_sha256": "06ab383684f3e953c613748938719fade05f573176457cb8133071a4e580df51",
+  "candidate_commit": "6b85cf2207e5b3126a18e2df1190a4efa49a2ecc",
+  "candidate_manifest_sha256": "35ff05f3b5b7fcfc7b0b8c02fa2d94c325069ffc1bd4aae80909dfef17d5e4ae",
+  "flips": [
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "SEC_REJECT",
+      "candidate_diagnostics": [
+        [
+          "ANUBIS_SECRET_EXFILTRATION",
+          "refused"
+        ]
+      ],
+      "id": "ifc2r2_minmax_callback_args_decided_by_results",
+      "intent": "REJECT",
+      "source_sha256": "ef4714cf8ef591f645c36c5b16ebde482502b3fd302841419001c7aeae8045a0"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "SEC_REJECT",
+      "candidate_diagnostics": [
+        [
+          "ANUBIS_SECRET_EXFILTRATION",
+          "refused"
+        ]
+      ],
+      "id": "ifc2r2_minmax_callback_argument",
+      "intent": "REJECT",
+      "source_sha256": "8b229d70075d1533636aaeebf5afdb34f3f70a90bafcbe185026edb61ef86a4c"
+    }
+  ],
+  "limits": [
+    "Selected Safe single-file sources only; matrix runner remains INCOMPLETE.",
+    "The two registered D9 Row ACCEPT controls remain refused by the ordinary lane.",
+    "SEC_REJECT is typed IFC2 refusal, not a solver counterexample or proof of source/runtime correspondence.",
+    "No hosted, independent rebuild, full workspace or required guest witness is claimed."
+  ],
+  "registry_sha256": "94a63ed3f25eef1f96a318fab66c9deb2b2f6e27f7790aabb6180b6ace0b0575",
+  "rows": [
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "SEC_REJECT",
+      "candidate_diagnostics": [
+        [
+          "ANUBIS_SECRET_EXFILTRATION",
+          "refused"
+        ]
+      ],
+      "id": "ifc2r2_minmax_callback_args_decided_by_results",
+      "intent": "REJECT",
+      "source_sha256": "ef4714cf8ef591f645c36c5b16ebde482502b3fd302841419001c7aeae8045a0"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "SEC_REJECT",
+      "candidate_diagnostics": [
+        [
+          "ANUBIS_SECRET_EXFILTRATION",
+          "refused"
+        ]
+      ],
+      "id": "ifc2r2_minmax_callback_argument",
+      "intent": "REJECT",
+      "source_sha256": "8b229d70075d1533636aaeebf5afdb34f3f70a90bafcbe185026edb61ef86a4c"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_max_by_comparison_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "cacf65cc5ea00c2b9815dd8fabb754820d1072f5375557d11c09d77b5e6fcea5"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_max_by_helper_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "cdabe16ede3e5e3e2d855059d45b48afd7654fb3f89a3b1643909e6f02bd90e7"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_max_by_negated_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "f3f826047d80df16e2878324d2bdcf64fbd75a6aa9fb00b439f42065aef87e91"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_max_by_padded_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "bc1cd1cd2afaa259426a26349defe789a894958be3affb1903adc3fa7d5752a7"
+    },
+    {
+      "baseline": "SEC_REJECT",
+      "baseline_diagnostics": [
+        [
+          "ANUBIS_SECRET_TO_PUBLIC",
+          "refused"
+        ]
+      ],
+      "candidate": "SEC_REJECT",
+      "candidate_diagnostics": [
+        [
+          "ANUBIS_SECRET_TO_PUBLIC",
+          "refused"
+        ]
+      ],
+      "id": "ifc2r2_minmax_max_by_unannotated_row_helper_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "c078a5ec4818eb1f3b12e6f27b7f120ab49379724fa3f39fe85ada49784f49b0"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_min_by_comparison_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "7addece8af4dc7371c9f5c02f1b62f9d3c00634f28e4b2fd7610e082c9771e38"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_min_by_helper_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "b6c55f72b88889b417fdb8e12020b0cc8cf6becac210c0f156aaf85b6960d078"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_min_by_negated_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "06100803f7a4207e6d5c60216fd2309174876abfddbc33744589ec2b3aef61f2"
+    },
+    {
+      "baseline": "PASS",
+      "baseline_diagnostics": [],
+      "candidate": "PASS",
+      "candidate_diagnostics": [],
+      "id": "ifc2r2_minmax_min_by_padded_fixed_key_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "396f73af4f7749a1f29f7f0a211fc9a8443d07a21d23b80e61e3b53b3fa7eacf"
+    },
+    {
+      "baseline": "SEC_REJECT",
+      "baseline_diagnostics": [
+        [
+          "ANUBIS_SECRET_TO_PUBLIC",
+          "refused"
+        ]
+      ],
+      "candidate": "SEC_REJECT",
+      "candidate_diagnostics": [
+        [
+          "ANUBIS_SECRET_TO_PUBLIC",
+          "refused"
+        ]
+      ],
+      "id": "ifc2r2_minmax_min_by_unannotated_row_helper_valid",
+      "intent": "ACCEPT",
+      "source_sha256": "5a908ac7cd8a5e510aac24aee9a10ca3a18269f7a51a6df0a3ca3e5b8d6a85ad"
+    }
+  ],
+  "schema": "anubis-local-selected-minmax-comparison/1"
+}
