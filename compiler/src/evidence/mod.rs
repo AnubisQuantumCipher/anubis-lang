@@ -64,6 +64,27 @@ pub struct SourceTreeEntry {
     pub bytes: u64,
 }
 
+/// The source Merkle listing is not itself source closure evidence: every leaf
+/// must also name the regular, manifest-covered bytes from which its digest and
+/// the Merkle root can be recomputed. Historic descriptor-only listings remain
+/// readable as JSON, but cannot satisfy source-closure validation.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SealedSourceLeaves {
+    schema: String,
+    source_merkle_root: String,
+    leaves: Vec<SealedSourceLeaf>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SealedSourceLeaf {
+    path: String,
+    sha256: String,
+    bytes: u64,
+    sealed_path: String,
+}
+
 #[derive(Debug)]
 pub struct EvidenceBundle {
     pub dir: PathBuf,
@@ -428,6 +449,26 @@ fn build_evidence_bundle_tree_inner(
     dep_closure: Option<&serde_json::Value>,
     rejection: Option<&str>,
 ) -> Result<EvidenceBundle, String> {
+    if files.is_empty() {
+        return Err("evidence source closure has no leaves".into());
+    }
+    if files.len() > MAX_EVIDENCE_TREE_ENTRIES {
+        return Err("source closure leaf count exceeds verifier limit".into());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total_source_bytes = 0_u64;
+    for (path, bytes) in files {
+        total_source_bytes = total_source_bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or("source closure byte count overflow")?;
+        if !evidence_manifest_path_ok(path)
+            || !seen.insert(path)
+            || bytes.len() as u64 > MAX_EVIDENCE_SOURCE_LEAF_BYTES
+            || total_source_bytes > MAX_EVIDENCE_HASH_BYTES
+        {
+            return Err("invalid, duplicate, or oversized source closure leaf".into());
+        }
+    }
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     // The bundle is written under a name ending in `.partial` and renamed when it is complete: a
     // process the allocator ends at the hard budget or the reserve (it cannot unwind) left a bundle
@@ -449,7 +490,8 @@ fn build_evidence_bundle_tree_inner(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let source_hash = crate::package::merkle::merkle_root(files.to_vec());
-    // Primary source body for re-derive: first leaf named source.anubis, else concat the SOURCE
+    // Primary source body for re-derive: exact source.anubis leaf first, then
+    // a canonical suffix match, else concatenated text leaves.
     // leaves. The concat fallback filters to leaves that are valid UTF-8 text and free of NUL bytes —
     // a build artifact (Mach-O / ELF) is neither, so it can never be appended into the `source.anubis`
     // snapshot. Defense-in-depth: without this, a caller that passes a binary leaf (e.g. a native
@@ -457,18 +499,13 @@ fn build_evidence_bundle_tree_inner(
     // artifact's bytes, making `anubis report` fail to parse it. The merkle `source_hash` above is
     // still taken over ALL leaves, so bundle integrity is unchanged — only the human/parser-facing
     // snapshot is kept clean.
-    let source = files
-        .iter()
-        .find(|(p, _)| p == "source.anubis" || p.ends_with("/source.anubis"))
-        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
-        .unwrap_or_else(|| {
-            files
-                .iter()
-                .filter(|(_, b)| std::str::from_utf8(b).is_ok() && !b.contains(&0))
-                .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
+    let source = source_snapshot_from_leaves(files, MAX_EVIDENCE_SOURCE_BYTES)?;
+    if total_source_bytes
+        .checked_add(source.len() as u64)
+        .is_none_or(|n| n > MAX_EVIDENCE_HASH_BYTES)
+    {
+        return Err("source closure exceeds verifier byte budget".into());
+    }
     let build_log = logs.join("\n");
     let build_log_hash = sha256_bytes(build_log.as_bytes());
     let artifact_data = artifact
@@ -517,21 +554,36 @@ fn build_evidence_bundle_tree_inner(
     {
         let _ = crate::package::entitlements::write_entitlement_profile_to_evidence_dir(&dir, &ep);
     }
-    // Optional multi-leaf listing for re-verify of Merkle source_hash.
+    // Seal the actual bytes behind every multi-leaf source root. A list of
+    // digests alone cannot re-derive sha256(path || NUL || content), and a
+    // manifest-covered but self-declared root is not source-closure evidence.
+    let mut source_leaf_files = Vec::new();
     if files.len() > 1 {
-        let leaves: Vec<serde_json::Value> = files
-            .iter()
-            .map(|(p, b)| {
-                serde_json::json!({
-                    "path": p,
-                    "sha256": sha256_bytes(b),
-                    "bytes": b.len(),
+        std::fs::create_dir_all(dir.join("source-leaves")).map_err(|e| e.to_string())?;
+        let mut canonical_files: Vec<_> = files.iter().collect();
+        canonical_files.sort_by(|a, b| a.0.cmp(&b.0));
+        let leaves: Vec<SealedSourceLeaf> = canonical_files
+            .into_iter()
+            .enumerate()
+            .map(|(index, (path, bytes))| {
+                let sealed_path = format!("source-leaves/{index:08}.bin");
+                std::fs::write(dir.join(&sealed_path), bytes).map_err(|e| e.to_string())?;
+                source_leaf_files.push(sealed_path.clone());
+                Ok(SealedSourceLeaf {
+                    path: path.clone(),
+                    sha256: sha256_bytes(bytes),
+                    bytes: bytes.len() as u64,
+                    sealed_path,
                 })
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         write_json(
             &dir.join("source-merkle-leaves.json"),
-            &serde_json::json!({ "source_merkle_root": source_hash, "leaves": leaves }),
+            &SealedSourceLeaves {
+                schema: "anubis-source-merkle-leaves-v2".into(),
+                source_merkle_root: source_hash.clone(),
+                leaves,
+            },
         )?;
     }
     std::fs::create_dir_all(dir.join("analysis")).map_err(|e| e.to_string())?;
@@ -921,7 +973,11 @@ fn build_evidence_bundle_tree_inner(
 
     let source_tree = build_source_tree(
         &dir,
-        tracked_bundle_files(artifact_hash.is_some(), &hybrid_sidecars),
+        tracked_bundle_files(
+            artifact_hash.is_some(),
+            &hybrid_sidecars,
+            &source_leaf_files,
+        ),
     )?;
     write_json(&dir.join("source-tree.json"), &source_tree)?;
     let source_tree_text =
@@ -985,6 +1041,12 @@ fn build_evidence_bundle_tree_inner(
         eprintln!("program-evidence.v3 skipped: {err}");
     }
     write_manifest_hashes(&dir)?;
+    // The producer must not publish a PASS-shaped bundle beyond the verifier's
+    // actual file-count, byte, source, or check-roster limits. Keep an invalid
+    // staged directory private instead of renaming it into a complete bundle.
+    if !validate_bundle_recorded_files(&dir, false)? {
+        return Err("produced evidence fails recorded-file validation".into());
+    }
 
     // Complete: under its own name (a new one, if a bundle of this second already holds it, or
     // another process takes it first: a directory is never renamed over one that has files).
@@ -1080,24 +1142,7 @@ fn validate_bundle_recorded_files(dir: &Path, require_pass: bool) -> Result<bool
         serde_json::from_str(&manifest_text).map_err(|e| e.to_string())?;
 
     let mut hashed_bytes = 0;
-    // Single-file: source_hash == sha256(source.anubis). Multi-file: matches recorded merkle.
-    let source_ok = hash_evidence_file(
-        &dir.join("source.anubis"),
-        &mut hashed_bytes,
-        MAX_EVIDENCE_HASH_BYTES,
-    )?
-    .is_some_and(|hash| hash == manifest.source_hash)
-        || read_regular_evidence_text(
-            &dir.join("source-merkle-leaves.json"),
-            MAX_EVIDENCE_JSON_BYTES,
-        )?
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| {
-            v.get("source_merkle_root")
-                .and_then(|r| r.as_str())
-                .map(|r| r == manifest.source_hash)
-        })
-        .unwrap_or(false);
+    let source_ok = source_closure_matches(dir, &manifest.source_hash, &mut hashed_bytes)?;
     let build_log_ok = manifest.build_log_hash.is_empty()
         || hash_evidence_file(
             &dir.join("build.log"),
@@ -2407,7 +2452,11 @@ fn risc0_metadata_check(bundle_dir: &Path) -> Option<Check> {
     })
 }
 
-fn tracked_bundle_files(has_artifact: bool, hybrid_sidecars: &[(String, String)]) -> Vec<String> {
+fn tracked_bundle_files(
+    has_artifact: bool,
+    hybrid_sidecars: &[(String, String)],
+    source_leaf_files: &[String],
+) -> Vec<String> {
     let mut files = vec![
         "source.anubis",
         "build.log",
@@ -2430,6 +2479,10 @@ fn tracked_bundle_files(has_artifact: bool, hybrid_sidecars: &[(String, String)]
         files.push("artifact".into());
     }
     files.extend(hybrid_sidecars.iter().map(|(name, _)| name.clone()));
+    if !source_leaf_files.is_empty() {
+        files.push("source-merkle-leaves.json".into());
+        files.extend(source_leaf_files.iter().cloned());
+    }
     files
 }
 
@@ -2503,6 +2556,7 @@ const MAX_EVIDENCE_HASH_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_EVIDENCE_PATH_BYTES: usize = 4096;
 const MAX_EVIDENCE_TREE_DEPTH: usize = 64;
 const MAX_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_EVIDENCE_SOURCE_LEAF_BYTES: u64 = MAX_EVIDENCE_SOURCE_BYTES;
 const MAX_EVIDENCE_JSON_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_EVIDENCE_SIGNATURE_BYTES: u64 = 64 * 1024;
 // Both the current writer and the archived PCA v2 fixture carry these semantic
@@ -2581,6 +2635,174 @@ fn read_regular_evidence_text(path: &Path, max_bytes: u64) -> Result<Option<Stri
     read_regular_evidence_bytes(path, max_bytes)?
         .map(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
         .transpose()
+}
+
+/// Construct the analyzed source snapshot in the same canonical path order as
+/// the Merkle root. The limit is checked before concatenation, so the producer
+/// never emits a bundle that the verifier must refuse for snapshot size.
+fn source_snapshot_from_leaves(
+    files: &[(String, Vec<u8>)],
+    max_bytes: u64,
+) -> Result<String, String> {
+    let mut canonical_files: Vec<_> = files.iter().collect();
+    canonical_files.sort_by(|a, b| a.0.cmp(&b.0));
+    if let Some((_, bytes)) = canonical_files
+        .iter()
+        .copied()
+        .find(|(path, _)| path == "source.anubis")
+        .or_else(|| {
+            canonical_files
+                .iter()
+                .copied()
+                .find(|(path, _)| path.ends_with("/source.anubis"))
+        })
+    {
+        if bytes.len() as u64 > max_bytes {
+            return Err("analyzed source snapshot exceeds verifier limit".into());
+        }
+        return String::from_utf8(bytes.clone())
+            .map_err(|_| "analyzed source.anubis leaf is not UTF-8".to_string());
+    }
+    let mut snapshot = String::new();
+    let mut first_text_leaf = true;
+    for (_, bytes) in canonical_files {
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            continue;
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+        let next_len = snapshot
+            .len()
+            .checked_add(usize::from(!first_text_leaf))
+            .and_then(|n| n.checked_add(text.len()))
+            .ok_or("analyzed source snapshot size overflow")?;
+        if next_len as u64 > max_bytes {
+            return Err("analyzed source snapshot exceeds verifier limit".into());
+        }
+        if !first_text_leaf {
+            snapshot.push('\n');
+        }
+        snapshot.push_str(text);
+        first_text_leaf = false;
+    }
+    Ok(snapshot)
+}
+
+/// Reconstruct the actual Merkle root and the analyzed source snapshot from
+/// manifest-covered leaf bytes. The old descriptor-only multi-file format
+/// cannot establish either relationship and is intentionally limited to
+/// historical hash-inventory inspection; PCA and accepted-artifact validation
+/// require the source closure to be independently reconstructible.
+fn source_closure_matches(
+    dir: &Path,
+    expected_root: &str,
+    inspected_bytes: &mut u64,
+) -> Result<bool, String> {
+    let Some(snapshot) =
+        read_regular_evidence_bytes(&dir.join("source.anubis"), MAX_EVIDENCE_SOURCE_BYTES)?
+    else {
+        return Ok(false);
+    };
+    *inspected_bytes = inspected_bytes
+        .checked_add(snapshot.len() as u64)
+        .ok_or("evidence source byte count overflow")?;
+    if *inspected_bytes > MAX_EVIDENCE_HASH_BYTES {
+        return Err("evidence source byte budget exceeded".into());
+    }
+    let snapshot_hash = sha256_bytes(&snapshot);
+    let listing_path = dir.join("source-merkle-leaves.json");
+    if !listing_path.exists() {
+        // The historic one-leaf identity remains compatible with PCA v2.
+        return Ok(snapshot_hash == expected_root);
+    }
+    let Some(listing_bytes) = read_regular_evidence_bytes(&listing_path, MAX_EVIDENCE_JSON_BYTES)?
+    else {
+        return Ok(false);
+    };
+    let Ok(listing) = serde_json::from_slice::<SealedSourceLeaves>(&listing_bytes) else {
+        return Ok(false);
+    };
+    if listing.schema != "anubis-source-merkle-leaves-v2"
+        || listing.leaves.len() < 2
+        || listing.leaves.len() > MAX_EVIDENCE_TREE_ENTRIES
+        || !evidence_digest_ok(&listing.source_merkle_root)
+        || listing.source_merkle_root != expected_root
+    {
+        return Ok(false);
+    }
+
+    let mut previous_path: Option<&str> = None;
+    let mut leaf_hashes = Vec::with_capacity(listing.leaves.len());
+    let mut exact_snapshot_hash = None;
+    let mut first_suffix_snapshot_hash = None;
+    let mut concatenated = Sha256::new();
+    let mut first_text_leaf = true;
+    for (index, leaf) in listing.leaves.iter().enumerate() {
+        let sealed_path = format!("source-leaves/{index:08}.bin");
+        if !evidence_manifest_path_ok(&leaf.path)
+            || previous_path.is_some_and(|path| leaf.path.as_str() <= path)
+            || !evidence_digest_ok(&leaf.sha256)
+            || leaf.sealed_path != sealed_path
+            || leaf.bytes > MAX_EVIDENCE_SOURCE_LEAF_BYTES
+            || inspected_bytes
+                .checked_add(leaf.bytes)
+                .is_none_or(|n| n > MAX_EVIDENCE_HASH_BYTES)
+        {
+            return Ok(false);
+        }
+        previous_path = Some(&leaf.path);
+        let Some(content) =
+            read_regular_evidence_bytes(&dir.join(&sealed_path), MAX_EVIDENCE_SOURCE_LEAF_BYTES)?
+        else {
+            return Ok(false);
+        };
+        if content.len() as u64 != leaf.bytes || sha256_bytes(&content) != leaf.sha256 {
+            return Ok(false);
+        }
+        *inspected_bytes += leaf.bytes;
+
+        if leaf.path == "source.anubis" || leaf.path.ends_with("/source.anubis") {
+            let named = (
+                sha256_bytes(&content),
+                std::str::from_utf8(&content).is_ok(),
+            );
+            if leaf.path == "source.anubis" {
+                exact_snapshot_hash = Some(named);
+            } else if first_suffix_snapshot_hash.is_none() {
+                first_suffix_snapshot_hash = Some(named);
+            }
+        }
+        if std::str::from_utf8(&content).is_ok() && !content.contains(&0) {
+            if !first_text_leaf {
+                concatenated.update(b"\n");
+            }
+            concatenated.update(&content);
+            first_text_leaf = false;
+        }
+
+        let mut leaf_hasher = Sha256::new();
+        leaf_hasher.update(leaf.path.as_bytes());
+        leaf_hasher.update([0]);
+        leaf_hasher.update(&content);
+        let mut digest = [0_u8; 32];
+        digest.copy_from_slice(&leaf_hasher.finalize());
+        leaf_hashes.push((leaf.path.as_str(), digest));
+    }
+    let named_snapshot = exact_snapshot_hash.or(first_suffix_snapshot_hash);
+    if named_snapshot.as_ref().is_some_and(|(_, utf8)| !utf8) {
+        return Ok(false);
+    }
+    let derived_snapshot_hash = named_snapshot
+        .map(|(hash, _)| hash)
+        .unwrap_or_else(|| hex::encode(concatenated.finalize()));
+    if derived_snapshot_hash != snapshot_hash {
+        return Ok(false);
+    }
+    let actual_root = crate::package::merkle::merkle_root_from_leaf_hashes(
+        leaf_hashes.into_iter().map(|(_, digest)| digest).collect(),
+    );
+    Ok(actual_root == expected_root)
 }
 
 fn evidence_manifest_path_ok(path: &str) -> bool {
@@ -2818,6 +3040,163 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
         &mut visited,
         &mut hashed_bytes,
     )? && expected.is_empty())
+}
+
+#[cfg(test)]
+mod source_closure_tests {
+    use super::*;
+
+    fn multi_source_bundle() -> (tempfile::TempDir, PathBuf) {
+        let base = tempfile::tempdir().unwrap();
+        let source = b"fn main() { let x = 1; }".to_vec();
+        let files = vec![
+            ("entry/main.anb".into(), source.clone()),
+            ("source.anubis".into(), source),
+        ];
+        let bundle =
+            build_evidence_bundle_tree(&files, "safe", None, vec![], base.path(), None, None, None)
+                .unwrap();
+        (base, bundle.dir)
+    }
+
+    #[test]
+    fn source_closure_rederives_root_from_sealed_bytes() {
+        let (_base, dir) = multi_source_bundle();
+        assert!(validate_bundle_recorded_files(&dir, false).unwrap());
+        assert!(verify_pca(&dir).unwrap());
+        let listing: SealedSourceLeaves =
+            serde_json::from_slice(&std::fs::read(dir.join("source-merkle-leaves.json")).unwrap())
+                .unwrap();
+        assert_eq!(listing.schema, "anubis-source-merkle-leaves-v2");
+        assert!(dir.join(&listing.leaves[0].sealed_path).is_file());
+
+        // Rehashing the mutable MANIFEST cannot conceal a changed source leaf.
+        std::fs::write(dir.join(&listing.leaves[0].sealed_path), b"different entry").unwrap();
+        write_manifest_hashes(&dir).unwrap();
+        assert!(!validate_bundle_recorded_files(&dir, false).unwrap());
+    }
+
+    #[test]
+    fn source_closure_refuses_a_self_declared_root_and_legacy_descriptors() {
+        let (_base, dir) = multi_source_bundle();
+        let listing_path = dir.join("source-merkle-leaves.json");
+        let original = std::fs::read(&listing_path).unwrap();
+
+        // Both advertised roots agree, and every altered file is rehashed, but
+        // the root does not follow from the manifest-covered source leaf bytes.
+        let mut listing: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let forged_root = "0".repeat(64);
+        listing["source_merkle_root"] = serde_json::json!(forged_root);
+        write_json(&listing_path, &listing).unwrap();
+        let evidence_path = dir.join("evidence.json");
+        let original_evidence = std::fs::read(&evidence_path).unwrap();
+        let mut evidence: EvidenceManifest = serde_json::from_slice(&original_evidence).unwrap();
+        evidence.source_hash = forged_root;
+        write_json(&evidence_path, &evidence).unwrap();
+        write_manifest_hashes(&dir).unwrap();
+        assert!(!validate_bundle_recorded_files(&dir, false).unwrap());
+
+        // Old listings recorded only paths/digests/sizes. They remain inspectable
+        // as historical artifacts, but cannot assert a checked source closure.
+        std::fs::write(&evidence_path, original_evidence).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        legacy.as_object_mut().unwrap().remove("schema");
+        for leaf in legacy["leaves"].as_array_mut().unwrap() {
+            leaf.as_object_mut().unwrap().remove("sealed_path");
+        }
+        write_json(&listing_path, &legacy).unwrap();
+        write_manifest_hashes(&dir).unwrap();
+        assert!(!validate_bundle_recorded_files(&dir, false).unwrap());
+    }
+
+    #[test]
+    fn source_closure_refuses_a_snapshot_unrelated_to_its_leaves() {
+        let (_base, dir) = multi_source_bundle();
+        std::fs::write(dir.join("source.anubis"), b"fn main() {} ").unwrap();
+        write_manifest_hashes(&dir).unwrap();
+        assert!(!validate_bundle_recorded_files(&dir, false).unwrap());
+    }
+
+    #[test]
+    fn source_closure_refuses_a_non_utf8_analyzed_leaf() {
+        let base = tempfile::tempdir().unwrap();
+        let files = vec![
+            ("entry/main.anb".into(), b"fn main() {}".to_vec()),
+            ("source.anubis".into(), b"fn main() {\xff }".to_vec()),
+        ];
+        let result =
+            build_evidence_bundle_tree(&files, "safe", None, vec![], base.path(), None, None, None);
+        assert!(result.unwrap_err().contains("not UTF-8"));
+    }
+
+    #[test]
+    fn source_closure_identity_and_snapshot_are_order_independent() {
+        let files = vec![
+            ("b.anb".into(), b"fn main() {}".to_vec()),
+            ("a.anb".into(), Vec::new()),
+        ];
+        let mut reversed = files.clone();
+        reversed.reverse();
+        assert_eq!(
+            crate::package::merkle::merkle_root(files.clone()),
+            crate::package::merkle::merkle_root(reversed.clone())
+        );
+        assert_eq!(
+            source_snapshot_from_leaves(&files, MAX_EVIDENCE_SOURCE_BYTES).unwrap(),
+            source_snapshot_from_leaves(&reversed, MAX_EVIDENCE_SOURCE_BYTES).unwrap()
+        );
+        assert!(source_snapshot_from_leaves(&files, 5).is_err());
+
+        let base = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle_tree(
+            &reversed,
+            "safe",
+            None,
+            vec![],
+            base.path(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+        let listing_path = bundle.dir.join("source-merkle-leaves.json");
+        let mut listing: SealedSourceLeaves =
+            serde_json::from_slice(&std::fs::read(&listing_path).unwrap()).unwrap();
+        listing.leaves.reverse();
+        write_json(&listing_path, &listing).unwrap();
+        let mut inspected_bytes = 0;
+        assert!(!source_closure_matches(
+            &bundle.dir,
+            &bundle.manifest.source_hash,
+            &mut inspected_bytes
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn exact_snapshot_leaf_precedes_an_entry_named_source_anubis() {
+        let files = vec![
+            (
+                "entry/source.anubis".into(),
+                b"not the checked AST".to_vec(),
+            ),
+            ("source.anubis".into(), b"fn main() {}".to_vec()),
+        ];
+        assert_eq!(
+            source_snapshot_from_leaves(&files, MAX_EVIDENCE_SOURCE_BYTES).unwrap(),
+            "fn main() {}"
+        );
+        let base = tempfile::tempdir().unwrap();
+        let bundle =
+            build_evidence_bundle_tree(&files, "safe", None, vec![], base.path(), None, None, None)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bundle.dir.join("source.anubis")).unwrap(),
+            "fn main() {}"
+        );
+        assert!(validate_bundle_recorded_files(&bundle.dir, false).unwrap());
+    }
 }
 
 #[cfg(test)]

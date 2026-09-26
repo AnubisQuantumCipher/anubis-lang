@@ -25,7 +25,7 @@ pub fn merkle_root(mut files: Vec<(String, Vec<u8>)>) -> String {
     if files.len() == 1 {
         return sha256_hex(&files[0].1);
     }
-    let mut level: Vec<[u8; 32]> = files
+    let level: Vec<[u8; 32]> = files
         .iter()
         .map(|(path, data)| {
             let mut h = Sha256::new();
@@ -38,6 +38,17 @@ pub fn merkle_root(mut files: Vec<(String, Vec<u8>)>) -> String {
             out
         })
         .collect();
+    merkle_root_from_leaf_hashes(level)
+}
+
+/// Reduce already-computed `sha256(path || 0x00 || content)` leaf hashes.
+///
+/// This is only the multi-leaf step: a single source file uses the historical
+/// `sha256(content)` identity in [`merkle_root`]. Keeping the reduction shared
+/// lets the evidence verifier stream sealed leaf contents without holding the
+/// entire source closure in memory.
+pub fn merkle_root_from_leaf_hashes(mut level: Vec<[u8; 32]>) -> String {
+    debug_assert!(level.len() > 1);
     while level.len() > 1 {
         let mut next = Vec::with_capacity(level.len().div_ceil(2));
         let mut i = 0;
