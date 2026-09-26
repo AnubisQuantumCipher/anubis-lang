@@ -15,6 +15,17 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — request-local solver symbols, selected verdicts stable.**
+Local code commit `e7187a31` has a
+[source-bound local receipt](evidence/REQUEST_LOCAL_SOLVER_SYMBOLS_2026-09-26.md).
+Contract and match generated symbols now share a request-local namespace;
+repeated typechecks and cold CLI processes produce byte-stable covered
+obligations. The selected registered `r2arm_*` Safe comparison against the
+preceding code pin has no typed verdict flips. This is not stable identity
+across source edits, a full-matrix result, or permission to reuse old evidence
+sidecars. The honest FAIL-bundle verifier is still unintegrated after review
+found legacy-version, authority-scope and readiness-status blockers.
+
 **UPDATE 2026-09-26 — scoped value-position enum match precision repaired.**
 The [source-bound selected-case receipt](evidence/ARM_ENUM_EXPR_PRECISION_2026-09-26.md)
 for local code commit `1280e21e` shows the two frozen constructed-enum dead

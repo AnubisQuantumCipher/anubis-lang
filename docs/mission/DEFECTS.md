@@ -29,6 +29,7 @@ its question; S3 precision/over-rejection or crash on input; S4 correctness/qual
 | A-EVID-4 | S4 | obligation identity = kind prefix + raw SMT text, no source location; proof files keyed by position; no cross-check of proofs.json vs solver.json | review 03 | reported |
 | A-LEAN-1 | S1/S5 | only `SecurityLabel` is byte-for-byte linked to Rust (G31); `BitBlast` linked by theorem-name grep; 14 modules checked only for compiling; 5 security/effect models fully disconnected from the compiler | review 03 | reported |
 | A-SOLVER-1 | S1 | when native declines, z3 `unsat` is accepted with no certificate (REG-002) | review 03 | reported |
+| A-SOLVER-SYMBOL | S2 | Process-global counters made generated contract and match query symbols depend on prior checks in the same process. | [Scoped receipt](../evidence/REQUEST_LOCAL_SOLVER_SYMBOLS_2026-09-26.md) | fixed for covered `SemanticContext` symbols in `e7187a31`; source-edit-stable obligation identity remains open |
 | A-CI-1 | S2 | Native Linux has a bounded ordinary allowlist witness on both hosted architectures; the full platform, guest, and release gates remain open. | [Hosted failures and follow-up](../evidence/LINUX_HOSTED_2026-09-26/README.md) | partial: initial AArch64 timeout and x86_64 memory-event refusal retained; follow-up `a00387d9` passes its named hosted lane |
 
 ### Assurance-chain reconciliation on local stack `c6955cd4` (2026-09-26)
