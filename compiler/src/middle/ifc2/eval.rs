@@ -18,10 +18,10 @@
 //! `cond ⊔ lift_ret ⊔ lift_loop`; an egress executed there with a secret program counter is an
 //! implicit flow (decision D1).
 
-use super::builtins;
 use super::value::{self, join_env, Clo, EnumV, Env, FnSet, Lab, LamId, ListV, MapV, V};
+use super::{builtins, repeatable};
 use crate::frontend::{
-    EnumVariant, EnumVariantKind, Expr, ForSource, Item, MatchArm, Pattern, Stmt,
+    EnumVariant, EnumVariantKind, Expr, ForSource, Item, MatchArm, Mode, Pattern, Stmt,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -60,6 +60,9 @@ struct FnDef<'a> {
     /// The runtime's call-resolution set (`collect_local_names`): params and every name bound
     /// anywhere in the body, nested lambdas' params included.
     locals: Rc<BTreeSet<String>>,
+    /// Narrow boxed-runtime admission for callback-key construction. Analyzed parameter
+    /// annotations can be inferred by the type checker; this flag never proves a runtime guard.
+    repeatable_eligible: bool,
 }
 
 struct LamInfo<'a> {
@@ -346,6 +349,13 @@ struct LoopResult {
 
 impl<'a> Interp<'a> {
     pub fn new(items: &'a [Item]) -> Self {
+        Self::new_with_original_params(items, None)
+    }
+
+    pub(super) fn new_with_original_params(
+        items: &'a [Item],
+        original: Option<&super::OriginalUnannotatedParams>,
+    ) -> Self {
         value::reset();
         let mut it = Interp {
             fns: BTreeMap::new(),
@@ -375,25 +385,43 @@ impl<'a> Interp<'a> {
             recursive_callees: HashSet::new(),
             generation: 0,
         };
-        it.register(items);
+        it.register(items, original);
         it
     }
 
-    fn register(&mut self, items: &'a [Item]) {
+    fn register(&mut self, items: &'a [Item], original: Option<&super::OriginalUnannotatedParams>) {
         for item in items {
             match item {
                 // Inline modules are flattened with no prefix at runtime (`fn_rust_name`).
-                Item::Module { items, .. } => self.register(items),
+                Item::Module { items, .. } => self.register(items, original),
                 Item::Fn {
                     name,
                     params,
                     body,
                     ret,
+                    mode,
+                    generics,
+                    generic_bounds,
+                    attributes,
                     ..
                 } => {
                     self.fn_arity.insert(name.clone(), params.len());
+                    let unannotated = match original {
+                        Some(signatures) => signatures
+                            .get(&(item as *const Item as usize))
+                            .is_some_and(|flags| {
+                                flags.len() == params.len() && flags.iter().all(|flag| *flag)
+                            }),
+                        None => params.iter().all(|(_, ty)| ty.is_empty()),
+                    };
+                    let eligible = *mode == Mode::Safe
+                        && generics.is_empty()
+                        && generic_bounds.is_empty()
+                        && attributes.is_empty()
+                        && ret.is_none()
+                        && unannotated;
                     self.fns
-                        .insert(name.clone(), fn_def(name, params, body, ret));
+                        .insert(name.clone(), fn_def(name, params, body, ret, eligible));
                 }
                 // Two definitions of one name (a module's and the program's): the runtime does not
                 // know which a value was built with, so a field takes every type either declares.
@@ -427,7 +455,7 @@ impl<'a> Interp<'a> {
                         {
                             self.methods.entry(name.clone()).or_default().push((
                                 Rc::from(type_name.as_str()),
-                                fn_def(name, params, body, ret),
+                                fn_def(name, params, body, ret, false),
                             ));
                         }
                     }
@@ -1045,6 +1073,53 @@ impl<'a> Interp<'a> {
         let mut out = frame.ret.join(&v);
         out.exit = frame.exit;
         out
+    }
+
+    /// Every represented fixed callable returns a repeatable comparison key. This summary
+    /// quantifies over each frozen capture snapshot; joined abstract values never establish
+    /// runtime equality. Unknown or unsupported callable alternatives disable the optimization.
+    pub(crate) fn has_repeatable_key(&self, f: &V) -> bool {
+        if f.top
+            || f.scalar
+            || f.list.is_some()
+            || f.map.is_some()
+            || !f.structs.is_empty()
+            || !f.enums.is_empty()
+            || f.fns.any
+            || !f.fns.user.is_empty()
+            || !f.fns.builtins.is_empty()
+            || !f.fns.composed.is_empty()
+            || f.fns.chain.is_some()
+            || f.fns.clos.is_empty()
+        {
+            return false;
+        }
+        let mut budget = repeatable::SummaryBudget::default();
+        f.fns.clos.iter().all(|(id, clo)| {
+            let Clo::Env(env) = clo else {
+                return false;
+            };
+            let Some(info) = self.lams.get(*id as usize) else {
+                return false;
+            };
+            info.captures.iter().all(|name| env.contains_key(name))
+                && repeatable::key_is_repeatable(
+                    info.params,
+                    info.body,
+                    &info.captures,
+                    info.owner_locals.clone(),
+                    &|name| {
+                        self.fns.get(name).map(|def| repeatable::FreeFnView {
+                            id: def.name.clone(),
+                            params: def.params,
+                            body: def.body,
+                            locals: def.locals.clone(),
+                            eligible: def.repeatable_eligible,
+                        })
+                    },
+                    &mut budget,
+                )
+        })
     }
 
     /// How many parameters a function value takes at most (how far `apply` spreads a list).
@@ -2598,6 +2673,7 @@ fn fn_def<'a>(
     params: &'a [(String, String)],
     body: &'a [Stmt],
     ret: &'a Option<String>,
+    repeatable_eligible: bool,
 ) -> FnDef<'a> {
     FnDef {
         name: Rc::from(name),
@@ -2605,6 +2681,7 @@ fn fn_def<'a>(
         body,
         ret: ret.as_deref(),
         locals: Rc::new(crate::backends::run::collect_local_names(params, body)),
+        repeatable_eligible,
     }
 }
 

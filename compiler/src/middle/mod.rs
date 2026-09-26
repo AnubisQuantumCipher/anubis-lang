@@ -5298,6 +5298,10 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Ty
     // (visible, direct) callers passes, so a declared field qualifier read through it is honored
     // exactly as for the annotated spelling. Analysis copy only: lowering uses its own AST.
     let mut ast = ast;
+    // IFC2's bounded callback-key summary must distinguish an originally unannotated helper
+    // from an actually annotated signature. D9 may infer a struct type in this analysis copy;
+    // keep that qualifier for ordinary IFC while retaining the raw-signature admission fact.
+    let original_unannotated_params = ifc2::original_unannotated_params(&ast.items);
     infer_params::infer_unannotated_struct_params(&mut ast.items);
     let bmode = match mode {
         Mode::Safe => BuildMode::Safe,
@@ -5432,7 +5436,7 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Ty
     // checks are Safe-mode only. Its findings join the enforcing diagnostics after the limit
     // truncation below (they are independent of the other lanes' analysis limit).
     let ifc2_found: Vec<SemanticDiagnostic> = if mode == Mode::Safe {
-        ifc2::check(&ast.items)
+        ifc2::check_with_original_params(&ast.items, &original_unannotated_params)
             .into_iter()
             .map(|f| SemanticDiagnostic {
                 code: Some(f.code.into()),

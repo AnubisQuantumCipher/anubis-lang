@@ -15,14 +15,53 @@
 
 mod builtins;
 mod eval;
+mod repeatable;
 mod value;
 
 use crate::frontend::Item;
+use std::collections::BTreeMap;
 
 pub(crate) use eval::Finding;
 
 /// Analyze a Safe-mode program; every information flow found.
 pub(crate) fn check(items: &[Item]) -> Vec<Finding> {
     let mut it = eval::Interp::new(items);
+    it.run()
+}
+
+/// Ephemeral addresses identify the same free-function Items before and after the D9 pass mutates
+/// parameter annotations in place. They are never serialized or used as program identities.
+/// A missing address later prevents repeatability admission rather than assuming a raw signature.
+pub(crate) type OriginalUnannotatedParams = BTreeMap<usize, Vec<bool>>;
+
+pub(crate) fn original_unannotated_params(items: &[Item]) -> OriginalUnannotatedParams {
+    fn visit(items: &[Item], out: &mut OriginalUnannotatedParams) {
+        for item in items {
+            match item {
+                Item::Module { items, .. } => visit(items, out),
+                Item::Fn { params, .. } => {
+                    out.insert(
+                        item as *const Item as usize,
+                        params.iter().map(|(_, ty)| ty.is_empty()).collect(),
+                    );
+                }
+                Item::Import { .. }
+                | Item::Struct { .. }
+                | Item::Enum { .. }
+                | Item::Impl { .. }
+                | Item::Trait { .. } => {}
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    visit(items, &mut out);
+    out
+}
+
+pub(crate) fn check_with_original_params(
+    items: &[Item],
+    original: &OriginalUnannotatedParams,
+) -> Vec<Finding> {
+    let mut it = eval::Interp::new_with_original_params(items, Some(original));
     it.run()
 }

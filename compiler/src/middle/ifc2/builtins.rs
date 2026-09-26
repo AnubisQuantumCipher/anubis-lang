@@ -693,12 +693,55 @@ pub(crate) fn call<'a>(
             let r = cb_short(it, &f, vec![elems(&c)], s, p, truth);
             elems(&c).raise(truth(&r).join(s))
         }
-        // The key function is called a number of times fixed by the length (`Iterator::min_by`).
+        // The callback count is fixed by the length, but each comparison's incumbent is
+        // selected by earlier keys. Feed that selection into its argument, not the callback PC:
+        // unconditional public logging still has a public, fixed schedule.
         "min_by" | "max_by" => {
             let (c, f) = (arg(a, 0), arg(a, 1));
             let s = shape(&c);
-            let r = cb(it, &f, vec![elems(&c)], s, p);
-            elems(&c).raise(r.deep().join(s))
+            // Equal keys of each fixed callback instance cannot change incumbent selection.
+            // Keep both callback analyses and their effects; this only removes key-derived
+            // selection labels. Abstract label/value equality is not evidence of equal keys.
+            let repeatable = it.has_repeatable_key(&f);
+            if let Some(items) = known_items(&c) {
+                let mut items = items.into_iter();
+                let Some(mut acc) = items.next() else {
+                    // The runtime traps without ever calling the callback.
+                    return Some(V::bottom());
+                };
+                for item in items {
+                    let left = cb(it, &f, vec![acc.clone()], s, p);
+                    let right = cb(it, &f, vec![item.clone()], s, p);
+                    let selected = if repeatable {
+                        Lab::PUB
+                    } else {
+                        left.deep().join(right.deep())
+                    };
+                    acc = acc.join(&item).raise(selected);
+                    if it.exhausted() {
+                        break;
+                    }
+                }
+                acc.raise(s)
+            } else {
+                let e = elems(&c);
+                let mut selected = Lab::PUB;
+                loop {
+                    let before_pc = p.pc();
+                    let r = cb(it, &f, vec![e.raise(selected)], s, p);
+                    let next = if repeatable {
+                        Lab::PUB
+                    } else {
+                        selected.join(r.deep())
+                    };
+                    // A callback may end the program under a secret condition even when its
+                    // returned key is public. Revisit later calls under that continuation PC.
+                    if (next == selected && p.pc() == before_pc) || it.exhausted() {
+                        break e.raise(next.join(s));
+                    }
+                    selected = next;
+                }
+            }
         }
         "any" | "all" | "position" => {
             let (c, f) = (arg(a, 0), arg(a, 1));
