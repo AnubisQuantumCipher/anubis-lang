@@ -170,6 +170,8 @@ jobs:
       # instead of being one line inside the 29-gate summary.
       - name: Lean formal gate (162 theorems machine-checked)
         run: bash scripts/run_formal_gate.sh
+      - name: Validate diagnostic-only artifact packaging
+        run: python3 scripts/test_hosted_diagnostics.py
       - name: Run host-verifiable gates with an explicit external VZ boundary
         run: bash scripts/audit_unified.sh --profile hosted --out out/ci_gate
       - name: Prepare minimized hosted report
@@ -275,5 +277,19 @@ jobs:
         with:
           name: hosted-gate-report
           path: out/ci_public/
+          if-no-files-found: error
+          retention-days: 14
+      # Failure diagnostics are retained separately; they never authorize a hosted seal.
+      # The successful report validator and artifact above remain unchanged.
+      - name: Prepare diagnostic-only hosted failure report
+        id: prepare_failure_diagnostics
+        if: failure()
+        run: python3 scripts/prepare_hosted_diagnostics.py --source out/ci_gate --out out/ci_diagnostics
+      - name: Upload diagnostic-only hosted failure report
+        if: failure() && steps.prepare_failure_diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-gate-diagnostics
+          path: out/ci_diagnostics/
           if-no-files-found: error
           retention-days: 14
