@@ -2,6 +2,76 @@ use std::fs;
 use std::process::Command;
 
 #[test]
+fn resolved_snapshot_refusal_precedes_native_artifact() {
+    let tmp = tempfile::tempdir().expect("scratch directory");
+    fs::write(tmp.path().join("lib.anb"), "pub fn helper() { 1 }").expect("write imported module");
+    let entry = tmp.path().join("main.anb");
+    fs::write(
+        &entry,
+        "import lib;\nfn main() { hybrid { gpu(metal){} cpu{} prove(risc0){ spec { forall x . true } } } }",
+    )
+    .expect("write source with an unsupported resolved snapshot");
+    let out = tmp.path().join("build-out");
+    let build = Command::new(env!("CARGO_BIN_EXE_anubis"))
+        .args(["build", "--evidence"])
+        .arg(&entry)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("run build --evidence");
+    assert!(
+        !build.status.success(),
+        "snapshot mismatch must refuse the build"
+    );
+    let stdout = String::from_utf8_lossy(&build.stdout);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        stderr.contains("ANUBIS_EVIDENCE_SNAPSHOT_"),
+        "missing snapshot refusal: {stderr}"
+    );
+    assert!(
+        !stdout.contains("native artifact:"),
+        "refused snapshot advertised an artifact: {stdout}"
+    );
+    assert!(
+        !out.join("anubis_out").exists(),
+        "refused snapshot left an unsealed native artifact"
+    );
+    let bundles: Vec<_> = fs::read_dir(&out)
+        .expect("read refusal output")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("evidence-"))
+        })
+        .collect();
+    assert_eq!(bundles.len(), 1, "expected one refusal bundle");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(bundles[0].join("manifest.json")).expect("read refusal manifest"),
+    )
+    .expect("parse refusal manifest");
+    assert_eq!(manifest["verdict"], "FAIL");
+    assert!(manifest["checks"]
+        .as_array()
+        .expect("manifest checks")
+        .iter()
+        .any(|check| check["name"] == "command_rejection" && check["status"] == "FAIL"));
+    let pca: serde_json::Value =
+        serde_json::from_slice(&fs::read(bundles[0].join("pca.json")).expect("read PCA"))
+            .expect("parse PCA");
+    assert_eq!(pca["tier"], "rejected");
+    assert_eq!(pca["verdict"], "FAIL");
+    assert!(pca["rejection"]
+        .as_str()
+        .expect("rejection reason")
+        .starts_with("ANUBIS_EVIDENCE_SNAPSHOT_"));
+    assert!(!bundles[0].join("artifact").exists());
+}
+
+#[test]
 fn manifestless_build_evidence_binds_only_the_requested_program() {
     let tmp = tempfile::tempdir().expect("scratch directory");
     let good = tmp.path().join("good.anb");

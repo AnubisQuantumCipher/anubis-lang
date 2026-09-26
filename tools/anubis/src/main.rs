@@ -1816,13 +1816,11 @@ fn evidence_program_files(
     source: &str,
     ast: &anubis_compiler::frontend::AST,
     resolved_program: bool,
-) -> Vec<(String, Vec<u8>)> {
+) -> Result<Vec<(String, Vec<u8>)>> {
     if resolved_program {
-        vec![
-            (
-                "source.anubis".to_string(),
-                anubis_compiler::fmt::format_ast(&ast.items).into_bytes(),
-            ),
+        let snapshot = anubis_compiler::fmt::format_ast_checked(ast).map_err(anyhow::Error::msg)?;
+        Ok(vec![
+            ("source.anubis".to_string(), snapshot.into_bytes()),
             (
                 format!(
                     "entry/{}",
@@ -1830,9 +1828,12 @@ fn evidence_program_files(
                 ),
                 source.as_bytes().to_vec(),
             ),
-        ]
+        ])
     } else {
-        vec![("source.anubis".to_string(), source.as_bytes().to_vec())]
+        Ok(vec![(
+            "source.anubis".to_string(),
+            source.as_bytes().to_vec(),
+        )])
     }
 }
 
@@ -2608,6 +2609,34 @@ fn cli_main() -> Result<()> {
                 }
             }
 
+            // Validate the exact checker input before lowering can emit a runnable artifact.
+            // Keep these bytes for the bundle so validation and sealing use one snapshot.
+            let evidence_files = if do_evidence && !no_verify {
+                let resolved_program = ws.is_some()
+                    || parse_source(&src).ok().is_some_and(|source_ast| {
+                        source_ast
+                            .items
+                            .iter()
+                            .any(|item| matches!(item, Item::Import { .. }))
+                    });
+                match evidence_program_files(&input, &src, &ast, resolved_program) {
+                    Ok(files) => Some(files),
+                    Err(error) => {
+                        emit_rejected_command_evidence(
+                            "build",
+                            &input,
+                            &src,
+                            mode,
+                            &out,
+                            &error.to_string(),
+                        )?;
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+
             let artifact = if do_evidence || true {
                 // Emit the native artifact via the faithful whole-program lowering (same path as
                 // `anubis run`); full_hybrid enables the in-lower cargo build for hybrid programs.
@@ -2661,16 +2690,11 @@ fn cli_main() -> Result<()> {
                 };
                 let mode_s = mode_name(mode);
                 let closure = ws.as_ref().map(dep_closure_json);
-                let resolved_program = ws.is_some()
-                    || parse_source(&src).ok().is_some_and(|source_ast| {
-                        source_ast
-                            .items
-                            .iter()
-                            .any(|item| matches!(item, Item::Import { .. }))
-                    });
-                let files = evidence_program_files(&input, &src, &ast, resolved_program);
+                let files = evidence_files
+                    .as_ref()
+                    .expect("verified evidence snapshot was validated before lowering");
                 let bundle = build_evidence_bundle_tree(
-                    &files,
+                    files,
                     mode_s,
                     artifact.as_deref(),
                     logs,
@@ -2991,9 +3015,12 @@ fn cli_main() -> Result<()> {
                 // same whole program as the command instead of re-checking an unresolved `import`
                 // line and contradicting a successful command verdict.
                 let resolved_files = if resolved_program {
-                    ast.as_ref().map(|resolved| {
-                        evidence_program_files(&input, &src, resolved, resolved_program)
-                    })
+                    let resolved = ast.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "ANUBIS_EVIDENCE_SNAPSHOT_MISSING: resolved checker AST is unavailable"
+                        )
+                    })?;
+                    Some(evidence_program_files(&input, &src, resolved, true)?)
                 } else {
                     None
                 };
@@ -8575,6 +8602,32 @@ pub(crate) fn program_mode(items: &[Item]) -> Option<Mode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_program_files_refuses_changed_resolved_checker_input() {
+        let ordinary = "fn main() { let x = 1; print(x); }";
+        let ordinary_ast = parse_source(ordinary).unwrap();
+        let leaf = evidence_program_files(Path::new("entry.anb"), ordinary, &ordinary_ast, false)
+            .expect("unresolved source is sealed byte-for-byte");
+        assert_eq!(
+            leaf,
+            vec![("source.anubis".into(), ordinary.as_bytes().to_vec())]
+        );
+        let resolved =
+            evidence_program_files(Path::new("entry.anb"), ordinary, &ordinary_ast, true)
+                .expect("supported resolved AST round-trips");
+        assert_eq!(
+            resolved[1],
+            ("entry/entry.anb".into(), ordinary.as_bytes().to_vec())
+        );
+
+        let hybrid =
+            "fn h() { hybrid { gpu(metal){} cpu{} prove(risc0){ spec { forall x . true } } } }";
+        let hybrid_ast = parse_source(hybrid).unwrap();
+        let error = evidence_program_files(Path::new("entry.anb"), hybrid, &hybrid_ast, true)
+            .expect_err("unsupported formatter output must not be sealed");
+        assert!(error.to_string().starts_with("ANUBIS_EVIDENCE_SNAPSHOT_"));
+    }
 
     fn unverified_test_bundle() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
