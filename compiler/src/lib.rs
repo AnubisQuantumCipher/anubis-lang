@@ -10634,6 +10634,95 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn round2_source_bound_match_controls_emit_passing_requires() {
+        // These sources are the tracked Safe acceptance controls in the soundness matrix. A
+        // successful aggregate check is insufficient: a missing call-site obligation would
+        // make that check vacuously green. Keep the source and expected callee identities bound
+        // to this test without matching the solver's human-readable SMT display text.
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "r2arm_contract_call_scrutinee_satisfied",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_contract_call_scrutinee_satisfied.anb"
+                ),
+                &["requires@f:"],
+            ),
+            (
+                "r2arm_contract_call_guard_satisfied",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_contract_call_guard_satisfied.anb"
+                ),
+                &["requires@f:"],
+            ),
+            (
+                "r2arm_iflet_scrutinee_call_satisfied",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_iflet_scrutinee_call_satisfied.anb"
+                ),
+                &["requires@f:"],
+            ),
+            (
+                "r2arm_outer_fact_after_match_scrutinee_call",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_outer_fact_after_match_scrutinee_call.anb"
+                ),
+                &["requires@f:", "requires@g:"],
+            ),
+            (
+                "r2arm_outer_fact_after_match_guard_call",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_outer_fact_after_match_guard_call.anb"
+                ),
+                &["requires@pred:", "requires@g:"],
+            ),
+            (
+                "r2arm_outer_fact_after_iflet_scrutinee_call",
+                include_str!(
+                    "../../tests/soundness/matrix/cases/r2arm_outer_fact_after_iflet_scrutinee_call.anb"
+                ),
+                &["requires@f:", "requires@g:"],
+            ),
+        ];
+
+        for &(fixture, source, expected_prefixes) in cases {
+            let ir = typecheck(
+                parse_source(source).expect("tracked acceptance fixture must parse"),
+                frontend::Mode::Safe,
+            )
+            .expect("tracked acceptance fixture must typecheck");
+            let checks = SymbolicEngine::check_obligations(&ir);
+            for &prefix in expected_prefixes {
+                let emitted: Vec<_> = ir
+                    .solver_obligations
+                    .iter()
+                    .filter(|obligation| obligation.name.starts_with(prefix))
+                    .collect();
+                assert!(
+                    !emitted.is_empty(),
+                    "{fixture}: no call-site obligation emitted for {prefix}"
+                );
+                let checked: Vec<_> = checks
+                    .iter()
+                    .filter(|check| check.name.starts_with(prefix))
+                    .collect();
+                assert_eq!(
+                    checked.len(),
+                    emitted.len(),
+                    "{fixture}: emitted {prefix} obligation was not checked"
+                );
+                assert!(
+                    checked.iter().all(|check| check.status == "PASS"),
+                    "{fixture}: {prefix} obligation was not discharged"
+                );
+            }
+            assert!(
+                checks.iter().all(|check| check.status == "PASS"),
+                "{fixture}: another obligation did not pass"
+            );
+        }
+    }
+
+    #[test]
     fn match_arm_body_calls_discharge_under_the_pattern_condition() {
         // The last call-site residual's tractable subset: a contracted call in a `match` ARM body/guard is
         // discharged under a SOUND path condition derived from the arm — a literal pattern over the
