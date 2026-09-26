@@ -15,6 +15,15 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — private captured-project combiner staged.**
+Local code commit `ebe4f3ed` has a
+[scoped local receipt](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md).
+Its private adapter combines parsed captured modules and retains their trait
+sidecars. Focused Safe tests and a source-bound selected multi-file CLI
+comparison passed, but the production checker does not call the adapter.
+Verified transitive package admission and source-closure evidence remain
+open; this is no release or platform witness.
+
 **UPDATE 2026-09-26 — request-local solver symbols, selected verdicts stable.**
 Local code commit `e7187a31` has a
 [source-bound local receipt](evidence/REQUEST_LOCAL_SOLVER_SYMBOLS_2026-09-26.md).

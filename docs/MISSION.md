@@ -67,9 +67,9 @@ matrix is the reference for open defects.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The latest reviewed implementation code commit on the isolated local integration
-branch is `e7187a314db5385e2d34fd74dd3b773878112195`. Fixture-only commit
-`60b8d4e429d2f96f54a001e851077c51b1f1c912` follows it; this docs-only
-checkpoint records its pinned baseline.
+branch is `ebe4f3edf0ae4b9a93c04b26e467de2ca0f8a05b`. It follows the
+fixture-only guard-write registration and its docs receipt. This docs-only
+checkpoint records the captured-combiner build and selected CLI comparison.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
@@ -81,6 +81,10 @@ parses those bytes and refuses nested imports explicitly, but the public
 checker, lowering, package admission and verifier are not yet bound to that
 captured graph. The valid transitive package fixture therefore still fails at
 `ANUBIS_DEP_PROOF_UNVERIFIED`; this is an open precision/product gate.
+The [private captured-combine adapter](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md)
+reuses the production module rewrite and preserves trait sidecars, but has no
+production caller. Its clean-head CLI matched the prior pin on selected
+tracked multi-file Safe examples; this is not a package-admission witness.
 The [request-local solver-symbol receipt](evidence/REQUEST_LOCAL_SOLVER_SYMBOLS_2026-09-26.md)
 records same-process and cold-process byte stability in the covered contract
 and match obligations. Its source-bound selected Safe comparison shows no
@@ -113,8 +117,10 @@ captured bytes to checker/lowering input with one immutable program input,
 and only then to versioned package
 and evidence closure claims before restoring transitive verified admission.
 The honest FAIL-bundle verifier also needs source-derived sidecar and security
-context checks with typed legacy scope and a current strict check contract;
-reviewed draft patches remain unintegrated. Continue the distinct
+context checks with typed legacy scope and a current strict check contract.
+The latest draft remains unintegrated after independent review found a broken
+publish-to-resolve path and incomplete machine-readable scope, invalid-input
+replay, file-roster, and provenance treatment. Continue the distinct
 [min/max precision controls](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md)
 and broader value-position match controls without treating refusal of valid
 code as completion. The canonical defect
