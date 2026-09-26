@@ -5699,16 +5699,49 @@ pub fn resolved_run_timeout() -> Option<std::time::Duration> {
     parse_run_timeout_secs(std::env::var("ANUBIS_RUN_TIMEOUT_SECS").ok().as_deref())
 }
 
+/// On Unix, spawning an executable held open for writing can return `ETXTBSY`.
+/// Parallel build and run tests can encounter it while an executable is being
+/// replaced. Retry this spawn error within a fixed budget; preserve every
+/// other error and the final `ETXTBSY` if the budget is exhausted.
+const ETXTBSY: i32 = 26;
+
+/// Bound the wait so a persistently busy executable still fails.
+const EXEC_BUSY_RETRIES: u32 = 40;
+const EXEC_BUSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+
+fn is_exec_busy(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(ETXTBSY)
+}
+
+/// Retry an `ETXTBSY` spawn failure within a fixed budget.
+///
+/// Every other error is returned on the first try. A persistently busy
+/// executable returns its final `ETXTBSY` error when the budget is exhausted.
+pub(crate) fn retry_while_exec_busy<T>(
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut left = EXEC_BUSY_RETRIES;
+    loop {
+        match attempt() {
+            Err(e) if is_exec_busy(&e) && left > 0 => {
+                left -= 1;
+                std::thread::sleep(EXEC_BUSY_BACKOFF);
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Run a prepared child `Command` to completion under an optional wall-clock
 /// budget, capturing stdout and stderr.
 ///
 /// `timeout == None` waits forever (the historical behavior, for callers that
 /// deliberately opt out). With a budget, a watchdog polls for exit and, once
-/// the deadline passes, SIGKILLs and reaps the child — so `anubis run` can
-/// never leave a runaway native binary that outlives its parent and spins a
-/// core indefinitely. The caller's stdin choice is preserved; only stdout and
-/// stderr are forced to pipes so they can be drained without a pipe-buffer
-/// deadlock.
+/// the deadline passes, SIGKILLs and reaps the direct child. The caller's
+/// stdin choice is preserved; stdout and stderr are forced to pipes so they
+/// can be drained without a pipe-buffer deadlock. Callers that require EOF
+/// must set stdin to `Stdio::null()`; an unspecified stdin on `Command::spawn`
+/// is inherited.
 ///
 /// Limitation: only the direct child is signalled. An Anubis program that
 /// itself spawns a long-lived grandchild is out of scope here (the research
@@ -5723,14 +5756,18 @@ pub fn run_child_capped(
     use std::time::Instant;
 
     let Some(budget) = timeout else {
-        // Unbounded opt-out: keep the simple blocking capture.
+        // Retry only spawn. Retrying output() could execute a program twice if
+        // capture or waiting failed after the child had already started.
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = retry_while_exec_busy(|| cmd.spawn())?;
         return Ok(CappedRun {
-            output: cmd.output()?,
+            output: child.wait_with_output()?,
             timed_out: false,
         });
     };
 
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = retry_while_exec_busy(|| cmd.spawn())?;
 
     // Drain both pipes on dedicated threads so a chatty child cannot wedge by
     // filling a pipe buffer while the main thread polls for exit.
@@ -6177,7 +6214,8 @@ pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) 
         }
         command
             .current_dir(&dir)
-            .env("CARGO_TARGET_DIR", &target_dir);
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .stdin(std::process::Stdio::null());
         let capped = run_child_capped(command, resolved_run_build_timeout())
             .map_err(|e| anyhow!("cargo spawn failed: {}", e))?;
         if capped.timed_out {
@@ -6319,6 +6357,53 @@ mod run_tests {
     }
 
     #[test]
+    fn exec_busy_is_retried_and_every_other_error_is_not() {
+        use std::cell::Cell;
+        use std::io::{Error, ErrorKind};
+
+        // Two synthetic busy-spawn errors followed by a successful spawn.
+        let tries = Cell::new(0u32);
+        let got = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            if tries.get() < 3 {
+                Err(Error::from_raw_os_error(ETXTBSY))
+            } else {
+                Ok("ran")
+            }
+        })
+        .expect("a transient ETXTBSY must not be fatal");
+        assert_eq!(got, "ran");
+        assert_eq!(tries.get(), 3);
+
+        // A missing executable is not transient. Retrying it would turn a real
+        // failure into a slow real failure and hide the cause behind a delay.
+        let tries = Cell::new(0u32);
+        let err = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(Error::new(ErrorKind::NotFound, "no such file"))
+        })
+        .expect_err("a non-transient error must surface");
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+        assert_eq!(tries.get(), 1, "returned on the first attempt, not retried");
+    }
+
+    #[test]
+    fn exec_busy_retries_are_bounded() {
+        use std::cell::Cell;
+        use std::io::Error;
+        // A genuinely busy executable must still fail, rather than hanging the
+        // suite behind an unbounded retry.
+        let tries = Cell::new(0u32);
+        let err = retry_while_exec_busy(|| {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(Error::from_raw_os_error(ETXTBSY))
+        })
+        .expect_err("the budget must run out");
+        assert!(is_exec_busy(&err), "and it surfaces as the error it was");
+        assert_eq!(tries.get(), EXEC_BUSY_RETRIES + 1);
+    }
+
+    #[test]
     fn run_child_capped_returns_output_when_program_is_fast() {
         use std::time::Duration;
         let mut cmd = std::process::Command::new("echo");
@@ -6330,6 +6415,17 @@ mod run_tests {
         );
         assert!(capped.output.status.success());
         assert!(String::from_utf8_lossy(&capped.output.stdout).contains("hello-from-child"));
+    }
+
+    #[test]
+    fn run_child_capped_unbounded_captures_output() {
+        let mut cmd = std::process::Command::new("echo");
+        cmd.arg("hello-without-timeout")
+            .stdin(std::process::Stdio::null());
+        let capped = run_child_capped(cmd, None).expect("spawn and capture");
+        assert!(!capped.timed_out);
+        assert!(capped.output.status.success());
+        assert_eq!(capped.output.stdout, b"hello-without-timeout\n");
     }
 
     #[test]
@@ -6523,12 +6619,14 @@ fn main() {
         let exe = dir.join("anubis_run");
         compile_native_rust_to_exe(&rust_source, &exe)
             .expect("compile via cargo (audited crypto deps)");
-        let mut child = std::process::Command::new(&exe)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn");
+        let mut child = retry_while_exec_busy(|| {
+            std::process::Command::new(&exe)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        })
+        .expect("spawn");
         child.stdin.take().unwrap().write_all(stdin_bytes).unwrap();
         let out = child.wait_with_output().expect("wait");
         let _ = std::fs::remove_dir_all(&dir);

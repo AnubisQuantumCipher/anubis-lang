@@ -2084,8 +2084,16 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
             let dir = tempfile::tempdir()?;
             let bin = dir.path().join("repl_bin");
             compile_native_rust_to_exe(&rust, &bin).map_err(|e| anyhow!("{e}"))?;
-            let out = run_child_capped(std::process::Command::new(&bin), resolved_run_timeout())
-                .map_err(|e| anyhow!("{e}"))?;
+            let timeout = resolved_run_timeout();
+            let mut command = std::process::Command::new(&bin);
+            // The old unbounded output() path gave the child EOF, while the
+            // timed spawn path inherited REPL input. Preserve both choices.
+            command.stdin(if timeout.is_none() {
+                std::process::Stdio::null()
+            } else {
+                std::process::Stdio::inherit()
+            });
+            let out = run_child_capped(command, timeout).map_err(|e| anyhow!("{e}"))?;
             print!("{}", String::from_utf8_lossy(&out.output.stdout));
             eprint!("{}", String::from_utf8_lossy(&out.output.stderr));
             if !out.output.status.success() {

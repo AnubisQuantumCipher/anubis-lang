@@ -97,6 +97,17 @@ mod tests {
         std::env::temp_dir().join(format!("anubis-{}-{}-{}", label, std::process::id(), nanos))
     }
 
+    fn run_test_artifact(exe_path: &str) -> std::io::Result<std::process::Output> {
+        use std::process::{Command, Stdio};
+        let mut cmd = Command::new(exe_path);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Retry only spawn; a capture or wait error must not execute the binary again.
+        let child = crate::backends::run::retry_while_exec_busy(|| cmd.spawn())?;
+        child.wait_with_output()
+    }
+
     #[test]
     fn parses_safe_program() {
         let src = "fn main() { let x = 1; }";
@@ -798,9 +809,7 @@ mod tests {
             "marker binary must exist after lower"
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run marker");
+        let run = run_test_artifact(&exe_path).expect("run marker");
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(
             out.contains("analysis-only artifact") && out.contains("not directly executable"),
@@ -922,9 +931,7 @@ fn trigger() {
             emitted
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run marker");
+        let run = run_test_artifact(&exe_path).expect("run marker");
         let stdout = String::from_utf8_lossy(&run.stdout);
         assert!(
             stdout.contains("taint:"),
@@ -954,9 +961,7 @@ fn trigger() {
             emitted
         );
 
-        let run = std::process::Command::new(&exe_path)
-            .output()
-            .expect("run real program");
+        let run = run_test_artifact(&exe_path).expect("run real program");
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(
             out.contains("hello-from-build") && out.contains("42"),
