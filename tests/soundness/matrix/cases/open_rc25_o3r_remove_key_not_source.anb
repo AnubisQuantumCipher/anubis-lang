@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q: S) {
+    let xs = [10, 20, 30, 40, 50];
+    remove(xs, q.k % 5);
+    return xs;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

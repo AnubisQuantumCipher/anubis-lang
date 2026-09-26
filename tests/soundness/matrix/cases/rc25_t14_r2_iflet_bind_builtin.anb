@@ -1,0 +1,1 @@
+fn main() { if let Some(f) = Some(write_file) { f("/home/sicarii/.cache/anubis-item21/reconcile/tmp/t14_r2_iflet_bind_builtin.txt", "x"); } }
