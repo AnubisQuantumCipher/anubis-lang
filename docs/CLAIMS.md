@@ -1612,6 +1612,16 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-26 — whole-struct lane: review round 39, landing steps 2-4 (boundary `892df460`, fnret `9d46b7e5`, loose `a05b6100`).**
+    - Round 39's remaining fix designs land with the cross-check's two corrections for unsound
+      refinements (a reduce fold order; a declared place type the runtime does not check). Five
+      registered leaks close as the cross-check predicted (the L-SHADOW-1 branch-write case and four
+      literal-field cases) and a refused valid program is accepted; no existing case regresses.
+    - 215 cases added (210 with a runtime witness). Six leaks are registered open, all shapes where a
+      declared type is trusted though the runtime does not check it (TY-UNENFORCED), and 14 documented
+      over-refusals, one of them an ordinary-lane precision loss of the alias unit. Matrix at a05b6100:
+      2157 cases, 1997 PASS, 39 silent accepts, 111 wrong-class, 10 INVALID.
+
     **UPDATE 2026-09-25 — whole-struct lane: review round 39, first landing step (bands, `d8a714f9`).**
     - The round-38 regression R39B-F1a/F1b (a rebound `call`/`apply` lost the function it forwards) is
       closed, with R39B-F2, O1, P1 and P2; 108 cases added, each with a runtime witness. No existing
