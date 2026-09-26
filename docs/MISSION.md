@@ -66,7 +66,7 @@ matrix is the reference for open defects.
 
 ## Current checkpoint and next executable step (2026-09-26)
 
-The isolated local integration branch is at `70b200c7197f1cee4eb0ceb6429da7b70ed649c5`.
+The isolated local integration branch is at `f15e1b83627379133ce5c94194b156a5d006aeea`.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
@@ -76,24 +76,26 @@ captured graph. The valid transitive package fixture therefore still fails at
 `ANUBIS_DEP_PROOF_UNVERIFIED`; this is an open precision/product gate.
 
 The [scoped arm-binder receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
-records a clean local release CLI for this head. Its violated sibling-binder
-call changes from an unexamined PASS to a checked DISPROVED result, while the
-selected satisfied match/if-let and dead-guard controls now pass. Its selected
-receipt remains `INCOMPLETE`: the valid dead enum-payload arm is still refused
-as UNDECIDED. The full matrix runner also remains `INCOMPLETE` by design. The
-local unfiltered compiler-library attempt was interrupted after a Research
-execution test was identified in this Linux guest; it is not a required suite
-witness. No disposable Tart, hosted, full workspace, independent rebuild or
-release gate is claimed for this head.
+records the preceding `70b200c7` result and its then-open enum precision
+control. The [enum-payload receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md)
+records the current source-bound local CLI: the frozen valid positional and
+named dead arms now PASS, and their reachable violated twins are DISPROVED.
+The selected `r2arm_*` Safe cases show only the expected classified flips.
+The full matrix runner remains `INCOMPLETE` by design. The local unfiltered
+compiler-library attempt on the preceding head was interrupted after a
+Research execution test was identified in this Linux guest; it is not a
+required suite witness. No disposable Tart, hosted, full workspace,
+independent rebuild or release gate is claimed for this head.
 
-Next, repair the enum-payload dead-arm precision case with matched reachable
-invalid controls and independent review. Separately, connect a bounded
-source-graph reader to resolver/checker input, then to versioned package and
-evidence closure claims before restoring transitive verified admission. The
-honest FAIL-bundle verifier also needs its producer/consumer consistency fixes;
-reviewed draft patches remain unintegrated. Continue the distinct
+Next, integrate the independently reviewed bounded source-graph byte reader
+as a private, non-authoritative primitive, test its race and refusal controls,
+then connect captured bytes to resolver/checker input and versioned package
+and evidence closure claims before restoring transitive verified admission.
+The honest FAIL-bundle verifier also needs source-derived sidecar and security
+context checks; revised draft patches remain unintegrated. Continue the distinct
 [min/max precision controls](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md)
-without treating refusal of valid code as completion. The canonical defect
+and broader value-position match controls without treating refusal of valid
+code as completion. The canonical defect
 status is [CLAIMS](CLAIMS.md), and the requirement dependencies remain in
 [the requirement map](mission/REQUIREMENTS.md). PR #44 still requires a
 reviewable split and human review before protected-branch integration.

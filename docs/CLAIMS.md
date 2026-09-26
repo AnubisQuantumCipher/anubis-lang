@@ -15,7 +15,19 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — scoped arm-binder repair and source-graph primitive.**
+**UPDATE 2026-09-26 — constructed-enum dead-arm precision.**
+Local code commit `f15e1b83627379133ce5c94194b156a5d006aeea`
+has a [source-bound selected-case receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md):
+the frozen valid positional and named dead-payload arms now PASS, while
+their reachable violated twins and a constructor-scrutinee violation are
+DISPROVED. The registered `r2arm_*` Safe subset has the typed outcomes
+recorded in that receipt; this is not a full-matrix or general match seal.
+The provisional matrix runner still reports `INCOMPLETE`. Verified transitive
+package admission and honest FAIL-bundle verification remain open, and no
+final workspace, guest, hosted, independent rebuild or release result is
+asserted for this head.
+
+**Earlier update 2026-09-26 — scoped arm-binder repair and source-graph primitive.**
 At local commit `70b200c7197f1cee4eb0ceb6429da7b70ed649c5`, the
 [source-bound local receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
 records a checked disproof of the formerly silent sibling-binder precondition,
