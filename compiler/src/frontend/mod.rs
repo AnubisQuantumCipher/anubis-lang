@@ -224,6 +224,16 @@ const AUTHORITY_ATTRIBUTE_NAMES: &[&str] = &[
     "agent",
 ];
 
+/// The function attributes that select Research mode in source order. Keep
+/// consumers of intrinsic mode intent on this same mapping: a later `@safe`
+/// can override the stored function mode without erasing the earlier intent.
+pub(crate) fn is_research_mode_attribute(name: &str) -> bool {
+    matches!(
+        name,
+        "research" | "poc" | "fuzz" | "proof" | "defensive" | "audit"
+    )
+}
+
 const INERT_ATTRIBUTE_NAMES: &[&str] = &["cfg", "derive", "inline", ""];
 
 #[derive(Debug, Clone)]
@@ -1941,7 +1951,16 @@ impl Parser {
         }
     }
 
-    fn parse_output(mut self) -> ParseOutput {
+    fn parse_output(self) -> ParseOutput {
+        self.parse_output_with_pre_desugar_summary(|_| ()).0
+    }
+
+    /// Give a caller a read-only view of the original parsed items before
+    /// trait desugaring drops declarations or overrides default methods.
+    fn parse_output_with_pre_desugar_summary<T>(
+        mut self,
+        summarize: impl FnOnce(&[Item]) -> T,
+    ) -> (ParseOutput, T) {
         let mut items = vec![];
         while !self.at_eof() {
             let attrs = self.parse_attributes();
@@ -1990,15 +2009,19 @@ impl Parser {
                 self.bump();
             }
         }
+        let summary = summarize(&items);
         // Capture the trait environment BEFORE `resolve_traits` consumes `items` and erases traits.
         let trait_env = collect_trait_env(&items);
-        ParseOutput {
-            ast: AST {
-                items: resolve_traits(items),
-                trait_env,
+        (
+            ParseOutput {
+                ast: AST {
+                    items: resolve_traits(items),
+                    trait_env,
+                },
+                diagnostics: self.diagnostics,
             },
-            diagnostics: self.diagnostics,
-        }
+            summary,
+        )
     }
 
     fn parse_attributes(&mut self) -> Vec<Attribute> {
@@ -3165,12 +3188,10 @@ impl Parser {
         let mut mode = infer_mode(&body);
         // Gate 15: attributes can set/override mode for security capabilities
         for attr in &pre_attrs {
-            match attr.name.as_str() {
-                "safe" => mode = Mode::Safe,
-                "research" | "poc" | "fuzz" | "proof" | "defensive" | "audit" => {
-                    mode = Mode::Research
-                }
-                _ => {}
+            if attr.name == "safe" {
+                mode = Mode::Safe;
+            } else if is_research_mode_attribute(&attr.name) {
+                mode = Mode::Research;
             }
         }
         Some(Item::Fn {
@@ -4744,8 +4765,23 @@ pub fn parse_source_detailed(source: &str) -> ParseOutput {
     Parser::new(lex_spanned(source)).parse_output()
 }
 
+/// Parse once and summarize the source items before trait desugaring consumes
+/// them. The callback cannot replace the AST, and parse diagnostics still
+/// refuse through the same source parser result path.
+pub(crate) fn parse_source_with_pre_desugar_summary<T>(
+    source: &str,
+    summarize: impl FnOnce(&[Item]) -> T,
+) -> Result<(AST, T), String> {
+    let (output, summary) =
+        Parser::new(lex_spanned(source)).parse_output_with_pre_desugar_summary(summarize);
+    parse_source_result(output).map(|ast| (ast, summary))
+}
+
 pub fn parse_source(source: &str) -> Result<AST, String> {
-    let output = parse_source_detailed(source);
+    parse_source_result(parse_source_detailed(source))
+}
+
+fn parse_source_result(output: ParseOutput) -> Result<AST, String> {
     if !output.diagnostics.is_empty() {
         // The first ones, then a count: every message joined made an 8.6 MB evidence field (written
         // four times) for a 480 KB malformed file.
@@ -5049,6 +5085,16 @@ mod diagnostic_render_tests {
 #[cfg(test)]
 mod misplaced_authority_attribute_tests {
     use super::*;
+
+    #[test]
+    fn research_mode_attribute_mapping_has_explicit_boundary() {
+        for attribute in ["research", "poc", "fuzz", "proof", "defensive", "audit"] {
+            assert!(is_research_mode_attribute(attribute), "{attribute}");
+        }
+        for attribute in ["safe", "exploit", "emulation", "agent", "verified"] {
+            assert!(!is_research_mode_attribute(attribute), "{attribute}");
+        }
+    }
 
     fn messages(source: &str) -> Vec<String> {
         parse_source_detailed(source)

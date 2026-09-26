@@ -9,7 +9,7 @@
 //! work and must not be inferred from a successful compilation graph here.
 
 use super::{collect_enum_names, collect_fn_names, collect_imports, import_alias, module_prefix};
-use crate::frontend::{parse_source, Item, Span, AST};
+use crate::frontend::{parse_source_with_pre_desugar_summary, Item, Mode, Span, AST};
 use crate::package::source_graph::{
     GraphCoverage, GraphError, GraphLimits, ImportEdge, PortablePath, SourceGraphSnapshot,
     SourceKey, SourceNode, SourceOrigin,
@@ -87,7 +87,16 @@ pub(crate) struct CapturedModule<'a> {
     pub namespace: String,
     pub bytes: &'a [u8],
     pub ast: AST,
+    pub intrinsic_mode: CapturedIntrinsicMode,
     pub imports: Vec<CapturedImport>,
+}
+
+/// One source-bound summary over parsed items before `resolve_traits` erases
+/// trait declarations or replaces overridden defaults. No source is reopened.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CapturedIntrinsicMode {
+    pub source_mode: Option<Mode>,
+    pub unresolved_mode_elevator: bool,
 }
 
 /// Modules appear after their imports. This is a compilation closure only;
@@ -251,6 +260,77 @@ pub(crate) fn load_captured_project<'a>(
 pub(crate) struct PreparedCapturedProject {
     ast: AST,
     source_graph: SourceGraphSnapshot,
+    intrinsic_modes: Vec<(ModuleKey, CapturedIntrinsicMode)>,
+}
+
+/// The source is produced only after this captured AST passed Safe-default
+/// typechecking and the solver refusal gate. This is not a verified seal.
+#[derive(Debug)]
+pub(crate) struct CheckedSafeRust {
+    rust_source: String,
+}
+
+impl CheckedSafeRust {
+    pub(crate) fn into_rust_source(self) -> String {
+        self.rust_source
+    }
+}
+
+/// Preserve the failing stage and its structured result for the eventual
+/// native consumer. Display text is presentation, never a status classifier.
+#[derive(Debug)]
+pub(crate) enum CapturedSafeCheckFailure {
+    NonSafeMode {
+        mode: crate::frontend::Mode,
+    },
+    ModeElevator,
+    Typecheck(crate::middle::TypecheckFailure),
+    SolverRefused {
+        checks: Vec<crate::middle::SolverCheck>,
+        refusals: Vec<crate::middle::SolverCheck>,
+    },
+    Lowering {
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for CapturedSafeCheckFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonSafeMode { mode } => {
+                write!(
+                    f,
+                    "captured comparison only supports Safe programs (found {mode:?})"
+                )
+            }
+            Self::ModeElevator => write!(
+                f,
+                "captured Safe program contains an unresolved Research/Exploit mode elevator"
+            ),
+            Self::Typecheck(failure) => write!(f, "{}", failure.message),
+            Self::SolverRefused { refusals, .. } => {
+                write!(
+                    f,
+                    "{}",
+                    crate::middle::format_build_check_failures(refusals)
+                )
+            }
+            Self::Lowering { detail } => write!(f, "captured Safe lowering failed: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for CapturedSafeCheckFailure {}
+
+fn check_captured_solver_stream(
+    checks: Vec<crate::middle::SolverCheck>,
+) -> Result<(), CapturedSafeCheckFailure> {
+    let refusals = crate::middle::solver_stream_refusals(&checks);
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(CapturedSafeCheckFailure::SolverRefused { checks, refusals })
+    }
 }
 
 impl PreparedCapturedProject {
@@ -264,30 +344,61 @@ impl PreparedCapturedProject {
         &self.source_graph.nodes()[self.source_graph.entry()].bytes
     }
 
+    /// Classify captured source intent without invoking typecheck or lowering.
+    /// The checker calls this first; Research/Exploit controls can exercise it
+    /// directly without asking the host to analyze or generate their programs.
+    fn classify_safe_mode(&self) -> Result<(), CapturedSafeCheckFailure> {
+        use crate::frontend::program_mode;
+        // Check each original module before trait desugaring could discard a
+        // default method, including an unused or overridden trait default.
+        if let Some(mode) =
+            self.intrinsic_modes
+                .iter()
+                .find_map(|(_, summary)| match summary.source_mode {
+                    Some(mode @ (Mode::Research | Mode::Exploit)) => Some(mode),
+                    None | Some(Mode::Safe) => None,
+                })
+        {
+            return Err(CapturedSafeCheckFailure::NonSafeMode { mode });
+        }
+        if let Some(mode @ (Mode::Research | Mode::Exploit)) = program_mode(&self.ast.items) {
+            return Err(CapturedSafeCheckFailure::NonSafeMode { mode });
+        }
+        if self
+            .intrinsic_modes
+            .iter()
+            .any(|(_, summary)| summary.unresolved_mode_elevator)
+            || crate::evidence::items_have_unresolved_mode_elevator(&self.ast.items)
+        {
+            return Err(CapturedSafeCheckFailure::ModeElevator);
+        }
+        Ok(())
+    }
+
     /// Check and lower this prepared Safe program as one captured input. This
     /// returns Rust source for comparison; it neither builds a native artifact
     /// nor grants package or evidence admission.
-    pub fn check_and_lower_safe_rust(&self) -> Result<String, String> {
-        use crate::frontend::{program_mode, Mode};
-        use crate::middle::{solver_stream_refusals, typecheck, SymbolicEngine, TaintPass};
+    pub fn check_and_lower_safe_rust(&self) -> Result<CheckedSafeRust, CapturedSafeCheckFailure> {
+        use crate::middle::{typecheck_ex_detailed, SymbolicEngine, TaintPass};
 
-        if !matches!(program_mode(&self.ast.items), None | Some(Mode::Safe)) {
-            return Err("captured comparison only supports Safe programs".into());
-        }
-        let typed = typecheck(self.ast.clone(), Mode::Safe)?;
-        let tainted = TaintPass::apply(typed.clone());
+        self.classify_safe_mode()?;
+        // Safe-default parity with `typecheck`; `verified=true` is a distinct
+        // effect/capability profile and is not conferred by this bridge.
+        let typed = typecheck_ex_detailed(self.ast.clone(), Mode::Safe, false)
+            .map_err(CapturedSafeCheckFailure::Typecheck)?;
+        let tainted = TaintPass::apply(typed);
         let checks = SymbolicEngine::check_obligations(&tainted);
-        let refusals = solver_stream_refusals(&checks);
-        if !refusals.is_empty() {
-            return Err(crate::middle::format_build_check_failures(&refusals));
-        }
-        crate::backends::run::lower_program_to_rust_with_mono(
+        check_captured_solver_stream(checks)?;
+        let rust_source = crate::backends::run::lower_program_to_rust_with_mono(
             &self.ast.items,
             false,
-            &typed.mono_specializations,
-            &typed.mono_call_sites,
+            &tainted.mono_specializations,
+            &tainted.mono_call_sites,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| CapturedSafeCheckFailure::Lowering {
+            detail: error.to_string(),
+        })?;
+        Ok(CheckedSafeRust { rust_source })
     }
 }
 
@@ -304,9 +415,18 @@ fn prepare_captured_project_with_limits(
     limits: ResolveLimits,
 ) -> Result<PreparedCapturedProject, CapturedResolveError> {
     let graph = load_captured_project(tree, entry, limits)?;
+    let intrinsic_modes = graph
+        .modules
+        .iter()
+        .map(|module| (module.key.clone(), module.intrinsic_mode))
+        .collect();
     let ast = super::combine_captured_project(&graph)?;
     let source_graph = compilation_identity(&graph)?;
-    Ok(PreparedCapturedProject { ast, source_graph })
+    Ok(PreparedCapturedProject {
+        ast,
+        source_graph,
+        intrinsic_modes,
+    })
 }
 
 fn compilation_identity(
@@ -459,10 +579,17 @@ impl<'a> State<'a> {
         let source = std::str::from_utf8(bytes).map_err(|_| CapturedResolveError::InvalidUtf8 {
             module: key.clone(),
         })?;
-        let ast = parse_source(source).map_err(|message| CapturedResolveError::Parse {
-            module: key.clone(),
-            message,
-        })?;
+        let (ast, intrinsic_mode) =
+            parse_source_with_pre_desugar_summary(source, |items| CapturedIntrinsicMode {
+                source_mode: crate::frontend::program_mode(items),
+                unresolved_mode_elevator: crate::evidence::items_have_unresolved_mode_elevator(
+                    items,
+                ),
+            })
+            .map_err(|message| CapturedResolveError::Parse {
+                module: key.clone(),
+                message,
+            })?;
         reject_nested_imports(&ast, &key)?;
         self.check_function_names(&key, &prefix, &ast)?;
         let raw_imports = collect_imports(&ast);
@@ -533,6 +660,7 @@ impl<'a> State<'a> {
             namespace,
             bytes,
             ast,
+            intrinsic_mode,
             imports,
         });
         Ok(())
@@ -692,7 +820,10 @@ mod tests {
         assert!(prepared.source_graph().nodes().values().any(|module| {
             module.namespace == "util" && module.bytes.as_slice() == captured_import
         }));
-        let lowered = prepared.check_and_lower_safe_rust().unwrap();
+        let lowered = prepared
+            .check_and_lower_safe_rust()
+            .unwrap()
+            .into_rust_source();
         assert!(lowered.contains("util__value"));
         assert!(lowered.contains("anubis_mk_str(\"captured-before\".to_string())"));
         assert!(!lowered.contains("anubis_mk_str(\"disk-after\".to_string())"));
@@ -718,7 +849,10 @@ mod tests {
             .impls
             .iter()
             .any(|imp| imp.trait_name == "Shape" && imp.type_name == "Circle"));
-        let lowered = prepared.check_and_lower_safe_rust().unwrap();
+        let lowered = prepared
+            .check_and_lower_safe_rust()
+            .unwrap()
+            .into_rust_source();
         assert!(lowered.contains("api__value"));
     }
 
@@ -726,18 +860,262 @@ mod tests {
     fn prepared_project_refuses_non_safe_mode_before_check_or_lower() {
         // This test only parses and classifies sources. It never executes a
         // Research or Exploit program, compiles one, or grants consent.
-        let sources: &[&[u8]] = &[
-            b"fn main() {}\n@research(authorization: \"unit-test\") fn probe() {}",
-            b"fn main() {}\nfn probe() { exploit {} }",
+        let sources: &[(&[u8], crate::frontend::Mode)] = &[
+            (
+                b"fn main() {}\n@research(authorization: \"unit-test\") fn probe() {}",
+                crate::frontend::Mode::Research,
+            ),
+            (
+                b"fn main() {}\nfn probe() { exploit {} }",
+                crate::frontend::Mode::Exploit,
+            ),
         ];
-        for source in sources {
+        for &(source, expected_mode) in sources {
             let (_temp, tree) = capture(&[("main.anb", source)]);
             let prepared = prepare_captured_project(&tree, entry()).unwrap();
-            let error = prepared.check_and_lower_safe_rust().unwrap_err();
+            let error = prepared.classify_safe_mode().unwrap_err();
             assert!(
-                error.contains("only supports Safe programs"),
+                matches!(
+                    &error,
+                    CapturedSafeCheckFailure::NonSafeMode { mode } if *mode == expected_mode
+                ),
                 "unexpected non-Safe classification: {error}"
             );
+        }
+    }
+
+    fn assert_mode_elevator_refused(files: &[(&str, &[u8])]) {
+        let (_temp, tree) = capture(files);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&prepared.ast.items),
+            Some(crate::frontend::Mode::Safe)
+        );
+        assert!(crate::evidence::items_have_unresolved_mode_elevator(
+            &prepared.ast.items
+        ));
+        assert!(matches!(
+            prepared.classify_safe_mode(),
+            Err(CapturedSafeCheckFailure::ModeElevator)
+        ));
+    }
+
+    #[test]
+    fn prepared_project_refuses_every_overwritten_research_attribute_before_typecheck() {
+        // Parsing and classification only: no Research/Exploit source is
+        // typechecked, lowered, compiled, or executed by this control.
+        // `@exploit(...) @safe` is not currently parsable by the frontend:
+        // the lexer drops `@`, and `exploit` is not a bare attribute before
+        // another attribute. A syntax error is not a mode-refusal witness.
+        // The parsed Exploit block is covered by the separate non-Safe test.
+        for attribute in ["research", "poc", "fuzz", "proof", "defensive", "audit"] {
+            let source = format!(
+                "fn main() {{}}\n@{attribute}(authorization: \"unit-test\") @safe fn probe() {{}}"
+            );
+            assert_mode_elevator_refused(&[("main.anb", source.as_bytes())]);
+        }
+
+        // This is the currently parsable Exploit item-attribute form. Its
+        // function mode is stored as Safe, so the intrinsic elevator must
+        // still refuse it before typechecking or lowering.
+        assert_mode_elevator_refused(&[("main.anb", b"fn main() {}\n@exploit fn probe() {}")]);
+    }
+
+    #[test]
+    fn prepared_project_refuses_nested_and_imported_mode_elevators() {
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"fn main() { let x = if true { @research { let y = 1; } 1 } else { 0 }; }",
+        )]);
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"module inner { @fuzz(authorization: \"unit-test\") @safe fn probe() {} }\nfn main() {}",
+        )]);
+        assert_mode_elevator_refused(&[
+            ("main.anb", b"import api;\nfn main() {}"),
+            (
+                "api.anb",
+                b"@poc(authorization: \"unit-test\") @safe pub fn probe() {}",
+            ),
+        ]);
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"struct S {}\nimpl S { @proof(authorization: \"unit-test\") @safe fn probe(self) {} }\nfn main() {}",
+        )]);
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"struct S {}\ntrait T { @audit(authorization: \"unit-test\") @safe fn probe(self) { return 1; } }\nimpl T for S {}\nfn main() {}",
+        )]);
+    }
+
+    #[test]
+    fn prepared_project_refuses_contract_expression_mode_elevators() {
+        // A contract expression is outside the function body, but it is still
+        // parsed source intent. Classification stops before typecheck/lowering.
+        for clause in ["requires", "ensures"] {
+            let source = format!(
+                "fn main() {clause}(if true {{ @research {{ let y = 1; }} true }} else {{ true }}) {{}}"
+            );
+            let (_temp, tree) = capture(&[("main.anb", source.as_bytes())]);
+            let prepared = prepare_captured_project(&tree, entry()).unwrap();
+            assert_eq!(
+                crate::frontend::program_mode(&prepared.ast.items),
+                Some(Mode::Safe)
+            );
+            assert!(matches!(
+                prepared.classify_safe_mode(),
+                Err(CapturedSafeCheckFailure::ModeElevator)
+            ));
+        }
+    }
+
+    #[test]
+    fn prepared_project_refuses_pre_desugar_trait_elevators_without_an_impl() {
+        // The ordinary AST no longer contains this declaration. Classify only;
+        // none of these Research sources reaches typecheck or lowering.
+        for source in [
+            "trait T { @poc(authorization: \"unit-test\") @safe fn probe(self) { return 1; } }\nfn main() {}",
+            "trait T { fn probe(self) { let x = if true { @research { let y = 1; } 1 } else { 0 }; } }\nfn main() {}",
+        ] {
+            let (_temp, tree) = capture(&[("main.anb", source.as_bytes())]);
+            let prepared = prepare_captured_project(&tree, entry()).unwrap();
+            assert_eq!(
+                crate::frontend::program_mode(&prepared.ast.items),
+                Some(Mode::Safe)
+            );
+            assert!(!crate::evidence::items_have_unresolved_mode_elevator(
+                &prepared.ast.items
+            ));
+            assert!(prepared
+                .intrinsic_modes
+                .iter()
+                .any(|(_, summary)| summary.unresolved_mode_elevator));
+            assert!(matches!(
+                prepared.classify_safe_mode(),
+                Err(CapturedSafeCheckFailure::ModeElevator)
+            ));
+        }
+    }
+
+    #[test]
+    fn prepared_project_refuses_overridden_trait_default_in_import() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import api;\nfn main() {}"),
+            (
+                "api.anb",
+                b"struct S {}\ntrait T { @audit(authorization: \"unit-test\") @safe fn probe(self) { return 1; } }\nimpl T for S { fn probe(self) { return 0; } }",
+            ),
+        ]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&prepared.ast.items),
+            Some(Mode::Safe)
+        );
+        assert!(!crate::evidence::items_have_unresolved_mode_elevator(
+            &prepared.ast.items
+        ));
+        assert!(prepared.intrinsic_modes.iter().any(|(module, summary)| {
+            *module == ModuleKey::Project(PortablePath::parse("api.anb").unwrap())
+                && summary.unresolved_mode_elevator
+        }));
+        assert!(matches!(
+            prepared.classify_safe_mode(),
+            Err(CapturedSafeCheckFailure::ModeElevator)
+        ));
+    }
+
+    #[test]
+    fn prepared_project_refuses_pre_desugar_non_safe_trait_mode() {
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"trait T { @research(authorization: \"unit-test\") fn probe(self) { return 1; } }\nfn main() {}",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&prepared.ast.items),
+            Some(Mode::Safe)
+        );
+        assert!(matches!(
+            prepared.classify_safe_mode(),
+            Err(CapturedSafeCheckFailure::NonSafeMode {
+                mode: Mode::Research
+            })
+        ));
+    }
+
+    #[test]
+    fn prepared_project_keeps_safe_acceptance_and_typed_typecheck_failure() {
+        let (_temp, tree) = capture(&[("main.anb", b"@safe fn main() {}")]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.check_and_lower_safe_rust().is_ok());
+
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"trait T { @safe fn probe(self) { return 1; } }\nfn main() {}",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.check_and_lower_safe_rust().is_ok());
+
+        let (_temp, tree) = capture(&[("main.anb", b"fn main() { missing(); }")]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(matches!(
+            prepared.check_and_lower_safe_rust(),
+            Err(CapturedSafeCheckFailure::Typecheck(failure))
+                if !failure.message.is_empty() && failure.limit.is_none()
+        ));
+    }
+
+    #[test]
+    fn captured_solver_stream_preserves_typed_refusals() {
+        let check = |status: &str| crate::middle::SolverCheck {
+            name: "contract:probe".into(),
+            status: status.into(),
+            detail: "synthetic classifier control".into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        assert!(check_captured_solver_stream(vec![check("PASS")]).is_ok());
+        for (status, expected) in [
+            ("FAIL", crate::middle::SolverOutcome::Fail),
+            ("UNKNOWN", crate::middle::SolverOutcome::Unknown),
+            ("unexpected", crate::middle::SolverOutcome::InvalidStatus),
+        ] {
+            let error = check_captured_solver_stream(vec![check(status)]).unwrap_err();
+            match error {
+                CapturedSafeCheckFailure::SolverRefused { checks, refusals } => {
+                    assert_eq!(checks[0].status, status);
+                    assert_eq!(refusals[0].status, status);
+                    assert_eq!(crate::middle::solver_outcome(&refusals[0]), expected);
+                }
+                other => panic!("wrong typed stage: {other}"),
+            }
+        }
+        assert!(matches!(
+            check_captured_solver_stream(vec![]),
+            Err(CapturedSafeCheckFailure::SolverRefused { checks, refusals })
+                if checks.is_empty()
+                    && refusals.iter().any(|row| row.name == "solver:stream-integrity")
+        ));
+    }
+
+    #[test]
+    fn captured_project_reports_malformed_entry_and_import_by_module() {
+        for (files, expected) in [
+            (vec![("main.anb", &b"fn main( {"[..])], "main.anb"),
+            (
+                vec![
+                    ("main.anb", &b"import api;\nfn main() {}"[..]),
+                    ("api.anb", &b"fn broken( {"[..]),
+                ],
+                "api.anb",
+            ),
+        ] {
+            let (_temp, tree) = capture(&files);
+            assert!(matches!(
+                prepare_captured_project(&tree, entry()),
+                Err(CapturedResolveError::Parse { module: ModuleKey::Project(path), .. })
+                    if path == PortablePath::parse(expected).unwrap()
+            ));
         }
     }
 

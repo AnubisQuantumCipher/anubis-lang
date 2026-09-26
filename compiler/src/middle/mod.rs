@@ -7281,6 +7281,15 @@ fn check_calls_expr_nc(
 /// to enforce the block's contents — it answers one question: does this function elevate mode from
 /// its own source?
 pub(crate) fn body_has_mode_elevator(body: &[Stmt]) -> bool {
+    body_and_expressions_have_mode_elevator(body, std::iter::empty())
+}
+
+/// Run the same total expression/statement walker over a function body and
+/// expression positions outside it, such as `requires` and `ensures`.
+pub(crate) fn body_and_expressions_have_mode_elevator<'a>(
+    body: &[Stmt],
+    expressions: impl Iterator<Item = &'a Expr>,
+) -> bool {
     // FIELD-TOTAL over Pattern. Pattern carries no Expr today, but consuming every named field here
     // means adding one (or adding any other field) is an E0027 compile error until this boundary
     // decides how to walk it.
@@ -7479,7 +7488,7 @@ pub(crate) fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             Stmt::Break | Stmt::Continue | Stmt::SpecBlock { forall: _ } => false,
         })
     }
-    in_stmts(body)
+    in_stmts(body) || expressions.into_iter().any(in_expr)
 }
 
 /// Every attribute name the compiler gives meaning to.

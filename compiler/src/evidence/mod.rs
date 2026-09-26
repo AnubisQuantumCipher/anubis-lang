@@ -1447,11 +1447,11 @@ struct Derived {
 }
 
 /// The parsed function mode can understate nested `@research`/`@exploit` blocks and an earlier
-/// higher-mode attribute overwritten by a later lower-mode attribute. Until the frontend records
-/// a source-wide intrinsic maximum, such programs may run through ordinary checking but cannot
-/// receive a source-derived PCA mode claim.
+/// Research-mode alias or Exploit attribute overwritten by a later lower-mode attribute.
+/// Until the frontend records a source-wide intrinsic maximum, such programs may
+/// run through ordinary checking but cannot receive a source-derived PCA mode claim.
 pub fn items_have_unresolved_mode_elevator(items: &[crate::frontend::Item]) -> bool {
-    use crate::frontend::{Item, Mode};
+    use crate::frontend::{is_research_mode_attribute, Item, Mode};
     fn rank(mode: Mode) -> u8 {
         match mode {
             Mode::Safe => 0,
@@ -1464,17 +1464,25 @@ pub fn items_have_unresolved_mode_elevator(items: &[crate::frontend::Item]) -> b
             mode,
             attributes,
             body,
+            requires,
+            ensures,
             ..
         } => {
-            crate::middle::body_has_mode_elevator(body)
-                || attributes.iter().any(|attr| {
-                    let declared = match attr.name.as_str() {
-                        "research" => Some(Mode::Research),
-                        "exploit" => Some(Mode::Exploit),
-                        _ => None,
-                    };
-                    declared.is_some_and(|candidate| rank(candidate) > rank(*mode))
-                })
+            // Contracts are expression fields outside `body`. Feed them to
+            // the same field-total walker without copying the expressions.
+            crate::middle::body_and_expressions_have_mode_elevator(
+                body,
+                requires.iter().chain(ensures),
+            ) || attributes.iter().any(|attr| {
+                let declared = if is_research_mode_attribute(&attr.name) {
+                    Some(Mode::Research)
+                } else if attr.name == "exploit" {
+                    Some(Mode::Exploit)
+                } else {
+                    None
+                };
+                declared.is_some_and(|candidate| rank(candidate) > rank(*mode))
+            })
         }
         Item::Module { items, .. } => items_have_unresolved_mode_elevator(items),
         Item::Impl { methods, .. } | Item::Trait { methods, .. } => {
@@ -5994,15 +6002,48 @@ fn main() uses(io.read) {
         );
         assert!(items_have_unresolved_mode_elevator(&nested.items));
 
-        let overwritten = crate::frontend::parse_source(
-            "@research(authorization: \"unit-test\") @safe fn main() { let x = 1; }",
-        )
-        .unwrap();
+        for clause in ["requires", "ensures"] {
+            let source = format!(
+                "fn main() {clause}(if true {{ @research {{ let y = 1; }} true }} else {{ true }}) {{}}"
+            );
+            let contract = crate::frontend::parse_source(&source).unwrap();
+            assert_eq!(
+                crate::frontend::program_mode(&contract.items),
+                Some(crate::frontend::Mode::Safe),
+                "{clause}"
+            );
+            assert!(
+                items_have_unresolved_mode_elevator(&contract.items),
+                "{clause}"
+            );
+        }
+
+        // `@exploit(...) @safe` currently fails to parse, so its syntax error
+        // cannot serve as an intrinsic-mode refusal control here.
+        for attribute in ["research", "poc", "fuzz", "proof", "defensive", "audit"] {
+            let source = format!(
+                "@{attribute}(authorization: \"unit-test\") @safe fn main() {{ let x = 1; }}"
+            );
+            let overwritten = crate::frontend::parse_source(&source).unwrap();
+            assert_eq!(
+                crate::frontend::program_mode(&overwritten.items),
+                Some(crate::frontend::Mode::Safe),
+                "{attribute}"
+            );
+            assert!(
+                items_have_unresolved_mode_elevator(&overwritten.items),
+                "{attribute}"
+            );
+        }
+
+        let exploit_attribute = crate::frontend::parse_source("@exploit fn main() {}").unwrap();
         assert_eq!(
-            crate::frontend::program_mode(&overwritten.items),
+            crate::frontend::program_mode(&exploit_attribute.items),
             Some(crate::frontend::Mode::Safe)
         );
-        assert!(items_have_unresolved_mode_elevator(&overwritten.items));
+        assert!(items_have_unresolved_mode_elevator(
+            &exploit_attribute.items
+        ));
 
         let retained = crate::frontend::parse_source(
             "@safe @research(authorization: \"unit-test\") fn main() { let x = 1; }",
