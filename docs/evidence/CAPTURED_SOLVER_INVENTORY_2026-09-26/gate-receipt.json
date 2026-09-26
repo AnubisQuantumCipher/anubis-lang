@@ -1,0 +1,94 @@
+{
+  "gates": [
+    {
+      "command": "cargo test -p anubis-compiler resolve::captured::tests -- --nocapture",
+      "exit_code": 0,
+      "log": "captured-pass.log",
+      "observed_test_result": "29 passed; 0 failed; 0 ignored",
+      "status": "PASS"
+    },
+    {
+      "command": "cargo test -p anubis-compiler middle::certificate_coverage_tests -- --nocapture",
+      "exit_code": 0,
+      "log": "middle-pass.log",
+      "observed_test_result": "21 passed; 0 failed; 0 ignored",
+      "status": "PASS"
+    },
+    {
+      "command": "cargo clippy -p anubis-compiler --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "clippy-pass.log",
+      "status": "PASS"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "status": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "status": "PASS"
+    },
+    {
+      "command": "bash scripts/run_docs_drift_gate.sh --out <isolated-output>",
+      "exit_code": 0,
+      "observed_result": "Overall: PASS (36 stamps checked, 0 drift)",
+      "report": "docs-drift-report.json",
+      "report_sha256": "51a92fbff078b2b96f7868f82b027172e86f8f9bb10d262dd7c86a352e9616b6",
+      "status": "PASS"
+    }
+  ],
+  "independent_final_diff_review": {
+    "report": "INDEPENDENT_REVIEW.md",
+    "sha256": "b352a2f081212f5c025552a19f2595c08d706de038278f79d973e1ad8b659c6f",
+    "status": "GO for bounded internal row-inventory guard; HOLD for public assurance"
+  },
+  "initial_failed_gate": {
+    "cause": "four test-only cloned singleton slices; replaced with std::slice::from_ref, then reran the final Clippy and focused tests",
+    "command": "cargo clippy -p anubis-compiler --all-targets -- -D warnings",
+    "exit_code": 101,
+    "log": "initial-clippy-fail.log",
+    "source_sha256": {
+      "compiler/src/middle/mod.rs": "9769cc251f6d051ebb41746dadb51a1a8ef71c0f1001fa20acd0a67a7a127766",
+      "compiler/src/resolve/captured.rs": "f5893c63c6a60c5413800417e2c77cffe5c3609b41d7f9eecdff1df33dd6f339"
+    },
+    "status": "FAIL"
+  },
+  "log_normalization": "Complete stdout/stderr message lines; private home-directory prefix replaced with <HOME>/ and terminal blank lines trimmed",
+  "not_run": [
+    "public CLI captured build",
+    "native artifact",
+    "evidence or package admission",
+    "full workspace suite",
+    "full soundness matrix",
+    "hosted source-matched CI",
+    "disposable-guest seal"
+  ],
+  "open_boundary": "The in-process row ordinal starts at final TypedIR.solver_obligations. It does not detect obligations omitted before that vector, associate exact SMT with source semantics, authenticate a solver proof, or type every existing producer tool error.",
+  "raw_log_sha256": {
+    "captured-pass.log": "dff9f27dc0a2c9c72c8dd8a57abe1f7a8ecf729d078e79b213170f6ca18a256b",
+    "clippy-pass.log": "e5a62173b7a0a0416352f2ecc90e7d0deaa9be3e3ce4f0943c6efbe4304c4329",
+    "initial-clippy-fail.log": "58a383ee54faa92f83e074e54babefe90d4feaa86523af5627c98277336601a3",
+    "middle-pass.log": "6528e1ff9c6e4baa83cbeca558db409b5f175aaf2b320ab5f264da9f88e8e8eb"
+  },
+  "retained_log_sha256": {
+    "captured-pass.log": "e8617a52d867983998d79dce0ba50f1c5d8b2cc3ad712e6e8804aa172572df7f",
+    "clippy-pass.log": "a919103120841dc653f742b52709fbbd46fcbdd691a793eec51d25544467aa0b",
+    "initial-clippy-fail.log": "372bce9c95fce44709b9a8ff034b85d14243b1b7e42694e734d3826ad5229a6f",
+    "middle-pass.log": "e18ec9fe852b510c39dd6cadd34afff2d4c1d98745c062f42717656fcb35d4d1"
+  },
+  "schema": "anubis.captured-solver-inventory-local/1",
+  "source_commit": "aa9c33b76a9c69607a53627e61e01e0db5abcab6",
+  "source_sha256": {
+    "compiler/src/middle/mod.rs": "6abfc5e3359adb535a42a64a84de78b746d5df93ffea81ca4a9aa9ed0f4a981c",
+    "compiler/src/resolve/captured.rs": "c2b1cd45899a96b05f221b645e8d1eb1769ce1955bcc13c588856f6756dc8a5c"
+  },
+  "toolchain": {
+    "cargo": "cargo 1.97.0-nightly (a343accce 2026-05-08)",
+    "cargo_build_jobs": 2,
+    "cargo_target": "isolated local target directory, not a published binary pin",
+    "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+    "scope": "systemd user scope, MemoryMax=8G, MemorySwapMax=0"
+  }
+}

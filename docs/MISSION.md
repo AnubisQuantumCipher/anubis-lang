@@ -74,7 +74,7 @@ records dependency-correct review refs without rewriting published history.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The isolated local integration branch `codex/register-round2-20260926` has
-reviewed compiler code through `ee4f13bb499059f51055f5a3b451abe15c5920ca`,
+reviewed compiler code through `aa9c33b76a9c69607a53627e61e01e0db5abcab6`,
 captured-bridge receipt/log correction through `cca4941582bb081d403b89afb941907b1fe7bb04`,
 fixture registrations through `e6b4fb7e86286c6314595284c0e014ca6bd49813`,
 and the reviewed captured-build design at
@@ -145,11 +145,15 @@ package/evidence admission was verified. The subsequent
 [solver-stream receipt](evidence/CAPTURED_SOLVER_STREAM_2026-09-26/README.md)
 binds `ee4f13bb`, focused lead tests, Clippy, format and final static review.
 The private captured path now returns a typed integrity failure for malformed
-streams while retaining distinct wire `FAIL` and `UNKNOWN` rows. An
-expected-obligation-to-row inventory check and typed classification of
-producer tool errors are still required before the public CLI can rely on
-this result. Then independently review staged-publisher and CLI units with
-imported contract twins;
+streams while retaining distinct wire `FAIL` and `UNKNOWN` rows. The later
+[row-inventory receipt](evidence/CAPTURED_SOLVER_INVENTORY_2026-09-26/README.md)
+binds `aa9c33b7` and shows that missing, copied, extra, or reordered rows
+relative to the final typed inventory become compiler integrity failures.
+It does not recover obligations omitted before that inventory or authenticate
+the SMT encoding. Typed producer tool errors, source-to-obligation
+correspondence, and a public captured-build consumer remain required before
+CLI or evidence admission. Then independently review staged-publisher and CLI
+units with imported contract twins;
 the valid transitive package still fails at `ANUBIS_DEP_PROOF_UNVERIFIED`.
 
 The next soundness implementation dependency is a typed distinction between protected
