@@ -2368,3 +2368,14 @@ r2arm_sibling_binder_drops_requires	M-ARM-BINDER	slice	REJECT	carrier,direct	sib
 r2arm_unrelated_assumption_drops_requires	M-ARM-BINDER	slice	REJECT	carrier,direct	sibling x binder drops violated f(-1) requires through unrelated outer-x assumption; initial pinned checker result in forthcoming evidence receipt.
 r2arm_renamed_binder_preserves_requires	M-ARM-BINDER	slice	REJECT	carrier	renamed sibling binder keeps violated f(x) requires; rejection control; initial pinned checker result in forthcoming evidence receipt.
 r2arm_satisfied_requires_remains_valid	M-ARM-BINDER	slice	ACCEPT	carrier	satisfied f(x) requires remains valid under sibling binder; initial pinned checker result in forthcoming evidence receipt.
+r2arm_contract_call_scrutinee	M-ARM-BINDER	slice	REJECT	carrier,direct	match scrutinee calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control.
+r2arm_contract_call_guard	M-ARM-BINDER	slice	REJECT	carrier,direct	match guard calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control.
+r2arm_iflet_scrutinee_call	M-ARM-BINDER	slice	REJECT	carrier,direct	if-let scrutinee calls f(-1); pinned baseline check passed (silent accept); direct call is the rejection control.
+r2arm_same_binder_invalid_match	M-ARM-BINDER	slice	REJECT	carrier	match binding x receives -1 before f(x); pinned baseline ANUBIS_ASSERTION_UNDECIDED, not a checked disproof.
+r2arm_same_binder_invalid_iflet	M-ARM-BINDER	slice	REJECT	carrier	if-let binding x receives -1 before f(x); pinned baseline ANUBIS_ASSERTION_UNDECIDED, not a checked disproof.
+r2arm_same_binder_valid_match	M-ARM-BINDER	slice	ACCEPT	carrier	match binding x receives 1 before f(x); valid control; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
+r2arm_same_binder_valid_iflet	M-ARM-BINDER	slice	ACCEPT	carrier	if-let binding x receives 1 before f(x); valid control; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
+r2arm_dead_binder_after_return	M-ARM-BINDER	slice	ACCEPT	carrier	f(x) follows return in a match arm and cannot execute; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
+r2arm_guard_false_binder_valid	M-ARM-BINDER	slice	ACCEPT	carrier	f(x) is under a false match guard and cannot execute; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
+r2arm_guard_establishes_binder_valid	M-ARM-BINDER	slice	ACCEPT	carrier	guard x > 0 establishes f(x) requires in the taken arm; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
+r2arm_quoted_string_symbol_valid	M-ARM-BINDER	slice	ACCEPT	carrier	f("anb_x") satisfies its string requires; unrelated match binder x must not be inferred from quoted SMT text; pinned baseline check passed.
