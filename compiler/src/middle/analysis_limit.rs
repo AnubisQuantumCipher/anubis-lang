@@ -238,6 +238,18 @@ impl Drop for Frame {
 /// Each request starts clean (an LSP or batch run checks many files in one process); the previous
 /// state is restored on return and on unwind, so requests may nest.
 pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    check_with(f, |limit, other| match other {
+        Some(other) => format!("{limit}\n{other}"),
+        None => limit,
+    })
+}
+
+/// Keep a caller's structured findings when an analysis limit is reached.
+/// The ordinary string API above preserves its existing error text and callers.
+pub(super) fn check_with<T, E>(
+    f: impl FnOnce() -> Result<T, E>,
+    limit_error: impl FnOnce(String, Option<E>) -> E,
+) -> Result<T, E> {
     struct Request(u8, usize, Option<crate::resource::Armed>);
     impl Drop for Request {
         fn drop(&mut self) {
@@ -266,10 +278,7 @@ pub(super) fn check<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
     if reason == NONE {
         return result;
     }
-    match result {
-        Ok(_) => Err(diagnostic(reason)),
-        Err(other) => Err(format!("{}\n{other}", diagnostic(reason))),
-    }
+    Err(limit_error(diagnostic(reason), result.err()))
 }
 
 #[cfg(test)]

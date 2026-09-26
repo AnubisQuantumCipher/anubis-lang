@@ -48,6 +48,7 @@ use crate::middle::{
     SolverCheck, SolverOutcome,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const SCHEMA: &str = "anubis-diagnostics/1";
@@ -192,6 +193,11 @@ pub struct Obligation {
     pub smt: String,
     /// Variables the query declares.
     pub declared_vars: Vec<String>,
+    /// An identity for this occurrence in this exact entry source. It is not a
+    /// semantic ID across edits or an imported-source-closure identity. The
+    /// middle-end does not yet retain expression/callsite provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_occurrence_id: Option<String>,
 }
 
 /// The resource budget the obligation was decided under.
@@ -425,6 +431,11 @@ pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
     // closure-depth refusal carries none, so there is nothing to raise.
     let (defect_locus, agent_action) = if code == "ANUBIS_ANALYSIS_LIMIT" {
         (DefectLocus::Capability, AgentAction::RestateOrRaiseBudget)
+    } else if code.starts_with("ANUBIS_EVIDENCE_SNAPSHOT_") {
+        // The evidence renderer cannot faithfully serialize the resolved AST.
+        // Editing the user's program to satisfy a lossy printer would hide a
+        // compiler defect rather than repair the program.
+        (DefectLocus::Compiler, AgentAction::InvestigateCompiler)
     } else {
         (DefectLocus::Program, AgentAction::RepairProgram)
     };
@@ -455,6 +466,52 @@ pub fn diagnostic_of_refusal(message: &str) -> Diagnostic {
         budget,
         suggestions: Vec::new(),
         omitted: 0,
+    }
+}
+
+/// Preserve semantic findings before their human-readable messages are joined.
+/// Only a span supplied by the analyzer and valid for this source is located.
+/// A limit remains its own finding, before any findings retained from the run.
+pub fn diagnostics_of_typecheck_failure(
+    failure: &crate::middle::TypecheckFailure,
+    source: Option<&str>,
+    path: &str,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    if let Some(limit) = &failure.limit {
+        out.push(diagnostic_of_refusal(limit));
+    }
+    let index = source.map(crate::frontend::LineIndex::new);
+    for finding in &failure.diagnostics {
+        let text = match &finding.code {
+            Some(code) => format!("{code}: {}", finding.message),
+            None => finding.message.clone(),
+        };
+        let mut diagnostic = diagnostic_of_refusal(&text);
+        diagnostic.location = finding.span.and_then(|(start, end)| {
+            let (source, index) = source.zip(index.as_ref())?;
+            (start < end
+                && end <= source.len()
+                && source.is_char_boundary(start)
+                && source.is_char_boundary(end))
+            .then(|| {
+                let (line, column) = index.line_col(start);
+                Location {
+                    file: path.to_owned(),
+                    line,
+                    column,
+                    span_start: start,
+                    span_end: end,
+                }
+            })
+        });
+        out.push(diagnostic);
+    }
+    if out.is_empty() {
+        // A non-semantic failure (if one is added later) still fails the stream.
+        diagnostics_of_refusal(&failure.message)
+    } else {
+        out
     }
 }
 
@@ -849,6 +906,7 @@ pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
             name: check.name.clone(),
             smt: check.smt.clone(),
             declared_vars: declared,
+            source_occurrence_id: None,
         }),
         counterexample,
         location: None,
@@ -865,6 +923,63 @@ pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
         suggestions: Vec::new(),
         omitted: 0,
     }
+}
+
+/// Distinguish solver refusals whose display names and SMT are identical. The
+/// ordinal belongs to the full obligation stream, so changing an earlier
+/// obligation from FAIL to PASS does not renumber later refusals. This binds
+/// only to exact entry-source bytes; imports and semantic callsite identity
+/// require provenance carried by the IR.
+pub fn diagnostics_of_solver_checks(
+    checks: &[SolverCheck],
+    entry_source: Option<&str>,
+    mode: &str,
+    verified: bool,
+) -> Vec<Diagnostic> {
+    // Hash the source once per stream. A program with many refusals must not
+    // re-read the entire entry file for every obligation. This digest is an
+    // exact-byte input to ephemeral stream occurrence IDs, not proof of a
+    // resolved callsite or of the imported source closure.
+    let source_hash = entry_source.map(|source| {
+        let mut hash = Sha256::new();
+        hash.update(b"anubis-entry-source/1\0");
+        hash.update((source.len() as u64).to_be_bytes());
+        hash.update(source.as_bytes());
+        hash.finalize()
+    });
+    let mut source_ordinals = checks
+        .iter()
+        .enumerate()
+        .filter(|(_, check)| crate::middle::solver_check_requires_refusal(check))
+        .map(|(ordinal, _)| ordinal);
+    // This authority also appends a compiler-owned stream-integrity refusal if
+    // checks are absent or the no-obligations sentinel is malformed.
+    crate::middle::solver_stream_refusals(checks)
+        .iter()
+        .map(|check| {
+            let mut diagnostic = diagnostic_of(check);
+            if let (Some(obligation), Some(ordinal), Some(source_hash)) = (
+                diagnostic.obligation.as_mut(),
+                source_ordinals.next(),
+                source_hash.as_ref(),
+            ) {
+                let mut hash = Sha256::new();
+                hash.update(b"anubis-entry-source-occurrence/1\0");
+                hash.update(source_hash);
+                hash.update((mode.len() as u64).to_be_bytes());
+                hash.update(mode.as_bytes());
+                hash.update([u8::from(verified)]);
+                hash.update((ordinal as u64).to_be_bytes());
+                hash.update((check.smt.len() as u64).to_be_bytes());
+                hash.update(check.smt.as_bytes());
+                obligation.source_occurrence_id = Some(format!(
+                    "entry-source-occurrence/1:{}",
+                    hex::encode(hash.finalize())
+                ));
+            }
+            diagnostic
+        })
+        .collect()
 }
 
 /// The whole refusal set, as JSON Lines: one diagnostic per line, then a
@@ -1227,6 +1342,24 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_failure_is_a_compiler_defect_not_a_program_repair() {
+        for code in [
+            "ANUBIS_EVIDENCE_SNAPSHOT_REPARSE",
+            "ANUBIS_EVIDENCE_SNAPSHOT_MISMATCH",
+            "ANUBIS_EVIDENCE_SNAPSHOT_MISSING",
+        ] {
+            let d = diagnostic_of_refusal(&format!("{code}: cannot seal resolved source"));
+            assert_eq!(d.code, code);
+            assert_eq!(d.defect_locus, DefectLocus::Compiler);
+            assert_eq!(d.agent_action, AgentAction::InvestigateCompiler);
+            assert_eq!(d.status, Status::Refused);
+            assert!(d.build_blocking);
+        }
+        let program = diagnostic_of_refusal("ANUBIS_SECRET_EXFILTRATION: secret reached print");
+        assert_eq!(program.defect_locus, DefectLocus::Program);
+    }
+
+    #[test]
     fn every_diagnostic_is_blocking_and_carries_no_lesser_severity() {
         // All three shapes, because the property is about the format rather
         // than about any one lane: there is no severity below error and no
@@ -1488,6 +1621,151 @@ mod tests {
         assert_eq!(summary["counts"]["disproved"], 1);
         assert_eq!(summary["counts"]["refused"], 1);
         assert_eq!(out.lines().count(), 3, "two diagnostics plus one summary");
+    }
+
+    #[test]
+    fn semantic_refusals_keep_their_own_real_spans() {
+        let source = "fn main() {\n let x: u32 = 3.14;\n let y: u32 = 4.14;\n }";
+        let ast = crate::frontend::parse_source(source).expect("valid syntax");
+        let failure = crate::middle::typecheck_ex_detailed(ast, crate::frontend::Mode::Safe, false)
+            .expect_err("float narrowing must be refused");
+        let findings = diagnostics_of_typecheck_failure(&failure, Some(source), "program.anb");
+        let narrowed: Vec<_> = findings
+            .iter()
+            .filter(|d| d.code == "ANUBIS_TYPE_MISMATCH")
+            .collect();
+        assert_eq!(narrowed.len(), 2);
+        let first = narrowed[0].location.as_ref().expect("first statement span");
+        let second = narrowed[1]
+            .location
+            .as_ref()
+            .expect("second statement span");
+        assert_eq!(first.file, "program.anb");
+        assert_eq!(
+            &source[first.span_start..first.span_end],
+            "let x: u32 = 3.14;"
+        );
+        assert_eq!(
+            &source[second.span_start..second.span_end],
+            "let y: u32 = 4.14;"
+        );
+        assert_ne!(first.line, second.line);
+        assert!(crate::middle::typecheck_ex_detailed(
+            crate::frontend::parse_source("fn main() { let x: u32 = 3; }").unwrap(),
+            crate::frontend::Mode::Safe,
+            false,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn untracked_and_invalid_semantic_spans_stay_absent() {
+        use crate::middle::{SemanticDiagnostic, TypecheckFailure};
+        let failure = TypecheckFailure {
+            message: "ANUBIS_UNKNOWN_FUNCTION: missing".into(),
+            diagnostics: vec![
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_UNKNOWN_FUNCTION".into()),
+                    message: "missing".into(),
+                    span: None,
+                },
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                    message: "wrong".into(),
+                    span: Some((0, 0)),
+                },
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                    message: "wrong".into(),
+                    span: Some((0, 1000)),
+                },
+            ],
+            limit: None,
+        };
+        let findings = diagnostics_of_typecheck_failure(&failure, Some("fn main() {}"), "p.anb");
+        assert_eq!(findings.len(), 3);
+        assert!(findings.iter().all(|d| d.location.is_none()));
+        let imported = TypecheckFailure {
+            diagnostics: vec![SemanticDiagnostic {
+                code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                message: "imported source".into(),
+                span: Some((0, 4)),
+            }],
+            ..failure
+        };
+        assert!(
+            diagnostics_of_typecheck_failure(&imported, None, "entry.anb")[0]
+                .location
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn identical_solver_refusals_get_distinct_exact_source_occurrences() {
+        let same = disproved_check();
+        let findings = diagnostics_of_solver_checks(
+            &[same.clone(), same],
+            Some("fn main() {}\n"),
+            "safe",
+            false,
+        );
+        let first = findings[0].obligation.as_ref().unwrap();
+        let second = findings[1].obligation.as_ref().unwrap();
+        assert_eq!(first.name, second.name);
+        assert_eq!(first.smt, second.smt);
+        assert_ne!(first.source_occurrence_id, second.source_occurrence_id);
+        let changed = diagnostics_of_solver_checks(
+            &[disproved_check()],
+            Some("fn main() {}\n\n"),
+            "safe",
+            false,
+        );
+        assert_ne!(
+            first.source_occurrence_id,
+            changed[0].obligation.as_ref().unwrap().source_occurrence_id
+        );
+        assert_eq!(
+            first.source_occurrence_id,
+            diagnostics_of_solver_checks(
+                &[disproved_check()],
+                Some("fn main() {}\n"),
+                "safe",
+                false
+            )[0]
+            .obligation
+            .as_ref()
+            .unwrap()
+            .source_occurrence_id
+        );
+        assert!(diagnostic_of(&disproved_check())
+            .obligation
+            .unwrap()
+            .source_occurrence_id
+            .is_none());
+        let mut passed = disproved_check();
+        passed.status = "PASS".into();
+        let after_pass = diagnostics_of_solver_checks(
+            &[passed, disproved_check()],
+            Some("fn main() {}\n"),
+            "safe",
+            false,
+        );
+        assert_eq!(
+            second.source_occurrence_id,
+            after_pass[0]
+                .obligation
+                .as_ref()
+                .unwrap()
+                .source_occurrence_id
+        );
+        assert!(
+            diagnostics_of_solver_checks(&[disproved_check()], None, "safe", false)[0]
+                .obligation
+                .as_ref()
+                .unwrap()
+                .source_occurrence_id
+                .is_none()
+        );
     }
 
     #[test]

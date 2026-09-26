@@ -30,7 +30,7 @@ use anubis_compiler::{
     },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
-    middle::{SymbolicEngine, TaintPass},
+    middle::{typecheck_ex_detailed, SymbolicEngine, TaintPass, TypecheckFailure},
     package::{
         registry, resolve_workspace, ResolveOptions, ResolvedWorkspace, TrustStore, LOCK_FILENAME,
     },
@@ -2875,13 +2875,18 @@ fn cli_main() -> Result<()> {
             }
 
             let typed_res = if let Some(ref a) = ast {
-                typecheck_ex(a.clone(), mode, verified)
+                typecheck_ex_detailed(a.clone(), mode, verified)
             } else {
-                Err(parse_err.clone().unwrap_or_else(|| "parse failed".into()))
+                Err(TypecheckFailure {
+                    message: parse_err.clone().unwrap_or_else(|| "parse failed".into()),
+                    diagnostics: Vec::new(),
+                    limit: None,
+                })
             };
+            let semantic_failure = typed_res.as_ref().err().cloned();
             let (typed, mut check_error) = match typed_res {
                 Ok(ref t) => (Some(t.clone()), parse_err.clone()),
-                Err(ref e) => (None, parse_err.clone().or(Some(e.clone()))),
+                Err(ref e) => (None, parse_err.clone().or(Some(e.message.clone()))),
             };
 
             let tainted = typed.as_ref().map(|t| TaintPass::apply(t.clone()));
@@ -3015,12 +3020,53 @@ fn cli_main() -> Result<()> {
                 // same whole program as the command instead of re-checking an unresolved `import`
                 // line and contradicting a successful command verdict.
                 let resolved_files = if resolved_program {
-                    let resolved = ast.as_ref().ok_or_else(|| {
-                        anyhow!(
-                            "ANUBIS_EVIDENCE_SNAPSHOT_MISSING: resolved checker AST is unavailable"
-                        )
-                    })?;
-                    Some(evidence_program_files(&input, &src, resolved, true)?)
+                    let snapshot = ast
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "ANUBIS_EVIDENCE_SNAPSHOT_MISSING: resolved checker AST is unavailable"
+                            )
+                        })
+                        .and_then(|resolved| evidence_program_files(&input, &src, resolved, true));
+                    match snapshot {
+                        Ok(files) => Some(files),
+                        Err(error) => {
+                            coverage.witnesses_retained = false;
+                            if json_mode {
+                                use anubis_compiler::diagnostics as diag;
+                                let mut diagnostics = if !solver_refusals.is_empty() {
+                                    diag::diagnostics_of_solver_checks(
+                                        &solver_checks,
+                                        (!resolved_program).then_some(src.as_str()),
+                                        mode_name(mode),
+                                        verified,
+                                    )
+                                } else if let Some(failure) = &semantic_failure {
+                                    diag::diagnostics_of_typecheck_failure(
+                                        failure,
+                                        (!resolved_program).then_some(src.as_str()),
+                                        &input.to_string_lossy(),
+                                    )
+                                } else if let Some(ref refusal) = check_error {
+                                    diag::diagnostics_of_refusal(refusal)
+                                } else {
+                                    Vec::new()
+                                };
+                                diagnostics.push(diag::diagnostic_of_refusal(&error.to_string()));
+                                print!(
+                                    "{}",
+                                    diag::render_with_coverage(
+                                        &diagnostics,
+                                        Some((&coverage).into())
+                                    )
+                                );
+                            }
+                            return Err(anyhow!(
+                                "check evidence failed: {}",
+                                anubis_compiler::diagnostics::printable(&error.to_string())
+                            ));
+                        }
+                    }
                 } else {
                     None
                 };
@@ -3144,7 +3190,18 @@ fn cli_main() -> Result<()> {
                 let diagnostics = if !parse_diags.is_empty() {
                     parse_diags
                 } else if !solver_refusals.is_empty() {
-                    solver_refusals.iter().map(diag::diagnostic_of).collect()
+                    diag::diagnostics_of_solver_checks(
+                        &solver_checks,
+                        (!resolved_program).then_some(src.as_str()),
+                        mode_name(mode),
+                        verified,
+                    )
+                } else if let Some(failure) = &semantic_failure {
+                    diag::diagnostics_of_typecheck_failure(
+                        failure,
+                        (!resolved_program).then_some(src.as_str()),
+                        &input.to_string_lossy(),
+                    )
                 } else if let Some(err) = check_error.clone().or_else(|| verdict_failure.clone()) {
                     diag::diagnostics_of_refusal(&err)
                 } else {

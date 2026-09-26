@@ -222,6 +222,17 @@ pub struct SemanticDiagnostic {
     pub span: Option<(usize, usize)>,
 }
 
+/// A typecheck refusal with the findings that produced its human-readable text.
+/// A missing span stays missing; callers must not recover one by searching the text.
+#[derive(Debug, Clone)]
+pub struct TypecheckFailure {
+    pub message: String,
+    pub diagnostics: Vec<SemanticDiagnostic>,
+    /// Present when the checker stopped at an analysis limit. Findings retained
+    /// alongside it were raised before the limit or independently of its walker.
+    pub limit: Option<String>,
+}
+
 /// One static monomorphization of a generic function at a call site (checker phase).
 /// Unique specializations drive clone emission; see also [`MonoCallSite`] for ordered
 /// per-call dispatch (variable-pinned mono).
@@ -5234,11 +5245,35 @@ pub fn ifc2_findings(ast: &AST, mode: Mode) -> Vec<(String, String)> {
 }
 
 pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
-    // One request: an analysis limit reached anywhere in it refuses it (`analysis_limit`).
-    analysis_limit::check(|| typecheck_request(ast, mode, verified))
+    typecheck_ex_detailed(ast, mode, verified).map_err(|failure| failure.message)
 }
 
-fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
+/// The same check as `typecheck_ex`, retaining structured semantic findings for
+/// machine diagnostics. The string API remains unchanged for existing consumers.
+pub fn typecheck_ex_detailed(
+    ast: AST,
+    mode: Mode,
+    verified: bool,
+) -> Result<TypedIR, TypecheckFailure> {
+    // One request: an analysis limit reached anywhere in it refuses it (`analysis_limit`).
+    analysis_limit::check_with(
+        || typecheck_request(ast, mode, verified),
+        |limit, other| match other {
+            Some(mut failure) => {
+                failure.message = format!("{limit}\n{}", failure.message);
+                failure.limit = Some(limit);
+                failure
+            }
+            None => TypecheckFailure {
+                message: limit.clone(),
+                diagnostics: Vec::new(),
+                limit: Some(limit),
+            },
+        },
+    )
+}
+
+fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, TypecheckFailure> {
     // Item-21 D9: give an unannotated free-function parameter the struct type every one of its
     // (visible, direct) callers passes, so a declared field qualifier read through it is honored
     // exactly as for the annotated spelling. Analysis copy only: lowering uses its own AST.
@@ -5428,7 +5463,11 @@ fn typecheck_request(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, St
             })
             .collect::<Vec<_>>()
             .join("; ");
-        return Err(messages);
+        return Err(TypecheckFailure {
+            message: messages,
+            diagnostics: ctx.diagnostics,
+            limit: None,
+        });
     }
 
     let captured_body = first_fn_body(&ast.items).unwrap_or_default();

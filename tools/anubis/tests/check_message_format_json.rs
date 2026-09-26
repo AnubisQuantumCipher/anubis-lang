@@ -62,6 +62,41 @@ fn summary(out: &Output) -> Value {
         .expect("a stream always ends in a summary")
 }
 
+#[test]
+fn evidence_snapshot_refusal_still_emits_a_compiler_diagnostic_and_fail_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lib.anb"), "pub fn helper() { 1 }").unwrap();
+    let entry = dir.path().join("main.anb");
+    std::fs::write(
+        &entry,
+        "import lib;\nfn main() { hybrid { gpu(metal){} cpu{} prove(risc0){ spec { forall x . true } } } }",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_anubis"))
+        .arg("check")
+        .arg(&entry)
+        .arg("--message-format=json")
+        .arg("--evidence")
+        .arg("--out")
+        .arg(dir.path().join("out"))
+        .output()
+        .expect("run check");
+    assert!(!out.status.success());
+    let lines = lines_of(&out);
+    let snapshot = lines
+        .iter()
+        .find(|line| {
+            line["code"] == "ANUBIS_EVIDENCE_SNAPSHOT_MISMATCH"
+                || line["code"] == "ANUBIS_EVIDENCE_SNAPSHOT_REPARSE"
+        })
+        .unwrap_or_else(|| panic!("missing snapshot diagnostic: {lines:?}"));
+    assert_eq!(snapshot["defect_locus"], "compiler");
+    assert_eq!(snapshot["agent_action"], "investigate_compiler");
+    let final_line = lines.last().unwrap();
+    assert_eq!(final_line["$type"], "anubis.summary");
+    assert_eq!(final_line["verdict"], "fail");
+}
+
 const DISPROVED: &str = "fn sub(a: i64, b: i64) -> i64\n\
      requires(a >= 0)\n\
      requires(b >= 0)\n\
