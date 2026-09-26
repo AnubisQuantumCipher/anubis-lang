@@ -191,7 +191,13 @@ pub(crate) fn call<'a>(
                     format!("secret data reaches `{name}` (the proof journal is public)"),
                 );
             }
-            arg(a, 1)
+            if name == "proof_commit_bool" {
+                // Both native and guest runtimes return Int after `as_bool`, not the input's
+                // kind. That kind decides whether later method-call arguments are evaluated.
+                V::scalar(arg(a, 1).truth())
+            } else {
+                arg(a, 1)
+            }
         }
         // Files: an integrity sink, and a store that `read_file` and `open` read back.
         "write" | "write_file" | "append_file" | "delete_file" | "remove_file" => {

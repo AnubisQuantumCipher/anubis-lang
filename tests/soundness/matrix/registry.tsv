@@ -2318,3 +2318,9 @@ d1_pc_egress_field_cond_print	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: a 
 d1_pc_egress_while_count	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: a loop bounded by a secret prints once per iteration — check-only: every available pin refuses it before it runs.
 d1_pc_egress_public_control	IFC-PC-EGRESS	slice	ACCEPT	carrier	decision D1 control: a print under a public condition in a program holding a secret — runtime k=42 prints big; k=123456 prints big
 d1_pc_egress_bits	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: one print per bit of a secret, under `if (k >> j) & 1 == 1` (printed every bit on e7b56507) — runtime k=42 prints 0 \n 1 \n 0 \n 1 \n 0 \n 1 \n 0 \n 0; k=123456 prints 0 \n 0 \n 0 \n 0 \n 0 \n 0 \n 1 \n 0
+ifc2r2_proof_bool_method_fallback	IFC2-REVIEW-2	slice	REJECT	carrier,direct	r2p_13 proof_commit_bool scalar runtime return; method_fallback
+ifc2r2_proof_bool_public	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_13 proof_commit_bool scalar runtime return; public
+ifc2r2_proof_bool_released	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_13 proof_commit_bool scalar runtime return; released
+ifc2r2_proof_bool_ordinary_struct	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_13 proof_commit_bool scalar runtime return; ordinary_struct
+ifc2r2_proof_bool_helper_return	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_13 proof_commit_bool scalar runtime return; helper_return
+ifc2r2_proof_bool_secret_truth	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_13 proof_commit_bool scalar runtime return; secret_truth

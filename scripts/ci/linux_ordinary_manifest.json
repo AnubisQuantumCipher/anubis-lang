@@ -67,6 +67,24 @@
       "classification": "ordinary-finite",
       "review": "Codex static source review, 2026-09-25; no execution claimed",
       "reason": "Finite source-binding build and offline evidence verification in scratch directory."
+    },
+    {
+      "package": "anubis-compiler",
+      "target": "ifc2_proof_commit_bool",
+      "source": "compiler/tests/ifc2_proof_commit_bool.rs",
+      "sha256": "f45de22af9c11a5241c38d3eafabbea30d9a28f1637b2c866bf73e2a8053b0d3",
+      "tests": [
+        "bool_commit_result_evaluates_method_fallback_arguments",
+        "scalar_receiver_and_direct_print_validate_the_rejection_controls",
+        "bool_commit_result_kind_survives_helper_returns",
+        "bool_commit_preserves_journal_rejection_for_secret_truth",
+        "bool_commit_preserves_public_and_declassified_fallback_arguments",
+        "ordinary_struct_method_still_drops_unused_arguments",
+        "bool_commit_accepts_public_inputs_of_supported_kinds"
+      ],
+      "classification": "ordinary-finite",
+      "review": "Codex independent static source review, 2026-09-26; local library execution retained separately",
+      "reason": "Fixed small Safe-mode checks of bool-commit result kind and method argument evaluation; embedded sources are hash-bound; no runtime, crash, fuzz, research, or resource-pressure execution."
     }
   ]
 }
