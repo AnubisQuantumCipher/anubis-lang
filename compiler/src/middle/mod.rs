@@ -16217,13 +16217,16 @@ fn analyze_stmts(
                     if let Some(eb) = else_ {
                         collect_assigned_roots(eb, &mut assigned);
                     }
-                    reject_implicit_flow_under_secret_pc(
-                        mode,
-                        expr_is_secret_pc(cond, scope, ctx),
-                        &assigned,
-                        scope,
-                        ctx,
-                    );
+                    let secret_pc = expr_is_secret_pc(cond, scope, ctx);
+                    if mode == Mode::Safe && secret_pc {
+                        filter_pc_protected_branch_local_writes(
+                            cond,
+                            then,
+                            else_.as_deref(),
+                            &mut assigned,
+                        );
+                    }
+                    reject_implicit_flow_under_secret_pc(mode, secret_pc, &assigned, scope, ctx);
                 }
                 // CRYPTO_MISUSE / effect analysis must see the condition (fail-open if skipped:
                 // `if hmac_sha256(k,m) == tag { ... }` would otherwise pass).
@@ -27696,6 +27699,300 @@ fn reject_secret_scrutinee_returns_in_expr(
             reject_secret_scrutinee_returns_in_expr(expr, scope, ctx, flagged);
         }
         _ => {}
+    }
+}
+
+/// An identity local to this original `Stmt::If` AST node. Each arm starts with its own lexical
+/// view of the pre-branch bindings. A `let` shadows only subsequent statements in that arm.
+/// The arm and source-order index distinguish same-spelled declarations without an AST pointer,
+/// global name, or annotation-derived identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PcBranchArm {
+    Then,
+    Else,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PcBindingSite {
+    PreBranch,
+    BranchLet(PcBranchArm, usize),
+}
+
+#[derive(Default)]
+struct PcClosedWrites {
+    protected_declarations: BTreeSet<PcBindingSite>,
+    writes: BTreeMap<String, Vec<PcBindingSite>>,
+}
+
+/// `Unsupported` means that this precision-only classifier has no coverage certificate.
+/// The existing root-based refusal remains in force; this is not evidence of a program fault.
+enum PcWriteCoverage {
+    Closed(PcClosedWrites),
+    Unsupported,
+}
+
+/// This exact read-only grammar has no embedded assignment, call, mutating builtin, lambda
+/// execution, or dynamic application. Comparison and Boolean operators are permitted for the
+/// guard; their operands must themselves be within the same grammar. This certifies only that
+/// evaluating the expression cannot write a local; it makes no termination or timing claim.
+fn pc_closed_read(expr: &Expr) -> bool {
+    match expr {
+        Expr::Var(_) | Expr::Literal(_) | Expr::StrLiteral(_) => true,
+        Expr::Unary { op, expr } if op == "!" => pc_closed_read(expr),
+        Expr::Binary { op, lhs, rhs }
+            if matches!(
+                op.as_str(),
+                "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+            ) =>
+        {
+            pc_closed_read(lhs) && pc_closed_read(rhs)
+        }
+        _ => false,
+    }
+}
+
+/// Classify every statement in one original branch, in source order. Unsupported syntax
+/// invalidates the entire closed certificate, including names handled earlier in the arm.
+fn pc_closed_arm_writes(body: &[Stmt], arm: PcBranchArm, out: &mut PcClosedWrites) -> bool {
+    let mut locals: BTreeMap<String, PcBindingSite> = BTreeMap::new();
+    for (index, stmt) in body.iter().enumerate() {
+        match stmt {
+            Stmt::Let { name, ty, init, .. } if pc_closed_read(init) => {
+                let site = PcBindingSite::BranchLet(arm, index);
+                if is_secret_type(ty.as_deref()) {
+                    out.protected_declarations.insert(site);
+                }
+                locals.insert(name.clone(), site);
+            }
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } if pc_closed_read(value) => {
+                let site = locals
+                    .get(name)
+                    .copied()
+                    .unwrap_or(PcBindingSite::PreBranch);
+                out.writes.entry(name.clone()).or_default().push(site);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn pc_closed_writes(cond: &Expr, then: &[Stmt], else_: Option<&[Stmt]>) -> PcWriteCoverage {
+    if !pc_closed_read(cond) {
+        return PcWriteCoverage::Unsupported;
+    }
+    let mut closed = PcClosedWrites::default();
+    if !pc_closed_arm_writes(then, PcBranchArm::Then, &mut closed)
+        || !pc_closed_arm_writes(else_.unwrap_or(&[]), PcBranchArm::Else, &mut closed)
+    {
+        return PcWriteCoverage::Unsupported;
+    }
+    PcWriteCoverage::Closed(closed)
+}
+
+/// Preserve the old root scan as an independent coverage guard. Only remove a root if the
+/// complete, direct-write grammar accounts for *all* roots that scan found and every write to
+/// this root resolves to an explicit `secret<T>` `let` introduced earlier in the same arm.
+/// A public inner binding, an outer write before shadowing, a call, an egress, an expression-
+/// position write, or any other unsupported form retains the original direct refusal.
+fn filter_pc_protected_branch_local_writes(
+    cond: &Expr,
+    then: &[Stmt],
+    else_: Option<&[Stmt]>,
+    old_roots: &mut BTreeSet<String>,
+) {
+    let PcWriteCoverage::Closed(closed) = pc_closed_writes(cond, then, else_) else {
+        return;
+    };
+    let covered_roots: BTreeSet<String> = closed.writes.keys().cloned().collect();
+    if *old_roots != covered_roots {
+        return;
+    }
+    old_roots.retain(|name| {
+        !closed.writes.get(name).is_some_and(|sites| {
+            sites
+                .iter()
+                .all(|site| closed.protected_declarations.contains(site))
+        })
+    });
+}
+
+#[cfg(test)]
+mod pc_branch_binding_identity_tests {
+    use super::*;
+
+    fn secret_guard() -> Expr {
+        Expr::Binary {
+            op: ">".into(),
+            lhs: Box::new(Expr::Var("s".into())),
+            rhs: Box::new(Expr::Literal("0".into())),
+        }
+    }
+
+    fn local(name: &str, ty: Option<&str>) -> Stmt {
+        Stmt::Let {
+            name: name.into(),
+            ty: ty.map(|ty| ty.to_string()),
+            init: Expr::Var("s".into()),
+            span: Span::default(),
+        }
+    }
+
+    fn assign(name: &str) -> Stmt {
+        Stmt::Assign {
+            target: Expr::Var(name.into()),
+            value: Expr::Literal("2".into()),
+        }
+    }
+
+    fn remaining(cond: &Expr, then: &[Stmt], else_: Option<&[Stmt]>) -> BTreeSet<String> {
+        let mut roots = BTreeSet::new();
+        collect_assigned_roots(then, &mut roots);
+        if let Some(else_body) = else_ {
+            collect_assigned_roots(else_body, &mut roots);
+        }
+        filter_pc_protected_branch_local_writes(cond, then, else_, &mut roots);
+        roots
+    }
+
+    #[test]
+    fn explicit_protected_shadow_has_its_own_consumed_site() {
+        for spelling in ["out", "public_value"] {
+            let body = [local(spelling, Some("secret<i64>")), assign(spelling)];
+            assert!(remaining(&secret_guard(), &body, None).is_empty());
+            let PcWriteCoverage::Closed(closed) = pc_closed_writes(&secret_guard(), &body, None)
+            else {
+                panic!("closed straight-line branch must be classified");
+            };
+            assert!(closed
+                .protected_declarations
+                .contains(&PcBindingSite::BranchLet(PcBranchArm::Then, 0)));
+            assert_eq!(
+                closed.writes.get(spelling),
+                Some(&vec![PcBindingSite::BranchLet(PcBranchArm::Then, 0)])
+            );
+        }
+    }
+
+    #[test]
+    fn public_or_pre_shadow_or_other_arm_write_is_not_filtered() {
+        let public_inner = [local("out", None), assign("out")];
+        assert_eq!(
+            remaining(&secret_guard(), &public_inner, None),
+            BTreeSet::from(["out".into()])
+        );
+
+        let before_shadow = [
+            assign("out"),
+            local("out", Some("secret<i64>")),
+            assign("out"),
+        ];
+        assert_eq!(
+            remaining(&secret_guard(), &before_shadow, None),
+            BTreeSet::from(["out".into()])
+        );
+
+        let protected_then = [local("out", Some("secret<i64>")), assign("out")];
+        let outer_else = [assign("out")];
+        assert_eq!(
+            remaining(&secret_guard(), &protected_then, Some(&outer_else)),
+            BTreeSet::from(["out".into()])
+        );
+
+        let public_reshadow = [
+            local("out", Some("secret<i64>")),
+            local("out", None),
+            assign("out"),
+        ];
+        assert_eq!(
+            remaining(&secret_guard(), &public_reshadow, None),
+            BTreeSet::from(["out".into()])
+        );
+
+        let protected_else = [local("out", Some("secret<i64>")), assign("out")];
+        let PcWriteCoverage::Closed(closed) =
+            pc_closed_writes(&secret_guard(), &protected_then, Some(&protected_else))
+        else {
+            panic!("two closed arms must be classified");
+        };
+        assert_eq!(
+            closed.writes.get("out"),
+            Some(&vec![
+                PcBindingSite::BranchLet(PcBranchArm::Then, 0),
+                PcBindingSite::BranchLet(PcBranchArm::Else, 0),
+            ])
+        );
+    }
+
+    #[test]
+    fn unsupported_egress_embedded_write_or_guard_write_retains_old_refusal() {
+        let protected_then = [
+            local("out", Some("secret<i64>")),
+            assign("out"),
+            Stmt::ExprStmt(Expr::Call {
+                callee: "println".into(),
+                args: vec![Expr::Var("out".into())],
+            }),
+        ];
+        assert_eq!(
+            remaining(&secret_guard(), &protected_then, None),
+            BTreeSet::from(["out".into()])
+        );
+
+        let unknown_call = [
+            local("out", Some("secret<i64>")),
+            assign("out"),
+            Stmt::ExprStmt(Expr::Call {
+                callee: "unknown_effect".into(),
+                args: vec![Expr::Var("out".into())],
+            }),
+        ];
+        assert_eq!(
+            remaining(&secret_guard(), &unknown_call, None),
+            BTreeSet::from(["out".into()])
+        );
+
+        let embedded = [
+            Stmt::Let {
+                name: "marker".into(),
+                ty: None,
+                init: Expr::Block {
+                    stmts: vec![assign("out")],
+                    tail: Some(Box::new(Expr::Literal("0".into()))),
+                },
+                span: Span::default(),
+            },
+            local("out", Some("secret<i64>")),
+            assign("out"),
+        ];
+        assert_eq!(
+            remaining(&secret_guard(), &embedded, None),
+            BTreeSet::from(["out".into()])
+        );
+
+        let writing_guard = Expr::Block {
+            stmts: vec![assign("out")],
+            tail: Some(Box::new(secret_guard())),
+        };
+        let simple = [local("out", Some("secret<i64>")), assign("out")];
+        assert_eq!(
+            remaining(&writing_guard, &simple, None),
+            BTreeSet::from(["out".into()])
+        );
+    }
+
+    #[test]
+    fn old_root_scan_mismatch_invalidates_whole_certificate() {
+        let body = [local("out", Some("secret<i64>")), assign("out")];
+        let mut old_roots = BTreeSet::from(["out".into(), "unmodeled".into()]);
+        filter_pc_protected_branch_local_writes(&secret_guard(), &body, None, &mut old_roots);
+        assert_eq!(
+            old_roots,
+            BTreeSet::from(["out".into(), "unmodeled".into()])
+        );
     }
 }
 
