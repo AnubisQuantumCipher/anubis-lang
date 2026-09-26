@@ -2448,3 +2448,7 @@ d9q_forward_public_field_projection_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	c
 d9q_public_field_secret_init_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret value in public n must not be made printable through a Row helper.
 d9q_public_field_secret_write_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Writing secret data to public n before a helper call must not launder the label.
 d9q_computed_whole_struct_comparison_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Whole-Row equality depends on secret k even when public n matches, so its public result is forbidden.
+d9q_v3_factory_public_field_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A factory returning Row may expose its public n field while a distinct k field remains declared secret.
+d9q_v3_factory_secret_field_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A factory returning Row may not print the declared secret k field without release.
+d9q_v3_nested_clean_public_write_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A value-position branch that writes a clean literal to public n preserves public n even when sibling k is protected.
+d9q_v3_nested_secret_public_write_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A value-position branch that writes a secret into public n must not leave a stale clean field shape at the following egress.
