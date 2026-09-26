@@ -1,0 +1,10 @@
+fn emit(s: secret<i64>) {
+    let public_value = 7;
+    if s > 0 {
+        public_value = 3;
+        let public_value: secret<i64> = s;
+        public_value = 4;
+    }
+    println(public_value);
+}
+fn main() { emit(42); }
