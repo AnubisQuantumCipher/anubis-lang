@@ -1,0 +1,369 @@
+{
+  "pin": "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+  "sha256_before": "0504173ba4771dfb6ce9aa0c4365088bd86fabdf1f9875d83065e39207826df6",
+  "sha256_after": "0504173ba4771dfb6ce9aa0c4365088bd86fabdf1f9875d83065e39207826df6",
+  "rows": [
+    {
+      "case": "ifc2r2_minmax_min_by_argument",
+      "expected": "REJECT",
+      "source_sha256": "1b0032e62ba76bd65cc88a1c225d6c6aca11b70cfe34c43dac989bfa592a82a7",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_argument.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_argument/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_unknown_length",
+      "expected": "REJECT",
+      "source_sha256": "b33e92271780dfbfc9bbb367eeec3fd0040eb2ffeff20249a351fdc72c3b0422",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_unknown_length.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_unknown_length/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_constant_log",
+      "expected": "ACCEPT",
+      "source_sha256": "8a47db79abb18b4986b4446cd54d2a7025c098edffca7206462ef0b12e4c01a6",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_constant_log.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_constant_log/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_released_key",
+      "expected": "ACCEPT",
+      "source_sha256": "e337cb0c9407bd37f5a2c0432aef2e718fe1faca7890449ce4a39d8da22afe75",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_released_key.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_released_key/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_public_key",
+      "expected": "ACCEPT",
+      "source_sha256": "7abbe9492da866e3f23f83722ea5394e91e81b63d7383339e34858c438fc7af0",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_public_key.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_public_key/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_pair",
+      "expected": "ACCEPT",
+      "source_sha256": "c81bb93a8741c36d80430f2b34f99982c66a6917ce088f64519a9b302e32921b",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_pair.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_pair/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_argument",
+      "expected": "REJECT",
+      "source_sha256": "a0bb0eb92707179add0ef849b8ee14c8c7391d74e22782005c01189ddb008f64",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_argument.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_argument/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_unknown_length",
+      "expected": "REJECT",
+      "source_sha256": "8af4503bd441e42810a7a4e4b5e67a676c3daef6f6dadf65ab8ecd93215d3f75",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_unknown_length.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_unknown_length/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_constant_log",
+      "expected": "ACCEPT",
+      "source_sha256": "d63ef786af24962a6b279b331f21a47b714612510a83487b75c35715ee0461d4",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_constant_log.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_constant_log/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_released_key",
+      "expected": "ACCEPT",
+      "source_sha256": "0571db864ed1ab3d88a2206f4228b27f1a49c41cb22fbecaaa3a8937eeed5d02",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_released_key.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_released_key/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_public_key",
+      "expected": "ACCEPT",
+      "source_sha256": "9a97a11ec0299fc6b5345a36a14327bdb4fbff1e741839b4c973683b3f48fc49",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_public_key.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_public_key/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_pair",
+      "expected": "ACCEPT",
+      "source_sha256": "2fba01565357cd8ea83414da3abae37f80f1ff87a0df507a19303e4e814b2505",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_pair.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_pair/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_equal_secret_keys",
+      "expected": "ACCEPT",
+      "source_sha256": "1ca544a07647dfe1ccb475259e69767e8ba1fdf424550eff21fe626627a8fc88",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_equal_secret_keys.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_equal_secret_keys/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_equal_secret_keys",
+      "expected": "ACCEPT",
+      "source_sha256": "d512cc8a643fd80a7ff5004d552d6149d6ffd3164e6af2214c26fb00e8331b6c",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_equal_secret_keys.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_equal_secret_keys/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_winner_equal_secret",
+      "expected": "ACCEPT",
+      "source_sha256": "cb565016e44a8c6d2e35e6b21120c804b2ca8782140b07e98ad3695ecd3ff436",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_winner_equal_secret.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_winner_equal_secret/out"
+      ],
+      "returncode": 1,
+      "verdict": "SEC_REJECT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_singleton_unused_secret",
+      "expected": "ACCEPT",
+      "source_sha256": "a35595c03723c93aae6221e9ec178ba0271751b850c0406bdcd285cde086a585",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_singleton_unused_secret.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_singleton_unused_secret/out"
+      ],
+      "returncode": 1,
+      "verdict": "SEC_REJECT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_winner_equal_secret",
+      "expected": "ACCEPT",
+      "source_sha256": "144d48daef215678d5e3fba5615777fb0c2759880cc105cc79b8372ea4f3385f",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_winner_equal_secret.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_winner_equal_secret/out"
+      ],
+      "returncode": 1,
+      "verdict": "SEC_REJECT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_singleton_unused_secret",
+      "expected": "ACCEPT",
+      "source_sha256": "dafe9b097f7ebb28c106c980fe7dca899202e0f87f78f1840b018de3e994259e",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_singleton_unused_secret.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_singleton_unused_secret/out"
+      ],
+      "returncode": 1,
+      "verdict": "SEC_REJECT",
+      "passed": false
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_stable_comparison",
+      "expected": "ACCEPT",
+      "source_sha256": "b8d8fc4d3d1936fcd814a3fd2c401cb61dcf67b8c48d99a6b562b18d4165ef50",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_comparison.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_stable_comparison/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_stable_negation",
+      "expected": "ACCEPT",
+      "source_sha256": "ee65a48fc37d64153101bc7a9fd8ae392f851da651e202cdc03fca60511db92a",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_negation.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_stable_negation/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_min_by_stable_helper",
+      "expected": "ACCEPT",
+      "source_sha256": "df23a5a71b8d26166db561b0a1c2862e4745f4f27966d10fb2d6a9553c71988c",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_helper.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_min_by_stable_helper/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_stable_comparison",
+      "expected": "ACCEPT",
+      "source_sha256": "c5a5c5250a4cf4700f360dd1263823dd81eb1ff10003a443a12ab25acf7d9dff",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_comparison.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_stable_comparison/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_stable_negation",
+      "expected": "ACCEPT",
+      "source_sha256": "d8ecbe564da7911ee58c153a83f083bb900a0c164a2d64ef53497dd9339e569a",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_negation.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_stable_negation/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    },
+    {
+      "case": "ifc2r2_minmax_max_by_stable_helper",
+      "expected": "ACCEPT",
+      "source_sha256": "684b7810dd9a31799824097c467f2fdc33bac96247686becb30b40dfe12d6671",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_helper.anb",
+        "--out",
+        "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/expanded-baseline-cases/ifc2r2_minmax_max_by_stable_helper/out"
+      ],
+      "returncode": 0,
+      "verdict": "ACCEPT",
+      "passed": true
+    }
+  ],
+  "pin_unchanged": true,
+  "all_passed": false
+}

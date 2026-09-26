@@ -1,0 +1,1383 @@
+diff --git a/compiler/src/middle/ifc2/builtins.rs b/compiler/src/middle/ifc2/builtins.rs
+index f3a954f0..2984062c 100644
+--- a/compiler/src/middle/ifc2/builtins.rs
++++ b/compiler/src/middle/ifc2/builtins.rs
+@@ -687,12 +687,55 @@ pub(crate) fn call<'a>(
+             let r = cb_short(it, &f, vec![elems(&c)], s, p, truth);
+             elems(&c).raise(truth(&r).join(s))
+         }
+-        // The key function is called a number of times fixed by the length (`Iterator::min_by`).
++        // The callback count is fixed by the length, but each comparison's incumbent is
++        // selected by earlier keys. Feed that selection into its argument, not the callback PC:
++        // unconditional public logging still has a public, fixed schedule.
+         "min_by" | "max_by" => {
+             let (c, f) = (arg(a, 0), arg(a, 1));
+             let s = shape(&c);
+-            let r = cb(it, &f, vec![elems(&c)], s, p);
+-            elems(&c).raise(r.deep().join(s))
++            // Equal keys of each fixed callback instance cannot change incumbent selection.
++            // Keep both callback analyses and their effects; this only removes key-derived
++            // selection labels. Abstract label/value equality is not evidence of equal keys.
++            let repeatable = it.has_repeatable_key(&f);
++            if let Some(items) = known_items(&c) {
++                let mut items = items.into_iter();
++                let Some(mut acc) = items.next() else {
++                    // The runtime traps without ever calling the callback.
++                    return Some(V::bottom());
++                };
++                for item in items {
++                    let left = cb(it, &f, vec![acc.clone()], s, p);
++                    let right = cb(it, &f, vec![item.clone()], s, p);
++                    let selected = if repeatable {
++                        Lab::PUB
++                    } else {
++                        left.deep().join(right.deep())
++                    };
++                    acc = acc.join(&item).raise(selected);
++                    if it.exhausted() {
++                        break;
++                    }
++                }
++                acc.raise(s)
++            } else {
++                let e = elems(&c);
++                let mut selected = Lab::PUB;
++                loop {
++                    let before_pc = p.pc();
++                    let r = cb(it, &f, vec![e.raise(selected)], s, p);
++                    let next = if repeatable {
++                        Lab::PUB
++                    } else {
++                        selected.join(r.deep())
++                    };
++                    // A callback may end the program under a secret condition even when its
++                    // returned key is public. Revisit later calls under that continuation PC.
++                    if (next == selected && p.pc() == before_pc) || it.exhausted() {
++                        break e.raise(next.join(s));
++                    }
++                    selected = next;
++                }
++            }
+         }
+         "any" | "all" | "position" => {
+             let (c, f) = (arg(a, 0), arg(a, 1));
+diff --git a/compiler/src/middle/ifc2/eval.rs b/compiler/src/middle/ifc2/eval.rs
+index 246f53ac..10d10c80 100644
+--- a/compiler/src/middle/ifc2/eval.rs
++++ b/compiler/src/middle/ifc2/eval.rs
+@@ -18,8 +18,8 @@
+ //! `cond ⊔ lift_ret ⊔ lift_loop`; an egress executed there with a secret program counter is an
+ //! implicit flow (decision D1).
+ 
+-use super::builtins;
+ use super::value::{self, join_env, Clo, EnumV, Env, FnSet, Lab, LamId, ListV, MapV, V};
++use super::{builtins, repeatable};
+ use crate::frontend::{
+     EnumVariant, EnumVariantKind, Expr, ForSource, Item, MatchArm, Pattern, Stmt,
+ };
+@@ -1047,6 +1047,42 @@ fn analyze_lambda(&mut self, id: LamId, clo: &Clo, args: &[V], pc: Lab, ctx: usi
+         out
+     }
+ 
++    /// Every represented fixed callable returns a repeatable comparison key. This summary
++    /// quantifies over each frozen capture snapshot; joined abstract values never establish
++    /// runtime equality. Unknown or unsupported callable alternatives disable the optimization.
++    pub(crate) fn has_repeatable_key(&self, f: &V) -> bool {
++        if f.top
++            || f.scalar
++            || f.list.is_some()
++            || f.map.is_some()
++            || !f.structs.is_empty()
++            || !f.enums.is_empty()
++            || f.fns.any
++            || !f.fns.user.is_empty()
++            || !f.fns.builtins.is_empty()
++            || !f.fns.composed.is_empty()
++            || f.fns.chain.is_some()
++            || f.fns.clos.is_empty()
++        {
++            return false;
++        }
++        f.fns.clos.iter().all(|(id, clo)| {
++            let Clo::Env(env) = clo else {
++                return false;
++            };
++            let Some(info) = self.lams.get(*id as usize) else {
++                return false;
++            };
++            info.captures.iter().all(|name| env.contains_key(name))
++                && repeatable::key_is_repeatable(
++                    info.params,
++                    info.body,
++                    &info.captures,
++                    !self.fns.contains_key("return") && !info.owner_locals.contains("return"),
++                )
++        })
++    }
++
+     /// How many parameters a function value takes at most (how far `apply` spreads a list).
+     pub(crate) fn max_arity(&self, f: &V) -> usize {
+         let fs = f.all_fns();
+diff --git a/compiler/src/middle/ifc2/mod.rs b/compiler/src/middle/ifc2/mod.rs
+index 9b70b902..6b2cbabf 100644
+--- a/compiler/src/middle/ifc2/mod.rs
++++ b/compiler/src/middle/ifc2/mod.rs
+@@ -15,6 +15,7 @@
+ 
+ mod builtins;
+ mod eval;
++mod repeatable;
+ mod value;
+ 
+ use crate::frontend::Item;
+diff --git a/scripts/ci/linux_ordinary_manifest.json b/scripts/ci/linux_ordinary_manifest.json
+index ae9bd0f9..e9c88dde 100644
+--- a/scripts/ci/linux_ordinary_manifest.json
++++ b/scripts/ci/linux_ordinary_manifest.json
+@@ -67,6 +67,36 @@
+       "classification": "ordinary-finite",
+       "review": "Codex static source review, 2026-09-25; no execution claimed",
+       "reason": "Finite source-binding build and offline evidence verification in scratch directory."
++    },
++    {
++      "package": "anubis-compiler",
++      "target": "ifc2_minmax",
++      "source": "compiler/tests/ifc2_minmax.rs",
++      "sha256": "0ca5a010a2222285dcb4539ac60092c20e43d6cb0fed328bbfc56750e80f04a1",
++      "tests": [
++        "minmax_rechecks_secret_selected_callback_arguments",
++        "minmax_preserves_fixed_callback_schedule",
++        "minmax_short_lists_do_not_feed_a_selected_winner_back",
++        "minmax_feedback_covers_aliases_compound_keys_and_nested_arguments",
++        "minmax_equal_captured_keys_preserve_public_argument_transcript",
++        "minmax_repeatable_keys_follow_aliases_rebinding_and_shadowing",
++        "minmax_repeatable_explicit_returns_preserve_public_argument_transcript",
++        "minmax_repeatability_is_per_fixed_capture_snapshot",
++        "minmax_observation_captured_before_callback_is_fixed",
++        "minmax_repeatable_keys_preserve_selected_value_labels",
++        "minmax_mutation_and_early_return_cannot_retain_a_stale_repeatability_proof",
++        "minmax_unmodeled_calls_do_not_prove_secret_keys_repeatable",
++        "minmax_repeatable_keys_do_not_authorize_direct_key_egress",
++        "minmax_repeatable_keys_preserve_secret_callable_control",
++        "minmax_secret_length_still_controls_callback_schedule",
++        "minmax_unknown_length_rechecks_lifted_callback_continuation",
++        "minmax_comparison_of_fixed_capture_remains_valid",
++        "minmax_negation_of_fixed_capture_remains_valid",
++        "minmax_fixed_capture_through_deterministic_helper_remains_valid"
++      ],
++      "classification": "ordinary-finite",
++      "review": "Candidate only: earlier controls independently classified 2026-09-26; newly added deterministic-key controls require renewed review before integration.",
++      "reason": "Fixed small Safe-mode source checks for callback selection and repeatable-key precision; no runtime execution, crash, fuzz, or resource-pressure inputs."
+     }
+   ]
+ }
+diff --git a/tests/soundness/matrix/registry.tsv b/tests/soundness/matrix/registry.tsv
+index 6b810e7c..8bfcf512 100644
+--- a/tests/soundness/matrix/registry.tsv
++++ b/tests/soundness/matrix/registry.tsv
+@@ -2318,3 +2318,27 @@ d1_pc_egress_field_cond_print	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: a
+ d1_pc_egress_while_count	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: a loop bounded by a secret prints once per iteration — check-only: every available pin refuses it before it runs.
+ d1_pc_egress_public_control	IFC-PC-EGRESS	slice	ACCEPT	carrier	decision D1 control: a print under a public condition in a program holding a secret — runtime k=42 prints big; k=123456 prints big
+ d1_pc_egress_bits	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: one print per bit of a secret, under `if (k >> j) & 1 == 1` (printed every bit on e7b56507) — runtime k=42 prints 0 \n 1 \n 0 \n 1 \n 0 \n 1 \n 0 \n 0; k=123456 prints 0 \n 0 \n 0 \n 0 \n 0 \n 0 \n 1 \n 0
++ifc2r2_minmax_min_by_argument	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; argument
++ifc2r2_minmax_min_by_unknown_length	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; unknown_length
++ifc2r2_minmax_min_by_constant_log	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; constant_log
++ifc2r2_minmax_min_by_released_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; released_key
++ifc2r2_minmax_min_by_public_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; public_key
++ifc2r2_minmax_min_by_pair	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; pair
++ifc2r2_minmax_max_by_argument	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; argument
++ifc2r2_minmax_max_by_unknown_length	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; unknown_length
++ifc2r2_minmax_max_by_constant_log	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; constant_log
++ifc2r2_minmax_max_by_released_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; released_key
++ifc2r2_minmax_max_by_public_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; public_key
++ifc2r2_minmax_max_by_pair	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; pair
++ifc2r2_minmax_min_by_equal_secret_keys	IFC2-REVIEW-2	slice	ACCEPT	carrier	equal captured keys tie; argument transcript independent of secret
++ifc2r2_minmax_max_by_equal_secret_keys	IFC2-REVIEW-2	slice	ACCEPT	carrier	equal captured keys tie; argument transcript independent of secret
++ifc2r2_minmax_min_by_winner_equal_secret	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid fixed tie winner; ordinary-lane OR-LANES-UNION remains open
++ifc2r2_minmax_min_by_singleton_unused_secret	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid singleton never invokes callback; ordinary-lane OR-LANES-UNION remains open
++ifc2r2_minmax_max_by_winner_equal_secret	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid fixed tie winner; ordinary-lane OR-LANES-UNION remains open
++ifc2r2_minmax_max_by_singleton_unused_secret	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid singleton never invokes callback; ordinary-lane OR-LANES-UNION remains open
++ifc2r2_minmax_min_by_stable_comparison	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid repeatable key; candidate regression blocks integration
++ifc2r2_minmax_min_by_stable_negation	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid repeatable key; candidate regression blocks integration
++ifc2r2_minmax_min_by_stable_helper	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid repeatable key; candidate regression blocks integration
++ifc2r2_minmax_max_by_stable_comparison	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid repeatable key; candidate regression blocks integration
++ifc2r2_minmax_max_by_stable_negation	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid repeatable key; candidate regression blocks integration
++ifc2r2_minmax_max_by_stable_helper	IFC2-REVIEW-2	slice	ACCEPT	carrier	valid repeatable key; candidate regression blocks integration
+diff --git a/compiler/src/middle/ifc2/repeatable.rs b/compiler/src/middle/ifc2/repeatable.rs
+new file mode 100644
+index 00000000..932acdba
+--- /dev/null
++++ b/compiler/src/middle/ifc2/repeatable.rs
+@@ -0,0 +1,587 @@
++//! A deliberately small, callback-relative proof of repeatable comparator keys.
++//!
++//! Capture atoms quantify over each fixed runtime closure snapshot, including every snapshot
++//! represented by a joined IFC environment. They are not identities for IFC abstract values.
++//! The admitted fragment has a single control path: reads, exact literal construction, ordered
++//! arrays, lexical blocks, bindings, plain rebinding, returns and statement-form output. Every
++//! evaluated unsupported transfer abandons the whole proof, even when its result is discarded.
++//! Ordinary IFC evaluation must still check both comparator calls and their effects.
++
++use crate::frontend::{Expr, Stmt};
++use std::collections::BTreeMap;
++
++// Precision budgets, not assumptions about runtime execution or program termination.
++const MAX_DEPTH: usize = 128;
++const MAX_TERMS: usize = 4096;
++const MAX_WORK: usize = 16384;
++
++#[derive(Clone, Copy, Debug)]
++struct Unsupported;
++
++type Analysis<T> = Result<T, Unsupported>;
++
++/// Interned construction terms are local to one summary. Ordered child IDs preserve exact
++/// construction; no arithmetic, abstract-value equality or comparator transitivity is used.
++#[derive(PartialEq, Eq, PartialOrd, Ord)]
++enum Term<'a> {
++    Capture(usize),
++    Literal(&'a str),
++    String(&'a str),
++    Array(Vec<usize>),
++    DefaultZero,
++}
++
++#[derive(Clone, Copy)]
++struct Stable {
++    id: usize,
++    depth: usize,
++}
++
++#[derive(Clone, Copy)]
++enum Value {
++    Stable(Stable),
++    Varying,
++}
++
++enum Outcome {
++    Normal(Value),
++    Return(Value),
++}
++
++enum Control {
++    Continue,
++    Return(Value),
++}
++
++struct Summary<'a> {
++    scopes: Vec<BTreeMap<&'a str, Value>>,
++    terms: BTreeMap<Term<'a>, Stable>,
++    remaining: usize,
++    max_depth: usize,
++    max_terms: usize,
++    expression_return_is_builtin: bool,
++}
++
++/// True means identical key construction on normally returning calls of each fixed closure
++/// instance, independent of its arguments and of fresh external observations. It makes no
++/// termination or IFC-egress claim. Callers must check every possible fixed callable separately.
++///
++/// Expression-position `return` has ordinary name resolution in the runtime. The caller supplies
++/// whether its user-function and owner-local namespaces permit the builtin interpretation;
++/// statement-position `return` and `print*` have special precedence regardless of those names.
++pub(super) fn key_is_repeatable(
++    params: &[String],
++    body: &Expr,
++    captures: &[String],
++    expression_return_is_builtin: bool,
++) -> bool {
++    let mut summary = Summary {
++        scopes: vec![BTreeMap::new()],
++        terms: BTreeMap::new(),
++        remaining: MAX_WORK,
++        max_depth: MAX_DEPTH,
++        max_terms: MAX_TERMS,
++        expression_return_is_builtin,
++    };
++    let result = (|| {
++        for (slot, name) in captures.iter().enumerate() {
++            let value = summary.intern(Term::Capture(slot), 0)?;
++            summary.bind(name, Value::Stable(value))?;
++        }
++        // Runtime parameter bindings follow the per-call capture clones and may shadow them.
++        for name in params {
++            summary.bind(name, Value::Varying)?;
++        }
++        summary.expr(body, 0)
++    })();
++    matches!(
++        result,
++        Ok(Outcome::Normal(Value::Stable(_)) | Outcome::Return(Value::Stable(_)))
++    )
++}
++
++impl<'a> Summary<'a> {
++    fn spend(&mut self, amount: usize) -> Analysis<()> {
++        self.remaining = self.remaining.checked_sub(amount).ok_or(Unsupported)?;
++        Ok(())
++    }
++
++    fn visit(&mut self, depth: usize) -> Analysis<()> {
++        self.spend(1)?;
++        if depth > self.max_depth {
++            return Err(Unsupported);
++        }
++        Ok(())
++    }
++
++    fn intern(&mut self, term: Term<'a>, depth: usize) -> Analysis<Stable> {
++        self.spend(1)?;
++        if depth > self.max_depth {
++            return Err(Unsupported);
++        }
++        if let Some(value) = self.terms.get(&term) {
++            return Ok(*value);
++        }
++        if self.terms.len() >= self.max_terms {
++            return Err(Unsupported);
++        }
++        let value = Stable {
++            id: self.terms.len(),
++            depth,
++        };
++        self.terms.insert(term, value);
++        Ok(value)
++    }
++
++    fn zero(&mut self) -> Analysis<Outcome> {
++        Ok(Outcome::Normal(Value::Stable(
++            self.intern(Term::DefaultZero, 0)?,
++        )))
++    }
++
++    fn bind(&mut self, name: &'a str, value: Value) -> Analysis<()> {
++        self.spend(1)?;
++        self.spend(name.len())?;
++        self.scopes
++            .last_mut()
++            .ok_or(Unsupported)?
++            .insert(name, value);
++        Ok(())
++    }
++
++    fn lookup(&mut self, name: &str) -> Analysis<Option<Value>> {
++        self.spend(name.len())?;
++        for index in (0..self.scopes.len()).rev() {
++            self.spend(1)?;
++            if let Some(value) = self.scopes[index].get(name) {
++                return Ok(Some(*value));
++            }
++        }
++        Ok(None)
++    }
++
++    fn assign(&mut self, name: &str, value: Value) -> Analysis<()> {
++        self.spend(name.len())?;
++        for index in (0..self.scopes.len()).rev() {
++            self.spend(1)?;
++            if let Some(binding) = self.scopes[index].get_mut(name) {
++                *binding = value;
++                return Ok(());
++            }
++        }
++        Err(Unsupported)
++    }
++
++    fn returned(&mut self, args: &'a [Expr], depth: usize) -> Analysis<Outcome> {
++        // Both runtime return lowerings evaluate only the first argument. Missing means Int(0).
++        let outcome = match args.first() {
++            Some(value) => self.expr(value, depth)?,
++            None => self.zero()?,
++        };
++        let (Outcome::Normal(value) | Outcome::Return(value)) = outcome;
++        Ok(Outcome::Return(value))
++    }
++
++    fn expr(&mut self, expr: &'a Expr, depth: usize) -> Analysis<Outcome> {
++        self.visit(depth)?;
++        match expr {
++            Expr::Var(name) => Ok(Outcome::Normal(self.lookup(name)?.ok_or(Unsupported)?)),
++            Expr::Literal(text) => {
++                self.spend(text.len())?;
++                Ok(Outcome::Normal(Value::Stable(
++                    self.intern(Term::Literal(text), 0)?,
++                )))
++            }
++            Expr::StrLiteral(text) => {
++                self.spend(text.len())?;
++                Ok(Outcome::Normal(Value::Stable(
++                    self.intern(Term::String(text), 0)?,
++                )))
++            }
++            Expr::ArrayLiteral { elements } => {
++                let mut children = Vec::new();
++                let mut term_depth = 0;
++                let mut varying = false;
++                for element in elements {
++                    match self.expr(element, depth + 1)? {
++                        Outcome::Normal(Value::Stable(term)) => {
++                            children.push(term.id);
++                            term_depth = term_depth.max(term.depth);
++                        }
++                        Outcome::Normal(Value::Varying) => varying = true,
++                        returned @ Outcome::Return(_) => return Ok(returned),
++                    }
++                }
++                if varying {
++                    Ok(Outcome::Normal(Value::Varying))
++                } else {
++                    Ok(Outcome::Normal(Value::Stable(
++                        self.intern(Term::Array(children), term_depth + 1)?,
++                    )))
++                }
++            }
++            Expr::Block { stmts, tail } => {
++                self.scopes.push(BTreeMap::new());
++                let result = self.block(stmts, tail.as_deref(), depth + 1);
++                self.scopes.pop();
++                result
++            }
++            Expr::Call { callee, args } => {
++                if callee == "return"
++                    && self.expression_return_is_builtin
++                    && self.lookup("return")?.is_none()
++                {
++                    self.returned(args, depth + 1)
++                } else {
++                    // A call may read fresh state, mutate bindings, or return early. Discarding its
++                    // result cannot preserve the old store. No spelling alone grants determinism.
++                    Err(Unsupported)
++                }
++            }
++            Expr::CallExpr { .. }
++            | Expr::Binary { .. }
++            | Expr::Unary { .. }
++            | Expr::Index { .. }
++            | Expr::Cast { .. }
++            | Expr::Tainted { .. }
++            | Expr::Symbolic { .. }
++            | Expr::Assume(_)
++            | Expr::Assert(_)
++            | Expr::Declassify { .. }
++            | Expr::TaintSource { .. }
++            | Expr::UnifiedBuffer { .. }
++            | Expr::RawPtr { .. }
++            | Expr::StructLiteral { .. }
++            | Expr::FieldAccess { .. }
++            | Expr::EnumConstruct { .. }
++            | Expr::Match { .. }
++            | Expr::If { .. }
++            | Expr::MapLiteral { .. }
++            | Expr::Lambda { .. }
++            | Expr::Try(_)
++            | Expr::IfLet { .. }
++            | Expr::Other(_) => Err(Unsupported),
++        }
++    }
++
++    fn stmt(&mut self, stmt: &'a Stmt, depth: usize) -> Analysis<Control> {
++        self.visit(depth)?;
++        match stmt {
++            Stmt::Let { name, init, .. } => match self.expr(init, depth + 1)? {
++                Outcome::Normal(value) => {
++                    self.bind(name, value)?;
++                    Ok(Control::Continue)
++                }
++                Outcome::Return(value) => Ok(Control::Return(value)),
++            },
++            Stmt::Assign { target, value } => {
++                let Expr::Var(name) = target else {
++                    return Err(Unsupported);
++                };
++                match self.expr(value, depth + 1)? {
++                    Outcome::Normal(value) => {
++                        self.assign(name, value)?;
++                        Ok(Control::Continue)
++                    }
++                    Outcome::Return(value) => Ok(Control::Return(value)),
++                }
++            }
++            Stmt::ExprStmt(expr) => {
++                if let Expr::Call { callee, args } = expr {
++                    // These statement lowerings precede user-function and local-name lookup.
++                    if matches!(callee.as_str(), "print" | "println" | "eprint" | "eprintln") {
++                        for arg in args {
++                            if let Outcome::Return(value) = self.expr(arg, depth + 1)? {
++                                return Ok(Control::Return(value));
++                            }
++                        }
++                        return Ok(Control::Continue);
++                    }
++                    if callee == "return" {
++                        let Outcome::Return(value) = self.returned(args, depth + 1)? else {
++                            return Err(Unsupported);
++                        };
++                        return Ok(Control::Return(value));
++                    }
++                }
++                match self.expr(expr, depth + 1)? {
++                    Outcome::Normal(_) => Ok(Control::Continue),
++                    Outcome::Return(value) => Ok(Control::Return(value)),
++                }
++            }
++            Stmt::LetPattern { .. }
++            | Stmt::WhileLet { .. }
++            | Stmt::If { .. }
++            | Stmt::While { .. }
++            | Stmt::Loop { .. }
++            | Stmt::For { .. }
++            | Stmt::Break
++            | Stmt::Continue
++            | Stmt::ResearchBlock { .. }
++            | Stmt::ExploitBlock { .. }
++            | Stmt::HybridBlock { .. }
++            | Stmt::SpecBlock { .. } => Err(Unsupported),
++        }
++    }
++
++    fn block(
++        &mut self,
++        stmts: &'a [Stmt],
++        tail: Option<&'a Expr>,
++        depth: usize,
++    ) -> Analysis<Outcome> {
++        self.visit(depth)?;
++        for (index, stmt) in stmts.iter().enumerate() {
++            if tail.is_none() && index == stmts.len() - 1 {
++                // Runtime split_tail_expr keeps return/output statements in the head. Other
++                // trailing expression statements become values even with a source semicolon.
++                if let Stmt::ExprStmt(expr) = stmt {
++                    let statement_only = matches!(
++                        expr,
++                        Expr::Call { callee, .. }
++                            if matches!(callee.as_str(),
++                                "return" | "print" | "println" | "eprint" | "eprintln")
++                    );
++                    if !statement_only {
++                        return self.expr(expr, depth + 1);
++                    }
++                }
++                // A trailing if/else also becomes a value at runtime. All branches are outside
++                // this summary's fragment and stmt() refuses it, so none can turn into zero here.
++            }
++            if let Control::Return(value) = self.stmt(stmt, depth + 1)? {
++                return Ok(Outcome::Return(value));
++            }
++        }
++        match tail {
++            Some(expr) => self.expr(expr, depth + 1),
++            None => self.zero(),
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::frontend::{parse_source, Item, Span};
++
++    fn check(body: &str) -> bool {
++        let source = format!("fn main() {{ let f = |x| {{ {body} }}; }}");
++        let ast = parse_source(&source).expect("summary fixture must parse");
++        let Item::Fn { body, .. } = &ast.items[0] else {
++            panic!("expected function");
++        };
++        let Stmt::Let {
++            init: Expr::Lambda { params, body },
++            ..
++        } = &body[0]
++        else {
++            panic!("expected lambda binding");
++        };
++        key_is_repeatable(params, body, &["s".into(), "t".into()], true)
++    }
++
++    fn var(name: &str) -> Expr {
++        Expr::Var(name.into())
++    }
++
++    fn call(name: &str, args: Vec<Expr>) -> Expr {
++        Expr::Call {
++            callee: name.into(),
++            args,
++        }
++    }
++
++    fn block(stmts: Vec<Stmt>, tail: Expr) -> Expr {
++        Expr::Block {
++            stmts,
++            tail: Some(Box::new(tail)),
++        }
++    }
++
++    fn check_ast(body: &Expr) -> bool {
++        key_is_repeatable(&["x".into()], body, &["s".into()], true)
++    }
++
++    #[test]
++    fn capture_literals_and_ordered_constructors_are_repeatable() {
++        for body in [
++            "s",
++            "[s]",
++            "[[s], [t, s]]",
++            "42",
++            "true",
++            "\"value\"",
++            "let key = [s]; println(x); key",
++            "let key = x; key = s; key",
++            "s = t; s",
++            "let x = s; x",
++            "let y = x; s",
++            "println(x); s",
++            "eprintln(x, x); [s]",
++            "return s; x",
++            "return [s]; random()",
++        ] {
++            assert!(check(body), "expected repeatable: {body}");
++        }
++    }
++
++    #[test]
++    fn varying_values_and_unsupported_transfers_do_not_become_stable() {
++        for body in [
++            "x",
++            "[s, x]",
++            "s = x; s",
++            "let s = x; s",
++            "return x; s",
++            "random()",
++            "now()",
++            "input()",
++            "random(); s",
++            "let y = random(); s",
++            "helper(s); s",
++            "push(s, x); s",
++            "s[0] = x; s",
++            "if true { s = x; } s",
++            "println(if true { s = x; x } else { x }); s",
++            "println(random()); s",
++            "let y = println(x); s",
++            "if true { s } else { s }",
++            "s + s",
++        ] {
++            assert!(!check(body), "expected conservative fallback: {body}");
++        }
++    }
++
++    #[test]
++    fn statement_output_and_expression_output_have_different_resolution() {
++        assert!(check("let println = x; println(x); s"));
++        assert!(!check("let println = x; let y = println(x); s"));
++        assert!(!check("println(x)")); // Explicit expression tail has ordinary resolution.
++        assert!(check("println(x);")); // Statement tail leaves the default return value.
++    }
++
++    #[test]
++    fn implicit_statement_tail_and_default_zero_match_lowering() {
++        assert!(!check("x;"));
++        assert!(check("s;"));
++        assert!(check("let y = x;"));
++        assert!(check("s = x;"));
++        assert!(!check("if true { x; } else { s; }"));
++    }
++
++    #[test]
++    fn printed_blocks_preserve_outer_mutation_and_lexical_shadowing() {
++        let mutation = block(
++            vec![Stmt::Assign {
++                target: var("s"),
++                value: var("x"),
++            }],
++            var("x"),
++        );
++        assert!(!check_ast(&block(
++            vec![Stmt::ExprStmt(call("println", vec![mutation]))],
++            var("s"),
++        )));
++        let shadow = block(
++            vec![Stmt::Let {
++                name: "s".into(),
++                ty: None,
++                init: var("x"),
++                span: Span::default(),
++            }],
++            var("s"),
++        );
++        assert!(check_ast(&block(
++            vec![Stmt::ExprStmt(call("println", vec![shadow]))],
++            var("s"),
++        )));
++    }
++
++    #[test]
++    fn returns_in_print_arguments_and_initializers_stop_continuation() {
++        assert!(!check_ast(&block(
++            vec![Stmt::ExprStmt(call(
++                "println",
++                vec![call("return", vec![var("x")])]
++            ))],
++            var("s"),
++        )));
++        assert!(check_ast(&block(
++            vec![Stmt::ExprStmt(call(
++                "println",
++                vec![call("return", vec![var("s")]), call("random", vec![]),]
++            ))],
++            var("x"),
++        )));
++        assert!(!check_ast(&block(
++            vec![Stmt::Let {
++                name: "y".into(),
++                ty: None,
++                init: call("return", vec![var("x")]),
++                span: Span::default(),
++            }],
++            var("s"),
++        )));
++    }
++
++    #[test]
++    fn return_namespace_is_required_only_in_expression_position() {
++        let return_s = call("return", vec![var("s")]);
++        assert!(!key_is_repeatable(&[], &return_s, &["s".into()], false));
++        assert!(!key_is_repeatable(
++            &["return".into()],
++            &return_s,
++            &["s".into()],
++            true,
++        ));
++        let statement = block(vec![Stmt::ExprStmt(return_s)], var("x"));
++        assert!(key_is_repeatable(
++            &["x".into(), "return".into()],
++            &statement,
++            &["s".into()],
++            false,
++        ));
++    }
++
++    #[test]
++    fn bounded_fallback_covers_depth_work_and_shared_term_growth() {
++        // Exercise refusal paths with small injected budgets, not a stress/crash workload.
++        let summary = || Summary {
++            scopes: vec![BTreeMap::new()],
++            terms: BTreeMap::new(),
++            remaining: MAX_WORK,
++            max_depth: MAX_DEPTH,
++            max_terms: MAX_TERMS,
++            expression_return_is_builtin: true,
++        };
++        let array = Expr::ArrayLiteral {
++            elements: vec![Expr::Literal("1".into())],
++        };
++        let mut shallow = summary();
++        shallow.max_depth = 0;
++        assert!(shallow.expr(&array, 0).is_err());
++        let mut short_work = summary();
++        short_work.remaining = 1;
++        assert!(short_work.expr(&array, 0).is_err());
++        let mut short_terms = summary();
++        short_terms.max_terms = 1;
++        assert!(short_terms.expr(&array, 0).is_err());
++
++        // Rebinding can deepen a shared construction without deepening the source AST.
++        let assignments = (0..5)
++            .map(|_| Stmt::Assign {
++                target: var("s"),
++                value: Expr::ArrayLiteral {
++                    elements: vec![var("s"), var("s")],
++                },
++            })
++            .collect();
++        let shared = block(assignments, var("s"));
++        let mut short_term_depth = summary();
++        short_term_depth.max_depth = 4;
++        let capture = short_term_depth.intern(Term::Capture(0), 0).unwrap();
++        short_term_depth.bind("s", Value::Stable(capture)).unwrap();
++        assert!(short_term_depth.expr(&shared, 0).is_err());
++    }
++}
+diff --git a/compiler/tests/ifc2_minmax.rs b/compiler/tests/ifc2_minmax.rs
+new file mode 100644
+index 00000000..a46ff01b
+--- /dev/null
++++ b/compiler/tests/ifc2_minmax.rs
+@@ -0,0 +1,367 @@
++//! Comparator keys select the incumbent passed to subsequent min/max callbacks.
++use anubis_compiler::{
++    frontend::{parse_source, Mode},
++    middle::{ifc2_findings, typecheck_ex},
++};
++
++fn findings(source: &str) -> Vec<(String, String)> {
++    ifc2_findings(&parse_source(source).expect("valid fixture"), Mode::Safe)
++}
++
++fn assert_accepts(source: &str) {
++    let found = findings(source);
++    assert!(found.is_empty(), "{source}: {found:?}");
++    let checked = typecheck_ex(parse_source(source).unwrap(), Mode::Safe, false);
++    assert!(checked.is_ok(), "{source}: {checked:?}");
++}
++
++// These valid workloads are still refused by the older ordinary lane, including on the
++// baseline pin. Keep their ACCEPT matrix intents; IFC2 precision is tested separately here.
++fn assert_ifc2_accepts_with_open_union_precision(source: &str) {
++    let found = findings(source);
++    assert!(found.is_empty(), "{source}: {found:?}");
++}
++
++fn assert_secret_exfiltration(source: &str) {
++    let found = findings(source);
++    assert!(
++        found
++            .iter()
++            .any(|(code, _)| code == "ANUBIS_SECRET_EXFILTRATION"),
++        "{source}: {found:?}"
++    );
++    let error = typecheck_ex(parse_source(source).unwrap(), Mode::Safe, false)
++        .expect_err("the complete Safe checker must reject secret egress");
++    assert!(error.contains("ANUBIS_SECRET_EXFILTRATION"), "{error}");
++}
++
++#[test]
++fn minmax_rechecks_secret_selected_callback_arguments() {
++    for op in ["min_by", "max_by"] {
++        for collection in ["[1, 2, 3]", "range(1, 4)"] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; \
++                 let m = {op}({collection}, |x| {{ println(x); \
++                 if x == 2 {{ s }} else {{ 100 }} }}); }}"
++            );
++            let found = findings(&source);
++            assert!(
++                found
++                    .iter()
++                    .any(|(code, _)| code == "ANUBIS_SECRET_EXFILTRATION"),
++                "{source}: {found:?}"
++            );
++            let error = typecheck_ex(parse_source(&source).unwrap(), Mode::Safe, false)
++                .expect_err("the complete Safe checker must reject the callback leak");
++            assert!(error.contains("ANUBIS_SECRET_EXFILTRATION"), "{error}");
++        }
++    }
++}
++
++#[test]
++fn minmax_preserves_fixed_callback_schedule() {
++    for op in ["min_by", "max_by"] {
++        for body in [
++            "println(\"called\"); s",
++            "println(x); declassify(s, \"test\", \"public ordering\")",
++            "println(x); x",
++        ] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; \
++                 let m = {op}([1, 2, 3], |x| {{ {body} }}); }}"
++            );
++            let found = findings(&source);
++            assert!(found.is_empty(), "{source}: {found:?}");
++            let checked = typecheck_ex(parse_source(&source).unwrap(), Mode::Safe, false);
++            assert!(checked.is_ok(), "{source}: {checked:?}");
++        }
++    }
++}
++
++#[test]
++fn minmax_short_lists_do_not_feed_a_selected_winner_back() {
++    for op in ["min_by", "max_by"] {
++        for collection in ["[1]", "[1, 2]"] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; \
++                 let m = {op}({collection}, |x| {{ println(x); s }}); }}"
++            );
++            assert_accepts(&source);
++        }
++        let source = format!(
++            "fn main() {{ let s: secret<i64> = 42; \
++             let m = {op}([1], |x| {{ println(s); x }}); }}"
++        );
++        assert_ifc2_accepts_with_open_union_precision(&source);
++    }
++}
++
++#[test]
++fn minmax_feedback_covers_aliases_compound_keys_and_nested_arguments() {
++    for op in ["min_by", "max_by"] {
++        for (collection, body) in [
++            ("[1, 2, 3]", "println(x); if x == 2 { [s] } else { [100] }"),
++            (
++                "[1, 2, 3]",
++                "if x == 2 { println(\"selected\"); } if x == 2 { s } else { 100 }",
++            ),
++            (
++                "[[1], [2], [3]]",
++                "println(x[0]); if x[0] == 2 { s } else { 100 }",
++            ),
++        ] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; let choose = {op}; \
++                 let key = |x| {{ {body} }}; let m = choose({collection}, key); }}"
++            );
++            let found = findings(&source);
++            assert!(
++                found
++                    .iter()
++                    .any(|(code, _)| code == "ANUBIS_SECRET_EXFILTRATION"
++                        || code == "ANUBIS_IMPLICIT_FLOW"),
++                "{source}: {found:?}"
++            );
++        }
++    }
++}
++
++#[test]
++fn minmax_equal_captured_keys_preserve_public_argument_transcript() {
++    for op in ["min_by", "max_by"] {
++        for collection in ["[1, 2, 3]", "range(1, 4)"] {
++            for key in ["s", "[s]", "[[s], [s, 100]]"] {
++                let source = format!(
++                    "fn main() {{ let s: secret<i64> = 42; \
++                     let m = {op}({collection}, |x| {{ println(x); {key} }}); }}"
++                );
++                assert_accepts(&source);
++            }
++        }
++    }
++}
++
++#[test]
++fn minmax_repeatable_keys_follow_aliases_rebinding_and_shadowing() {
++    for op in ["min_by", "max_by"] {
++        for body in [
++            "println(x); let key = s; key",
++            "println(x); let key = 0; key = s; key",
++            "println(x); let key = x; key = s; key",
++            "println(x); let key = s; let s = x; key",
++            "println(x); let s = [s]; s",
++            "println(x); let key = [s]; let alias = key; [[alias], [key]]",
++        ] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; let choose = {op}; \
++                 let key = |x| {{ {body} }}; let alias = key; \
++                 let m = choose([1, 2, 3], alias); }}"
++            );
++            assert_accepts(&source);
++        }
++    }
++}
++
++#[test]
++fn minmax_repeatable_explicit_returns_preserve_public_argument_transcript() {
++    for op in ["min_by", "max_by"] {
++        for body in [
++            "println(x); return s;",
++            "let key = s; println(x); return [key];",
++            "println(x); return s; x",
++        ] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; \
++                 let m = {op}([1, 2, 3], |x| {{ {body} }}); }}"
++            );
++            assert_accepts(&source);
++        }
++    }
++}
++
++#[test]
++fn minmax_repeatability_is_per_fixed_capture_snapshot() {
++    for op in ["min_by", "max_by"] {
++        let source = format!(
++            "fn make(s) {{ return |x| {{ println(x); s }}; }} \
++             fn main() {{ let a: secret<i64> = 42; let b: secret<i64> = 142; \
++             let left = make(a); let right = make(b); \
++             let key = if true {{ left }} else {{ right }}; \
++             let m = {op}([1, 2, 3], key); }}"
++        );
++        assert_accepts(&source);
++    }
++}
++
++#[test]
++fn minmax_observation_captured_before_callback_is_fixed() {
++    for op in ["min_by", "max_by"] {
++        let source = format!(
++            "fn main() uses(rand.gen) {{ let s: secret<f64> = random(); \
++             let m = {op}([1, 2, 3], |x| {{ println(x); s }}); }}"
++        );
++        assert_accepts(&source);
++    }
++}
++
++#[test]
++fn minmax_repeatable_keys_preserve_selected_value_labels() {
++    for op in ["min_by", "max_by"] {
++        for collection in ["[1, 2, 3]", "range(1, 4)"] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; \
++                 let m = {op}({collection}, |x| s); println(m); }}"
++            );
++            assert_ifc2_accepts_with_open_union_precision(&source);
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; \
++                 let m = {op}({collection}, |x| if x == 2 {{ s }} else {{ 100 }}); \
++                 println(m); }}"
++            );
++            assert_secret_exfiltration(&source);
++        }
++        let source = format!(
++            "fn main() {{ let s: secret<i64> = 42; \
++             let m = {op}([s, 100, 200], |x| {{ println(x); 0 }}); }}"
++        );
++        assert_secret_exfiltration(&source);
++    }
++}
++
++#[test]
++fn minmax_mutation_and_early_return_cannot_retain_a_stale_repeatability_proof() {
++    for op in ["min_by", "max_by"] {
++        for body in [
++            "println(x); s = if x == 2 { s } else { 100 }; s",
++            "println(x); let saved = s; s = x; if s == 2 { saved } else { 100 }",
++            "println(x); key[0] = if x == 2 { s } else { 100 }; key",
++            "println(x); if x != 2 { s = 100; } s",
++            "println(x); let key = [0]; push(key, if x == 2 { s } else { 100 }); key",
++            "println(if true { key[0] = if x == 2 { s } else { 100 }; x } else { x }); key",
++            "println(x); return if x == 2 { s } else { 100 }; s",
++            "println(x); println(if true { return if x == 2 { s } else { 100 }; x } else { x }); s",
++        ] {
++            // Each normally used key varies with the current argument and secret.
++            // Merely overwriting a capture with public x would not be a leak.
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; let key = [s]; \
++                 let m = {op}([1, 2, 3], |x| {{ {body} }}); }}"
++            );
++            assert_secret_exfiltration(&source);
++        }
++    }
++}
++
++#[test]
++fn minmax_unmodeled_calls_do_not_prove_secret_keys_repeatable() {
++    for op in ["min_by", "max_by"] {
++        for (helper, body) in [
++            (
++                "fn key(s, x) { return if x == 2 { s } else { 100 }; }",
++                "println(x); key(s, x)",
++            ),
++            (
++                "fn random(s, x) { return if x == 2 { s } else { 100 }; }",
++                "println(x); random(s, x)",
++            ),
++            ("", "println(x); if x == 2 { s } else { random() }"),
++        ] {
++            let source = format!(
++                "{helper} fn main() uses(rand.gen) {{ let s: secret<i64> = 42; \
++                 let m = {op}([1, 2, 3], |x| {{ {body} }}); }}"
++            );
++            assert_secret_exfiltration(&source);
++        }
++    }
++}
++
++#[test]
++fn minmax_repeatable_keys_do_not_authorize_direct_key_egress() {
++    for op in ["min_by", "max_by"] {
++        for body in ["println(s); s", "let key = [s]; println(key); key"] {
++            let source = format!(
++                "fn main() {{ let s: secret<i64> = 42; \
++                 let m = {op}([1, 2, 3], |x| {{ {body} }}); }}"
++            );
++            assert_secret_exfiltration(&source);
++        }
++    }
++}
++
++#[test]
++fn minmax_repeatable_keys_preserve_secret_callable_control() {
++    for op in ["min_by", "max_by"] {
++        let source = format!(
++            "fn main() {{ let s: secret<i64> = 42; \
++             let key = if s == 42 {{ |x| {{ println(\"left\"); s }} }} \
++             else {{ |x| {{ println(\"right\"); s }} }}; \
++             let m = {op}([1, 2, 3], key); }}"
++        );
++        let found = findings(&source);
++        assert!(
++            found.iter().any(|(code, _)| code == "ANUBIS_IMPLICIT_FLOW"),
++            "{source}: {found:?}"
++        );
++    }
++}
++
++#[test]
++fn minmax_secret_length_still_controls_callback_schedule() {
++    for op in ["min_by", "max_by"] {
++        let source = format!(
++            "fn main() {{ let s: secret<i64> = 42; \
++             let m = {op}(range(1, s), |x| {{ println(\"called\"); 0 }}); }}"
++        );
++        let found = findings(&source);
++        assert!(
++            found.iter().any(|(code, _)| code == "ANUBIS_IMPLICIT_FLOW"),
++            "{source}: {found:?}"
++        );
++    }
++}
++
++#[test]
++fn minmax_unknown_length_rechecks_lifted_callback_continuation() {
++    for op in ["min_by", "max_by"] {
++        let source = format!(
++            "fn main() {{ let s: secret<i64> = 42; \
++             let m = {op}(range(1, 4), |x| {{ println(\"called\"); \
++             if s == 42 {{ exit(0); }} 0 }}); }}"
++        );
++        let found = findings(&source);
++        assert!(
++            found.iter().any(|(code, _)| code == "ANUBIS_IMPLICIT_FLOW"),
++            "{source}: {found:?}"
++        );
++    }
++}
++
++#[test]
++fn minmax_comparison_of_fixed_capture_remains_valid() {
++    for op in ["min_by", "max_by"] {
++        assert_accepts(&format!(
++            "fn main() {{ let s: secret<i64> = 42; \
++             let m = {op}([1, 2, 3], |x| {{ println(x); s > 0 }}); }}"
++        ));
++    }
++}
++
++#[test]
++fn minmax_negation_of_fixed_capture_remains_valid() {
++    for op in ["min_by", "max_by"] {
++        assert_accepts(&format!(
++            "fn main() {{ let s: secret<i64> = 42; \
++             let m = {op}([1, 2, 3], |x| {{ println(x); -s }}); }}"
++        ));
++    }
++}
++
++#[test]
++fn minmax_fixed_capture_through_deterministic_helper_remains_valid() {
++    for op in ["min_by", "max_by"] {
++        assert_accepts(&format!(
++            "fn fixed(s) {{ s }} fn main() {{ let s: secret<i64> = 42; \
++             let m = {op}([1, 2, 3], |x| {{ println(x); fixed(s) }}); }}"
++        ));
++    }
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_argument.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_argument.anb
+new file mode 100644
+index 00000000..42d91417
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_argument.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = max_by([1, 2, 3], |x| { println(x); if x == 2 { s } else { 100 } });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_constant_log.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_constant_log.anb
+new file mode 100644
+index 00000000..4a451088
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_constant_log.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = max_by([1, 2, 3], |x| { println("called"); s });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_equal_secret_keys.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_equal_secret_keys.anb
+new file mode 100644
+index 00000000..06a54422
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_equal_secret_keys.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = max_by([1, 2, 3], |x| { println(x); s });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_pair.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_pair.anb
+new file mode 100644
+index 00000000..b8835be8
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_pair.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = max_by([1, 2], |x| { println(x); s });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_public_key.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_public_key.anb
+new file mode 100644
+index 00000000..164fd6ff
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_public_key.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = max_by([1, 2, 3], |x| { println(x); x });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_released_key.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_released_key.anb
+new file mode 100644
+index 00000000..29158486
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_released_key.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = max_by([1, 2, 3], |x| { println(x); declassify(s, "test", "public ordering") });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_singleton_unused_secret.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_singleton_unused_secret.anb
+new file mode 100644
+index 00000000..90944702
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_singleton_unused_secret.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = max_by([1], |x| { println(s); x }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_comparison.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_comparison.anb
+new file mode 100644
+index 00000000..db92401d
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_comparison.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = max_by([1, 2, 3], |x| { println(x); s > 0 }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_helper.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_helper.anb
+new file mode 100644
+index 00000000..18228c21
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_helper.anb
+@@ -0,0 +1,2 @@
++fn fixed(s) { s }
++fn main() { let s: secret<i64> = 42; let m = max_by([1, 2, 3], |x| { println(x); fixed(s) }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_negation.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_negation.anb
+new file mode 100644
+index 00000000..7afe07a4
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_negation.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = max_by([1, 2, 3], |x| { println(x); -s }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_unknown_length.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_unknown_length.anb
+new file mode 100644
+index 00000000..ae110ee7
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_unknown_length.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = max_by(range(1, 4), |x| { println(x); if x == 2 { s } else { 100 } });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_winner_equal_secret.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_winner_equal_secret.anb
+new file mode 100644
+index 00000000..be77aa38
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_winner_equal_secret.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = max_by([1, 2, 3], |x| s); println(m); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_argument.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_argument.anb
+new file mode 100644
+index 00000000..544659d3
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_argument.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = min_by([1, 2, 3], |x| { println(x); if x == 2 { s } else { 100 } });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_constant_log.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_constant_log.anb
+new file mode 100644
+index 00000000..9834c4dd
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_constant_log.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = min_by([1, 2, 3], |x| { println("called"); s });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_equal_secret_keys.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_equal_secret_keys.anb
+new file mode 100644
+index 00000000..60834e61
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_equal_secret_keys.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = min_by([1, 2, 3], |x| { println(x); s });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_pair.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_pair.anb
+new file mode 100644
+index 00000000..4999516e
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_pair.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = min_by([1, 2], |x| { println(x); s });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_public_key.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_public_key.anb
+new file mode 100644
+index 00000000..d695e406
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_public_key.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = min_by([1, 2, 3], |x| { println(x); x });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_released_key.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_released_key.anb
+new file mode 100644
+index 00000000..d16cad16
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_released_key.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = min_by([1, 2, 3], |x| { println(x); declassify(s, "test", "public ordering") });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_singleton_unused_secret.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_singleton_unused_secret.anb
+new file mode 100644
+index 00000000..88bc25ae
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_singleton_unused_secret.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = min_by([1], |x| { println(s); x }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_comparison.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_comparison.anb
+new file mode 100644
+index 00000000..8fa2ad8d
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_comparison.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = min_by([1, 2, 3], |x| { println(x); s > 0 }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_helper.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_helper.anb
+new file mode 100644
+index 00000000..d35811aa
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_helper.anb
+@@ -0,0 +1,2 @@
++fn fixed(s) { s }
++fn main() { let s: secret<i64> = 42; let m = min_by([1, 2, 3], |x| { println(x); fixed(s) }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_negation.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_negation.anb
+new file mode 100644
+index 00000000..5f8c83ac
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_negation.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = min_by([1, 2, 3], |x| { println(x); -s }); }
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_unknown_length.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_unknown_length.anb
+new file mode 100644
+index 00000000..2816498e
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_unknown_length.anb
+@@ -0,0 +1,4 @@
++fn main() {
++    let s: secret<i64> = 42;
++    let m = min_by(range(1, 4), |x| { println(x); if x == 2 { s } else { 100 } });
++}
+diff --git a/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_winner_equal_secret.anb b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_winner_equal_secret.anb
+new file mode 100644
+index 00000000..2c2f4a1b
+--- /dev/null
++++ b/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_winner_equal_secret.anb
+@@ -0,0 +1 @@
++fn main() { let s: secret<i64> = 42; let m = min_by([1, 2, 3], |x| s); println(m); }

@@ -1,0 +1,22 @@
+   Compiling anubis-compiler v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/compiler)
+    Finished `release` profile [optimized] target(s) in 0.66s
+     Running tests/ifc2_minmax.rs (/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/ifc2_minmax-619fd00f4d5ac42b)
+
+running 1 test
+test minmax_unknown_length_rechecks_lifted_callback_continuation ... FAILED
+
+failures:
+
+---- minmax_unknown_length_rechecks_lifted_callback_continuation stdout ----
+
+thread 'minmax_unknown_length_rechecks_lifted_callback_continuation' (2123381) panicked at compiler/tests/ifc2_minmax.rs:325:9:
+fn main() { let s: secret<i64> = 42; let m = min_by(range(1, 4), |x| { println("called"); if s == 42 { exit(0); } 0 }); }: []
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    minmax_unknown_length_rechecks_lifted_callback_continuation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p anubis-compiler --test ifc2_minmax`

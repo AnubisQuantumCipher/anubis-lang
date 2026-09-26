@@ -1,0 +1,2 @@
+fn fixed(s) { s }
+fn main() { let s: secret<i64> = 42; let m = max_by([1, 2, 3], |x| { println(x); fixed(s) }); }

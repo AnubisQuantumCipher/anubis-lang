@@ -1,0 +1,54 @@
+{
+  "compile": [
+    "rustc",
+    "--edition=2021",
+    "out/minmax-repeatability/precision-expansion/check.rs",
+    "-L",
+    "dependency=/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps",
+    "--extern",
+    "anubis_compiler=/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/libanubis_compiler-22514589e1f0fefd.rlib",
+    "-o",
+    "out/minmax-repeatability/precision-expansion/check"
+  ],
+  "rlib": "/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/libanubis_compiler-22514589e1f0fefd.rlib",
+  "rlib_sha256": "9173cf8d00de58958c87bc1a91596c0d3ca9bb09fb35a34ffeaaa1adf531675a",
+  "candidate_rc": 0,
+  "baseline": [
+    {
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "out/minmax-repeatability/precision-expansion/compare.anb",
+        "--out",
+        "out/minmax-repeatability/precision-expansion/compare-baseline"
+      ],
+      "rc": 0,
+      "stdout": "anubis check out/minmax-repeatability/precision-expansion/compare.anb (evidence=false, verified=false)\ncheck passed\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "out/minmax-repeatability/precision-expansion/helper.anb",
+        "--out",
+        "out/minmax-repeatability/precision-expansion/helper-baseline"
+      ],
+      "rc": 0,
+      "stdout": "anubis check out/minmax-repeatability/precision-expansion/helper.anb (evidence=false, verified=false)\ncheck passed\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "check",
+        "out/minmax-repeatability/precision-expansion/unary.anb",
+        "--out",
+        "out/minmax-repeatability/precision-expansion/unary-baseline"
+      ],
+      "rc": 0,
+      "stdout": "anubis check out/minmax-repeatability/precision-expansion/unary.anb (evidence=false, verified=false)\ncheck passed\n",
+      "stderr": ""
+    }
+  ]
+}

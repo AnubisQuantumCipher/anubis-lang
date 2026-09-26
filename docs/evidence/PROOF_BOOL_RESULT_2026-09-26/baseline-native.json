@@ -1,0 +1,29 @@
+{
+  "pin": "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+  "sha256": "0504173ba4771dfb6ce9aa0c4365088bd86fabdf1f9875d83065e39207826df6",
+  "classification": "ordinary finite native programs in existing Linux QEMU guest; memory cap is not isolation; no proof journal execution",
+  "rows": [
+    {
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "run",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/secret42.anb"
+      ],
+      "source_sha256": "290a88b6c40c67cb687b566a45d6087463099373b9e7dd5c4327e33f83fe52f3",
+      "rc": 0,
+      "stdout": "3\nend\n",
+      "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+    },
+    {
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+        "run",
+        "/home/sicarii/.cache/anubis-wt/codex-proof-bool/out/proof-bool/secret142.anb"
+      ],
+      "source_sha256": "2a2794c4681bc90ce42fabeeb08151bd6fbafcc77c8c6328793170fa67846493",
+      "rc": 0,
+      "stdout": "7\nend\n",
+      "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+    }
+  ]
+}

@@ -66,6 +66,16 @@ matrix is the reference for open defects.
 
 See the last section of this file's history in git, and the next-dependency line below.
 
+**Next dependency (2026-09-26, after b835b94b):** finish source-bound CLI and
+platform validation of the [bool result-kind slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md).
+Then implement and independently review the
+[repeatable-key extension](evidence/MINMAX_REPEATABILITY_2026-09-26/EXTENSION_DESIGN.md)
+with its design-review qualification and required failing precision controls.
+The min/max candidate is withheld; documenting newly refused valid programs does
+not satisfy compatibility. Continue the recovered round-2 mechanisms and the full
+requirement map. Actual live handles and backup status are in the
+[continuation checkpoint](evidence/PROOF_BOOL_RESULT_2026-09-26/CONTINUATION.md).
+
 **Next dependency (2026-09-26, after e516b1f3):** IFC v2 (the semantic foundation) runs in every
 Safe-mode check. The recorded landing matrix has no silent accept, but does not include the known
 round-2 findings. Their [complete recovered inventory](evidence/IFC2_ROUND2_2026-09-26/REPORT.md)

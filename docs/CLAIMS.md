@@ -15,7 +15,17 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — round-2 evidence recovered; min/max candidate withheld.** The
+**UPDATE 2026-09-26 — bool result-kind correction; min/max still withheld.** The
+[bool-commit slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md) corrects the
+runtime result kind in `b835b94b`; focused full-Safe library controls pass and
+the original native leak is reproduced. Current full CLI, workspace, matrix,
+guest-journal and final platform gates are not claimed. The expanded
+[min/max candidate](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md) restores
+the original equal-captured-key control but newly refuses comparisons, negation
+and a deterministic helper over fixed captures. Its required suite reports
+16 passed, 3 failed; it remains unintegrated. Intended valid outcomes stay ACCEPT.
+
+**Earlier update 2026-09-26 — round-2 evidence recovered; first min/max candidate withheld.** The
 [complete round-2 inventory](evidence/IFC2_ROUND2_2026-09-26/REPORT.md) preserves
 its sources and historical verifier outcomes; it is not a current closure receipt.
 A [fresh min/max witness and candidate review](evidence/MINMAX_CANDIDATE_2026-09-26/README.md)
