@@ -936,24 +936,33 @@ never terminates is a check/run divergence of a different kind, and is being cha
     Poison/accept guards: `research_build_requires_explicit_consent_and_vz_before_lowering`,
     `whole_program_callers_share_the_same_mode_derived_research_boundary`, and
     `research_block_local_field_access_and_ordinary_twin_both_lower`. At the deciding technical
-    epoch (historical), compiler library **771/771**, language **259/259**, security **337/337**, stdlib
+    epoch (historical), compiler library **771/771**, language **253/253**, security **327/327**, stdlib
     fail-closed **104/104**, PCA **19/19**, and the independent direct/carrier/dead-branch
-    falsification matrix **9/9** passed. The current source-matching disposable-guest receipts are
-    recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`.
+    falsification matrix **9/9** passed. The dated source-matching disposable-guest receipts are
+    recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md` (supporting-check table,
+    lines 92–96). Correction 2026-09-26: `c87ad1cf` retained the later 259/337 fixture counts
+    in this July technical epoch; they do not describe this receipt.
 
-    The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) is retained as
-    a failed receipt (historical), not promoted: security **337/337**, language **259/259**, stdlib fail-closed
-    **104/104**; the current native-authoritative corpus is **968 files**, while that failed receipt
-    graded 916 files with 0 mismatches; the measured builtin inventory was
-    **213 builtins**, while check/run parity and the documentation-coverage floor were RED. Phase 1
-    repairs those observed blockers and must rerun.
+    The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) remains
+    a failed historical record, not promoted. Its run artifact was not recovered for the
+    2026-09-26 correction, so its actual security and language measurements are **unknown** here.
+    The earlier historical `2160f4a4` narrative reported security 327/327, language 253/253, stdlib
+    fail-closed 104/104, and 916 native-authoritative files with 0 mismatches for that attempt;
+    those run-specific observations have not been independently reconfirmed. The same narrative
+    called an inventory of **921 files** then-current and reported a 213-builtin inventory and RED
+    check/run parity and documentation-coverage gates. Phase 1 required repair
+    and a rerun; this failed attempt is not evidence that the repaired gates passed.
 
-    The audited source-bound rerun at `out/phase1_host_seal_audited_20260730T154003Z` mechanically
-    returned `SEAL_PASS` with 18/18 declared gates on pin `anubis-4dc5a51df23b`. It is **not promoted
-    to a whole-tree seal**: native-authoritative enumerated **937 files** from that historical run's working tree while the
-    docs gate enumerated **916 tracked files**. Five untracked `.anb` files explain the difference;
-    silently narrowing either side or staging unrelated showcase work is forbidden. The discrepancy
-    was a technical HOLD pending trust-surface sign-off.
+    The surviving `2160f4a4` narrative says the audited source-bound rerun at
+    `out/phase1_host_seal_audited_20260730T154003Z` returned `SEAL_PASS` with 18/18 declared
+    gates on pin `anubis-4dc5a51df23b`. That observation was not reconfirmed because the run
+    artifact was not recovered. It is **not promoted to a whole-tree seal**: the narrative reported
+    **921 files** enumerated by native-authoritative and **916 tracked files** enumerated by the
+    docs gate. The original narrative attributed the gap to five untracked `.anb` files, but the
+    run artifact and those files were not recovered for this correction, so the cause was not
+    independently verified. A later edit substituted 937 for 921; it did not establish a new
+    measurement of this July run. The original discrepancy was a technical HOLD pending
+    trust-surface sign-off. Neither figure is a current corpus claim.
 
     **Superseding technical closure receipt:** immutable compiler pin
     `vm/pins/anubis-51f4a964347a` (SHA-256
@@ -1540,16 +1549,24 @@ and cannot verify later repairs.
     //         flows to egress `print` without declassify()
     ```
 
+    The following table preserves the original `2160f4a4` W1 narrative. Its run artifact was not
+    recovered for this correction, so these are reported historical results, not fresh checks.
+
     | verification | result |
     |---|---|
     | compiler lib | **766/766** — source-current W1 suite, including recursive malformed-slot tests |
     | tool unit suite | **351/351** plus all integration harnesses green |
-    | security corpus | **337/337** (historical) — includes the ten annotated list/map/generic/parameter fixtures |
-    | language corpus | **259/259** — historical W1 measurement; corrected after `c0f5b884` overwrote this dated row |
+    | security corpus | Historical W1 run not independently recovered; the original `2160f4a4` table reported **327/327**, including the ten annotated list/map/generic/parameter fixtures |
+    | language corpus | Historical W1 measurement **unknown** from retained run evidence; the original `2160f4a4` table reported **253/253**, while 259/259 belongs to a later fixture inventory |
     | stdlib fail-closed | **104/104**, `timed_out=0` |
-    | native-authoritative | a later inventory had **937 files**; this historical W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
+    | native-authoritative | the historical narrative called **921 files** the July corpus and reported 916 W1 graded files, 0 mismatches, 0 disagreements; the run artifact was not recovered here |
     | formal | **162 theorems / 15 modules**, machine-checked; no `sorry`/`admit`/free `axiom` |
-    | immutable candidate | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; source-tree verification PASS |
+    | pre-change comparison instrument | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; the original narrative reported source-tree verification PASS for that instrument, not for a W1 candidate |
+
+    Correction 2026-09-26: `c0f5b884` later overwrote the language row with 271/271;
+    restoring 259/259 did not recover this W1 measurement. The cited `281e0e…` pin is identified
+    as a pre-change comparison instrument in `docs/evidence/PHASE_1_COMPLETION_2026-07-30.md`;
+    this correction did not rerun or establish the table's exact W1 corpus measurement.
 
     Fixtures added, including the over-rejection guard the project's rules require:
     `secret_field_via_annotated_list_index_rejects.anb`,
@@ -1959,12 +1976,17 @@ and cannot verify later repairs.
     |---|---|
     | compiler library | **766/766 PASS** |
     | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
-    | security | **337/337 PASS** (historical) |
-    | language | **259/259 PASS** — historical W1 measurement; corrected after `c0f5b884` overwrote this dated row |
+    | security | **327/327 PASS** — historical result reported in `9a03c2b6` for this W1 pin |
+    | language | **252/252 PASS** — historical result reported in `9a03c2b6` for this W1 pin |
     | stdlib fail-closed | **104/104 PASS** |
-    | native-authoritative | a later inventory had **937 files**; this historical W1 receipt graded 916 files, 0 mismatches |
+    | native-authoritative | the original `9a03c2b6` W1 table reported **916 files, 0 mismatches**; no later corpus inventory is this W1 measurement |
     | formal inventory | **162 theorems / 15 modules**, gate PASS |
     | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
+
+    Correction 2026-09-26: these are the original dated `9a03c2b6` W1 rows for commit
+    `03210603` and the source-matched `58ba4abc…` pin above. The later 259/259 fixture
+    inventory and `c0f5b884`'s 271/271 edit were not measurements of this W1 run. The
+    original PASS observations are reported here; no historical pin was rerun for this correction.
 
     *Instrument note against myself:* the workflow's own post-processing returned empty
     `raw_falsify`/`falsify_summary` arrays because I wrote a self-contradictory filter
