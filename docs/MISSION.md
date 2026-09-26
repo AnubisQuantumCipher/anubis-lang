@@ -74,12 +74,12 @@ records dependency-correct review refs without rewriting published history.
 ## Current checkpoint and next executable step (2026-09-26)
 
 The isolated local integration branch `codex/register-round2-20260926` has
-reviewed compiler code through `339a960a1da0acd7aa65e23f7469a4ae77f77007`,
+reviewed compiler code through `365da05dbd4637323f646f95ec204d571a7ddcb1`,
 captured-bridge receipt/log correction through `1ca7e5b93cf7db62ddc9392d0240c57ff1d3d728`,
 fixture registrations through `e6b4fb7e86286c6314595284c0e014ca6bd49813`,
 and the reviewed captured-build design at
 `f7ea19097320a23fac3120359e2f226a034ee905`. The current branch has no
-integrated D9 v6 or production captured-build consumer code.
+integrated D9 v6 or production captured-build CLI consumer code.
 The [guard-transfer receipt](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md)
 binds the preceding `88a2903c` code, selected Safe checks, a clean-head
 binary and a complete provisional same-source matrix comparison. Its reached
@@ -134,14 +134,16 @@ now pairs its combined AST with a compilation-only source graph from one
 captured input. Source-bound focused resolver tests, compiler-library Clippy,
 and workspace format check pass on `339a960a`; a same-named changed-body
 control confirms that lowering uses the saved import. This private API is not
-used by the CLI and grants no package or evidence admission. Its next
-dependency is the [reviewed captured Safe build design](evidence/CAPTURED_SAFE_BUILD_DESIGN_REVIEW_2026-09-26.md),
-then independently reviewed compiler, staged-publisher and CLI units. The
-design review gave GO for implementation only; no production CLI consumer,
-native publication or package/evidence admission was verified. The first
-compiler-side scratch patch is on HOLD after actual-diff review found that
-trait defaults can vanish before its mode guard; preserve pre-desugaring mode
-intent in the revised patch;
+used by the CLI and grants no package or evidence admission. The
+[reviewed captured Safe build design](evidence/CAPTURED_SAFE_BUILD_DESIGN_REVIEW_2026-09-26.md)
+led to [compiler-side code commit `365da05d` and receipt](evidence/CAPTURED_SAFE_CHECK_RESULT_2026-09-26/README.md):
+pre-desugaring mode summaries now prevent unused and overridden trait
+defaults from vanishing before the Safe classifier. Focused tests, compiler
+Clippy and format passed; the initial parser-invalid test failure and its
+correction are retained. No production CLI consumer, native publication or
+package/evidence admission was verified. The next CLI dependency is a typed
+solver-stream tool-error outcome, then independently reviewed staged-publisher
+and CLI units with imported contract twins;
 the valid transitive package still fails at `ANUBIS_DEP_PROOF_UNVERIFIED`.
 
 The next soundness implementation dependency is a typed distinction between protected

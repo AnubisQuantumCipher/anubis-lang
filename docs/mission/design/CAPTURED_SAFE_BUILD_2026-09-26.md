@@ -312,8 +312,13 @@ this list was run by this worker.
   lambda, match guard, and loop bound/invariant. Freeze an independent
   parse/classify control for each overwritten attribute spelling:
   `@research(...) @safe`, `@poc(...) @safe`, `@fuzz(...) @safe`,
-  `@proof(...) @safe`, `@defensive(...) @safe`, `@audit(...) @safe`, and
-  `@exploit(...) @safe`. Assert the frontend's final stored `Mode::Safe` where
+  `@proof(...) @safe`, `@defensive(...) @safe`, and `@audit(...) @safe`.
+  Correction after the source-matched compiler test: stacked
+  `@exploit(authorization: ...) @safe` is parser-invalid in the current
+  frontend and cannot witness a mode refusal. Use the parser-valid
+  `@exploit fn` form as a separate parse/classify control, and record the
+  stacked spelling as a language-surface limitation until it is specified
+  and implemented. Assert the frontend's final stored `Mode::Safe` where
   that is what it parses, but the shared predicate still returns true and the
   captured builder returns typed `ModeElevator` before typecheck or lowering.
   Include the same forms inside an imported module, nested module, impl, and

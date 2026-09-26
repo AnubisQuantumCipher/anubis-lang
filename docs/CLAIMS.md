@@ -15,6 +15,19 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — captured Safe mode classification banked, CLI trust
+boundary open.** Code commit `365da05d` and its
+[source-bound receipt](evidence/CAPTURED_SAFE_CHECK_RESULT_2026-09-26/README.md)
+retain each captured module's pre-desugaring mode intent, including unused
+and overridden trait defaults, and classify nested/contract-expression mode
+elevators before Safe-default checking. Focused tests, compiler Clippy, and
+format pass; independent static review approved this private compiler-side
+unit. No public CLI artifact or evidence admission follows. Malformed solver
+streams still use a synthetic wire `FAIL` and need a distinct typed tool-error
+outcome before a public adapter can report `disproved`. The stacked
+`@exploit(authorization: ...) @safe` spelling fails to parse and remains a
+language-surface limitation; its syntax error is not a security refusal.
+
 **UPDATE 2026-09-26 — no-default-feature CLI lint gate restored locally.**
 The [scoped code and Safe smoke receipt](evidence/NO_DEFAULT_PROVE_CLI_2026-09-26.md)
 binds commit `5e3f76df`: the no-`prove` Clippy gate now passes, ordinary
@@ -74,6 +87,12 @@ reachable `Row.n` refusals come from generic whole-Row egress and IFC2, not a
 writer-located PC finding. Independent static review held the v5 scratch
 patch for binder, shadow, deferred-body, and reachability errors. No D9
 implementation patch or broader soundness result follows from registration.
+The subsequent [v6 static HOLD](mission/review/D9_V6_HOLD_2026-09-26.md)
+identifies incomplete callable alternatives, call-time closure capture,
+name-only binder shadowing, early-exit control loss and ordinary valid-program
+refusals in an unintegrated candidate. No v6 binary or checker verdict was
+produced; a typed undecided diagnostic mapping alone does not close the
+producer gap.
 
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate
