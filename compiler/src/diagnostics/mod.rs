@@ -43,7 +43,10 @@
 //! today, and this note is here because the format's own first draft claimed it
 //! did.
 
-use crate::middle::{classify_assertion_fail, AssertionFailKind, SolverCheck};
+use crate::middle::{
+    classify_assertion_fail, solver_outcome, solver_stream_refusals, AssertionFailKind,
+    SolverCheck, SolverOutcome,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -687,6 +690,36 @@ fn classify(check: &SolverCheck) -> (String, Family, Status, DefectLocus, AgentA
         }
     };
     let env = locus == DefectLocus::Environment;
+    if solver_outcome(check) == SolverOutcome::InvalidStatus {
+        return (
+            "ANUBIS_SOLVER_STATUS_INVALID".into(),
+            Family::SolverTrust,
+            Status::Refused,
+            DefectLocus::Compiler,
+            AgentAction::InvestigateCompiler,
+        );
+    }
+    if check.detail == crate::middle::SOLVER_STREAM_INVALID_DETAIL {
+        return (
+            "ANUBIS_SOLVER_STREAM_INVALID".into(),
+            Family::SolverTrust,
+            Status::Refused,
+            DefectLocus::Compiler,
+            AgentAction::InvestigateCompiler,
+        );
+    }
+    if check
+        .detail
+        .starts_with(crate::middle::SOLVER_PROTOCOL_ERROR_PREFIX)
+    {
+        return (
+            crate::middle::SOLVER_PROTOCOL_ERROR_PREFIX.into(),
+            Family::Environment,
+            Status::Refused,
+            DefectLocus::Environment,
+            AgentAction::FixEnvironment,
+        );
+    }
     match classify_assertion_fail(check) {
         AssertionFailKind::Disproved => (
             "ANUBIS_ASSERTION_DISPROVED".into(),
@@ -704,7 +737,11 @@ fn classify(check: &SolverCheck) -> (String, Family, Status, DefectLocus, AgentA
         ),
         AssertionFailKind::Undecided => (
             "ANUBIS_ASSERTION_UNDECIDED".into(),
-            Family::Contract,
+            if check.name.starts_with("wrap-safety:") {
+                Family::WrapSafety
+            } else {
+                Family::Contract
+            },
             Status::Undecided,
             locus,
             action,
@@ -743,7 +780,9 @@ fn classify(check: &SolverCheck) -> (String, Family, Status, DefectLocus, AgentA
 /// False for the native lane, whose verdicts come from the CDCL conflict budget,
 /// and false when the solver never ran.
 fn decided_under_z3_budget(check: &SolverCheck) -> bool {
-    if check.detail == crate::middle::DISPROVED_DETAIL_NATIVE
+    if solver_outcome(check) == SolverOutcome::InvalidStatus
+        || check.detail == crate::middle::SOLVER_STREAM_INVALID_DETAIL
+        || check.detail == crate::middle::DISPROVED_DETAIL_NATIVE
         || check.detail == crate::middle::PROVED_DETAIL_CERTIFIED
         // Never encoded, so no solver ran and no budget bounded it.
         || check.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
@@ -764,18 +803,29 @@ fn decided_under_z3_budget(check: &SolverCheck) -> bool {
 pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
     let (code, family, status, defect_locus, agent_action) = classify(check);
     let declared = declared_vars(&check.smt);
-    let counterexample = check.model.as_ref().map(|m| {
-        // Asked of `middle`, not inferred here: it is the single authority on
-        // whether a model was independently verified, and both the human
-        // printer and this format must give the same answer.
-        let replayed = crate::middle::counterexample_was_replayed(check);
-        counterexample_of(
-            m,
-            &declared,
-            &crate::middle::counterexample_bindings(m),
-            replayed,
-        )
-    });
+    let counterexample = check
+        .model
+        .as_ref()
+        .filter(|_| {
+            matches!(
+                classify_assertion_fail(check),
+                AssertionFailKind::Disproved
+                    | AssertionFailKind::WrapRisk
+                    | AssertionFailKind::ReplayMismatch
+            )
+        })
+        .map(|m| {
+            // Asked of `middle`, not inferred here: it is the single authority on
+            // whether a model was independently verified, and both the human
+            // printer and this format must give the same answer.
+            let replayed = crate::middle::counterexample_was_replayed(check);
+            counterexample_of(
+                m,
+                &declared,
+                &crate::middle::counterexample_bindings(m),
+                replayed,
+            )
+        });
 
     Diagnostic {
         type_tag: "anubis.diagnostic".into(),
@@ -787,7 +837,14 @@ pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
         agent_action,
         severity: "error".into(),
         build_blocking: true,
-        message: check.detail.clone(),
+        message: if solver_outcome(check) == SolverOutcome::InvalidStatus {
+            format!(
+                "invalid solver status `{}` for `{}`; no proof or counterexample was established",
+                check.status, check.name
+            )
+        } else {
+            check.detail.clone()
+        },
         obligation: Some(Obligation {
             name: check.name.clone(),
             smt: check.smt.clone(),
@@ -823,8 +880,13 @@ pub fn diagnostic_of(check: &SolverCheck) -> Diagnostic {
 /// the check failed.** Every other field can be incomplete; this one cannot be
 /// wrong, because a consumer that trusts a false `pass` ships the program.
 pub fn render_jsonl_with(checks: &[SolverCheck], other_refusal: Option<&str>) -> String {
-    let fails: Vec<&SolverCheck> = checks.iter().filter(|c| c.status == "FAIL").collect();
-    let mut diagnostics: Vec<Diagnostic> = fails.iter().map(|c| diagnostic_of(c)).collect();
+    let fails = if checks.is_empty() && other_refusal.is_some() {
+        // Parse/type/effect refusal happened before the solver, so no stream was expected.
+        Vec::new()
+    } else {
+        solver_stream_refusals(checks)
+    };
+    let mut diagnostics: Vec<Diagnostic> = fails.iter().map(diagnostic_of).collect();
     if diagnostics.is_empty() {
         if let Some(message) = other_refusal {
             diagnostics.push(diagnostic_of_refusal(message));
@@ -892,6 +954,56 @@ pub fn render_jsonl(checks: &[SolverCheck]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_wrap_safety_is_undecided_and_blocks_json_verdict() {
+        let check = SolverCheck {
+            name: "wrap-safety:add".into(),
+            status: "UNKNOWN".into(),
+            detail: "solver did not decide this obligation".into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        let diagnostic = diagnostic_of(&check);
+        assert_eq!(diagnostic.family, Family::WrapSafety);
+        assert_eq!(diagnostic.status, Status::Undecided);
+        assert_eq!(diagnostic.code, "ANUBIS_ASSERTION_UNDECIDED");
+        assert!(diagnostic.counterexample.is_none());
+        let json = render_jsonl(&[check]);
+        assert!(json.contains("\"verdict\":\"fail\""));
+        assert!(json.contains("\"status\":\"undecided\""));
+    }
+
+    #[test]
+    fn invalid_solver_status_and_protocol_error_are_distinct_tool_refusals() {
+        let invalid = SolverCheck {
+            name: "ensures:x".into(),
+            status: "PASS ".into(),
+            detail: "claimed proof".into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        let d = diagnostic_of(&invalid);
+        assert_eq!(d.code, "ANUBIS_SOLVER_STATUS_INVALID");
+        assert_eq!(d.family, Family::SolverTrust);
+        assert_eq!(d.status, Status::Refused);
+        assert_eq!(d.defect_locus, DefectLocus::Compiler);
+        assert!(d.message.contains("PASS "));
+
+        let protocol = SolverCheck {
+            status: "FAIL".into(),
+            detail: format!(
+                "{}: empty z3 response",
+                crate::middle::SOLVER_PROTOCOL_ERROR_PREFIX
+            ),
+            ..invalid
+        };
+        let d = diagnostic_of(&protocol);
+        assert_eq!(d.code, "ANUBIS_SOLVER_PROTOCOL_ERROR");
+        assert_eq!(d.family, Family::Environment);
+        assert_eq!(d.status, Status::Refused);
+        assert_eq!(d.defect_locus, DefectLocus::Environment);
+    }
 
     #[test]
     fn branch_reachability_uncertainty_is_structured_as_undecided() {
@@ -1382,7 +1494,15 @@ mod tests {
     fn a_pass_is_only_ever_an_empty_refusal_set() {
         // Anubis fails closed. There is no verdict between pass and fail, and
         // no diagnostic that a consumer may proceed past.
-        assert!(render_jsonl_with(&[], None).contains("\"verdict\":\"pass\""));
+        let no_obligations = SolverCheck {
+            name: "solver:no-obligations".into(),
+            status: "PASS".into(),
+            detail: crate::middle::NO_OBLIGATIONS_DETAIL.into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        assert!(render_jsonl_with(&[no_obligations], None).contains("\"verdict\":\"pass\""));
+        assert!(render_jsonl_with(&[], None).contains("\"verdict\":\"fail\""));
         for refusal in ["ANUBIS_X: y", "parse failed", ""] {
             let out = render_jsonl_with(&[], Some(refusal));
             assert!(

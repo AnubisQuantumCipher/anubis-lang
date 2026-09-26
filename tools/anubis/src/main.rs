@@ -26,7 +26,7 @@ use anubis_compiler::{
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
         build_rejected_evidence_bundle_tree, generate_keypair, pca_signature_status, sign_pca,
-        verify_pca, EvidenceManifest,
+        verify_pca, ClaimBlock, EvidenceManifest,
     },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
@@ -2072,7 +2072,7 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
     };
     use anubis_compiler::frontend::{parse_source, Mode, AST};
     use anubis_compiler::interp::Interp;
-    use anubis_compiler::middle::{typecheck, SymbolicEngine};
+    use anubis_compiler::middle::{solver_stream_refusals, typecheck, SymbolicEngine};
     use std::io::{self, BufRead, Write};
 
     let check_src = |src: &str| -> Result<AST> {
@@ -2080,7 +2080,7 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
         let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
         let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("check: {e}"))?;
         let obs = SymbolicEngine::check_obligations(&typed);
-        let fails: Vec<_> = obs.into_iter().filter(|c| c.status == "FAIL").collect();
+        let fails = solver_stream_refusals(&obs);
         if !fails.is_empty() {
             return Err(anyhow!(
                 "{}",
@@ -2589,10 +2589,8 @@ fn cli_main() -> Result<()> {
             // is the escape for an in-progress program. Honest codes: DISPROVED (has model) vs
             // UNDECIDED (timeout) vs residual UNPROVEN — never conflate them.
             if !no_verify {
-                let fails: Vec<_> = SymbolicEngine::check_obligations(&tainted)
-                    .into_iter()
-                    .filter(|c| c.status == "FAIL")
-                    .collect();
+                let checks = SymbolicEngine::check_obligations(&tainted);
+                let fails = anubis_compiler::middle::solver_stream_refusals(&checks);
                 if !fails.is_empty() {
                     let error = anubis_compiler::middle::format_build_check_failures(&fails);
                     if do_evidence {
@@ -2600,7 +2598,11 @@ fn cli_main() -> Result<()> {
                     }
                     return Err(anyhow!("{}", error));
                 }
-                println!("✓ contract obligations verified (fail-closed; pass --no-verify to skip)");
+                if tainted.solver_obligations.is_empty() {
+                    println!("✓ no solver obligations emitted; build preflight passed");
+                } else {
+                    println!("✓ emitted solver obligations discharged (fail-closed)");
+                }
             }
 
             let artifact = if do_evidence || true {
@@ -2881,16 +2883,16 @@ fn cli_main() -> Result<()> {
             // obligations that PASSED, and a verdict that omits it says the same thing whether
             // every obligation carried a re-checkable witness or none did.
             let mut solver_checks: Vec<anubis_compiler::middle::SolverCheck> = Vec::new();
+            let mut solver_refusals = Vec::new();
             if check_error.is_none() {
                 if let Some(t) = &tainted {
                     solver_checks = SymbolicEngine::check_obligations(t);
-                    let fails: Vec<_> = solver_checks
-                        .iter()
-                        .filter(|c| c.status == "FAIL")
-                        .cloned()
-                        .collect();
-                    if !fails.is_empty() {
-                        check_error = Some(anubis_compiler::middle::format_check_failures(&fails));
+                    solver_refusals =
+                        anubis_compiler::middle::solver_stream_refusals(&solver_checks);
+                    if !solver_refusals.is_empty() {
+                        check_error = Some(anubis_compiler::middle::format_check_failures(
+                            &solver_refusals,
+                        ));
                     }
                 }
             }
@@ -3111,12 +3113,8 @@ fn cli_main() -> Result<()> {
                 let parse_diags = diag::diagnostics_of_parse_errors(&src, &input.to_string_lossy());
                 let diagnostics = if !parse_diags.is_empty() {
                     parse_diags
-                } else if solver_checks.iter().any(|c| c.status == "FAIL") {
-                    solver_checks
-                        .iter()
-                        .filter(|c| c.status == "FAIL")
-                        .map(diag::diagnostic_of)
-                        .collect()
+                } else if !solver_refusals.is_empty() {
+                    solver_refusals.iter().map(diag::diagnostic_of).collect()
                 } else if let Some(err) = check_error.clone().or_else(|| verdict_failure.clone()) {
                     diag::diagnostics_of_refusal(&err)
                 } else {
@@ -6023,6 +6021,9 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     }
                 }
             }
+            if ok {
+                print_verified_pca_scope(&bundle)?;
+            }
             println!("bundle valid: {}", ok);
             if !ok {
                 std::process::exit(1);
@@ -6064,6 +6065,9 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 return Ok(());
             }
             let ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
+            if ok {
+                print_verified_pca_scope(&bundle)?;
+            }
             println!("bundle valid: {}", ok);
             if !ok {
                 std::process::exit(1);
@@ -7063,12 +7067,9 @@ fn verify_before_native_execution(input: &Path, source: &str, verified_caps: boo
     // and secret egress. Only the duplicate, stricter re-read is gone. Do not reintroduce a second
     // policy decision here — re-deriving a label at a consumer instead of carrying it from the
     // producer is the shape that caused this bug and its evidence-lane twin.
-    let failures: Vec<_> = SymbolicEngine::check_obligations(&tainted)
-        .into_iter()
-        // Match `check`/`build` (`== "FAIL"`): only FAIL is a hard reject. `!= "PASS"` also caught
-        // UNKNOWN, false-rejecting accept-biased non-contract obligations such as wrap-safety.
-        .filter(|check| check.status == "FAIL")
-        .collect();
+    let checks = SymbolicEngine::check_obligations(&tainted);
+    // The shared stream rule covers epistemic status and a missing/malformed inventory.
+    let failures = anubis_compiler::middle::solver_stream_refusals(&checks);
     if !failures.is_empty() {
         return Err(anyhow!(
             "ANUBIS_EXECUTION_UNVERIFIED: refusing native execution — {}",
@@ -8108,6 +8109,28 @@ fn read_lane_observed(meta_path: &Path) -> Result<String> {
         return Ok(l.to_string());
     }
     Ok("unknown".into())
+}
+
+/// Display the declared claim scope only after `verify_pca` accepted its re-derivation.
+/// The recorded verdict is distinct from the bundle-validity result. An unsigned,
+/// rehashed bundle does not authenticate when it was first produced.
+fn print_verified_pca_scope(bundle: &Path) -> Result<()> {
+    let claim: ClaimBlock = serde_json::from_slice(&std::fs::read(bundle.join("pca.json"))?)?;
+    let version_scope = if claim.pca_version == 2 {
+        "compatibility count semantics; historical origin not established"
+    } else {
+        "current count semantics"
+    };
+    println!(
+        "declared PCA version: {} ({version_scope})",
+        claim.pca_version
+    );
+    println!(
+        "recorded verdict: {}",
+        anubis_compiler::diagnostics::printable(&claim.verdict)
+    );
+    println!("assurance: recorded claim re-derived; manifest hashes match the bundle");
+    Ok(())
 }
 
 fn read_verify_status(meta_path: &Path) -> Result<String> {

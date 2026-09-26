@@ -2348,37 +2348,32 @@ fn main() {
 
     #[test]
     fn undecided_loop_invariant_step_fails_closed() {
-        // A z3 `unknown` (undecided within the work budget — NOT disproved) on ANY proof-carrying
-        // obligation must fail closed. The loop-invariant PRESERVATION step is deliberately excluded from
-        // the separate vacuity check (a loop whose invariant implies ¬cond never iterates), but it must
-        // still be in the undecided-verdict set — else a timed-out step silently admits a possibly-false
-        // invariant (a fail-open gap the adversarial hunt flagged). This asserts the predicate directly
-        // (a genuine z3 `unknown` is non-deterministic — it needs a per-query timeout — so the LOGIC is
-        // tested here rather than via a flaky timing-dependent program).
-        use middle::obligation_undecided_is_unsound as undecided;
-        assert!(
-            undecided("loop-invariant-step:(bvsgt anb_x (_ bv0 64))"),
-            "step must fail closed"
-        );
-        assert!(
-            undecided("loop-invariant-base:(bvsgt anb_x (_ bv0 64))"),
-            "base"
-        );
-        assert!(
-            undecided("ensures:(bvsgt anb_result (_ bv0 64))"),
-            "ensures"
-        );
-        assert!(undecided("requires@f:(bvsgt anb_x (_ bv0 64))"), "requires");
-        assert!(undecided("assert:(bvsgt anb_x (_ bv0 64))"), "assert");
-        // A non-proof-carrying obligation name is not forced to FAIL on unknown.
-        assert!(
-            !undecided("solver"),
-            "a bare solver check is not a contract obligation"
-        );
-        assert!(
-            !undecided("taint-flow:x"),
-            "an analysis tag is not a contract obligation"
-        );
+        // Keep the solver's epistemic UNKNOWN status and reject it at the shared boundary.
+        // A name-based family allowlist previously omitted wrap-safety and could admit an
+        // undecided check. This deterministic injection covers both loop cases and that twin.
+        for name in [
+            "loop-invariant-step:(bvsgt anb_x (_ bv0 64))",
+            "loop-invariant-base:(bvsgt anb_x (_ bv0 64))",
+            "ensures:(bvsgt anb_result (_ bv0 64))",
+            "requires@f:(bvsgt anb_x (_ bv0 64))",
+            "assert:(bvsgt anb_x (_ bv0 64))",
+            "wrap-safety:add",
+            "solver",
+        ] {
+            let check = middle::SolverCheck {
+                name: name.into(),
+                status: "UNKNOWN".into(),
+                detail: "solver did not decide".into(),
+                model: None,
+                smt: String::new(),
+            };
+            assert!(middle::solver_check_requires_refusal(&check), "{name}");
+            assert_eq!(
+                middle::classify_assertion_fail(&check),
+                middle::AssertionFailKind::Undecided,
+                "{name}"
+            );
+        }
     }
 
     #[test]

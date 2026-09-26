@@ -139,6 +139,82 @@ pub struct SolverCheck {
     pub smt: String,
 }
 
+/// Interpret the wire status once, without accepting a future or malformed value by default.
+/// `PASS` is a discharge for this check, not a claim that its proof was retained or that a
+/// program with no obligations has a proof. Certificate coverage records those distinctions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolverOutcome {
+    Pass,
+    Fail,
+    Unknown,
+    InvalidStatus,
+}
+
+pub fn solver_outcome(check: &SolverCheck) -> SolverOutcome {
+    match check.status.as_str() {
+        "PASS" => SolverOutcome::Pass,
+        "FAIL" => SolverOutcome::Fail,
+        "UNKNOWN" => SolverOutcome::Unknown,
+        _ => SolverOutcome::InvalidStatus,
+    }
+}
+
+/// Per-row refusal rule. Stream integrity is checked by [`solver_stream_refusals`].
+pub fn solver_check_requires_refusal(check: &SolverCheck) -> bool {
+    solver_outcome(check) != SolverOutcome::Pass
+}
+
+/// The sole synthetic PASS emitted when analysis found no solver obligations.
+/// Reserved name/detail text in any other shape is an invalid stream, not a
+/// discharged obligation. This includes a sentinel mixed with real checks.
+pub fn is_no_obligations_sentinel(checks: &[SolverCheck]) -> bool {
+    matches!(checks, [check]
+        if check.name == "solver:no-obligations"
+            && check.status == "PASS"
+            && check.detail == NO_OBLIGATIONS_DETAIL
+            && check.model.is_none()
+            && check.smt == "(check-sat)")
+}
+
+pub fn reserves_no_obligations_identity(check: &SolverCheck) -> bool {
+    check.name == "solver:no-obligations" || check.detail == NO_OBLIGATIONS_DETAIL
+}
+
+pub const SOLVER_STREAM_INVALID_DETAIL: &str = "ANUBIS_SOLVER_STREAM_INVALID: missing checks \
+     or malformed synthetic no-obligations marker; compiler solver inventory is incomplete";
+
+fn solver_stream_shape_valid(checks: &[SolverCheck]) -> bool {
+    !checks.is_empty()
+        && (!checks.iter().any(reserves_no_obligations_identity)
+            || is_no_obligations_sentinel(checks))
+}
+
+/// Every refusing row, plus a compiler-owned refusal if the stream itself is malformed.
+pub fn solver_stream_refusals(checks: &[SolverCheck]) -> Vec<SolverCheck> {
+    let mut refusals: Vec<SolverCheck> = checks
+        .iter()
+        .filter(|check| solver_check_requires_refusal(check))
+        .cloned()
+        .collect();
+    if !solver_stream_shape_valid(checks) {
+        refusals.push(SolverCheck {
+            name: "solver:stream-integrity".into(),
+            status: "FAIL".into(),
+            detail: SOLVER_STREAM_INVALID_DETAIL.into(),
+            model: None,
+            smt: String::new(),
+        });
+    }
+    refusals
+}
+
+pub fn solver_checks_discharged(checks: &[SolverCheck]) -> bool {
+    solver_stream_shape_valid(checks)
+        && checks
+            .iter()
+            .all(|check| !solver_check_requires_refusal(check))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SemanticDiagnostic {
     pub code: Option<String>,
@@ -19597,22 +19673,6 @@ impl TaintPass {
     }
 }
 
-/// Whether an obligation whose solver verdict is `unknown` (UNDECIDED within the z3 work budget — not
-/// disproved, no counterexample) must fail closed. Every proof-carrying contract obligation qualifies:
-/// an `ensures`, a `requires@` call-site precondition, an `assert`, AND BOTH loop-invariant obligations —
-/// the base case AND the preservation STEP. The step is deliberately excluded from the separate VACUITY
-/// check (a loop whose invariant implies `¬cond` legitimately never iterates, so a vacuous step is fine),
-/// but an UNDECIDED step is still not a proof: admitting the invariant's post-loop fact on a timed-out
-/// preservation step would certify a possibly-false invariant — a fail-open gap the vacuity exclusion
-/// must NOT extend to the undecided-verdict handling.
-pub(crate) fn obligation_undecided_is_unsound(name: &str) -> bool {
-    name.starts_with("ensures:")
-        || name.starts_with("requires@")
-        || name.starts_with("loop-invariant-base:")
-        || name.starts_with("loop-invariant-step:")
-        || name.starts_with("assert:")
-}
-
 pub struct SymbolicEngine;
 impl SymbolicEngine {
     /// Returns usable SMT-LIB path constraints (ready for Z3 or other solver).
@@ -19666,8 +19726,7 @@ impl SymbolicEngine {
             .map(|obl| {
                 // An obligation the checker could not encode is refused as undecided here, before any
                 // SMT is built, so neither z3 nor the native lane decides it and the two cannot
-                // disagree about it. The prefix lists below (`is_contract`,
-                // `obligation_undecided_is_unsound`) never see it for the same reason.
+                // disagree about it. The contract vacuity check below never sees it.
                 if obl.name.starts_with(UNRESOLVED_REQUIRES_PREFIX) {
                     return SolverCheck {
                         name: obl.name.clone(),
@@ -19741,38 +19800,12 @@ impl SymbolicEngine {
                     || obl.name.starts_with("loop-invariant-base:")
                     || obl.name.starts_with("assert:");
                 if check.status == "PASS" && is_contract && !obl.assumptions.is_empty() {
-                    match assumptions_satisfiable(obl) {
-                        Vacuity::Contradictory => {
-                            check.status = "FAIL".into();
-                            check.detail = "vacuous proof: the contract's assumptions are \
-                                 self-contradictory (unsatisfiable), so the postcondition is not really \
-                                 established — check for a `requires`/`assume` that cannot hold"
-                                .into();
-                        }
-                        // A solver alarm is reported AS one (compiler locus): calling it a
-                        // self-contradictory contract would send whoever reads it to edit a correct
-                        // program and destroy the evidence of the disagreement.
-                        Vacuity::SolverAlarm(detail) => {
-                            check.status = "FAIL".into();
-                            check.detail = detail;
-                            check.model = None;
-                        }
-                        Vacuity::Satisfiable | Vacuity::Unknown => {}
-                    }
+                    apply_vacuity_result(&mut check, assumptions_satisfiable(obl));
                 }
-                // A contract obligation the solver could not DECIDE (z3 `unknown`, e.g. a per-query
-                // timeout on a hard symbolic division/remainder — see `Z3_ARGS`) is NOT proven. The
-                // proof-carrying gate fails closed on it rather than accept an unverified postcondition.
-                // It was not disproved (no counterexample), only undecided within budget — say so, and
-                // clear any model. This branch became reachable once queries got a bounded budget.
-                // NOTE the predicate is BROADER than the vacuity `is_contract` above: a loop-invariant
-                // PRESERVATION step is (correctly) NOT vacuity-checked, but an UNDECIDED step is still not
-                // a proof — an `unknown` preservation must fail closed exactly like an `ensures`, else a
-                // timed-out step silently admits a possibly-false invariant whose post-loop fact then
-                // certifies a false postcondition (a fail-OPEN gap the step's vacuity exclusion left open).
-                if check.status == "UNKNOWN" && obligation_undecided_is_unsound(&obl.name) {
-                    check.status = "FAIL".into();
-                    check.detail = UNDECIDED_DETAIL.into();
+                // Keep epistemic status intact. The shared admission rule rejects `UNKNOWN` for
+                // every property, while diagnostics can still report undecided rather than a
+                // counterexample. No obligation-name allowlist is involved in that decision.
+                if solver_outcome(&check) == SolverOutcome::Unknown {
                     check.model = None;
                 }
                 overapprox(check, obl)
@@ -19860,9 +19893,6 @@ impl SymbolicEngine {
 /// budget's job, sized from measurement in `run_native_authoritative_gate.sh`.
 const Z3_ARGS: [&str; 5] = ["-in", "-smt2", "rlimit=200000000", "-T:120", "-memory:2048"];
 
-/// Whether a contract obligation's assumptions are jointly satisfiable. `Some(true)`/`Some(false)`
-/// from z3; `None` if the solver did not cleanly decide (in which case the caller keeps the original
-/// verdict rather than fabricating a vacuity failure).
 /// What the vacuity query established about a contract's premises.
 enum Vacuity {
     /// Satisfiable: the proof is not vacuous.
@@ -19873,8 +19903,37 @@ enum Vacuity {
     /// The solvers could not be trusted on this query: z3 rejected it as malformed, or the native
     /// solver and z3 disagreed. A compiler soundness alarm, never a program defect.
     SolverAlarm(String),
-    /// Undecided.
+    /// The premise check returned a literal `unknown`, so non-vacuity was not established.
     Unknown,
+}
+
+fn apply_vacuity_result(check: &mut SolverCheck, result: Vacuity) {
+    match result {
+        Vacuity::Contradictory => {
+            check.status = "FAIL".into();
+            check.detail = "vacuous proof: the contract's assumptions are \
+                 self-contradictory (unsatisfiable), so the postcondition is not really \
+                 established — check for a `requires`/`assume` that cannot hold"
+                .into();
+            check.model = None;
+        }
+        // A solver alarm is reported AS one (compiler locus): calling it a
+        // self-contradictory contract would send whoever reads it to edit a correct
+        // program and destroy the evidence of the disagreement.
+        Vacuity::SolverAlarm(detail) => {
+            check.status = "FAIL".into();
+            check.detail = detail;
+            check.model = None;
+        }
+        Vacuity::Satisfiable => {}
+        Vacuity::Unknown => {
+            // The separate premise check is undecided, so the proof cannot acquire a PASS
+            // seal through that unchecked boundary. A literal unknown is not a disproof.
+            check.status = "UNKNOWN".into();
+            check.detail = VACUITY_UNDECIDED_DETAIL.into();
+            check.model = None;
+        }
+    }
 }
 
 fn assumptions_satisfiable(obl: &SolverObligation) -> Vacuity {
@@ -19970,7 +20029,13 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Vacuity {
     }
     let ans = z3_spawn_first_line(&smt);
     native_shadow_compare(&smt, ans.as_deref());
-    match ans.as_deref() {
+    vacuity_answer(ans.as_deref())
+}
+
+/// Interpret one premise query response, with literal `unknown` distinct from a missing or
+/// malformed answer. This pure seam supports deterministic negative and positive controls.
+fn vacuity_answer(answer: Option<&str>) -> Vacuity {
+    match answer {
         Some("sat") => Vacuity::Satisfiable,
         Some("unsat") => Vacuity::Contradictory,
         // z3 alone, and it rejected the premise query: the contract's "proof" rests on a query nobody
@@ -19979,7 +20044,13 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Vacuity {
             "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; failing \
              closed — a malformed premise query establishes nothing"
         )),
-        _ => Vacuity::Unknown,
+        Some("unknown") => Vacuity::Unknown,
+        Some(_) => Vacuity::SolverAlarm(format!(
+            "{SOLVER_PROTOCOL_ERROR_PREFIX}: vacuity query returned an unrecognized response; non-vacuity was not established"
+        )),
+        None => Vacuity::SolverAlarm(format!(
+            "{SOLVER_PROTOCOL_ERROR_PREFIX}: vacuity query returned no answer; non-vacuity was not established"
+        )),
     }
 }
 
@@ -19990,7 +20061,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         let path = std::env::temp_dir().join(format!("anubis_solver_{}.smt2", std::process::id()));
         let _ = std::fs::write(path, &smt);
     }
-    // Phase-7 z3-authoritative flip (opt-in): the native QF_BV solver decides the PRIMARY obligation
+    // The native QF_BV solver decides the PRIMARY obligation by default
     // when it can — but ONLY over the PROOF-BACKED FRAGMENT. `native_check_sat_model_authoritative`
     // applies `fragment::is_proven_authoritative`, so a native verdict is returned only when EVERY op
     // has a machine-checked bit-blast in BitBlast.lean. Unproven ops (div-rem, bvashr, sign_extend)
@@ -19998,8 +20069,8 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     // direction, especially z3-absent) requires ALL of: (1) proven fragment, (2) CDCL UnsatCert (root
     // refutation), (3) independent `lrat::check_proof` accept — missing/invalid cert → native declines
     // (`None`), never a bare Unsat. SAT (counterexample) is re-verified by independent
-    // `bv::Formula::eval` before return. While z3 is on PATH every native verdict is additionally
-    // cross-checked and a disagreement fails CLOSED. Native declines (out-of-fragment,
+    // `bv::Formula::eval` before return. When z3 answers decisively, its native cross-check
+    // disagreement fails CLOSED. Native declines (out-of-fragment,
     // float/string/array, over-budget, over-size, oversized certificate, cert reject) fall through to
     // z3 unchanged — see `anubis_solver`'s four termination bounds (2026-07-26): a pre-blast gate-cost
     // ceiling, a CNF clause ceiling, the CDCL conflict budget + wall-clock net, and a RUP
@@ -20009,6 +20080,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     // emit an audit log entry (opt-in via ANUBIS_Z3_ONLY_LOG) that captures the SMT and z3's
     // verdict verbatim, so the operator can audit exactly which obligations were z3-only.
     let mut native_declined = false;
+    let mut native_sat_seen = false;
     if native_authoritative() {
         match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
@@ -20049,6 +20121,9 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                             smt,
                         };
                     }
+                    if !matches!(z.as_str(), "unsat" | "unknown" | Z3_OUT_OF_MEMORY) {
+                        return solver_unresolved_answer(&obligation.name, smt, &z);
+                    }
                 }
                 return SolverCheck {
                     name: obligation.name.clone(),
@@ -20060,23 +20135,10 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
             }
             Some(anubis_solver::NativeVerdict::Sat(native_model)) => {
                 if let Some(z) = z3_spawn_first_line(&smt) {
-                    if z == "unsat" {
-                        eprintln!(
-                            "ANUBIS_NATIVE_DISAGREE(primary): native=sat z3=unsat — failing \
-                             closed; smt=<<{}>>",
-                            smt.replace('\n', " ")
-                        );
-                        return SolverCheck {
-                            name: obligation.name.clone(),
-                            status: "FAIL".into(),
-                            detail: "ANUBIS_NATIVE_DISAGREEMENT: the native solver found a \
-                                     counterexample but z3 proved the obligation — cross-check \
-                                     soundness alarm; failing closed"
-                                .into(),
-                            model: None,
-                            smt,
-                        };
+                    if let Some(refusal) = native_sat_first_z3_answer(&obligation.name, &smt, &z) {
+                        return refusal;
                     }
+                    native_sat_seen = true;
                     // Both say sat → fall through to the z3 path below for its model + replay
                     // diagnostics (identical user-facing output during the soak).
                 } else {
@@ -20195,9 +20257,66 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     if native_declined {
         record_z3_only_decision(&smt, Some(first));
     }
+    classify_obligation_z3_answer(&obligation.name, smt, &stdout, &stderr, native_sat_seen)
+}
+
+/// A checked native SAT model cannot be erased by an unrecognized first z3 response.
+/// Only a matching `sat` may proceed to the model-bearing second query.
+fn native_sat_first_z3_answer(name: &str, smt: &str, answer: &str) -> Option<SolverCheck> {
+    if answer == "sat" {
+        return None;
+    }
+    let detail = if z3_rejected_query(answer) {
+        format!(
+            "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{answer}`) although the native solver found a \
+             counterexample; failing closed"
+        )
+    } else if answer == "unsat" {
+        "ANUBIS_NATIVE_DISAGREEMENT: the native solver found a counterexample but z3 proved the \
+         obligation — cross-check soundness alarm; failing closed"
+            .into()
+    } else if answer == Z3_OUT_OF_MEMORY {
+        UNDECIDED_MEMORY_DETAIL.into()
+    } else {
+        return Some(solver_unresolved_answer(name, smt.into(), answer));
+    };
+    Some(SolverCheck {
+        name: name.into(),
+        status: if answer == Z3_OUT_OF_MEMORY {
+            "UNKNOWN"
+        } else {
+            "FAIL"
+        }
+        .into(),
+        detail,
+        model: None,
+        smt: smt.into(),
+    })
+}
+
+/// Classify the final z3 answer while retaining any independently checked native SAT verdict.
+/// A repeated z3 query cannot turn that counterexample into a PASS if its answer changes.
+fn classify_obligation_z3_answer(
+    name: &str,
+    smt: String,
+    stdout: &str,
+    stderr: &str,
+    native_sat_seen: bool,
+) -> SolverCheck {
+    let answer = z3_answer_line(stdout).unwrap_or_default();
+    let first = answer.as_str();
     match first {
+        "unsat" if native_sat_seen => SolverCheck {
+            name: name.into(),
+            status: "FAIL".into(),
+            detail: "ANUBIS_NATIVE_DISAGREEMENT: an independently checked native counterexample \
+                     preceded a contradictory z3 unsat answer; failing closed"
+                .into(),
+            model: None,
+            smt,
+        },
         "unsat" => SolverCheck {
-            name: obligation.name.clone(),
+            name: name.into(),
             status: "PASS".into(),
             detail: PROVED_DETAIL_SOLVER_ONLY.into(),
             model: None,
@@ -20206,10 +20325,10 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         "sat" => {
             // Phase-4 B1: every FAIL model must replay. A model that does not re-satisfy the
             // query is an encoder/solver soundness alarm — not a trustworthy counterexample.
-            let model = stdout.clone();
+            let model = stdout.to_owned();
             if !replay_counterexample(&smt, &model) {
                 SolverCheck {
-                    name: obligation.name.clone(),
+                    name: name.into(),
                     status: "FAIL".into(),
                     detail: "ANUBIS_REPLAY_MISMATCH: z3 returned sat with a model that does not \
                          re-verify under model-substitution replay (encoder-vs-solver soundness \
@@ -20220,7 +20339,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                 }
             } else {
                 SolverCheck {
-                    name: obligation.name.clone(),
+                    name: name.into(),
                     status: "FAIL".into(),
                     detail: DISPROVED_DETAIL_Z3.into(),
                     model: Some(model),
@@ -20233,21 +20352,20 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         // would report it as "the SMT we emitted is malformed" — blaming this compiler for an
         // obligation that is merely too big, and sending whoever reads it to hunt a bug that does
         // not exist. It is UNDECIDED: fail closed, and name the bound that actually bit.
-        other if other == Z3_OUT_OF_MEMORY || stderr.contains("out of memory") => {
-            SolverCheck {
-                name: obligation.name.clone(),
-                status: "FAIL".into(),
-                detail: UNDECIDED_MEMORY_DETAIL.into(),
-                model: None,
-                smt,
-            }
-        }
+        other if other == Z3_OUT_OF_MEMORY || stderr.contains("out of memory") => SolverCheck {
+            name: name.into(),
+            status: "UNKNOWN".into(),
+            detail: UNDECIDED_MEMORY_DETAIL.into(),
+            model: None,
+            smt,
+        },
         // A z3 parse/sort ERROR means the SMT WE emitted is malformed (e.g. an undeclared symbol).
         // That is our bug, not an undecidable query — treat it as FAIL so it fails CLOSED. Emitting a
         // malformed obligation and then calling it "not a disproof" was the fail-OPEN hole that let a
         // parameter named `model`/`set`/`bvx` slip an unverified overflow contract past `check`.
+        "unknown" => solver_unresolved_answer(name, smt, "unknown"),
         other if other.starts_with("(error") || stderr.contains("error") => SolverCheck {
-            name: obligation.name.clone(),
+            name: name.into(),
             status: "FAIL".into(),
             detail: format!(
                 "solver rejected the emitted SMT (z3: `{}` stderr `{}`); failing closed — a \
@@ -20258,20 +20376,39 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
             model: None,
             smt,
         },
-        // A genuine `unknown` (or empty output) on a well-formed query is NOT a counterexample.
-        // Reporting it as FAIL would be an unsound "disproof". A runtime `assert` is still enforced at
-        // runtime; QF_BV is decidable, so this branch is effectively unreachable for our obligations.
-        other => SolverCheck {
-            name: obligation.name.clone(),
-            status: "UNKNOWN".into(),
-            detail: format!(
-                "solver did not decide this obligation (z3 returned `{}` stderr `{}`); not a disproof",
-                other,
-                stderr.trim()
+        other => solver_unresolved_answer(name, smt, other),
+    }
+}
+
+/// A literal solver `unknown` is undecided. Empty output or any other answer is a broken solver
+/// protocol and cannot be laundered into a budget-limited result (or a proof). Kept pure so the
+/// protocol boundary can be tested without spawning z3 or relying on timing.
+fn solver_unresolved_answer(name: &str, smt: String, answer: &str) -> SolverCheck {
+    let (status, detail) = if answer == "unknown" {
+        (
+            "UNKNOWN",
+            "solver did not decide this obligation (z3 returned `unknown`); not a disproof"
+                .to_string(),
+        )
+    } else {
+        let category = if answer.is_empty() {
+            "empty"
+        } else {
+            "unrecognized"
+        };
+        (
+            "FAIL",
+            format!(
+                "{SOLVER_PROTOCOL_ERROR_PREFIX}: z3 returned an {category} response instead of sat, unsat, or unknown; no proof or counterexample was established"
             ),
-            model: None,
-            smt,
-        },
+        )
+    };
+    SolverCheck {
+        name: name.into(),
+        status: status.into(),
+        detail,
+        model: None,
+        smt,
     }
 }
 
@@ -20458,18 +20595,19 @@ fn z3_spawn_first_line(smt: &str) -> Option<String> {
 
 /// The line of z3's output that answers the query: an `(error …)` raised BEFORE the verdict (the query
 /// was rejected, even if z3 went on to answer what was left of it), else the verdict itself
-/// (`sat`/`unsat`/`unknown`). Blank and informational lines (`WARNING: …`) are skipped rather than taken
-/// as the answer. An `(error …)` AFTER the verdict belongs to a later command (`get-model` after `unsat`
-/// always errors) and is ignored.
+/// (`sat`/`unsat`/`unknown`). Blank lines and known informational warnings (`WARNING: …`)
+/// are skipped. Any other first line is returned to the caller as a protocol refusal;
+/// searching past arbitrary text for a later `unsat` could manufacture a PASS. An `(error …)`
+/// AFTER the verdict belongs to a later command (`get-model` after `unsat` always errors)
+/// and is ignored.
 fn z3_answer_line(stdout: &str) -> Option<String> {
-    let mut first = None;
     for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        first.get_or_insert_with(|| line.to_string());
-        if line.starts_with("(error") || matches!(line, "sat" | "unsat" | "unknown") {
-            return Some(line.to_string());
+        if line.starts_with("WARNING:") {
+            continue;
         }
+        return Some(line.to_string());
     }
-    first
+    None
 }
 
 /// Runs `smt` and returns the first verdict line (`sat`/`unsat`/`unknown`), or `None` if no solver
@@ -20868,14 +21006,9 @@ pub struct CertificateCoverage {
     /// The obligations resting on the solver's word, named so the admission is
     /// specific rather than a count. These are the REG-002 residual.
     pub uncertified: Vec<String>,
-    /// Checks that reached neither a recognised discharge nor a failure.
-    ///
-    /// An `UNKNOWN` wrap-safety obligation is the live case:
-    /// `obligation_undecided_is_unsound` deliberately excludes `wrap-safety:`
-    /// from the fail-closed set, so such a check passes the run without ever
-    /// being decided. Counting only the discharged ones would print
-    /// "3/3 obligations" for a run where a fourth was never decided at all,
-    /// which is the denominator quietly shrinking to fit the numerator.
+    /// Checks that reached neither a recognised discharge nor a `FAIL`. `UNKNOWN`
+    /// is refused by the shared admission rule but still counted here so coverage
+    /// does not silently lose an undecided obligation.
     pub not_discharged: usize,
     /// Whether the refutations behind `certified` were written somewhere a
     /// third party can re-check them. False on a plain `check`.
@@ -20885,7 +21018,14 @@ pub struct CertificateCoverage {
 /// Tally certificate coverage over a completed check.
 pub fn certificate_coverage(checks: &[SolverCheck]) -> CertificateCoverage {
     let mut c = CertificateCoverage::default();
+    if is_no_obligations_sentinel(checks) {
+        return c;
+    }
     for check in checks {
+        if reserves_no_obligations_identity(check) {
+            c.not_discharged += 1;
+            continue;
+        }
         match certificate_status(check) {
             CertificateStatus::Certified => c.certified += 1,
             CertificateStatus::TrustedToSolver => {
@@ -20897,7 +21037,7 @@ pub fn certificate_coverage(checks: &[SolverCheck]) -> CertificateCoverage {
                 // obligations has nothing to count, but anything else that
                 // reaches here was neither discharged nor refused, and the
                 // verdict must not silently omit it.
-                if check.status != "FAIL" && check.detail != NO_OBLIGATIONS_DETAIL {
+                if check.status != "FAIL" {
                     c.not_discharged += 1;
                 }
             }
@@ -20984,6 +21124,10 @@ pub const UNDECIDED_MEMORY_DETAIL: &str = "solver could not decide this contract
      postcondition is not a proof. Restate it as a simpler or better-bounded obligation, or raise \
      the declared bound if the obligation is genuinely this large";
 
+pub const VACUITY_UNDECIDED_DETAIL: &str = "solver returned `unknown` for the contract-premise \
+     satisfiability check; non-vacuity was not established, so the obligation is undecided \
+     rather than proved or disproved";
+
 /// Source-level bindings from a solver counterexample, for machine-readable output.
 ///
 /// The two lane-specific parsers stay private because each one anchors on its
@@ -21002,7 +21146,8 @@ pub fn counterexample_bindings(model: &str) -> BTreeMap<String, String> {
     bindings
 }
 
-/// The exact text an undecided contract obligation reports.
+/// Historical text for a FAIL-shaped undecided contract obligation. New literal solver
+/// `unknown` results retain the typed `UNKNOWN` status and their solver detail.
 ///
 /// Named rather than inlined because [`classify_assertion_fail`] recognises an
 /// undecided verdict by reading this prose, so a test that hand-copied the
@@ -21081,9 +21226,13 @@ fn unresolved_obligation_smt_comment(obl: &SolverObligation) -> String {
 /// Every FAIL detail for a query z3 rejected as malformed begins with this; classification and the
 /// refusal locus key on it (never on z3's own words).
 pub const Z3_REJECTED_DETAIL_PREFIX: &str = "solver rejected the emitted SMT";
+pub const SOLVER_PROTOCOL_ERROR_PREFIX: &str = "ANUBIS_SOLVER_PROTOCOL_ERROR";
 
 pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
-    if check.status != "FAIL" {
+    if solver_outcome(check) == SolverOutcome::Unknown {
+        return AssertionFailKind::Undecided;
+    }
+    if solver_outcome(check) != SolverOutcome::Fail {
         return AssertionFailKind::Other;
     }
     // Exact equality, not a substring: an unencoded obligation is undecided by construction.
@@ -21091,6 +21240,8 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
         || check.detail == OVERAPPROX_UNDECIDED_DETAIL
         || check.detail == BRANCH_REACHABILITY_UNDECIDED_DETAIL
         || check.detail == OVERAPPROX_COMBINED_UNDECIDED_DETAIL
+        || check.detail == UNDECIDED_DETAIL
+        || check.detail == UNDECIDED_MEMORY_DETAIL
     {
         return AssertionFailKind::Undecided;
     }
@@ -21164,8 +21315,12 @@ pub fn refusal_locus(check: &SolverCheck) -> RefusalLocus {
     if d.contains("ANUBIS_REPLAY_MISMATCH")
         || d.contains("ANUBIS_NATIVE_DISAGREEMENT")
         || d.contains("ANUBIS_Z3_ONLY_UNTRUSTED")
+        || d.starts_with(SOLVER_STREAM_INVALID_DETAIL)
         || d.contains("solver rejected the emitted SMT")
     {
+        return RefusalLocus::Compiler;
+    }
+    if solver_outcome(check) == SolverOutcome::InvalidStatus {
         return RefusalLocus::Compiler;
     }
     // The solver could not be run at all. Telling anyone to restate a contract
@@ -21173,6 +21328,7 @@ pub fn refusal_locus(check: &SolverCheck) -> RefusalLocus {
     if d.starts_with("z3 unavailable")
         || d.starts_with("z3 stdin failed")
         || d.starts_with("z3 execution failed")
+        || d.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX)
     {
         return RefusalLocus::Environment;
     }
@@ -21642,7 +21798,31 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
     let all_undecided = kinds.iter().all(|k| *k == AssertionFailKind::Undecided);
     let any_replay = kinds.contains(&AssertionFailKind::ReplayMismatch);
 
-    let (code, headline) = if all_wrap {
+    let (code, headline) = if fails
+        .iter()
+        .all(|c| c.detail.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX))
+    {
+        (
+            SOLVER_PROTOCOL_ERROR_PREFIX,
+            format!("{n} solver response(s) violated the expected protocol:"),
+        )
+    } else if fails
+        .iter()
+        .all(|c| c.detail == SOLVER_STREAM_INVALID_DETAIL)
+    {
+        (
+            "ANUBIS_SOLVER_STREAM_INVALID",
+            "compiler emitted an incomplete solver-check stream:".into(),
+        )
+    } else if fails
+        .iter()
+        .all(|c| solver_outcome(c) == SolverOutcome::InvalidStatus)
+    {
+        (
+            "ANUBIS_SOLVER_STATUS_INVALID",
+            format!("{n} solver check(s) carried an invalid status:"),
+        )
+    } else if all_wrap {
         (
             "ANUBIS_WRAP_RISK",
             format!(
@@ -21763,6 +21943,9 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                 }
             }
             AssertionFailKind::Other => {
+                if solver_outcome(c) == SolverOutcome::InvalidStatus {
+                    out.push_str(&format!("\n    (invalid solver status `{}`)", c.status));
+                }
                 if !c.detail.is_empty() {
                     out.push_str(&format!("\n    ({})", c.detail));
                 }
@@ -39469,6 +39652,236 @@ mod certificate_coverage_tests {
         }
     }
 
+    fn no_obligations() -> SolverCheck {
+        let mut check = check("PASS", NO_OBLIGATIONS_DETAIL, "solver:no-obligations");
+        check.smt = "(check-sat)".into();
+        check
+    }
+
+    #[test]
+    fn typed_solver_discharge_refuses_unknown_and_invalid_status_for_every_family() {
+        let accepted = check("PASS", PROVED_DETAIL_SOLVER_ONLY, "ensures:x");
+        let no_obligations = no_obligations();
+        assert_eq!(solver_outcome(&accepted), SolverOutcome::Pass);
+        assert!(solver_checks_discharged(&[accepted]));
+        assert!(solver_checks_discharged(std::slice::from_ref(
+            &no_obligations
+        )));
+        assert_eq!(certificate_coverage(&[no_obligations]).discharged, 0);
+
+        for name in ["ensures:x", "wrap-safety:add", "solver:other"] {
+            for (status, outcome) in [
+                ("FAIL", SolverOutcome::Fail),
+                ("UNKNOWN", SolverOutcome::Unknown),
+                ("PASS ", SolverOutcome::InvalidStatus),
+                ("", SolverOutcome::InvalidStatus),
+            ] {
+                let undecided = check(status, "no decision", name);
+                assert_eq!(solver_outcome(&undecided), outcome, "{name}: {status:?}");
+                assert!(
+                    solver_check_requires_refusal(&undecided),
+                    "{name}: {status:?}"
+                );
+                assert!(
+                    !solver_checks_discharged(&[undecided]),
+                    "{name}: {status:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reserved_no_obligations_identity_only_admits_the_exact_sole_sentinel() {
+        assert!(!solver_checks_discharged(&[]));
+        assert_eq!(
+            solver_stream_refusals(&[])[0].detail,
+            SOLVER_STREAM_INVALID_DETAIL
+        );
+        let sentinel = no_obligations();
+        assert!(is_no_obligations_sentinel(std::slice::from_ref(&sentinel)));
+        assert!(solver_checks_discharged(std::slice::from_ref(&sentinel)));
+        assert!(solver_stream_refusals(std::slice::from_ref(&sentinel)).is_empty());
+        for malformed in [
+            SolverCheck {
+                name: "wrap-safety:add".into(),
+                ..sentinel.clone()
+            },
+            SolverCheck {
+                detail: "a proof".into(),
+                ..sentinel.clone()
+            },
+            SolverCheck {
+                model: Some("forged".into()),
+                ..sentinel.clone()
+            },
+            SolverCheck {
+                smt: "(check-sat)\n".into(),
+                ..sentinel.clone()
+            },
+            SolverCheck {
+                status: "UNKNOWN".into(),
+                ..sentinel.clone()
+            },
+        ] {
+            assert!(!is_no_obligations_sentinel(std::slice::from_ref(
+                &malformed
+            )));
+            assert!(!solver_checks_discharged(std::slice::from_ref(&malformed)));
+            assert!(solver_stream_refusals(std::slice::from_ref(&malformed))
+                .iter()
+                .any(|refusal| refusal.detail == SOLVER_STREAM_INVALID_DETAIL));
+            assert_eq!(certificate_coverage(&[malformed]).not_discharged, 1);
+        }
+        let mixed = [sentinel, check("PASS", PROVED_DETAIL_CERTIFIED, "assert:x")];
+        assert!(!is_no_obligations_sentinel(&mixed));
+        assert!(!solver_checks_discharged(&mixed));
+        assert!(solver_stream_refusals(&mixed)
+            .iter()
+            .any(|refusal| refusal.detail == SOLVER_STREAM_INVALID_DETAIL));
+        assert_eq!(certificate_coverage(&mixed).not_discharged, 1);
+    }
+
+    #[test]
+    fn z3_answer_only_skips_known_warnings_before_a_verdict() {
+        assert_eq!(
+            z3_answer_line("\nWARNING: benign\nunsat\n"),
+            Some("unsat".into())
+        );
+        assert_eq!(z3_answer_line("bogus\nunsat\n"), Some("bogus".into()));
+        assert_eq!(
+            z3_answer_line("(error \"sort mismatch\")\nunsat\n"),
+            Some("(error \"sort mismatch\")".into())
+        );
+        assert_eq!(
+            z3_answer_line("unknown\n(error \"model unavailable\")\n"),
+            Some("unknown".into())
+        );
+        assert_eq!(z3_answer_line("WARNING: no answer\n"), None);
+
+        let refused = classify_obligation_z3_answer(
+            "assert:x",
+            "(check-sat)".into(),
+            "bogus\nunsat\n",
+            "",
+            false,
+        );
+        assert_eq!(solver_outcome(&refused), SolverOutcome::Fail);
+        assert!(refused.detail.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
+    }
+
+    #[test]
+    fn literal_unknown_is_undecided_but_empty_and_malformed_solver_answers_are_tool_errors() {
+        let unknown = solver_unresolved_answer("wrap-safety:add", String::new(), "unknown");
+        assert_eq!(solver_outcome(&unknown), SolverOutcome::Unknown);
+        assert_eq!(
+            classify_assertion_fail(&unknown),
+            AssertionFailKind::Undecided
+        );
+        assert_eq!(refusal_locus(&unknown), RefusalLocus::Capability);
+        assert!(format_check_failures(&[unknown]).starts_with("ANUBIS_ASSERTION_UNDECIDED:"));
+
+        for answer in ["", "WARNING: solver unavailable", "maybe"] {
+            let broken = solver_unresolved_answer("ensures:x", String::new(), answer);
+            assert_eq!(solver_outcome(&broken), SolverOutcome::Fail);
+            assert!(broken.detail.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
+            assert_eq!(refusal_locus(&broken), RefusalLocus::Environment);
+            assert!(
+                format_check_failures(&[broken]).starts_with("ANUBIS_SOLVER_PROTOCOL_ERROR:"),
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_sat_and_repeated_z3_disagreement_can_never_turn_into_a_pass() {
+        let smt = "(check-sat)";
+        assert!(native_sat_first_z3_answer("assert:x", smt, "sat").is_none());
+        for answer in ["unsat", "(error \"sort mismatch\")", "", "maybe"] {
+            let refusal = native_sat_first_z3_answer("assert:x", smt, answer)
+                .expect("only matching sat can reach the model query");
+            assert!(solver_check_requires_refusal(&refusal), "{answer:?}");
+            assert!(refusal.model.is_none());
+        }
+        let changed = classify_obligation_z3_answer("assert:x", smt.into(), "unsat\n", "", true);
+        assert_eq!(solver_outcome(&changed), SolverOutcome::Fail);
+        assert!(changed.detail.starts_with("ANUBIS_NATIVE_DISAGREEMENT"));
+        assert!(changed.model.is_none());
+
+        let z3_only = classify_obligation_z3_answer("assert:x", smt.into(), "unsat\n", "", false);
+        assert_eq!(solver_outcome(&z3_only), SolverOutcome::Pass);
+    }
+
+    #[test]
+    fn literal_unknown_keeps_undecided_status_despite_later_get_model_error() {
+        let smt = "(check-sat)";
+        let unknown = classify_obligation_z3_answer(
+            "assert:x",
+            smt.into(),
+            "unknown\n(error \"model is not available\")\n",
+            "error: model is not available",
+            false,
+        );
+        assert_eq!(solver_outcome(&unknown), SolverOutcome::Unknown);
+        assert_eq!(
+            classify_assertion_fail(&unknown),
+            AssertionFailKind::Undecided
+        );
+        assert!(solver_check_requires_refusal(&unknown));
+        assert!(unknown.model.is_none());
+
+        let rejected = classify_obligation_z3_answer(
+            "assert:x",
+            smt.into(),
+            "(error \"sort mismatch\")\nunknown\n",
+            "",
+            false,
+        );
+        assert_eq!(solver_outcome(&rejected), SolverOutcome::Fail);
+        assert!(rejected.detail.starts_with(Z3_REJECTED_DETAIL_PREFIX));
+
+        let exhausted = classify_obligation_z3_answer(
+            "assert:x",
+            smt.into(),
+            "(error \"out of memory\")\n",
+            "",
+            false,
+        );
+        assert_eq!(solver_outcome(&exhausted), SolverOutcome::Unknown);
+        assert_eq!(exhausted.detail, UNDECIDED_MEMORY_DETAIL);
+    }
+
+    #[test]
+    fn vacuity_probe_does_not_treat_unknown_or_missing_answer_as_satisfiable() {
+        assert!(matches!(vacuity_answer(Some("sat")), Vacuity::Satisfiable));
+        assert!(matches!(
+            vacuity_answer(Some("unsat")),
+            Vacuity::Contradictory
+        ));
+        assert!(matches!(vacuity_answer(Some("unknown")), Vacuity::Unknown));
+        for answer in [None, Some(""), Some("WARNING: no answer")] {
+            match vacuity_answer(answer) {
+                Vacuity::SolverAlarm(detail) => {
+                    assert!(detail.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
+                }
+                _ => panic!("vacuity probe accepted {answer:?}"),
+            }
+        }
+        let original = check("PASS", PROVED_DETAIL_SOLVER_ONLY, "ensures:x");
+        let mut satisfied = original.clone();
+        apply_vacuity_result(&mut satisfied, Vacuity::Satisfiable);
+        assert!(solver_checks_discharged(&[satisfied]));
+
+        let mut undecided = original.clone();
+        apply_vacuity_result(&mut undecided, Vacuity::Unknown);
+        assert_eq!(solver_outcome(&undecided), SolverOutcome::Unknown);
+        assert!(!solver_checks_discharged(&[undecided]));
+
+        let mut broken = original;
+        apply_vacuity_result(&mut broken, vacuity_answer(None));
+        assert_eq!(solver_outcome(&broken), SolverOutcome::Fail);
+        assert_eq!(refusal_locus(&broken), RefusalLocus::Environment);
+    }
+
     #[test]
     fn a_native_proof_is_certified_and_a_z3_proof_is_not() {
         assert_eq!(
@@ -39542,7 +39955,7 @@ mod certificate_coverage_tests {
         // A program with nothing to prove has not failed to witness anything.
         // `0/0` would read as "nothing was witnessed" instead of "nothing was
         // attempted", and a consumer would be right to treat that as alarming.
-        let c = certificate_coverage(&[check("PASS", NO_OBLIGATIONS_DETAIL, "none")]);
+        let c = certificate_coverage(&[no_obligations()]);
         assert_eq!(c.discharged, 0);
         assert!(c.verdict_line().is_none());
     }
@@ -39571,10 +39984,8 @@ mod certificate_coverage_tests {
 
     #[test]
     fn an_obligation_that_was_never_decided_is_counted_not_hidden() {
-        // `obligation_undecided_is_unsound` deliberately excludes wrap-safety,
-        // so an UNKNOWN wrap-safety check passes the run. Counting only the
-        // discharged ones printed "1/1 obligations" for a run where a second
-        // was never decided at all — the denominator shrinking to fit.
+        // UNKNOWN wrap-safety now refuses like every other undecided obligation.
+        // Coverage must also retain it in the denominator, never shrinking to fit.
         let c = certificate_coverage(&[
             check("PASS", PROVED_DETAIL_CERTIFIED, "ensures:a"),
             check("UNKNOWN", "solver did not decide", "wrap-safety:b"),

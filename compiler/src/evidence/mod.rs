@@ -123,8 +123,9 @@ where
     F: FnMut(&str, &str) -> bool,
 {
     let mut rows = Vec::with_capacity(solver_checks.len());
+    let no_obligations = crate::middle::is_no_obligations_sentinel(solver_checks);
     let mut failed_replay = false;
-    let mut incomplete = false;
+    let mut incomplete = solver_checks.is_empty();
     let mut replayed = false;
 
     for (index, check) in solver_checks.iter().enumerate() {
@@ -136,8 +137,11 @@ where
         } else if let Some((_, replay_status)) = undecided_provenance(&check.detail) {
             incomplete = true;
             replay_status
-        } else if check.detail == crate::middle::NO_OBLIGATIONS_DETAIL {
+        } else if no_obligations {
             "not_applicable_no_obligations"
+        } else if crate::middle::reserves_no_obligations_identity(check) {
+            incomplete = true;
+            "not_replayed_invalid_sentinel"
         } else if check.status == "PASS" {
             "not_applicable"
         } else if check.status == "FAIL" {
@@ -607,9 +611,26 @@ fn build_evidence_bundle_tree_inner(
                     let pdir = dir.join("analysis").join("proofs");
                     let _ = std::fs::create_dir_all(&pdir);
                     let mut index = Vec::new();
+                    let no_obligations = crate::middle::is_no_obligations_sentinel(&solver_checks);
                     for (i, c) in solver_checks.iter().enumerate() {
                         let stem = format!("obligation_{i:04}");
                         let _ = std::fs::write(pdir.join(format!("{stem}.smt2")), &c.smt);
+                        // The synthetic empty-check marker is not a solver obligation. Its
+                        // `(check-sat)` placeholder is satisfiable, but that is not a program
+                        // counterexample and must not enter the native proof lane.
+                        if no_obligations || crate::middle::reserves_no_obligations_identity(c) {
+                            index.push(serde_json::json!({
+                                "obligation": c.name,
+                                "status": c.status,
+                                "proof": if no_obligations {
+                                    "not_applicable_no_obligations"
+                                } else {
+                                    "invalid_synthetic_no_obligations"
+                                },
+                                "smt": format!("analysis/proofs/{stem}.smt2"),
+                            }));
+                            continue;
+                        }
                         // A model under over-approximated value or branch reachability is not a
                         // checked program counterexample. Keep the reason typed in the index;
                         // a native SAT label would incorrectly present it as a disproof.
@@ -751,7 +772,7 @@ fn build_evidence_bundle_tree_inner(
                     .into(),
                     detail: format!("constraints={}", tainted.constraints.len()),
                 });
-                let solver_status = if solver_checks.iter().all(|check| check.status == "PASS") {
+                let solver_status = if crate::middle::solver_checks_discharged(&solver_checks) {
                     "PASS"
                 } else {
                     "FAIL"
@@ -1060,7 +1081,7 @@ pub struct ClaimBlock {
     pub pca_version: u32,
     pub source_sha256: String,
     pub mode: String,
-    /// Assurance tier actually reached. v2: `"checked"` — parse + typecheck + the bounded solver
+    /// Assurance tier actually reached. v2/v3: `"checked"` — parse + typecheck + the bounded solver
     /// obligation pass ran. This deliberately makes no separate total-flow/taint-clean claim.
     pub tier: String,
     /// Present only for a fail-closed command rejection. A rejected PCA is evidence of refusal,
@@ -1113,6 +1134,8 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     derive_claim(source, mode, true).claim
 }
 
+const PCA_VERSION_CURRENT: u32 = 3;
+
 /// The claim block, and the analysis limit its analysis stopped at, if any (then its verdict is not
 /// a fact about the program). `analyze: false` records the parse only.
 /// A claim block derived from a source, and how its analysis ended.
@@ -1129,7 +1152,24 @@ struct Derived {
     kept_finding: bool,
 }
 
+/// Summarize the exact emitted checks for PCA. The no-obligations PASS sentinel is an
+/// admission of a checked program with nothing to prove, not one discharged obligation.
+fn solver_claim_summary(checks: &[crate::middle::SolverCheck]) -> (usize, bool) {
+    (
+        if crate::middle::is_no_obligations_sentinel(checks) {
+            0
+        } else {
+            checks.len()
+        },
+        crate::middle::solver_checks_discharged(checks),
+    )
+}
+
 fn derive_claim(source: &str, mode: &str, analyze: bool) -> Derived {
+    derive_claim_for_version(source, mode, analyze, PCA_VERSION_CURRENT)
+}
+
+fn derive_claim_for_version(source: &str, mode: &str, analyze: bool, pca_version: u32) -> Derived {
     let source_sha256 = sha256_bytes(source.as_bytes());
     let tc_mode = match mode {
         "research" => crate::frontend::Mode::Research,
@@ -1161,10 +1201,16 @@ fn derive_claim(source: &str, mode: &str, analyze: bool) -> Derived {
             // contains accepted programs with runtime secret/taint witnesses. PCA v2 therefore
             // records only the bounded typecheck result above and carries no independent taint field.
             let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
-            solver_obligations = solver_checks.len();
-            // Same alignment as the preflight: only FAIL blocks discharge. `all == "PASS"` rejected
-            // UNKNOWN exactly as the preflight's `!= "PASS"` did.
-            solver_all_discharged = !solver_checks.iter().any(|c| c.status == "FAIL");
+            // Use the same typed discharge rule as check/build/run and the evidence manifest.
+            // A no-obligations sentinel admits development checking without adding proof coverage;
+            // UNKNOWN or an unrecognized status can never produce a PASS claim.
+            (solver_obligations, solver_all_discharged) = solver_claim_summary(&solver_checks);
+            // PCA v2 counted the synthetic check as an obligation. Retain that historical
+            // count only while re-deriving a v2 bundle; new v3 claims count real obligations.
+            // Both versions now require typed PASS for every real emitted check.
+            if pca_version == 2 {
+                solver_obligations = solver_checks.len();
+            }
         }
     }
     let verdict = if parse_ok && typecheck_ok && solver_all_discharged {
@@ -1174,7 +1220,7 @@ fn derive_claim(source: &str, mode: &str, analyze: bool) -> Derived {
     };
     Derived {
         claim: ClaimBlock {
-            pca_version: 2,
+            pca_version,
             source_sha256,
             mode: mode.to_string(),
             tier: "checked".into(),
@@ -1274,7 +1320,16 @@ pub fn derive_claim_block_bound(dir: &Path, source: &str, mode: &str) -> ClaimBl
 
 /// [`derive_claim_block_bound`], and how its analysis ended.
 fn derive_claim_bound(dir: &Path, source: &str, mode: &str) -> Derived {
-    let mut d = derive_claim(source, mode, true);
+    derive_claim_bound_for_version(dir, source, mode, PCA_VERSION_CURRENT)
+}
+
+fn derive_claim_bound_for_version(
+    dir: &Path,
+    source: &str,
+    mode: &str,
+    pca_version: u32,
+) -> Derived {
+    let mut d = derive_claim_for_version(source, mode, true, pca_version);
     if let Some(zk) = derive_zk_binding(dir) {
         d.claim.zk_present = true;
         d.claim.zk_image_id = Some(zk.image_id);
@@ -1316,6 +1371,9 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     let recorded: ClaimBlock =
         serde_json::from_str(&std::fs::read_to_string(&pca_path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    if !matches!(recorded.pca_version, 2 | PCA_VERSION_CURRENT) {
+        return Ok(false);
+    }
     let source = std::fs::read_to_string(dir.join("source.anubis")).map_err(|e| e.to_string())?;
     // Explicit source binding: the claim's recorded hash must be the hash of the bundle's own
     // source. (Also implied by `fresh == recorded`, but asserted directly so the source↔claim tie
@@ -1393,7 +1451,8 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // tampered receipt, a swapped ImageID, or a claim that lies about carrying a receipt makes the
     // re-derived block differ from the recorded one and fails closed here (the CLI additionally
     // re-verifies the receipt cryptographically against the ImageID).
-    let derived = derive_claim_bound(dir, &source, &recorded.mode);
+    let derived =
+        derive_claim_bound_for_version(dir, &source, &recorded.mode, recorded.pca_version);
     let matches = claim_semantically_matches(&derived.claim, &recorded);
     // A re-derivation stopped by the MEMORY budget of this machine neither confirms nor refutes an
     // intact bundle's claim: say so, rather than "invalid", which reads as tampering. A stack or
@@ -2340,7 +2399,7 @@ mod pca_tests {
                 "overapproximated_not_replayed",
                 "branch_reachability_not_replayed",
                 "value_and_branch_reachability_not_replayed",
-                "not_applicable_no_obligations",
+                "not_replayed_invalid_sentinel",
                 "not_replayed_unknown_status",
             ]
         );
@@ -2400,9 +2459,9 @@ mod pca_tests {
     }
 
     #[test]
-    fn replay_record_empty_check_has_no_replay_claim() {
+    fn replay_record_empty_stream_is_incomplete() {
         let record = solver_replay_record(&[], |_, _| panic!("no model exists to replay"));
-        assert_eq!(record["status"], "not_applicable");
+        assert_eq!(record["status"], "incomplete");
         assert_eq!(record["replay_valid"], false);
         assert_eq!(record["obligations"].as_array().unwrap().len(), 0);
     }
@@ -2474,6 +2533,18 @@ mod pca_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["status"], "not_applicable_no_obligations");
         assert_eq!(rows[0]["replay_attempted"], false);
+        let claim: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(bundle.dir.join("pca.json")).unwrap()).unwrap();
+        assert_eq!(claim["pca_version"], PCA_VERSION_CURRENT);
+        assert_eq!(claim["solver_obligations"], 0);
+        let proofs: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(bundle.dir.join("analysis/proofs.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            proofs["obligations"][0]["proof"],
+            "not_applicable_no_obligations"
+        );
         assert!(validate_manifest_hashes(&bundle.dir).unwrap());
     }
 
@@ -2565,7 +2636,68 @@ fn main() uses(io.read) {
     }
 
     #[test]
-    fn pca_v2_does_not_assert_unearned_taint_clean_for_an_accepted_program() {
+    fn injected_solver_checks_cannot_launder_unknown_or_invalid_status_into_a_pca_pass() {
+        assert_eq!(solver_claim_summary(&[]), (0, false));
+        let absent = solver_replay_record(&[], |_, _| panic!("empty stream must not replay"));
+        assert_eq!(absent["status"], "incomplete");
+        assert_eq!(absent["replay_valid"], false);
+        let check = |status: &str, detail: &str| crate::middle::SolverCheck {
+            name: "wrap-safety:add".into(),
+            status: status.into(),
+            detail: detail.into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        let sentinel = crate::middle::SolverCheck {
+            name: "solver:no-obligations".into(),
+            status: "PASS".into(),
+            detail: crate::middle::NO_OBLIGATIONS_DETAIL.into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        assert_eq!(
+            solver_claim_summary(std::slice::from_ref(&sentinel)),
+            (0, true)
+        );
+        assert_eq!(
+            solver_claim_summary(&[check("PASS", crate::middle::NO_OBLIGATIONS_DETAIL)]),
+            (1, false),
+            "reserved prose on a real obligation must not erase it"
+        );
+        assert_eq!(
+            solver_claim_summary(&[
+                sentinel,
+                check("PASS", crate::middle::PROVED_DETAIL_SOLVER_ONLY)
+            ]),
+            (2, false),
+            "a synthetic sentinel mixed with a real check is invalid"
+        );
+        assert_eq!(
+            solver_claim_summary(&[check("PASS", crate::middle::PROVED_DETAIL_SOLVER_ONLY)]),
+            (1, true)
+        );
+        for status in ["FAIL", "UNKNOWN", "PASS ", ""] {
+            assert_eq!(
+                solver_claim_summary(&[check(status, "no discharge")]),
+                (1, false),
+                "a {status:?} check must block the PCA claim"
+            );
+        }
+    }
+
+    #[test]
+    fn source_with_no_solver_obligations_keeps_a_checked_not_proved_claim() {
+        let claim = derive_claim_block("fn main() { let x = 1; }", "safe");
+        assert_eq!(claim.pca_version, PCA_VERSION_CURRENT);
+        assert_eq!(claim.verdict, "PASS");
+        assert_eq!(claim.tier, "checked");
+        assert_eq!(claim.solver_obligations, 0);
+        assert!(claim.solver_all_discharged);
+        assert!(!claim.zk_present);
+    }
+
+    #[test]
+    fn current_pca_does_not_assert_unearned_taint_clean_for_an_accepted_program() {
         // Until a separate taint theorem is derived, the PCA must report the bounded typecheck
         // result without translating `typecheck returned Ok` into the stronger `taint_clean: true`
         // guarantee — for every accepted program, not only a leaking one.
@@ -2575,10 +2707,10 @@ fn main() uses(io.read) {
             "the fixture must be an accepted program"
         );
         let json = serde_json::to_value(&claim).unwrap();
-        assert_eq!(json["pca_version"], 2);
+        assert_eq!(json["pca_version"], PCA_VERSION_CURRENT);
         assert!(
             json.get("taint_clean").is_none(),
-            "PCA v2 must not serialize the unearned taint-clean guarantee: {json}"
+            "PCA must not serialize the unearned taint-clean guarantee: {json}"
         );
     }
 
@@ -2615,7 +2747,7 @@ fn main() uses(io.read) {
     }
 
     #[test]
-    fn verify_pca_rejects_rehashed_v2_with_a_retired_taint_claim() {
+    fn verify_pca_rejects_rehashed_current_claim_with_a_retired_taint_claim() {
         let base = unique_dir("v2-retired-taint-claim");
         let bundle = build_evidence_bundle(
             accepted_untrusted_input_program(),
@@ -2630,7 +2762,7 @@ fn main() uses(io.read) {
         let pca_path = bundle.dir.join("pca.json");
         let mut poisoned: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&pca_path).unwrap()).unwrap();
-        assert_eq!(poisoned["pca_version"], 2);
+        assert_eq!(poisoned["pca_version"], PCA_VERSION_CURRENT);
         poisoned
             .as_object_mut()
             .unwrap()

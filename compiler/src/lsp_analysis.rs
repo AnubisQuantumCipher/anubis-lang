@@ -2,7 +2,9 @@
 
 use crate::doc::expr_to_src;
 use crate::frontend::{line_col, parse_source, parse_source_detailed, Item, Mode, AST};
-use crate::middle::{typecheck, SemanticDiagnostic, SolverCheck, SymbolicEngine, TypedIR};
+use crate::middle::{
+    solver_stream_refusals, typecheck, SemanticDiagnostic, SolverCheck, SymbolicEngine, TypedIR,
+};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,10 +74,8 @@ pub fn analyze_source(source: &str) -> (Vec<LspDiagnostic>, Option<TypedIR>, Opt
                 diags.push(semantic_to_lsp(source, d));
             }
             let checks = SymbolicEngine::check_obligations(&ir);
-            for c in checks {
-                if c.status == "FAIL" {
-                    diags.push(obligation_to_lsp(&c));
-                }
+            for c in solver_stream_refusals(&checks) {
+                diags.push(obligation_to_lsp(&c));
             }
             (diags, Some(ir), Some(ast))
         }
@@ -114,14 +114,15 @@ fn semantic_to_lsp(source: &str, d: &SemanticDiagnostic) -> LspDiagnostic {
 }
 
 fn obligation_to_lsp(c: &SolverCheck) -> LspDiagnostic {
+    let structured = crate::diagnostics::diagnostic_of(c);
     LspDiagnostic {
         line: 0,
         character: 0,
         end_line: 0,
         end_character: 1,
         severity: 1,
-        code: Some("ANUBIS_OBLIGATION".into()),
-        message: format!("{}: {} {}", c.name, c.status, c.detail),
+        code: Some(structured.code),
+        message: format!("{}: {} {}", c.name, c.status, structured.message),
     }
 }
 
@@ -244,6 +245,25 @@ fn word_at(source: &str, offset: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undecided_obligation_is_an_lsp_error_with_its_typed_code() {
+        let check = SolverCheck {
+            name: "wrap-safety:add".into(),
+            status: "UNKNOWN".into(),
+            detail: "solver did not decide".into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        assert!(crate::middle::solver_check_requires_refusal(&check));
+        let diagnostic = obligation_to_lsp(&check);
+        assert_eq!(diagnostic.severity, 1);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some("ANUBIS_ASSERTION_UNDECIDED")
+        );
+        assert!(diagnostic.message.contains("UNKNOWN"));
+    }
 
     #[test]
     fn diagnostics_on_type_error() {
