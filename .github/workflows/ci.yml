@@ -170,8 +170,30 @@ jobs:
       # instead of being one line inside the 29-gate summary.
       - name: Lean formal gate (162 theorems machine-checked)
         run: bash scripts/run_formal_gate.sh
+      - name: Check hosted failure identifier extractor
+        run: python3 -m unittest discover -s scripts/tests -p test_emit_hosted_failure_ids.py -v
       - name: Run host-verifiable gates with an explicit external VZ boundary
         run: bash scripts/audit_unified.sh --profile hosted --out out/ci_gate
+      # Failure identifiers are diagnostic only. The extractor reads the private gate
+      # tree but publishes no raw logs, diagnostics, source, or machine-local paths.
+      # It cannot substitute for the HOSTED_PASS attestation below.
+      - name: Create public failure identifiers
+        id: failure_ids
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf out/ci_failure_public
+          mkdir -p out/ci_failure_public
+          python3 scripts/emit_hosted_failure_ids.py
+      - name: Upload public failure identifiers
+        if: ${{ always() && steps.failure_ids.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-failure-identifiers
+          path: out/ci_failure_public/failure_ids.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Prepare minimized hosted report
         if: always()
         shell: bash
