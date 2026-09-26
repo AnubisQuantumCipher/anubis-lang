@@ -36,6 +36,11 @@ passes. The paired secret-field, whole-value, wrapper, secret-write, and
 computed-comparison egress controls are refused. This crosses the direct
 source walker, interprocedural egress summary and call boundary; a
 call-boundary-only exception is on HOLD. The full matrix was not rerun.
+The additional [factory and nested-write registration](evidence/D9_QUALIFIER_V3_REGISTRATION_2026-09-26/README.md)
+preserves a declared secret-field negative, its passing public sibling, a
+secret nested-write negative, and a still-refused valid clean nested write.
+Independent review held the scratch D9 v2 implementation for possible
+call-returned-field laundering and stale shapes; no such patch is integrated.
 
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate

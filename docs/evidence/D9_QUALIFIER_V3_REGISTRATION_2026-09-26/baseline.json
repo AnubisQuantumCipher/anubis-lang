@@ -1,0 +1,115 @@
+{
+  "binary_sha256": "98e8090a07716e4876c65422c368e373d92717456edc235f296d8b687f17aac0",
+  "cases": [
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_v3_factory_public_field_valid",
+      "source_sha256": "be9238d40aa6c2cc25f351523fdb2dd2c1f02975c1f4fe1a49b8ee6b29e43d47",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "location": null,
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "location": null,
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_v3_factory_secret_field_invalid",
+      "source_sha256": "d73f31b529ea64508ec4a49c145434f5c3f0a17429086467b6e85e0fdc564421",
+      "stderr_sha256": "315942140fc2edb8a8a92491a61e20af909d1fa39e718864ef8f2960d4182af0",
+      "stdout_sha256": "cf7e4e4e2571d8c66648eea2f42c31be7707acd364850200ca02298c61ffede7",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "location": null,
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_v3_nested_clean_public_write_valid",
+      "source_sha256": "ae8ca07b8685e96cd3b2fd4b4188db16da92c042656bee2afe7eb674b3e236d8",
+      "stderr_sha256": "ad555194ee96e24914bdee8d1277efd68ebabd09eb5c8b5fafd05b35b014db3e",
+      "stdout_sha256": "9537d15c64bbe4ef55578371083abd6913ede9bf48a65f228463ddc629f201cb",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "location": null,
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "location": null,
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_v3_nested_secret_public_write_invalid",
+      "source_sha256": "16bc78b03d56ac509015f66a6ea0d3bbf6c1f44a48cdd333af333ac62e9dbca2",
+      "stderr_sha256": "af48381f9a349c36955dc3f4f2eb46d1cd636fc99868c83cf04601f7cad16bfd",
+      "stdout_sha256": "558a6dcc76f0c8c546959a3935daae77530920c62fbd99227c63a2b7bd1551c4",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    }
+  ],
+  "source_commit": "fc72526b5477f6475d33adf3d86ad02a467b1046",
+  "source_tree": "7c671193777e5ee6f7f646b6fc9fc013dde01463"
+}

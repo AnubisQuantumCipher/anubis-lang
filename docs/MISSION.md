@@ -124,8 +124,12 @@ to checker/lowering and package admission; the valid transitive package still
 fails at `ANUBIS_DEP_PROOF_UNVERIFIED`. The D9 scratch v2 patch remains
 withheld after independent review found possible label laundering through
 uncertified call-returned structs and stale field shapes after nested writes.
-New matched witnesses require frozen baseline registration before its next
-implementation revision. The matrix
+Four matched [factory and nested-write witnesses](evidence/D9_QUALIFIER_V3_REGISTRATION_2026-09-26/README.md)
+are now frozen and source-bound at `fc72526b`: both REJECT controls receive
+typed security refusals, the factory public sibling passes, and the valid
+clean nested write is over-refused. The next executable step is independent
+review and lead-only testing of a revised D9 scratch patch against all frozen
+controls and the unchanged original corpus. The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
 the new fixed-path loader: production diagnostics still lack complete stable
 source locators. Preserve the old `history.tsv` and add compact event history
