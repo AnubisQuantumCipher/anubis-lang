@@ -1612,6 +1612,16 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-25 — ordinary lane: review of `1696925b`, second landing step (alias, `d61c33d8`).**
+    - The alias cluster (16 findings + a latent one): function values written in branches, loops,
+      value blocks and places, held in containers, forwarded by builtins or aliased to higher-order
+      functions now reach their applications; a round-35 main-binder leak closes with it.
+    - The whole-struct lane's closure-resolution cycle, which overflowed the checker's stack once
+      alias gave it loop-written closures, now ends in the analysis limit's refusal.
+    - Two valid self-referential closures reassigned in a loop are refused by that limit (a precision
+      defect, OR-ALIAS-SELFREF-LIMIT), and three capture-by-value leaks are registered open. Matrix at
+      d61c33d8: 1834 cases, 1695 PASS, 34 silent accepts, 97 wrong-class, 8 INVALID.
+
     **UPDATE 2026-09-25 — ordinary lane: review of `1696925b`, first landing step (`e7b56507`).**
     - Both regressions of 1696925b fixed (or-pattern arms in the return summary; a function ending in
       `push(xs, v);`), with their older siblings in every lane; 13 findings and 128 more programs

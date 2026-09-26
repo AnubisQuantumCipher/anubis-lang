@@ -66,8 +66,11 @@ matrix is the reference for open defects.
 
 See the last section of this file's history in git, and the next-dependency line below.
 
-**Next dependency (2026-09-25):** complete the ordinary-lane alias unit and its matrix,
-corpus and gate evidence; then close the whole-struct round-39 bands regression before
-merging the remaining ordinary summary/precision/performance and whole-struct designs.
-These are implementation dependencies within the full [requirement map](mission/REQUIREMENTS.md),
-not a narrower completion contract. PR #44 remains a draft integration stack.
+**Next dependency (2026-09-25, after d61c33d8):** close the whole-struct round-39 bands
+regression (R39B-F1a/F1b), then land round 39's boundary, fnret and loose units; in parallel,
+build the semantic-foundation analysis (mandate section 6: an information-flow interpreter that
+mirrors the runtime's value semantics and capture-by-snapshot closures) in shadow mode against the
+matrix, and the IFC-PC-EGRESS fix. Open decisions the owner delegated on 2026-09-25 are recorded in
+[DELEGATED_DECISIONS_2026-09-25.md](mission/DELEGATED_DECISIONS_2026-09-25.md). These are
+implementation dependencies within the full [requirement map](mission/REQUIREMENTS.md), not a
+narrower completion contract. PR #44 remains a draft integration stack.

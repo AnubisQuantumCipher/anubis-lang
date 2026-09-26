@@ -479,3 +479,33 @@ hold the regressions. Matrix at e7b56507: 1761 cases, 1632 PASS, 32 silent accep
 | PERF-NESTED-PARAM-FLOW | S3 | 1696925b: the parameter-flow closure walked statements nesting statements again per level (p5_scrut_10: 79.5 s) | `ro3y_perf_p5_scrut_10` | **fixed** e7b56507: shallow_param_flow (2.8 s) |
 | OR-PUSH-NAMED-USER-FN | S4 | documented: a user function named `push` is judged as any user call, by its arguments (as every pin judges one of another name) | `ro3x_push_va2` (wrong-class) | documented |
 | ORDRET3-REST | S1 | still open: the review's alias (15 leaks), summary (9 leaks), over-refusal (15) and cost (6) clusters | review of 1696925b | the next units |
+
+### Follow-up: d61c33d8 (review of 1696925b, landing step 2: alias; a whole-lane cycle bounded)
+
+The alias cluster of the review of 1696925b, the stack-overflow crash the alias candidate exposed
+in the whole-struct lane, and a stronger walker-completeness gate. Matrix at d61c33d8 (pin
+`anubis-ord3x2`): 1834 cases, 1695 PASS, 34 silent accepts (all `open_*`), 97 wrong-class, 8
+INVALID (limit refusals, below).
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| ORD-ALIAS | S1 | function values written in branches, loops, value blocks and places, held in containers, forwarded by builtins or aliased to higher-order functions never reached their applications (16 findings + latent p23) | stage-B `ro3_*` / `ro3x_alias_*` cases (64) | **fixed** d61c33d8 |
+| IFC-MAIN-BINDER | S1 | a main-scope binder keeping a closure (round 35; had no row) | `open_whole12_r35_r35i_2_l_mainbinder` | **fixed** d61c33d8 (closed by the alias join) |
+| CHK-WHOLE-SCOPE-CYCLE | S2 | the whole-struct lane's resolve_local → Env::closure → widen_with → reach → resolve_local cycle had no guard (widening starts a fresh seen set); with alias's loop-written closures the checker overflowed its stack (`anubis check` too, on 64 MiB) | `limit_recursive_closure_source`, `rv30_valid_n03`; test `closure_analysis_limit` | **fixed** d61c33d8: Frame::enter on the scope path, cut() in reach |
+| G19-SPAN-BORROW | S3 | a walker-completeness requirement could pass by matching a later sibling's call (`direct_local_consumer` did) | G19 poison tests | **fixed** d61c33d8: ScopedPattern (balanced-block scoping), per-consumer poisons |
+| OR-ALIAS-SELFREF-LIMIT | S3 | precision regression of alias: a self-referential closure reassigned in a loop (`c = \|z\| c(z) + 1`) is refused with ANUBIS_ANALYSIS_LIMIT; at runtime the new closure calls the OLD snapshot, so the program is not recursive | `rv30_valid_n02`, `rv30_valid_n03` (INVALID) | **open**: closes when the lane models captures by value |
+| FV-CAPTURE-BY-VALUE | S1 | the ordinary lane reads a closure's captures in the application scope, not by value at creation | `open_ord3_alias_defer_inner_capture`, `open_ord3_alias_defer_capture_by_value`, `open_ord3_alias_defer_shadowed_formal` | **open** |
+| OR-ALIAS-PUSH-INDEX | S4 | an exact index read counts closures in weak push slots (the price of the pop-then-push fix) | `ord3_alias_defer_push_index_overrefusal` (wrong-class) | documented |
+| OR-LOCAL-SHADOWS-FN | S4 | pre-existing (every pin): a local shadowing a printing user function is refused | `ord3_alias_defer_local_shadows_fn` (wrong-class) | documented |
+| PERF-ALIAS-LOOP-LAMBDA | S3 | alias: loop-carried lambda chains are slower (lam_60_14 8.9 s → about 20 s; lam_120_10 42 → 47 s) | `ordret3fix/alias/perf/` | open |
+| ORDRET3-REST | S1 | still open: the review's summary (9 leaks), over-refusal (15) and cost (6) clusters | review of 1696925b | the next units |
+
+### Decisions under the owner's delegation (2026-09-25)
+
+Recorded in [DELEGATED_DECISIONS_2026-09-25.md](DELEGATED_DECISIONS_2026-09-25.md), each reversible by
+the owner:
+
+| id | effect on this registry |
+|---|---|
+| IFC-PC-EGRESS | not a policy question any more: egress executed under a secret-decided condition is refused in Safe mode (a print under `if (k >> j) & 1 == 1` printed every bit of a secret on e7b56507); the row stays **open** until the fix lands in every lane |
+| L-SHADOW-1 | lexical shadowing is the intended rule, reached through a diagnostic in the current edition and an edition change with a migration; open |
