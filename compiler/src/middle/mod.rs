@@ -11378,9 +11378,70 @@ fn leave_pattern_contract_scope(
 /// SHADOW-AWARE: a nested `match` arm that REBINDS `name` keeps its own scope — its guard/body are left
 /// with `name` intact (the inner binding is a different value, renamed by its own arm recursion); its
 /// SCRUTINEE is still renamed (it is evaluated before the inner pattern binds, so `name` there is the
-/// OUTER binding). Mirrors EXACTLY the positions `discharge_calls_in_expr` descends, so every renamed
-/// reference is one the walker will encode; deferred forms (Block/Lambda/IfLet — not discharged) and
-/// leaves are cloned untouched.
+/// OUTER binding). Mirror the positions `discharge_calls_in_expr` actually descends,
+/// including value blocks and if-let expressions. A block let's initializer still
+/// reads the preceding binding; its own name shadows only subsequent statements.
+/// Lambda bodies and statement forms this walker does not discharge stay deferred.
+fn rename_binding_stmts(stmts: &[Stmt], name: &str, fresh: &str) -> (Vec<Stmt>, bool) {
+    let mut binding_visible = true;
+    let mut renamed = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        if !binding_visible {
+            renamed.push(stmt.clone());
+            continue;
+        }
+        let next = match stmt {
+            Stmt::Let {
+                name: bound,
+                ty,
+                init,
+                span,
+            } => Stmt::Let {
+                name: bound.clone(),
+                ty: ty.clone(),
+                init: rename_binding(init, name, fresh),
+                span: *span,
+            },
+            Stmt::LetPattern {
+                pattern,
+                init,
+                span,
+            } => Stmt::LetPattern {
+                pattern: pattern.clone(),
+                init: rename_binding(init, name, fresh),
+                span: *span,
+            },
+            Stmt::Assign { target, value } => Stmt::Assign {
+                target: rename_binding(target, name, fresh),
+                value: rename_binding(value, name, fresh),
+            },
+            Stmt::ExprStmt(expr) => Stmt::ExprStmt(rename_binding(expr, name, fresh)),
+            Stmt::If { cond, then, else_ } => Stmt::If {
+                cond: rename_binding(cond, name, fresh),
+                then: rename_binding_stmts(then, name, fresh).0,
+                else_: else_
+                    .as_ref()
+                    .map(|body| rename_binding_stmts(body, name, fresh).0),
+            },
+            // The value-position call walker does not descend the other
+            // statement forms. Their effects are accounted for separately
+            // by the enclosing block's conservative write invalidation.
+            _ => stmt.clone(),
+        };
+        renamed.push(next);
+        match stmt {
+            Stmt::Let { name: bound, .. } if bound == name => binding_visible = false,
+            Stmt::LetPattern { pattern, .. }
+                if pattern.bound_names().iter().any(|bound| bound == name) =>
+            {
+                binding_visible = false
+            }
+            _ => {}
+        }
+    }
+    (renamed, binding_visible)
+}
+
 fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
     let go = |x: &Expr| rename_binding(x, name, fresh);
     match e {
@@ -11498,9 +11559,38 @@ fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
                 .collect(),
             span: *span,
         },
-        // Leaves + deferred forms (Literal/StrLiteral/Symbolic/TaintSource/UnifiedBuffer/RawPtr/Block/
-        // Lambda/IfLet/Other and a non-matching Var): the walker never discharges inside them, so a
-        // clone is sound (renaming there would be dead, and IfLet/Lambda/Block may rebind `name`).
+        Expr::Block { stmts, tail } => {
+            let (stmts, binding_visible) = rename_binding_stmts(stmts, name, fresh);
+            Expr::Block {
+                stmts,
+                tail: tail.as_ref().map(|tail| {
+                    if binding_visible {
+                        Box::new(go(tail))
+                    } else {
+                        tail.clone()
+                    }
+                }),
+            }
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            span,
+        } => Expr::IfLet {
+            pattern: pattern.clone(),
+            scrutinee: Box::new(go(scrutinee)),
+            then: if pattern.bound_names().iter().any(|bound| bound == name) {
+                then.clone()
+            } else {
+                Box::new(go(then))
+            },
+            else_: Box::new(go(else_)),
+            span: *span,
+        },
+        // Leaves and deferred lambda bodies do not contain an immediately
+        // discharged reference to this binding.
         _ => e.clone(),
     }
 }
@@ -11648,11 +11738,149 @@ fn discharge_builtin_hof_requires(
     }
 }
 
+/// Only a current, typed Int ground fact can stand in for the scrutinee saved by
+/// the runtime before any match guard mutates the source binding. This is captured
+/// before a let-initializer's conservative embedded-write havoc. Never consult
+/// `symbolic_defs`: it also contains historical, no-longer-live definitions.
+fn saved_ground_int_match_scrutinee(
+    ctx: &SemanticContext,
+    assumptions: &[String],
+    init: &Expr,
+) -> Option<Expr> {
+    let Expr::Match { scrutinee, .. } = init else {
+        return None;
+    };
+    let Expr::Var(name) = scrutinee.as_ref() else {
+        return None;
+    };
+    if !ctx.solver_int_vars.contains(name)
+        || ctx.solver_float_vars.contains(name)
+        || ctx.solver_string_vars.contains(name)
+    {
+        return None;
+    }
+    let bits = smt_bv_const_u64(&exact_ground_binding_fact(assumptions, name)?)?;
+    Some(Expr::Literal((bits as i64).to_string()))
+}
+
+/// A deliberately small transfer function for a failed guard that certainly writes
+/// one outer Int binding. Both branches must return false; only the taken branch may
+/// assign, and its RHS must be an Int literal. Calls, aliases, casts, short-circuit
+/// writes, early exits, and other guards remain unknown.
+fn exact_failed_match_guard_int_write(guard: &Expr) -> Option<(&str, i64)> {
+    let Expr::If {
+        cond, then, else_, ..
+    } = guard
+    else {
+        return None;
+    };
+    if !matches!(cond.as_ref(), Expr::Literal(value) if value == "true") {
+        return None;
+    }
+    let Expr::Block {
+        stmts,
+        tail: Some(tail),
+    } = then.as_ref()
+    else {
+        return None;
+    };
+    if stmts.len() != 1 || !matches!(tail.as_ref(), Expr::Literal(value) if value == "false") {
+        return None;
+    }
+    let Stmt::Assign {
+        target: Expr::Var(name),
+        value: Expr::Literal(value),
+    } = &stmts[0]
+    else {
+        return None;
+    };
+    // A block with no statements is parsed directly as its tail expression.
+    let else_false = match else_.as_ref() {
+        Expr::Literal(value) => value == "false",
+        Expr::Block {
+            stmts: else_stmts,
+            tail: Some(else_tail),
+        } => {
+            else_stmts.is_empty()
+                && matches!(else_tail.as_ref(), Expr::Literal(value) if value == "false")
+        }
+        _ => false,
+    };
+    if !else_false {
+        return None;
+    }
+    Some((name, value.parse::<i64>().ok()?))
+}
+
+/// The call walker explores arms independently. A length-only truncation cannot
+/// restore facts deleted by a guard write, so save all solver membership and path
+/// facts needed by call obligations. Obligation output itself is deliberately not
+/// restored: every reachable guard/body call remains in the result.
+#[derive(Clone)]
+struct MatchCallState {
+    assumptions: Vec<String>,
+    active_guards: Vec<String>,
+    int_vars: BTreeSet<String>,
+    float_vars: BTreeSet<String>,
+    string_vars: BTreeSet<String>,
+    widths: BTreeMap<String, u32>,
+    shadowed_string_preds: BTreeSet<String>,
+}
+
+impl MatchCallState {
+    fn capture(ctx: &SemanticContext, assumptions: &[String]) -> Self {
+        Self {
+            assumptions: assumptions.to_vec(),
+            active_guards: ctx.active_branch_guards.clone(),
+            int_vars: ctx.solver_int_vars.clone(),
+            float_vars: ctx.solver_float_vars.clone(),
+            string_vars: ctx.solver_string_vars.clone(),
+            widths: ctx.symbolic_widths.clone(),
+            shadowed_string_preds: ctx.shadowed_string_preds.clone(),
+        }
+    }
+
+    fn restore(&self, ctx: &mut SemanticContext, assumptions: &mut Vec<String>) {
+        *assumptions = self.assumptions.clone();
+        ctx.active_branch_guards = self.active_guards.clone();
+        ctx.solver_int_vars = self.int_vars.clone();
+        ctx.solver_float_vars = self.float_vars.clone();
+        ctx.solver_string_vars = self.string_vars.clone();
+        ctx.symbolic_widths = self.widths.clone();
+        ctx.shadowed_string_preds = self.shadowed_string_preds.clone();
+    }
+}
+
+/// A write invalidates both the solver premises and their obligation provenance.
+fn invalidate_match_call_binding(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    name: &str,
+) {
+    invalidate_binding_facts(ctx, assumptions, name);
+    let symbols = [smt_var(name), seq_arr_smt(name), seq_len_smt(name)];
+    ctx.active_branch_guards.retain(|fact| {
+        let mut vars = BTreeSet::new();
+        collect_vars_from_smt(fact, &mut vars);
+        symbols.iter().all(|symbol| !vars.contains(symbol))
+    });
+}
+
 fn discharge_calls_in_expr(
     ctx: &mut SemanticContext,
     assumptions: &mut Vec<String>,
     scope: &BTreeMap<String, ScopeBinding>,
     expr: &Expr,
+) {
+    discharge_calls_in_expr_with_saved_match(ctx, assumptions, scope, expr, None);
+}
+
+fn discharge_calls_in_expr_with_saved_match(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    expr: &Expr,
+    saved_match_scrutinee: Option<&Expr>,
 ) {
     // Out of stack or memory: the request is refused (`analysis_limit`).
     if analysis_limit::cut() {
@@ -11833,28 +12061,62 @@ fn discharge_calls_in_expr(
             // A guarded LITERAL arm (non-match = pattern-false OR guard-false), a binding-guarded arm, and a
             // refutable pattern's non-match (unmodeled) yield no single fact — they contribute nothing (sound:
             // fewer premises).
+            // Runtime evaluates the scrutinee exactly once, before every guard. A captured
+            // ground Int remains that saved value even after a guard assigns its source name.
+            let saved_value = saved_match_scrutinee.unwrap_or(scrutinee);
+            let match_entry = MatchCallState::capture(ctx, assumptions);
+            let mut fallthrough = match_entry.clone();
+            let mut scrutinee_fact_safe = scrutinee_writes.is_empty();
+            let mut scrutinee_vars = BTreeSet::new();
+            collect_expr_vars(scrutinee, &mut scrutinee_vars);
             let mut prior_negated: Vec<Expr> = Vec::new();
+            let mut fallthrough_reachability_unknown = false;
+            let mut guard_write_seen = false;
             let mut terminal_arm_seen = false;
             for arm in arms {
+                fallthrough.restore(ctx, assumptions);
                 // The runtime tests arms in order. An exact constructed enum payload miss
                 // cannot evaluate either this guard or this body; a preceding unguarded
                 // definite match makes every following arm equally unreachable. The
                 // narrow exact matcher returns false for unknown payloads, leaving their
                 // contract obligations intact.
-                if terminal_arm_seen || match_position_literal_misses(scrutinee, &arm.pattern) {
+                if terminal_arm_seen || match_position_literal_misses(saved_value, &arm.pattern) {
                     continue;
                 }
-                let exact_guard = arm.guard.as_ref().and_then(match_guard_exact_bool);
-                let snap = assumptions.len();
-                let snap_g = ctx.active_branch_guards.len();
+                let obligation_mark = ctx.solver_obligations.len();
+                let prior_reachability_unknown = fallthrough_reachability_unknown;
+                let mut guard_writes = BTreeSet::new();
+                if let Some(guard) = &arm.guard {
+                    expr_assigned_roots(guard, &mut guard_writes);
+                }
+                guard_write_seen |= !guard_writes.is_empty();
+                // Or-patterns can evaluate their guard after different alternatives;
+                // a pattern binder may shadow the outer written name. Neither is in
+                // this transfer's modeled subset.
+                let exact_transfer = arm.guard.as_ref().and_then(|guard| {
+                    let (name, value) = exact_failed_match_guard_int_write(guard)?;
+                    (scrutinee_fact_safe
+                        && !matches!(arm.pattern, crate::frontend::Pattern::Or(_))
+                        && arm.pattern.bound_names().is_empty()
+                        && match_position_definitely_matches(saved_value, &arm.pattern)
+                        && guard_writes.len() == 1
+                        && guard_writes.contains(name))
+                    .then_some((name, value))
+                });
+                // The narrow guard shape returns false even when its write is
+                // to a pattern binder or its Or alternative cannot be modeled.
+                // That control-flow fact is independent of transferring the write.
+                let exact_guard = arm.guard.as_ref().and_then(|guard| {
+                    match_guard_exact_bool(guard)
+                        .or_else(|| exact_failed_match_guard_int_write(guard).map(|_| false))
+                });
                 for f in &prior_negated {
                     push_branch_path_condition(ctx, assumptions, f, true);
                 }
                 // A write while evaluating the scrutinee means its source expression no
                 // longer denotes the saved match value. Do not use it as a path premise.
-                let this_fact = scrutinee_writes
-                    .is_empty()
-                    .then(|| match_arm_pattern_fact(scrutinee, &arm.pattern))
+                let this_fact = (scrutinee_fact_safe && scrutinee_writes.is_empty())
+                    .then(|| match_arm_pattern_fact(saved_value, &arm.pattern))
                     .flatten();
                 if let Some(fact) = &this_fact {
                     push_branch_path_condition(ctx, assumptions, fact, false);
@@ -11894,8 +12156,8 @@ fn discharge_calls_in_expr(
                     let fresh = ctx.fresh_solver_symbol("mbind");
                     ctx.solver_int_vars.insert(fresh.clone());
                     ctx.symbolic_widths.insert(fresh.clone(), 64);
-                    if is_int_modelable(scrutinee, &ctx.solver_int_vars) {
-                        if let Some(s) = expr_to_smt_value(scrutinee, &ctx.symbolic_widths) {
+                    if is_int_modelable(saved_value, &ctx.solver_int_vars) {
+                        if let Some(s) = expr_to_smt_value(saved_value, &ctx.symbolic_widths) {
                             assumptions.push(format!("(= {} {})", smt_var(&fresh), s));
                         }
                     }
@@ -11965,17 +12227,50 @@ fn discharge_calls_in_expr(
                     Some((g, b)) => (g.as_ref(), b),
                     None => (arm.guard.as_ref(), &arm.body),
                 };
+                let guard_condition_modeled = eff_guard.is_none_or(|guard| {
+                    guard_writes.is_empty() && path_condition_smt(ctx, guard).is_some()
+                });
                 if let Some(guard) = eff_guard {
                     discharge_calls_in_expr(ctx, assumptions, scope, guard);
-                    push_branch_path_condition(ctx, assumptions, guard, false);
+                    // A condition mentioning a binding it writes is a PRE-write
+                    // expression; asserting it after the write would be stale.
+                    if guard_writes.is_empty() {
+                        push_branch_path_condition(ctx, assumptions, guard, false);
+                    }
                 }
+                // Guard calls execute when the pattern matches even when the
+                // guard's result is unknown. Only BODY calls depend on the guard
+                // succeeding; an invalid guard call must stay DISPROVED.
+                let body_obligation_mark = ctx.solver_obligations.len();
                 // A known-false guard is evaluated, including its calls, but its body is
                 // not. This also applies to boolean combinations such as `g() && false`.
                 if exact_guard != Some(false) {
                     discharge_calls_in_expr(ctx, assumptions, scope, eff_body);
                 }
-                assumptions.truncate(snap);
-                ctx.active_branch_guards.truncate(snap_g);
+                let pattern_reachability_unknown =
+                    !match_position_definitely_matches(saved_value, &arm.pattern)
+                        && this_fact.is_none();
+                let guard_reachability_unknown =
+                    arm.guard.is_some() && exact_guard.is_none() && !guard_condition_modeled;
+                // Keep the existing no-write lane's verdicts stable. The new
+                // reachability classification applies to write-sensitive paths,
+                // where a stale source value could otherwise claim a disproof.
+                let unknown_start = if guard_write_seen
+                    && (prior_reachability_unknown || pattern_reachability_unknown)
+                {
+                    obligation_mark
+                } else if guard_write_seen && guard_reachability_unknown {
+                    body_obligation_mark
+                } else {
+                    ctx.solver_obligations.len()
+                };
+                for obligation in &mut ctx.solver_obligations[unknown_start..] {
+                    if obligation.name.starts_with("requires@") {
+                        obligation
+                            .over_approx_reasons
+                            .insert(OverApproxReason::BranchReachability);
+                    }
+                }
                 for fresh in &fresh_syms {
                     // A fresh symbol lives in exactly ONE lane (int XOR float XOR string) and its
                     // `<ctr>mbind` name is globally unique, so removing from all three is exact/leak-free.
@@ -11990,6 +12285,7 @@ fn discharge_calls_in_expr(
                 // denotes a DIFFERENT thing (or an enclosing shadowed var) in a later arm — pushing `!G`
                 // there could assert a wrong fact. Fail-closed: a binding-guarded arm contributes nothing.
                 let wildcard_guarded = matches!(arm.pattern, crate::frontend::Pattern::Wildcard);
+                let pattern_fact_missing = this_fact.is_none();
                 match (&arm.guard, wildcard_guarded) {
                     // Guardless literal/or-literal → later arms have `scrutinee != lit`.
                     (None, _) => {
@@ -11998,17 +12294,82 @@ fn discharge_calls_in_expr(
                         }
                     }
                     // Wildcard + guarded → the pattern always matches, so non-match ⟺ `!guard`.
-                    (Some(guard), true) => prior_negated.push(guard.clone()),
-                    // A binding-guarded, or guarded-literal, or refutable arm: no sound single fact.
-                    (Some(_), false) => {}
+                    (Some(guard), true) if guard_writes.is_empty() => {
+                        prior_negated.push(guard.clone())
+                    }
+                    // A write-bearing, binding-guarded, guarded-literal, or refutable arm
+                    // contributes no stable single fallthrough fact.
+                    (Some(_), _) => {}
                 }
                 if exact_guard != Some(false)
                     && (arm.guard.is_none() || exact_guard == Some(true))
                     && (match_position_irrefutable(&arm.pattern)
-                        || match_position_definitely_matches(scrutinee, &arm.pattern))
+                        || match_position_definitely_matches(saved_value, &arm.pattern))
                 {
                     terminal_arm_seen = true;
                 }
+                if !terminal_arm_seen {
+                    // The failed guard runs only on a matching pattern. A write
+                    // may affect the next arm, while the current body's writes
+                    // cannot: the body runs only if this arm terminates selection.
+                    // Start from the pre-arm fallthrough state to exclude all
+                    // pattern, binder, guard, and body-only premises.
+                    fallthrough.restore(ctx, assumptions);
+                    let binders: BTreeSet<String> = arm.pattern.bound_names().into_iter().collect();
+                    for name in guard_writes.difference(&binders) {
+                        invalidate_match_call_binding(ctx, assumptions, name);
+                    }
+                    if let Some((name, value)) = exact_transfer {
+                        let literal = Expr::Literal(value.to_string());
+                        if let Some(encoded) = expr_to_smt_value(&literal, &ctx.symbolic_widths) {
+                            ctx.solver_int_vars.insert(name.to_string());
+                            ctx.symbolic_widths.insert(name.to_string(), 64);
+                            assumptions.push(format!("(= {} {encoded})", smt_var(name)));
+                        }
+                    }
+                    fallthrough = MatchCallState::capture(ctx, assumptions);
+                    if !guard_writes.is_empty() {
+                        prior_negated.retain(|fact| {
+                            let mut vars = BTreeSet::new();
+                            collect_expr_vars(fact, &mut vars);
+                            vars.is_disjoint(&guard_writes)
+                        });
+                        if saved_match_scrutinee.is_none()
+                            && !scrutinee_vars.is_disjoint(&guard_writes)
+                        {
+                            scrutinee_fact_safe = false;
+                        }
+                    }
+                    // A failed exact-false guard always falls through. A
+                    // modelable wildcard guard has a precise negated path fact.
+                    // Other guarded or unmodeled pattern paths may reach the
+                    // next arm, but a candidate violation there is undecided.
+                    if exact_guard != Some(false) {
+                        let wildcard = matches!(arm.pattern, crate::frontend::Pattern::Wildcard);
+                        if arm.guard.is_some() {
+                            // A refutable pattern plus a guard has a disjunctive
+                            // fallthrough. A wildcard's modeled, write-free
+                            // guard alone has an exact negated path fact.
+                            if !wildcard || !guard_writes.is_empty() || !guard_condition_modeled {
+                                fallthrough_reachability_unknown = true;
+                            }
+                        } else if pattern_fact_missing
+                            && !match_position_definitely_matches(saved_value, &arm.pattern)
+                        {
+                            fallthrough_reachability_unknown = true;
+                        }
+                    }
+                }
+            }
+            // A match body's effects are conditional, so the caller may use no
+            // one-arm fact after the expression. Restore entry state and havoc
+            // every binding an arm may write. The let initializer already does
+            // this, but nested/direct match expressions need the same boundary.
+            match_entry.restore(ctx, assumptions);
+            let mut match_writes = BTreeSet::new();
+            expr_assigned_roots(expr, &mut match_writes);
+            for name in &match_writes {
+                invalidate_match_call_binding(ctx, assumptions, name);
             }
         }
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
@@ -13967,6 +14328,8 @@ fn analyze_stmts(
                 // A `let` INITIALIZER can hide a write to an OUTER variable in an `if`/`match`/block
                 // expression (`let z = if c { y = 100; 0 } else { 0 };`). That write escapes the
                 // statement-level frame sweep, so invalidate the written variables' stale facts here.
+                let saved_match_scrutinee =
+                    saved_ground_int_match_scrutinee(ctx, assumptions, init);
                 invalidate_embedded_writes(ctx, assumptions, init);
                 // NOTE: a symbolic input's `u8`/`u32` type annotation is NOT turned into a
                 // [0, 2^w-1] range assumption — the annotation is runtime-inert, so assuming a range
@@ -13979,7 +14342,13 @@ fn analyze_stmts(
                 // handled by the B2 block below (which also binds the ensures), so it's excluded here to
                 // avoid a double obligation.
                 if !matches!(init, Expr::Call { .. }) {
-                    discharge_calls_in_expr(ctx, assumptions, scope, init);
+                    discharge_calls_in_expr_with_saved_match(
+                        ctx,
+                        assumptions,
+                        scope,
+                        init,
+                        saved_match_scrutinee.as_ref(),
+                    );
                 }
                 // B2 composition: when the initializer calls a CONTRACTED function, specialize the
                 // callee's contract to this call — ASSERT its precondition (the caller must satisfy
