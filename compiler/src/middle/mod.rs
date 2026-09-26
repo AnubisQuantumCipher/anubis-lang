@@ -139,6 +139,15 @@ pub struct SolverCheck {
     pub smt: String,
 }
 
+/// In-process origin for a solver row. This is assigned while visiting the
+/// final TypedIR inventory, not reconstructed from display names or from the
+/// emitted stream. It is not a persistent obligation ID or proof certificate.
+#[derive(Debug)]
+pub(crate) struct IssuedSolverCheck {
+    pub(crate) source_ordinal: Option<usize>,
+    pub(crate) check: SolverCheck,
+}
+
 /// Interpret the wire status once, without accepting a future or malformed value by default.
 /// `PASS` is a discharge for this check, not a claim that its proof was retained or that a
 /// program with no obligations has a proof. Certificate coverage records those distinctions.
@@ -192,11 +201,16 @@ fn reserves_solver_stream_integrity_identity(check: &SolverCheck) -> bool {
 /// A compiler-owned stream failure, distinct from any solver verdict about an
 /// obligation. The row index refers to the original wire stream, if present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SolverStreamIntegrityError {
     Empty,
     MalformedNoObligations,
     SyntheticIntegrityRow { index: usize },
     InvalidStatus { index: usize },
+    UnexpectedNoObligations,
+    InventoryCountMismatch { expected: usize, actual: usize },
+    InventoryOriginMismatch { index: usize, actual: Option<usize> },
+    InventoryNameMismatch { index: usize },
 }
 
 impl std::fmt::Display for SolverStreamIntegrityError {
@@ -213,6 +227,24 @@ impl std::fmt::Display for SolverStreamIntegrityError {
             Self::InvalidStatus { index } => {
                 write!(f, "solver emitted an invalid status at row {index}")
             }
+            Self::UnexpectedNoObligations => {
+                write!(
+                    f,
+                    "solver emitted a no-obligations marker for a nonempty inventory"
+                )
+            }
+            Self::InventoryCountMismatch { expected, actual } => write!(
+                f,
+                "solver emitted {actual} rows for {expected} source obligations"
+            ),
+            Self::InventoryOriginMismatch { index, actual } => write!(
+                f,
+                "solver row {index} has source origin {actual:?} rather than its inventory position"
+            ),
+            Self::InventoryNameMismatch { index } => write!(
+                f,
+                "solver row {index} has a different display name from its source obligation"
+            ),
         }
     }
 }
@@ -20802,14 +20834,37 @@ impl SymbolicEngine {
     }
 
     pub fn check_obligations(ir: &TypedIR) -> Vec<SolverCheck> {
+        Self::check_obligations_with(ir, |_, check| check)
+    }
+
+    /// Carry an internal source origin through solver execution for consumers
+    /// that compare the emitted stream to the final TypedIR inventory. Public
+    /// SolverCheck serialization remains unchanged.
+    pub(crate) fn check_obligations_with_origins(ir: &TypedIR) -> Vec<IssuedSolverCheck> {
+        Self::check_obligations_with(ir, |source_ordinal, check| IssuedSolverCheck {
+            source_ordinal,
+            check,
+        })
+    }
+
+    // Keep a single solver producer and allocate only the result vector used
+    // by each caller. The origin is assigned while visiting the source item;
+    // it cannot be reconstructed by enumerating finished check rows.
+    fn check_obligations_with<T>(
+        ir: &TypedIR,
+        mut issue: impl FnMut(Option<usize>, SolverCheck) -> T,
+    ) -> Vec<T> {
         if ir.solver_obligations.is_empty() {
-            return vec![SolverCheck {
-                name: "solver:no-obligations".into(),
-                status: "PASS".into(),
-                detail: NO_OBLIGATIONS_DETAIL.into(),
-                model: None,
-                smt: "(check-sat)".into(),
-            }];
+            return vec![issue(
+                None,
+                SolverCheck {
+                    name: "solver:no-obligations".into(),
+                    status: "PASS".into(),
+                    detail: NO_OBLIGATIONS_DETAIL.into(),
+                    model: None,
+                    smt: "(check-sat)".into(),
+                },
+            )];
         }
 
         let overapprox = |check: SolverCheck, obl: &SolverObligation| -> SolverCheck {
@@ -20839,18 +20894,22 @@ impl SymbolicEngine {
         };
         ir.solver_obligations
             .iter()
-            .map(|obl| {
+            .enumerate()
+            .map(|(source_ordinal, obl)| {
                 // An obligation the checker could not encode is refused as undecided here, before any
                 // SMT is built, so neither z3 nor the native lane decides it and the two cannot
                 // disagree about it. The contract vacuity check below never sees it.
                 if obl.name.starts_with(UNRESOLVED_REQUIRES_PREFIX) {
-                    return SolverCheck {
-                        name: obl.name.clone(),
-                        status: "FAIL".into(),
-                        detail: UNRESOLVED_PRECONDITION_DETAIL.into(),
-                        model: None,
-                        smt: unresolved_obligation_smt_comment(obl),
-                    };
+                    return issue(
+                        Some(source_ordinal),
+                        SolverCheck {
+                            name: obl.name.clone(),
+                            status: "FAIL".into(),
+                            detail: UNRESOLVED_PRECONDITION_DETAIL.into(),
+                            model: None,
+                            smt: unresolved_obligation_smt_comment(obl),
+                        },
+                    );
                 }
                 // Faithful complete smt with defs from ir + obligation
                 let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
@@ -20924,7 +20983,7 @@ impl SymbolicEngine {
                 if solver_outcome(&check) == SolverOutcome::Unknown {
                     check.model = None;
                 }
-                overapprox(check, obl)
+                issue(Some(source_ordinal), overapprox(check, obl))
             })
             .collect()
     }

@@ -353,6 +353,79 @@ fn check_captured_solver_stream(
     }
 }
 
+fn check_captured_solver_inventory(
+    obligations: &[crate::middle::SolverObligation],
+    issued: Vec<crate::middle::IssuedSolverCheck>,
+) -> Result<(), CapturedSafeCheckFailure> {
+    use crate::middle::{
+        is_no_obligations_sentinel, validate_solver_stream, SolverStreamIntegrityError,
+    };
+
+    let (origins, checks): (Vec<_>, Vec<_>) = issued
+        .into_iter()
+        .map(|issued| (issued.source_ordinal, issued.check))
+        .unzip();
+    let invalid = |issue| CapturedSafeCheckFailure::SolverStreamInvalid {
+        checks: checks.clone(),
+        issue,
+    };
+    validate_solver_stream(&checks).map_err(&invalid)?;
+
+    if obligations.is_empty() {
+        if !is_no_obligations_sentinel(&checks) {
+            return Err(invalid(
+                SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 0,
+                    actual: checks.len(),
+                },
+            ));
+        }
+        if origins[0].is_some() {
+            return Err(invalid(
+                SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 0,
+                    actual: origins[0],
+                },
+            ));
+        }
+    } else {
+        if is_no_obligations_sentinel(&checks) {
+            return Err(invalid(SolverStreamIntegrityError::UnexpectedNoObligations));
+        }
+        if checks.len() != obligations.len() {
+            return Err(invalid(
+                SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: obligations.len(),
+                    actual: checks.len(),
+                },
+            ));
+        }
+        for (index, ((origin, check), obligation)) in origins
+            .iter()
+            .zip(checks.iter())
+            .zip(obligations.iter())
+            .enumerate()
+        {
+            if *origin != Some(index) {
+                return Err(invalid(
+                    SolverStreamIntegrityError::InventoryOriginMismatch {
+                        index,
+                        actual: *origin,
+                    },
+                ));
+            }
+            if check.name != obligation.name {
+                return Err(invalid(SolverStreamIntegrityError::InventoryNameMismatch {
+                    index,
+                }));
+            }
+        }
+    }
+    // Shape and source inventory are valid. A genuine FAIL or UNKNOWN still
+    // belongs to the obligation-refusal path, not an inventory error.
+    check_captured_solver_stream(checks)
+}
+
 impl PreparedCapturedProject {
     /// Borrow the compilation identity without allowing a caller to replace the
     /// captured graph or the AST that is checked and lowered with it.
@@ -407,8 +480,8 @@ impl PreparedCapturedProject {
         let typed = typecheck_ex_detailed(self.ast.clone(), Mode::Safe, false)
             .map_err(CapturedSafeCheckFailure::Typecheck)?;
         let tainted = TaintPass::apply(typed);
-        let checks = SymbolicEngine::check_obligations(&tainted);
-        check_captured_solver_stream(checks)?;
+        let issued = SymbolicEngine::check_obligations_with_origins(&tainted);
+        check_captured_solver_inventory(&tainted.solver_obligations, issued)?;
         let rust_source = crate::backends::run::lower_program_to_rust_with_mono(
             &self.ast.items,
             false,
@@ -1164,6 +1237,276 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn captured_solver_inventory_rejects_missing_or_replaced_rows_with_duplicate_names() {
+        use crate::middle::{
+            IssuedSolverCheck, SolverCheck, SolverObligation, SolverStreamIntegrityError,
+        };
+
+        let obligation = |name: &str| SolverObligation {
+            name: name.into(),
+            assumptions: Vec::new(),
+            assertion: "true".into(),
+            vars: Vec::new(),
+            strings: false,
+            guard_assumptions: Vec::new(),
+            over_approx_reasons: std::collections::BTreeSet::new(),
+        };
+        let check = |name: &str, status: &str| SolverCheck {
+            name: name.into(),
+            status: status.into(),
+            detail: "synthetic inventory control".into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        let issued = |origin, check| IssuedSolverCheck {
+            source_ordinal: origin,
+            check,
+        };
+        let expected = [obligation("assert:same"), obligation("assert:same")];
+
+        assert!(check_captured_solver_inventory(
+            &expected,
+            vec![
+                issued(Some(0), check("assert:same", "PASS")),
+                issued(Some(1), check("assert:same", "PASS")),
+            ],
+        )
+        .is_ok());
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![issued(Some(0), check("assert:same", "PASS"))],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 2,
+                    actual: 1,
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![
+                    issued(Some(0), check("assert:same", "PASS")),
+                    issued(Some(1), check("assert:same", "PASS")),
+                    issued(Some(2), check("assert:same", "PASS")),
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 2,
+                    actual: 3,
+                },
+                ..
+            })
+        ));
+        // A count-plus-display-name check would accept this dropped-and-copied row.
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![
+                    issued(Some(0), check("assert:same", "PASS")),
+                    issued(Some(0), check("assert:same", "PASS")),
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 1,
+                    actual: Some(0),
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![
+                    issued(Some(1), check("assert:same", "PASS")),
+                    issued(Some(0), check("assert:same", "PASS")),
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 0,
+                    actual: Some(1),
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &[obligation("assert:expected")],
+                vec![issued(Some(0), check("assert:other", "PASS"))],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryNameMismatch { index: 0 },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn captured_solver_inventory_requires_contextual_sentinel_and_preserves_refusals() {
+        use crate::middle::{
+            IssuedSolverCheck, SolverCheck, SolverObligation, SolverStreamIntegrityError,
+        };
+
+        let obligation = SolverObligation {
+            name: "assert:probe".into(),
+            assumptions: Vec::new(),
+            assertion: "true".into(),
+            vars: Vec::new(),
+            strings: false,
+            guard_assumptions: Vec::new(),
+            over_approx_reasons: std::collections::BTreeSet::new(),
+        };
+        let check = |status: &str, detail: &str| SolverCheck {
+            name: obligation.name.clone(),
+            status: status.into(),
+            detail: detail.into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        let issued = |origin, check| IssuedSolverCheck {
+            source_ordinal: origin,
+            check,
+        };
+        let sentinel = SolverCheck {
+            name: "solver:no-obligations".into(),
+            status: "PASS".into(),
+            detail: crate::middle::NO_OBLIGATIONS_DETAIL.into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+
+        assert!(check_captured_solver_inventory(&[], vec![issued(None, sentinel.clone())]).is_ok());
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![issued(None, sentinel.clone())]
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::UnexpectedNoObligations,
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(&[], vec![issued(Some(0), sentinel.clone())]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 0,
+                    actual: Some(0),
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(&[], vec![issued(Some(0), check("PASS", "proved"))]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 0,
+                    actual: 1,
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![
+                    issued(None, sentinel),
+                    issued(Some(0), check("PASS", "proved"))
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::MalformedNoObligations,
+                ..
+            })
+        ));
+
+        for status in ["FAIL", "UNKNOWN"] {
+            assert!(matches!(
+                check_captured_solver_inventory(
+                    std::slice::from_ref(&obligation),
+                    vec![issued(Some(0), check(status, "synthetic refusal"))],
+                ),
+                Err(CapturedSafeCheckFailure::SolverRefused { refusals, .. })
+                    if refusals[0].status == status
+            ));
+        }
+        let environment = check("FAIL", "z3 unavailable: synthetic control");
+        assert_eq!(
+            crate::middle::refusal_locus(&environment),
+            crate::middle::RefusalLocus::Environment
+        );
+        assert_eq!(
+            crate::middle::classify_assertion_fail(&environment),
+            crate::middle::AssertionFailKind::Other
+        );
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![issued(Some(0), environment)],
+            ),
+            Err(CapturedSafeCheckFailure::SolverRefused { .. })
+        ));
+        let unencoded = SolverObligation {
+            name: "requires-unresolved@probe".into(),
+            ..obligation.clone()
+        };
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&unencoded),
+                vec![issued(
+                    Some(0),
+                    SolverCheck {
+                        name: unencoded.name.clone(),
+                        status: "FAIL".into(),
+                        detail: crate::middle::UNRESOLVED_PRECONDITION_DETAIL.into(),
+                        model: None,
+                        smt: "; not encoded\n".into(),
+                    },
+                )],
+            ),
+            Err(CapturedSafeCheckFailure::SolverRefused { .. })
+        ));
+    }
+
+    #[test]
+    fn captured_solver_inventory_keeps_a_valid_safe_contract_call() {
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"fn g(x: u32) requires(x > 0) {} fn main() { g(5); }",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.check_and_lower_safe_rust().is_ok());
+
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"fn g(x: u32) requires(x > 0) {} fn main() { g(0); }",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        match prepared.check_and_lower_safe_rust() {
+            Err(CapturedSafeCheckFailure::SolverRefused { checks, refusals }) => {
+                assert!(!checks.is_empty());
+                assert!(refusals.iter().any(|check| {
+                    check.name.starts_with("requires@")
+                        && crate::middle::solver_outcome(check)
+                            == crate::middle::SolverOutcome::Fail
+                        && crate::middle::classify_assertion_fail(check)
+                            == crate::middle::AssertionFailKind::Disproved
+                        && crate::middle::counterexample_was_replayed(check)
+                }));
+            }
+            other => {
+                panic!("violated Safe call must reach a checked obligation refusal: {other:?}")
+            }
+        }
     }
 
     #[test]
