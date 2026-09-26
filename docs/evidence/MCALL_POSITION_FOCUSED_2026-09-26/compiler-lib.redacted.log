@@ -1,0 +1,94 @@
+
+running 912 tests
+....................................................................................... 87/912
+.....................test backends::run::run_tests::golden_program_examples has been running for over 60 seconds
+....test backends::run::run_tests::golden_tour_programs has been running for over 60 seconds
+............................test backends::run::run_tests::integer_casts_and_wide_literals has been running for over 60 seconds
+.................................. 174/912
+....................................................................................... 261/912
+....................................................................................... 348/912
+....................................................................................... 435/912
+....................................................................................... 522/912
+.........................................................Initialized empty Git repository in <HOME>/.cache/anubis-item21/tmp/.tmpdiQDM4/math_repo/.git/
+..[main (root-commit) 7c7afad] init
+ 54 files changed, 1304 insertions(+)
+ create mode 100644 Anubis.toml
+ create mode 100644 evidence/MANIFEST.sha256
+ create mode 100644 evidence/analysis/proofs.json
+ create mode 100644 evidence/analysis/proofs/obligation_0000.smt2
+ create mode 100644 evidence/analysis/solver.smt2
+ create mode 100644 evidence/analysis/solver_replay.json
+ create mode 100644 evidence/bounty-report.md
+ create mode 100644 evidence/build.log
+ create mode 100644 evidence/checks.sarif
+ create mode 100644 evidence/confinement_manifest.json
+ create mode 100644 evidence/declassify_audit.json
+ create mode 100644 evidence/entitlement_profile.json
+ create mode 100644 evidence/environment.json
+ create mode 100644 evidence/evidence.json
+ create mode 100644 evidence/hir.json
+ create mode 100644 evidence/manifest.json
+ create mode 100644 evidence/mir.json
+ create mode 100644 evidence/mono_specializations.json
+ create mode 100644 evidence/pca.json
+ create mode 100644 evidence/pca.sig
+ create mode 100644 evidence/program.entitlements
+ create mode 100644 evidence/solver.json
+ create mode 100644 evidence/source-tree.json
+ create mode 100644 evidence/source.anubis
+ create mode 100644 evidence/summaries.json
+ create mode 100644 evidence/taint-traces.json
+ create mode 100755 evidence/validate.sh
+ create mode 100644 out/evidence-20260926-091506-safe/MANIFEST.sha256
+ create mode 100644 out/evidence-20260926-091506-safe/analysis/proofs.json
+ create mode 100644 out/evidence-20260926-091506-safe/analysis/proofs/obligation_0000.smt2
+ create mode 100644 out/evidence-20260926-091506-safe/analysis/solver.smt2
+ create mode 100644 out/evidence-20260926-091506-safe/analysis/solver_replay.json
+ create mode 100644 out/evidence-20260926-091506-safe/bounty-report.md
+ create mode 100644 out/evidence-20260926-091506-safe/build.log
+ create mode 100644 out/evidence-20260926-091506-safe/checks.sarif
+ create mode 100644 out/evidence-20260926-091506-safe/confinement_manifest.json
+ create mode 100644 out/evidence-20260926-091506-safe/declassify_audit.json
+ create mode 100644 out/evidence-20260926-091506-safe/entitlement_profile.json
+ create mode 100644 out/evidence-20260926-091506-safe/environment.json
+ create mode 100644 out/evidence-20260926-091506-safe/evidence.json
+ create mode 100644 out/evidence-20260926-091506-safe/hir.json
+ create mode 100644 out/evidence-20260926-091506-safe/manifest.json
+ create mode 100644 out/evidence-20260926-091506-safe/mir.json
+ create mode 100644 out/evidence-20260926-091506-safe/mono_specializations.json
+ create mode 100644 out/evidence-20260926-091506-safe/pca.json
+ create mode 100644 out/evidence-20260926-091506-safe/pca.sig
+ create mode 100644 out/evidence-20260926-091506-safe/program.entitlements
+ create mode 100644 out/evidence-20260926-091506-safe/solver.json
+ create mode 100644 out/evidence-20260926-091506-safe/source-tree.json
+ create mode 100644 out/evidence-20260926-091506-safe/source.anubis
+ create mode 100644 out/evidence-20260926-091506-safe/summaries.json
+ create mode 100644 out/evidence-20260926-091506-safe/taint-traces.json
+ create mode 100755 out/evidence-20260926-091506-safe/validate.sh
+ create mode 100644 src/lib.anb
+Cloning into '<HOME>/.cache/anubis-item21/tmp/anubis-git-fetch/math/7c7afad1586f794eda54b1a7f64492ae8cfef371'...
+Note: switching to '7c7afad1586f794eda54b1a7f64492ae8cfef371'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+HEAD is now at 7c7afad init
+............................ 609/912
+....................................................................................... 696/912
+....................................................................................... 783/912
+....................................................................................... 870/912
+........................................test tests::differential_solver_encoder_matches_runtime_oracle has been running for over 60 seconds
+..
+test result: ok. 912 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 227.33s
