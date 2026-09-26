@@ -1,0 +1,14 @@
+fn run_on(xs, f) {
+    return map(xs, f);
+}
+fn main() {
+    let s: secret<i64> = 123456;
+    let log_stage = |x| {
+        println("stage");
+        x
+    };
+    let pick = if s > 100 { |x| x * 3 } else { |x| x * 5 };
+    let pipeline = compose(log_stage, compose(pick, |x| x + 1));
+    let sealed = run_on([1, 2], pipeline);
+    println("ok");
+}

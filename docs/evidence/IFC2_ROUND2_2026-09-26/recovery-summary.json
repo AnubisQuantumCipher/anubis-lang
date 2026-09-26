@@ -1,0 +1,22 @@
+{
+  "findings": 75,
+  "categories": {
+    "leak": 41,
+    "overrefusal": 28,
+    "robustness": 6
+  },
+  "lenses": {
+    "control": 14,
+    "values": 18,
+    "functions": 13,
+    "parity": 19,
+    "precision": 11
+  },
+  "historical_confirmed": 75,
+  "missing_verifier_results": [],
+  "missing_original_program_matches": [],
+  "archive_files": 3793,
+  "archive_bytes": 2767493,
+  "partial_cached_findings": 51,
+  "no_programs_executed": true
+}

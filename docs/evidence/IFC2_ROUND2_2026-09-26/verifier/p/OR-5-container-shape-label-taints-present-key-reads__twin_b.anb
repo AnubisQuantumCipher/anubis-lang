@@ -1,0 +1,12 @@
+// A login session held as a map. A successful password check adds a token key; the audit line
+// prints the user name, which is in the map from the start either way.
+fn main() {
+    let stored = 123456;
+    let guess = 7;
+    let mut session = {"user": "ana", "role": "guest"};
+    if guess == stored {
+        session["token"] = "t-1";
+    }
+    print("audit: session for " + session["user"]);
+    print("role: " + session.role);
+}

@@ -67,7 +67,10 @@ matrix is the reference for open defects.
 See the last section of this file's history in git, and the next-dependency line below.
 
 **Next dependency (2026-09-26, after e516b1f3):** IFC v2 (the semantic foundation) runs in every
-Safe-mode check and the matrix has no silent accept. Next: its review round 2 (fixes, then a third
+Safe-mode check. The recorded landing matrix has no silent accept, but does not include the known
+round-2 findings. Their [complete recovered inventory](evidence/IFC2_ROUND2_2026-09-26/REPORT.md)
+preserves the programs and historical verifier results; recovery is not current verification or
+closure. Next: its review round 2 (fixes, then a third
 round until a round finds nothing an independent verifier reproduces); then decide on the matrix
 whether IFC v2 becomes the authority for information flow (the lanes' flow findings refuse 65
 registered valid programs IFC v2 accepts); the remaining work order (ordinary-lane review, round 40

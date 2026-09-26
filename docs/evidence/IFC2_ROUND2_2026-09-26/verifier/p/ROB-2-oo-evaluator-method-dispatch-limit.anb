@@ -1,0 +1,118 @@
+// An expression tree in object style: one struct per operator, each with an `eval` method that
+// evaluates its children through method calls, and a `show` method that renders it.
+struct Num {
+    v: i64,
+}
+
+impl Num {
+    fn eval(self) -> i64 {
+        return self.v;
+    }
+    fn show(self) -> str {
+        return str(self.v);
+    }
+}
+
+struct Add {
+    l: Num,
+    r: Num,
+}
+
+impl Add {
+    fn eval(self) -> i64 {
+        let a = self.l.eval();
+        let b = self.r.eval();
+        return a + b;
+    }
+    fn show(self) -> str {
+        return "add(" + self.l.show() + ", " + self.r.show() + ")";
+    }
+}
+
+struct Sub {
+    l: Num,
+    r: Num,
+}
+
+impl Sub {
+    fn eval(self) -> i64 {
+        let a = self.l.eval();
+        let b = self.r.eval();
+        return a - b;
+    }
+    fn show(self) -> str {
+        return "sub(" + self.l.show() + ", " + self.r.show() + ")";
+    }
+}
+
+struct Mul {
+    l: Num,
+    r: Num,
+}
+
+impl Mul {
+    fn eval(self) -> i64 {
+        let a = self.l.eval();
+        let b = self.r.eval();
+        return a * b;
+    }
+    fn show(self) -> str {
+        return "mul(" + self.l.show() + ", " + self.r.show() + ")";
+    }
+}
+
+struct Div {
+    l: Num,
+    r: Num,
+}
+
+impl Div {
+    fn eval(self) -> i64 {
+        let a = self.l.eval();
+        let b = self.r.eval();
+        return if b == 0 { 0 } else { a / b };
+    }
+    fn show(self) -> str {
+        return "div(" + self.l.show() + ", " + self.r.show() + ")";
+    }
+}
+
+struct Mod {
+    l: Num,
+    r: Num,
+}
+
+impl Mod {
+    fn eval(self) -> i64 {
+        let a = self.l.eval();
+        let b = self.r.eval();
+        return if b == 0 { 0 } else { a % b };
+    }
+    fn show(self) -> str {
+        return "mod(" + self.l.show() + ", " + self.r.show() + ")";
+    }
+}
+
+struct Max {
+    l: Num,
+    r: Num,
+}
+
+impl Max {
+    fn eval(self) -> i64 {
+        let a = self.l.eval();
+        let b = self.r.eval();
+        return if a > b { a } else { b };
+    }
+    fn show(self) -> str {
+        return "max(" + self.l.show() + ", " + self.r.show() + ")";
+    }
+}
+
+fn main() {
+    let k: secret<i64> = 42;
+    let e = Max { l: Max { l: Add { l: Div { l: Num { v: 17 }, r: Num { v: 18 } }, r: Mod { l: Num { v: 19 }, r: Num { v: 20 } } }, r: Sub { l: Max { l: Num { v: 21 }, r: Num { v: 22 } }, r: Add { l: Num { v: 23 }, r: Num { v: 24 } } } }, r: Add { l: Mul { l: Sub { l: Num { v: 25 }, r: Num { v: 26 } }, r: Mul { l: Num { v: 27 }, r: Num { v: 28 } } }, r: Div { l: Div { l: Num { v: 29 }, r: Num { v: 30 } }, r: Mod { l: Num { v: 31 }, r: Num { v: 32 } } } } };
+    print(e.show() + " = " + str(e.eval()));
+    let h = Add { l: Num { v: k }, r: e };
+    assert(h.eval() > -1000000000);
+}

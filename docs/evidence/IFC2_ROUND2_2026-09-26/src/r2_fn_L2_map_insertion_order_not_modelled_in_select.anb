@@ -1,0 +1,6 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let ms = map([1], |v| if s > 100 { {"a": 1, "b": 2} } else { {"b": 2, "a": 1} });
+    let m = ms[0];
+    println(keys(m));
+}

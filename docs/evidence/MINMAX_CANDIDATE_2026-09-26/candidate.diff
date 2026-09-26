@@ -1,0 +1,69 @@
+diff --git a/compiler/src/middle/ifc2/builtins.rs b/compiler/src/middle/ifc2/builtins.rs
+index f3a954f0..1040ae43 100644
+--- a/compiler/src/middle/ifc2/builtins.rs
++++ b/compiler/src/middle/ifc2/builtins.rs
+@@ -687,12 +687,39 @@ pub(crate) fn call<'a>(
+             let r = cb_short(it, &f, vec![elems(&c)], s, p, truth);
+             elems(&c).raise(truth(&r).join(s))
+         }
+-        // The key function is called a number of times fixed by the length (`Iterator::min_by`).
++        // The callback count is fixed by the length, but each comparison's incumbent is
++        // selected by earlier keys. Feed that selection into its argument, not the callback PC:
++        // unconditional public logging still has a public, fixed schedule.
+         "min_by" | "max_by" => {
+             let (c, f) = (arg(a, 0), arg(a, 1));
+             let s = shape(&c);
+-            let r = cb(it, &f, vec![elems(&c)], s, p);
+-            elems(&c).raise(r.deep().join(s))
++            if let Some(items) = known_items(&c) {
++                let mut items = items.into_iter();
++                let Some(mut acc) = items.next() else {
++                    // The runtime traps without ever calling the callback.
++                    return Some(V::bottom());
++                };
++                for item in items {
++                    let left = cb(it, &f, vec![acc.clone()], s, p);
++                    let right = cb(it, &f, vec![item.clone()], s, p);
++                    acc = acc.join(&item).raise(left.deep().join(right.deep()));
++                    if it.exhausted() {
++                        break;
++                    }
++                }
++                acc.raise(s)
++            } else {
++                let e = elems(&c);
++                let mut selected = Lab::PUB;
++                loop {
++                    let r = cb(it, &f, vec![e.raise(selected)], s, p);
++                    let next = selected.join(r.deep());
++                    if next == selected || it.exhausted() {
++                        break e.raise(next.join(s));
++                    }
++                    selected = next;
++                }
++            }
+         }
+         "any" | "all" | "position" => {
+             let (c, f) = (arg(a, 0), arg(a, 1));
+diff --git a/tests/soundness/matrix/registry.tsv b/tests/soundness/matrix/registry.tsv
+index 6b810e7c..76a5cdef 100644
+--- a/tests/soundness/matrix/registry.tsv
++++ b/tests/soundness/matrix/registry.tsv
+@@ -2318,3 +2318,17 @@ d1_pc_egress_field_cond_print	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: a
+ d1_pc_egress_while_count	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: a loop bounded by a secret prints once per iteration — check-only: every available pin refuses it before it runs.
+ d1_pc_egress_public_control	IFC-PC-EGRESS	slice	ACCEPT	carrier	decision D1 control: a print under a public condition in a program holding a secret — runtime k=42 prints big; k=123456 prints big
+ d1_pc_egress_bits	IFC-PC-EGRESS	slice	REJECT	carrier	decision D1: one print per bit of a secret, under `if (k >> j) & 1 == 1` (printed every bit on e7b56507) — runtime k=42 prints 0 \n 1 \n 0 \n 1 \n 0 \n 1 \n 0 \n 0; k=123456 prints 0 \n 0 \n 0 \n 0 \n 0 \n 0 \n 1 \n 0
++ifc2r2_minmax_min_by_argument	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; argument
++ifc2r2_minmax_min_by_unknown_length	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; unknown_length
++ifc2r2_minmax_min_by_constant_log	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; constant_log
++ifc2r2_minmax_min_by_released_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; released_key
++ifc2r2_minmax_min_by_public_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; public_key
++ifc2r2_minmax_min_by_pair	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; pair
++ifc2r2_minmax_max_by_argument	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; argument
++ifc2r2_minmax_max_by_unknown_length	IFC2-REVIEW-2	slice	REJECT	carrier	r2p_06 comparator incumbent feedback; unknown_length
++ifc2r2_minmax_max_by_constant_log	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; constant_log
++ifc2r2_minmax_max_by_released_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; released_key
++ifc2r2_minmax_max_by_public_key	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; public_key
++ifc2r2_minmax_max_by_pair	IFC2-REVIEW-2	slice	ACCEPT	carrier	r2p_06 comparator incumbent feedback; pair
++ifc2r2_minmax_min_by_equal_secret_keys	IFC2-REVIEW-2	slice	ACCEPT	carrier	equal captured keys tie; argument transcript independent of secret
++ifc2r2_minmax_max_by_equal_secret_keys	IFC2-REVIEW-2	slice	ACCEPT	carrier	equal captured keys tie; argument transcript independent of secret

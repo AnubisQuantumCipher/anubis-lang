@@ -1,0 +1,14 @@
+fn pick(c) {
+    let v = if c { 7 } else { 3 };
+    v
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let a = {"k": pick(s > 100)};
+    let mut b = {"x": 0};
+    if len(args()) > 5 {
+        b["k"] = 1;
+    }
+    let m = merge(a, b);
+    println(m["k"]);
+}

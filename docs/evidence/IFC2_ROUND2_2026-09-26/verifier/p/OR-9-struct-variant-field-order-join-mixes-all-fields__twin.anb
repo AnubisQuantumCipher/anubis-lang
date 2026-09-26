@@ -1,0 +1,21 @@
+// An event log: login events carry the user name and the secret PIN that was entered. Two call
+// sites build the event with the fields written in different orders. The report prints users.
+enum Event {
+    Login { user: str, pin: i64 },
+    Logout { user: str },
+}
+
+fn main() {
+    let pin = 42;
+    let events = [
+        Event::Login { user: "ana", pin: pin },
+        Event::Login { pin: pin + 1, user: "ben" },
+        Event::Logout { user: "ana" },
+    ];
+    for e in events {
+        match e {
+            Event::Login { user, pin } => print("login " + user),
+            Event::Logout { user } => print("logout " + user),
+        };
+    }
+}

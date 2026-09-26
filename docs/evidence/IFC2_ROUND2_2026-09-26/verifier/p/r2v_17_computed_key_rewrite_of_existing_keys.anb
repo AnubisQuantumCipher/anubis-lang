@@ -1,0 +1,14 @@
+fn bump(m, c) {
+    for k in keys(m) {
+        if c {
+            m[k] = 1;
+        }
+    }
+    m
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let m = {"a": 0, "b": 0};
+    let r = bump(m, s > 100);
+    println(keys(r));
+}

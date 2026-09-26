@@ -15,6 +15,14 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — round-2 evidence recovered; min/max candidate withheld.** The
+[complete round-2 inventory](evidence/IFC2_ROUND2_2026-09-26/REPORT.md) preserves
+its sources and historical verifier outcomes; it is not a current closure receipt.
+A [fresh min/max witness and candidate review](evidence/MINMAX_CANDIDATE_2026-09-26/README.md)
+confirmed callback output depending on secret comparator keys. The candidate repairs
+that flow but newly refuses a valid equal-key callback, so it remains unintegrated
+and the defect stays open. The valid fixture remains required to pass.
+
 **UPDATE 2026-09-26 — IFC v2 runs in every Safe-mode check (`e516b1f3`).** An information-flow
 interpreter that evaluates the program the way the runtime executes it ([design](mission/IFC_V2.md))
 runs beside the other lanes; a program is refused if any lane finds a flow. After its first

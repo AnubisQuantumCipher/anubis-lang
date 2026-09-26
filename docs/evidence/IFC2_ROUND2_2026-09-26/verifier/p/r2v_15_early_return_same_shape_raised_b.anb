@@ -1,0 +1,13 @@
+fn tags(ok) {
+    if ok {
+        return ["granted", "full"];
+    }
+    ["denied", "none"]
+}
+fn main() {
+    let k: secret<i64> = 123456;
+    let t = tags(k > 100);
+    for x in t {
+        println("tag slot");
+    }
+}

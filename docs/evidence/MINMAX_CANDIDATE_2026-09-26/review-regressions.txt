@@ -1,0 +1,23 @@
+
+running 6 tests
+test minmax_secret_length_still_controls_callback_schedule ... ok
+test minmax_short_lists_do_not_feed_a_selected_winner_back ... ok
+test minmax_equal_captured_keys_preserve_public_argument_transcript ... FAILED
+test minmax_feedback_covers_aliases_compound_keys_and_nested_arguments ... ok
+test minmax_rechecks_secret_selected_callback_arguments ... ok
+test minmax_preserves_fixed_callback_schedule ... ok
+
+failures:
+
+---- minmax_equal_captured_keys_preserve_public_argument_transcript stdout ----
+
+thread 'minmax_equal_captured_keys_preserve_public_argument_transcript' (2045681) panicked at compiler/tests/ifc2_minmax.rs:116:13:
+equal keys do not reveal s: fn main() { let s: secret<i64> = 42; let m = min_by([1, 2, 3], |x| { println(x); s }); }: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    minmax_equal_captured_keys_preserve_public_argument_transcript
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

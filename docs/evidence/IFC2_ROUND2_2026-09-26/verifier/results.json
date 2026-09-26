@@ -1,0 +1,2200 @@
+{
+ "r2ctl_L01_int_literal_patterns_collide_in_f64": {
+  "id": "r2ctl_L01_int_literal_patterns_collide_in_f64",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L01_int_literal_patterns_collide_in_f64.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L01_int_literal_patterns_collide_in_f64.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "second arm\ndone\n",
+     "stderr": "",
+     "t": 0.71
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "done\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_O01_same_shape_assignment_under_secret_raises_tag": {
+  "id": "r2ctl_O01_same_shape_assignment_under_secret_raises_tag",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O01_same_shape_assignment_under_secret_raises_tag.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O01_same_shape_assignment_under_secret_raises_tag.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "have a reading\nreading\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "have a reading\nreading\n",
+     "stderr": "",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2ctl_L02_select_ignores_struct_field_order": {
+  "id": "r2ctl_L02_select_ignores_struct_field_order",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L02_select_ignores_struct_field_order.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L02_select_ignores_struct_field_order.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.58
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "0\n",
+     "stderr": "",
+     "t": 0.54
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_L03_select_ignores_map_key_order": {
+  "id": "r2ctl_L03_select_ignores_map_key_order",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L03_select_ignores_map_key_order.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L03_select_ignores_map_key_order.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "b\n",
+     "stderr": "",
+     "t": 0.52
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "a\n",
+     "stderr": "",
+     "t": 0.57
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_L04_select_equal_maybe_fields_not_same_shape": {
+  "id": "r2ctl_L04_select_equal_maybe_fields_not_same_shape",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L04_select_equal_maybe_fields_not_same_shape.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L04_select_equal_maybe_fields_not_same_shape.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.51
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_L05_select_equal_maybe_keys_map": {
+  "id": "r2ctl_L05_select_equal_maybe_keys_map",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L05_select_equal_maybe_keys_map.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L05_select_equal_maybe_keys_map.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.57
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_L06_method_narrowing_drops_maybe_fields": {
+  "id": "r2ctl_L06_method_narrowing_drops_maybe_fields",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L06_method_narrowing_drops_maybe_fields.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L06_method_narrowing_drops_maybe_fields.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header": {
+  "id": "r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header.anb (evidence=false, verified=false)\ncheck passed\ncertificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "poll\ndone\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "poll\npoll\npoll\ndone\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_L08_panic_under_secret_pc_not_egress": {
+  "id": "r2ctl_L08_panic_under_secret_pc_not_egress",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L08_panic_under_secret_pc_not_egress.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L08_panic_under_secret_pc_not_egress.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "",
+     "stderr": "",
+     "t": 0.57
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "\nthread '<unnamed>' (1841777) panicked at src/main.rs:1095:52:\nANUBIS_PANIC: limit exceeded\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_L09_exit_status_under_secret_pc_not_egress": {
+  "id": "r2ctl_L09_exit_status_under_secret_pc_not_egress",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L09_exit_status_under_secret_pc_not_egress.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L09_exit_status_under_secret_pc_not_egress.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "Error: run failed: exit_code=Some(3)",
+     "t": 0.53
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2ctl_O02_distinct_float_literal_patterns_not_disjoint": {
+  "id": "r2ctl_O02_distinct_float_literal_patterns_not_disjoint",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O02_distinct_float_literal_patterns_not_disjoint.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O02_distinct_float_literal_patterns_not_disjoint.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "standard tier\npremium tier\n",
+     "stderr": "",
+     "t": 0.51
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "standard tier\npremium tier\n",
+     "stderr": "",
+     "t": 0.57
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2ctl_O03_early_return_same_shape_raises_tag": {
+  "id": "r2ctl_O03_early_return_same_shape_raises_tag",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O03_early_return_same_shape_raises_tag.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O03_early_return_same_shape_raises_tag.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "discount applied\n",
+     "stderr": "",
+     "t": 0.47
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "discount applied\n",
+     "stderr": "",
+     "t": 0.49
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2ctl_O04_select_of_compositions_raises_every_stage": {
+  "id": "r2ctl_O04_select_of_compositions_raises_every_stage",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O04_select_of_compositions_raises_every_stage.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `audit`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O04_select_of_compositions_raises_every_stage.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `audit`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "audit step\npipeline done\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "audit step\npipeline done\n",
+     "stderr": "",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2v_01_select_map_insertion_order": {
+  "id": "r2v_01_select_map_insertion_order",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_01_select_map_insertion_order.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_01_select_map_insertion_order.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "b\na\n",
+     "stderr": "",
+     "t": 0.51
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "a\nb\n",
+     "stderr": "",
+     "t": 0.48
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_02_select_struct_field_order": {
+  "id": "r2v_02_select_struct_field_order",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_02_select_struct_field_order.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_02_select_struct_field_order.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "P { b: [[]], a: [] }\n",
+     "stderr": "",
+     "t": 0.46
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "P { a: [], b: [[]] }\n",
+     "stderr": "",
+     "t": 0.48
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_03_select_maybe_keys_map": {
+  "id": "r2v_03_select_maybe_keys_map",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_03_select_maybe_keys_map.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_03_select_maybe_keys_map.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.51
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_04_select_maybe_fields_struct": {
+  "id": "r2v_04_select_maybe_fields_struct",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_04_select_maybe_fields_struct.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_04_select_maybe_fields_struct.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.49
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_05_nested_write_into_missing_key_makes_it_present": {
+  "id": "r2v_05_nested_write_into_missing_key_makes_it_present",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_05_nested_write_into_missing_key_makes_it_present.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_05_nested_write_into_missing_key_makes_it_present.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_06_nested_write_into_missing_field_makes_it_present": {
+  "id": "r2v_06_nested_write_into_missing_field_makes_it_present",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_06_nested_write_into_missing_field_makes_it_present.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_06_nested_write_into_missing_field_makes_it_present.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.52
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.49
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_07_remove_computed_key_keeps_known_keys_present": {
+  "id": "r2v_07_remove_computed_key_keeps_known_keys_present",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_07_remove_computed_key_keeps_known_keys_present.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_07_remove_computed_key_keeps_known_keys_present.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_08_merge_drops_first_map_value_when_second_key_maybe": {
+  "id": "r2v_08_merge_drops_first_map_value_when_second_key_maybe",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_08_merge_drops_first_map_value_when_second_key_maybe.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_08_merge_drops_first_map_value_when_second_key_maybe.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "42\n",
+     "stderr": "",
+     "t": 0.52
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "123456\n",
+     "stderr": "",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_09_pattern_decision_top_skips_concrete_parts": {
+  "id": "r2v_09_pattern_decision_top_skips_concrete_parts",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_09_pattern_decision_top_skips_concrete_parts.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_09_pattern_decision_top_skips_concrete_parts.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "other\nnone\n",
+     "stderr": "",
+     "t": 0.57
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "other\nother\n",
+     "stderr": "",
+     "t": 0.53
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_10_join_enum_different_field_sets_drops_names": {
+  "id": "r2v_10_join_enum_different_field_sets_drops_names",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_10_join_enum_different_field_sets_drops_names.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_10_join_enum_different_field_sets_drops_names.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "42\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "123456\n",
+     "stderr": "",
+     "t": 0.53
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_11_remove_trap_message_prints_key_and_index": {
+  "id": "r2v_11_remove_trap_message_prints_key_and_index",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_11_remove_trap_message_prints_key_and_index.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_11_remove_trap_message_prints_key_and_index.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1847809) panicked at src/main.rs:952:25:\nANUBIS_MISSING_KEY: key `42` is not present in the map (use get(m, k, default) for optional access)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.46
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1847852) panicked at src/main.rs:952:25:\nANUBIS_MISSING_KEY: key `123456` is not present in the map (use get(m, k, default) for optional access)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.49
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2v_12_state_merge_push_on_both_branches": {
+  "id": "r2v_12_state_merge_push_on_both_branches",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_12_state_merge_push_on_both_branches.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_12_state_merge_push_on_both_branches.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "entries: 1\n",
+     "stderr": "",
+     "t": 0.48
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "entries: 1\n",
+     "stderr": "",
+     "t": 0.49
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2v_13_state_merge_same_key_added_on_both_branches": {
+  "id": "r2v_13_state_merge_same_key_added_on_both_branches",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_13_state_merge_same_key_added_on_both_branches.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_13_state_merge_same_key_added_on_both_branches.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "[user, status]\n",
+     "stderr": "",
+     "t": 0.52
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[user, status]\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2v_14_state_merge_reassign_same_length": {
+  "id": "r2v_14_state_merge_reassign_same_length",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_14_state_merge_reassign_same_length.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_14_state_merge_reassign_same_length.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "tick\ntick\n",
+     "stderr": "",
+     "t": 0.46
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "tick\ntick\n",
+     "stderr": "",
+     "t": 0.51
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2v_15_early_return_same_shape_raised": {
+  "id": "r2v_15_early_return_same_shape_raised",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_15_early_return_same_shape_raised.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_15_early_return_same_shape_raised.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "tag slot\ntag slot\n",
+     "stderr": "",
+     "t": 0.58
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "tag slot\ntag slot\n",
+     "stderr": "",
+     "t": 0.51
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2v_16_enum_variant_literal_order_join_over_refusal": {
+  "id": "r2v_16_enum_variant_literal_order_join_over_refusal",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_16_enum_variant_literal_order_join_over_refusal.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_16_enum_variant_literal_order_join_over_refusal.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "bob\n",
+     "stderr": "",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "bob\n",
+     "stderr": "",
+     "t": 0.53
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2v_17_computed_key_rewrite_of_existing_keys": {
+  "id": "r2v_17_computed_key_rewrite_of_existing_keys",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_17_computed_key_rewrite_of_existing_keys.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_17_computed_key_rewrite_of_existing_keys.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "[a, b]\n",
+     "stderr": "",
+     "t": 0.62
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[a, b]\n",
+     "stderr": "",
+     "t": 0.85
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2v_18_shared_list_dag_exponential_memory": {
+  "id": "r2v_18_shared_list_dag_exponential_memory",
+  "kind": "robustness",
+  "new_rc": -9,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_18_shared_list_dag_exponential_memory.anb (IFC v2 alone; not a check)\n",
+  "new_t": 6.11,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_18_shared_list_dag_exponential_memory.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "\nANUBIS_ANALYSIS_LIMIT: the checker's analysis of this program exceeded its memory budget (1022 MiB: half the memory free when the check began, or ANUBIS_ANALYSIS_MEMORY_MIB) and kept allocating past its hard budget (two thirds of that memory, or twice the variable) where the analysis could not stop it, so the process stopped at once: the analysis did not complete (a check refuses the program; a verify neither confirms nor refutes the bundle), and no report or evidence bundle it was making was completed (an unfinished bundle is left under a name ending in .partial). This is a limit of the checker, not a finding about the program: simplify it, or give the check more memory (ANUBIS_ANALYSIS_MEMORY_MIB, in MiB) if the machine has it to spare",
+     "t": 6.19
+    },
+    "B": null
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2_fn_L1_min_by_max_by_callback_argument": {
+  "id": "r2_fn_L1_min_by_max_by_callback_argument",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L1_min_by_max_by_callback_argument.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L1_min_by_max_by_callback_argument.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n2\n1\n3\ndone\n",
+     "stderr": "",
+     "t": 0.97
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "1\n2\n2\n3\ndone\n",
+     "stderr": "",
+     "t": 0.89
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2_fn_L2_map_insertion_order_not_modelled_in_select": {
+  "id": "r2_fn_L2_map_insertion_order_not_modelled_in_select",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L2_map_insertion_order_not_modelled_in_select.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L2_map_insertion_order_not_modelled_in_select.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "[b, a]\n",
+     "stderr": "",
+     "t": 0.73
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[a, b]\n",
+     "stderr": "",
+     "t": 0.59
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2_fn_L3_struct_literal_field_order_not_modelled_in_select": {
+  "id": "r2_fn_L3_struct_literal_field_order_not_modelled_in_select",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L3_struct_literal_field_order_not_modelled_in_select.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L3_struct_literal_field_order_not_modelled_in_select.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "Tag::Plain\n",
+     "stderr": "",
+     "t": 0.56
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[]\n",
+     "stderr": "",
+     "t": 0.57
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2_fn_L4_panic_and_exit_under_secret_pc_not_refused": {
+  "id": "r2_fn_L4_panic_and_exit_under_secret_pc_not_refused",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L4_panic_and_exit_under_secret_pc_not_refused.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L4_panic_and_exit_under_secret_pc_not_refused.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "checking\n",
+     "stderr": "",
+     "t": 0.57
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "checking\n",
+     "stderr": "\nthread '<unnamed>' (1850295) panicked at src/main.rs:1095:52:\nANUBIS_PANIC: rejected entry\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.53
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2_fn_O1_recursive_hof_summary_merges_closure_captures": {
+  "id": "r2_fn_O1_recursive_hof_summary_merges_closure_captures",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O1_recursive_hof_summary_merges_closure_captures.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O1_recursive_hof_summary_merges_closure_captures.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "[2, 4, 6]\n",
+     "stderr": "",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[2, 4, 6]\n",
+     "stderr": "",
+     "t": 0.54
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_O2_context_budget_summary_merges_closure_captures": {
+  "id": "r2_fn_O2_context_budget_summary_merges_closure_captures",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O2_context_budget_summary_merges_closure_captures.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O2_context_budget_summary_merges_closure_captures.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "[6, 8]\n",
+     "stderr": "",
+     "t": 0.55
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[6, 8]\n",
+     "stderr": "",
+     "t": 0.55
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines": {
+  "id": "r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "false\n",
+     "stderr": "",
+     "t": 0.51
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "false\n",
+     "stderr": "",
+     "t": 0.55
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening": {
+  "id": "r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "10\n12\nok\n",
+     "stderr": "",
+     "t": 0.67
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "10\n12\nok\n",
+     "stderr": "",
+     "t": 0.51
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_O5_chain_joins_component_labels_into_every_stage_pc": {
+  "id": "r2_fn_O5_chain_joins_component_labels_into_every_stage_pc",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O5_chain_joins_component_labels_into_every_stage_pc.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `<closure>`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O5_chain_joins_component_labels_into_every_stage_pc.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `<closure>`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "stage\nstage\nok\n",
+     "stderr": "",
+     "t": 0.51
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "stage\nstage\nok\n",
+     "stderr": "",
+     "t": 0.57
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content": {
+  "id": "r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `<closure>`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `<closure>`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "checking password strength\ntrue\n",
+     "stderr": "",
+     "t": 0.93
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "checking password strength\ntrue\n",
+     "stderr": "",
+     "t": 0.97
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4": {
+  "id": "r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.03,
+  "lanes_rc": 1,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-044724-safe\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `a value computed from a whole struct value holding declared field `bal` of type `secret<i64>` (type `Acct`)` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\nprogram-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `a value computed from a whole struct value holding declared field `bal` of type `secret<i64>` (type `Acct`)` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+  "lanes_t": 0.1,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `a value computed from a whole struct value holding declared field `bal` of type `secret<i64>` (type `Acct`)` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "[1, 2, 3, 4, 5, 6, 7]\n",
+     "stderr": "",
+     "t": 1.02
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[1, 2, 3, 4, 5, 6, 7]\n",
+     "stderr": "",
+     "t": 0.59
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget": {
+  "id": "r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget",
+  "kind": "robustness",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget.anb (IFC v2 alone; not a check)\nANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its step budget was spent); it cannot bound what the program discloses, so the program is refused\nError: 1 information-flow finding(s)\n",
+  "new_t": 1.36,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its step budget was spent); it cannot bound what the program discloses, so the program is refused"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "true\nfalse\ntrue\n",
+     "stderr": "",
+     "t": 0.69
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "true\nfalse\ntrue\n",
+     "stderr": "",
+     "t": 0.69
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget": {
+  "id": "r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget",
+  "kind": "robustness",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget.anb (IFC v2 alone; not a check)\nANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its work budget was spent); it cannot bound what the program discloses, so the program is refused\nError: 1 information-flow finding(s)\n",
+  "new_t": 42.75,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.59,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its work budget was spent); it cannot bound what the program discloses, so the program is refused"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "33\n[3, 12, 10, 4, 7, 3, 3, 15, 13, 5, 10, 3, 13, 10, 2, 2, 2, 18, 16, 6, 13, 3, 16, 13, 2, 2, 19, 16, 2, 12, 1, 1, 1]\n",
+     "stderr": "",
+     "t": 1.21
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "33\n[3, 12, 10, 4, 7, 3, 3, 15, 13, 5, 10, 3, 13, 10, 2, 2, 2, 18, 16, 6, 13, 3, 16, 13, 2, 2, 19, 16, 2, 12, 1, 1, 1]\n",
+     "stderr": "",
+     "t": 0.76
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2p_01_select_ignores_runtime_order": {
+  "id": "r2p_01_select_ignores_runtime_order",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_01_select_ignores_runtime_order.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_01_select_ignores_runtime_order.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "[b, a]\n",
+     "stderr": "",
+     "t": 0.54
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "[a, b]\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_02_select_equal_maybe_sets_same_shape": {
+  "id": "r2p_02_select_equal_maybe_sets_same_shape",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_02_select_equal_maybe_sets_same_shape.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_02_select_equal_maybe_sets_same_shape.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "false\n",
+     "stderr": "",
+     "t": 0.56
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "true\n",
+     "stderr": "",
+     "t": 0.54
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_03_set_path_nested_write_marks_missing_key_present": {
+  "id": "r2p_03_set_path_nested_write_marks_missing_key_present",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_03_set_path_nested_write_marks_missing_key_present.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_03_set_path_nested_write_marks_missing_key_present.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.54
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.53
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_04_merge_drops_first_map_value_for_maybe_key": {
+  "id": "r2p_04_merge_drops_first_map_value_for_maybe_key",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_04_merge_drops_first_map_value_for_maybe_key.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_04_merge_drops_first_map_value_for_maybe_key.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "3\n",
+     "stderr": "",
+     "t": 0.6
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "7\n",
+     "stderr": "",
+     "t": 0.62
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_05_remove_by_computed_key_keeps_keys_present": {
+  "id": "r2p_05_remove_by_computed_key_keeps_keys_present",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_05_remove_by_computed_key_keeps_keys_present.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_05_remove_by_computed_key_keeps_keys_present.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n",
+     "stderr": "",
+     "t": 0.66
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2\n",
+     "stderr": "",
+     "t": 0.61
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_06_min_by_max_by_callback_args_decided_by_results": {
+  "id": "r2p_06_min_by_max_by_callback_args_decided_by_results",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_06_min_by_max_by_callback_args_decided_by_results.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_06_min_by_max_by_callback_args_decided_by_results.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "1\n2\n2\n3\n",
+     "stderr": "",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "1\n2\n1\n3\n",
+     "stderr": "",
+     "t": 0.61
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_07_stdin_cursor_is_an_unmodelled_store": {
+  "id": "r2p_07_stdin_cursor_is_an_unmodelled_store",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_07_stdin_cursor_is_an_unmodelled_store.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_07_stdin_cursor_is_an_unmodelled_store.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "first line\n",
+     "stderr": "",
+     "t": 0.66
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "",
+     "stderr": "",
+     "t": 0.75
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_08_write_file_to_device_path_is_egress": {
+  "id": "r2p_08_write_file_to_device_path_is_egress",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_08_write_file_to_device_path_is_egress.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_08_write_file_to_device_path_is_egress.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "",
+     "stderr": "42",
+     "t": 0.51
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "",
+     "stderr": "123456",
+     "t": 1.22
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_09_panic_exit_under_secret_pc_not_refused": {
+  "id": "r2p_09_panic_exit_under_secret_pc_not_refused",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_09_panic_exit_under_secret_pc_not_refused.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_09_panic_exit_under_secret_pc_not_refused.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "",
+     "stderr": "",
+     "t": 0.54
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "\nthread '<unnamed>' (1886628) panicked at src/main.rs:1095:52:\nANUBIS_PANIC: over the limit\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.51
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_10_try_on_empty_payload_gives_bottom": {
+  "id": "r2p_10_try_on_empty_payload_gives_bottom",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_10_try_on_empty_payload_gives_bottom.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_10_try_on_empty_payload_gives_bottom.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "3\nend\n",
+     "stderr": "",
+     "t": 0.63
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "7\nend\n",
+     "stderr": "",
+     "t": 0.62
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_11_join_enum_drops_runtime_default_for_short_payload": {
+  "id": "r2p_11_join_enum_drops_runtime_default_for_short_payload",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_11_join_enum_drops_runtime_default_for_short_payload.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_11_join_enum_drops_runtime_default_for_short_payload.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "3\nend\n",
+     "stderr": "",
+     "t": 0.71
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "7\nend\n",
+     "stderr": "",
+     "t": 0.55
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_12_struct_string_index_ignores_maybe_field": {
+  "id": "r2p_12_struct_string_index_ignores_maybe_field",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_12_struct_string_index_ignores_maybe_field.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_12_struct_string_index_ignores_maybe_field.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "3\nend\n",
+     "stderr": "",
+     "t": 0.58
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "7\nend\n",
+     "stderr": "",
+     "t": 0.72
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_13_proof_commit_bool_result_modelled_as_argument": {
+  "id": "r2p_13_proof_commit_bool_result_modelled_as_argument",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_13_proof_commit_bool_result_modelled_as_argument.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_13_proof_commit_bool_result_modelled_as_argument.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "3\nend\n",
+     "stderr": "",
+     "t": 0.75
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "7\nend\n",
+     "stderr": "",
+     "t": 0.59
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_14_remove_trap_message_prints_index_length_key": {
+  "id": "r2p_14_remove_trap_message_prints_index_length_key",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_14_remove_trap_message_prints_index_length_key.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_14_remove_trap_message_prints_index_length_key.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1887473) panicked at src/main.rs:942:25:\nANUBIS_INDEX_OUT_OF_BOUNDS: index 42 is out of bounds for a list of length 3 (use get(xs, i, default) for optional access)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.5
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1887799) panicked at src/main.rs:942:25:\nANUBIS_INDEX_OUT_OF_BOUNDS: index 123456 is out of bounds for a list of length 3 (use get(xs, i, default) for optional access)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_15_crypto_trap_messages_print_operands": {
+  "id": "r2p_15_crypto_trap_messages_print_operands",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_15_crypto_trap_messages_print_operands.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_15_crypto_trap_messages_print_operands.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1887896) panicked at src/main.rs:2287:13:\nANUBIS_CRYPTO_BYTES_KIND: bare integer 42 is not accepted as crypto input; use a byte list [0..255, ...] or a string\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.61
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1888016) panicked at src/main.rs:2287:13:\nANUBIS_CRYPTO_BYTES_KIND: bare integer 123456 is not accepted as crypto input; use a byte list [0..255, ...] or a string\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.56
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_16_builtin_value_arity_trap_prints_argument_count": {
+  "id": "r2p_16_builtin_value_arity_trap_prints_argument_count",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_16_builtin_value_arity_trap_prints_argument_count.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_16_builtin_value_arity_trap_prints_argument_count.anb (evidence=false, verified=false)\ncheck passed\ncertificates: 0/1 obligations discharged by a machine-checked refutation; 1 trusted to the solver with none (checked in this run and not retained; --evidence writes them)\n  no witness (REG-002, out of the proven fragment): wrap-safety:(+ (bvsrem anb_s (_ bv5 64)) (_ bv2 64))\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1888093) panicked at src/main.rs:3287:194:\nANUBIS_ARITY: builtin `abs` cannot take 4 argument(s)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1888142) panicked at src/main.rs:3287:194:\nANUBIS_ARITY: builtin `abs` cannot take 3 argument(s)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.57
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_17_poc_kit_trap_messages_print_operands": {
+  "id": "r2p_17_poc_kit_trap_messages_print_operands",
+  "kind": "leak",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_17_poc_kit_trap_messages_print_operands.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_17_poc_kit_trap_messages_print_operands.anb (evidence=false, verified=false)\ncheck passed\ncertificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1888193) panicked at src/main.rs:3149:9:\nANUBIS_POC_CYCLIC_LENGTH: cyclic length must be >= 0, got -42\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 1,
+     "stdout": "start\n",
+     "stderr": "\nthread '<unnamed>' (1888234) panicked at src/main.rs:3149:9:\nANUBIS_POC_CYCLIC_LENGTH: cyclic length must be >= 0, got -123456\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nError: run failed: exit_code=Some(101)",
+     "t": 0.49
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "r2p_18_bool_int_of_collection_use_content": {
+  "id": "r2p_18_bool_int_of_collection_use_content",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_18_bool_int_of_collection_use_content.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_18_bool_int_of_collection_use_content.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "true\n3\n",
+     "stderr": "",
+     "t": 0.52
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "true\n3\n",
+     "stderr": "",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "r2p_19_files_store_is_global_and_flow_insensitive": {
+  "id": "r2p_19_files_store_is_global_and_flow_insensitive",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_19_files_store_is_global_and_flow_insensitive.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_19_files_store_is_global_and_flow_insensitive.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.01,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "feature enabled\n",
+     "stderr": "",
+     "t": 0.51
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "feature enabled\n",
+     "stderr": "",
+     "t": 0.67
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "ROB-1-nested-summary-fixpoint-precedence-parser": {
+  "id": "ROB-1-nested-summary-fixpoint-precedence-parser",
+  "kind": "robustness",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/ROB-1-nested-summary-fixpoint-precedence-parser.anb (IFC v2 alone; not a check)\nANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its step budget was spent); it cannot bound what the program discloses, so the program is refused\nError: 1 information-flow finding(s)\n",
+  "new_t": 1.0,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/ROB-1-nested-summary-fixpoint-precedence-parser.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its step budget was spent); it cannot bound what the program discloses, so the program is refused"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "nodes: 5\n",
+     "stderr": "",
+     "t": 0.71
+    },
+    "B": null
+   }
+  },
+  "runner": "whole10"
+ },
+ "ROB-2-oo-evaluator-method-dispatch-limit": {
+  "id": "ROB-2-oo-evaluator-method-dispatch-limit",
+  "kind": "robustness",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/ROB-2-oo-evaluator-method-dispatch-limit.anb (IFC v2 alone; not a check)\nANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its step budget was spent); it cannot bound what the program discloses, so the program is refused\nError: 1 information-flow finding(s)\n",
+  "new_t": 2.19,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/ROB-2-oo-evaluator-method-dispatch-limit.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (its step budget was spent); it cannot bound what the program discloses, so the program is refused"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "max(max(add(div(17, 18), mod(19, 20)), sub(max(21, 22), add(23, 24))), add(mul(sub(25, 26), mul(27, 28)), div(div(29, 30), mod(31, 32)))) = 19\n",
+     "stderr": "",
+     "t": 1.09
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "max(max(add(div(17, 18), mod(19, 20)), sub(max(21, 22), add(23, 24))), add(mul(sub(25, 26), mul(27, 28)), div(div(29, 30), mod(31, 32)))) = 19\n",
+     "stderr": "",
+     "t": 0.79
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "OR-1-file-store-single-label": {
+  "id": "OR-1-file-store-single-label",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-1-file-store-single-label.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `print` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-1-file-store-single-label.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `print` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "==================== WELCOME ====================\n",
+     "stderr": "",
+     "t": 0.48
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "==================== WELCOME ====================\n",
+     "stderr": "",
+     "t": 0.51
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "OR-2-loop-built-tree-fold-mixes-payload": {
+  "id": "OR-2-loop-built-tree-fold-mixes-payload",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-2-loop-built-tree-fold-mixes-payload.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.03,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-2-loop-built-tree-fold-mixes-payload.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "accounts: 3\n",
+     "stderr": "",
+     "t": 0.83
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "accounts: 3\n",
+     "stderr": "",
+     "t": 0.5
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "OR-3-recursion-summary-fold-depth4": {
+  "id": "OR-3-recursion-summary-fold-depth4",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-3-recursion-summary-fold-depth4.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-3-recursion-summary-fold-depth4.anb (evidence=false, verified=false)\ncheck passed\ncertificates: 9/9 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)\n",
+  "lanes_t": 0.08,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "accounts: 9\n",
+     "stderr": "",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "accounts: 9\n",
+     "stderr": "",
+     "t": 0.65
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "OR-4-kind-label-of-secret-scalar": {
+  "id": "OR-4-kind-label-of-secret-scalar",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-4-kind-label-of-secret-scalar.anb (IFC v2 alone; not a check)\nANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `print` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-4-kind-label-of-secret-scalar.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: [ifc2] in `main`: `print` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "pin format ok\n",
+     "stderr": "",
+     "t": 0.75
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "pin format ok\n",
+     "stderr": "",
+     "t": 0.52
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "OR-5-container-shape-label-taints-present-key-reads": {
+  "id": "OR-5-container-shape-label-taints-present-key-reads",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 1,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-044936-safe\nverdict: FAIL\ncheck failed: ANUBIS_IMPLICIT_FLOW: `session` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `session` as secret<T>.\nprogram-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_IMPLICIT_FLOW: `session` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `session` as secret<T>.\n",
+  "lanes_t": 0.04,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: `session` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `session` as secret<T>.; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`"
+   },
+   "whole10": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: `session` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `session` as secret<T>."
+   },
+   "ordret2a": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: `session` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `session` as secret<T>."
+   },
+   "LANES": {
+    "refused": "Error: ANUBIS_IMPLICIT_FLOW: `session` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `session` as secret<T>."
+   }
+  }
+ },
+ "OR-6-closure-summary-reach-label-merges-pipelines": {
+  "id": "OR-6-closure-summary-reach-label-merges-pipelines",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-6-closure-summary-reach-label-merges-pipelines.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 1,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-6-closure-summary-reach-label-merges-pipelines.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-044936-safe-2\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `captured secret in closure `shown`` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\nprogram-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `captured secret in closure `shown`` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `captured secret in closure `shown`` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "22\n",
+     "stderr": "",
+     "t": 0.52
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "22\n",
+     "stderr": "",
+     "t": 0.58
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "OR-7-summary-context-after-12-merges-all-secret-rows": {
+  "id": "OR-7-summary-context-after-12-merges-all-secret-rows",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-7-summary-context-after-12-merges-all-secret-rows.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 1,
+  "lanes_out": " leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "refused": "private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`"
+   },
+   "whole10": {
+    "refused": "ation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   },
+   "ordret2a": {
+    "refused": "ation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   },
+   "LANES": {
+    "refused": "ation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `h` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   }
+  }
+ },
+ "OR-9-struct-variant-field-order-join-mixes-all-fields": {
+  "id": "OR-9-struct-variant-field-order-join-mixes-all-fields",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 1,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-044938-safe-2\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\nprogram-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `print`"
+   },
+   "whole10": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   },
+   "ordret2a": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   },
+   "LANES": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `user` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   }
+  }
+ },
+ "OR-8-max-nodes-collapse-merges-map-literal-keys": {
+  "id": "OR-8-max-nodes-collapse-merges-map-literal-keys",
+  "kind": "overrefusal",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys.anb (IFC v2 alone; not a check)\nANUBIS_SECRET_EXFILTRATION: [ifc2] in `show_host`: secret data reaches `print`\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.01,
+  "lanes_rc": 1,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-044938-safe-3\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows into parameter 0 of `show_host`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\nprogram-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows into parameter 0 of `show_host`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows into parameter 0 of `show_host`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `show_host`: secret data reaches `print`"
+   },
+   "whole10": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows into parameter 0 of `show_host`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   },
+   "ordret2a": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows into parameter 0 of `show_host`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   },
+   "LANES": {
+    "refused": "Error: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows to egress `print` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `settings` flows into parameter 0 of `show_host`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program"
+   }
+  }
+ },
+ "r2ctl_R01_shift_register_hits_loop_limit": {
+  "id": "r2ctl_R01_shift_register_hits_loop_limit",
+  "kind": "robustness",
+  "new_rc": 1,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_R01_shift_register_hits_loop_limit.anb (IFC v2 alone; not a check)\nANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (a loop did not settle); it cannot bound what the program discloses, so the program is refused\nError: 1 information-flow finding(s)\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_R01_shift_register_hits_loop_limit.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "refused": "Error: ANUBIS_IFC2_LIMIT: [ifc2] the information-flow interpreter stopped before it finished (a loop did not settle); it cannot bound what the program discloses, so the program is refused"
+   },
+   "whole10": {
+    "A": {
+     "rc": 0,
+     "stdout": "1778\n",
+     "stderr": "",
+     "t": 0.53
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "2032\n",
+     "stderr": "",
+     "t": 0.53
+    }
+   }
+  },
+  "runner": "whole10"
+ },
+ "OR-5-container-shape-label-taints-present-key-reads__twin": {
+  "id": "OR-5-container-shape-label-taints-present-key-reads__twin",
+  "kind": "overrefusal",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads__twin.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.03,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads__twin.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "audit: session for ana\nrole: guest\n",
+     "stderr": "",
+     "t": 1.02
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "audit: session for ana\nrole: guest\n",
+     "stderr": "",
+     "t": 0.73
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "OR-7-summary-context-after-12-merges-all-secret-rows__twin": {
+  "id": "OR-7-summary-context-after-12-merges-all-secret-rows__twin",
+  "kind": "overrefusal",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-7-summary-context-after-12-merges-all-secret-rows__twin.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.01,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-7-summary-context-after-12-merges-all-secret-rows__twin.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "ana: 1 days\nben: 2 days\ncho: 3 days\ndev: 4 days\neli: 5 days\nfay: 6 days\ngus: 7 days\nhal: 8 days\nivy: 9 days\njon: 10 days\nkai: 11 days\nlea: 12 days\nmax: 13 days\nnia: 14 days\n",
+     "stderr": "",
+     "t": 0.75
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "ana: 1 days\nben: 2 days\ncho: 3 days\ndev: 4 days\neli: 5 days\nfay: 6 days\ngus: 7 days\nhal: 8 days\nivy: 9 days\njon: 10 days\nkai: 11 days\nlea: 12 days\nmax: 13 days\nnia: 14 days\n",
+     "stderr": "",
+     "t": 0.73
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "OR-9-struct-variant-field-order-join-mixes-all-fields__twin": {
+  "id": "OR-9-struct-variant-field-order-join-mixes-all-fields__twin",
+  "kind": "overrefusal",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields__twin.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields__twin.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.02,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "login ana\nlogin ben\nlogout ana\n",
+     "stderr": "",
+     "t": 0.64
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "login ana\nlogin ben\nlogout ana\n",
+     "stderr": "",
+     "t": 0.67
+    }
+   }
+  },
+  "runner": "NEW"
+ },
+ "OR-8-max-nodes-collapse-merges-map-literal-keys__twin": {
+  "id": "OR-8-max-nodes-collapse-merges-map-literal-keys__twin",
+  "kind": "overrefusal",
+  "new_rc": 0,
+  "new_out": "anubis ifc2-report /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys__twin.anb (IFC v2 alone; not a check)\nno information flow found\n",
+  "new_t": 0.02,
+  "lanes_rc": 0,
+  "lanes_out": "anubis check /home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys__twin.anb (evidence=false, verified=false)\ncheck passed\n",
+  "lanes_t": 0.03,
+  "runs": {
+   "NEW": {
+    "A": {
+     "rc": 0,
+     "stdout": "host = db.internal\nhost = db.internal\n",
+     "stderr": "",
+     "t": 1.32
+    },
+    "B": {
+     "rc": 0,
+     "stdout": "host = db.internal\nhost = db.internal\n",
+     "stderr": "",
+     "t": 1.16
+    }
+   }
+  },
+  "runner": "NEW"
+ }
+}

@@ -1,0 +1,350 @@
+{
+  "status": "candidate rejected: required precision test fails",
+  "compiler_base": "f7e906d1a31533e485aaeeac3ca1c2d1d0877c01",
+  "code_delta": "candidate.diff",
+  "source_files": [
+    {
+      "path": "compiler/src/backends/audited_crypto_runtime.inc.rs",
+      "sha256": "13d0b327d36f198f203cf7471d7031ef063b1ed5200317db15f9745b874a9d1e"
+    },
+    {
+      "path": "compiler/src/backends/keychain_se_runtime.inc.rs",
+      "sha256": "d9159d1df59aa2d07942105ebe042c2e3b8a53c10671fb1e6fdce61bad40a538"
+    },
+    {
+      "path": "compiler/src/backends/mod.rs",
+      "sha256": "9633239e0c3565fceade124adf9ab8c8b36511625c94dbca7a1a9422c26a34cb"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/build.rs",
+      "sha256": "6eee9cda54f5f45707caf320db1c88775eaf394f46e2b99acef5e9678e227330"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/emit.rs",
+      "sha256": "2a06b9f07957169de9d19ad8f4685cb9d41be78998c0f39ecb562ec17ecc99e1"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/mod.rs",
+      "sha256": "0615c6486d1f0da904dd1e868513324d50f67f620f91d5ad772d239dd2ee69ae"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/Cargo.fast.toml",
+      "sha256": "e5c2a30bc445dfb067040ba94018b50351acf8d88c59915f235db16b2206a3ba"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/Cargo.full.toml",
+      "sha256": "cf8d823ff0cdbe2a105a18f37eb59fb802ab09d4f7242589d52312ad93de9525"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/guest_Cargo.toml",
+      "sha256": "37b407a6ed39be360c839205b933b2bea2cc48395ff6eef223dc2e8618bb2c27"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/guest_main.rs",
+      "sha256": "163f4205e16542d2bae43a7f9c46bd3bb02cec719b872e26711b4a0f64ac7f2b"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/host_Cargo.full.toml",
+      "sha256": "cea45a75d78a0b94550aeeb45758a93d2cc1e5043e1271a296e6b3c09e9ab6c8"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/host_main.rs",
+      "sha256": "517abeba230e3578571251f1c7ab32a98564a1070607231f36bda679bb1b7f92"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/host_main_full.rs",
+      "sha256": "23c76de5953ffc2f7adbd1eab6e71f5cc799d3c8af814037db29046e59a3239b"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/methods_Cargo.toml",
+      "sha256": "ef5ae96f4f387a5d9a651ce5912ba6bee17ac233501e78822aace1a7ac27aba0"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/methods_build.rs",
+      "sha256": "d3d0aa4add6d6294b4cd9199c9b7162187b7383980cda986051fe94497334f75"
+    },
+    {
+      "path": "compiler/src/backends/native/hybrid/templates/methods_lib.rs",
+      "sha256": "902d56d952004dd42e65c148a4b537710f869054556528b25ed3e67d050bb255"
+    },
+    {
+      "path": "compiler/src/backends/native/mod.rs",
+      "sha256": "af5fb2e1fa01437b7385c8a77320e8e5595f654698d5b9d38a39abb3cfa1a32f"
+    },
+    {
+      "path": "compiler/src/backends/password_crypto_runtime.inc.rs",
+      "sha256": "b0ad05379a39e2da2988f8f0bd6825a9a6245cc503cc2106191bc9b7b3fb1775"
+    },
+    {
+      "path": "compiler/src/backends/pure_crypto_runtime.inc.rs",
+      "sha256": "9bfe19e805383706df1582d8925d1e2e9a08b47e6f4857c7f99827140878b6fa"
+    },
+    {
+      "path": "compiler/src/backends/run.rs",
+      "sha256": "0f1d3a14176ceb809a8e5d23c059371dcd5b652d27581ac4bf912a4715182049"
+    },
+    {
+      "path": "compiler/src/diagnostics/mod.rs",
+      "sha256": "32bca7c7f6ce7494a93a674da73e62d580f67f790248b3f92ddf45673a782bcf"
+    },
+    {
+      "path": "compiler/src/doc/mod.rs",
+      "sha256": "ca8ba4dd01cef4e39ab9c63c9b091108164749c6022bd8377e19d3da0d391c13"
+    },
+    {
+      "path": "compiler/src/evidence/mod.rs",
+      "sha256": "035a9d0fe573199dd8a7344fab6dfe28367d520952e24f980b8ecfded6bcc485"
+    },
+    {
+      "path": "compiler/src/fmt/mod.rs",
+      "sha256": "0523bfeeb2babe24c24912bea28201c1b26e9c603a3aadffdc91327726fd3ab8"
+    },
+    {
+      "path": "compiler/src/frontend/mod.rs",
+      "sha256": "a4d3cc1b40973271270e3b9e9ed3d705197dd015b1c3fcd45243dbc415fe1b81"
+    },
+    {
+      "path": "compiler/src/interp/mod.rs",
+      "sha256": "b170ab9a93fe086c93a49bb5e590163eb1495ce6281bad3ad40a1ae297a4b568"
+    },
+    {
+      "path": "compiler/src/lib.rs",
+      "sha256": "92f2b7ec51f6b110f978c353711ffd573665fb31442db20687806b694306df52"
+    },
+    {
+      "path": "compiler/src/lsp_analysis.rs",
+      "sha256": "b26670e24c724c0b33b27cc271a585764167dd03171416329eccf67a532099e1"
+    },
+    {
+      "path": "compiler/src/middle/analysis_limit.rs",
+      "sha256": "6f51e6694301eb3e14188f20d1fbd3b4c961a8d2b03d71bdcbb80e16b76bb1ec"
+    },
+    {
+      "path": "compiler/src/middle/capability.rs",
+      "sha256": "3d0d59a3c0200a93e6d224a65c81dee0dcc6e7dcb7875ec4f7cc43971ac6637b"
+    },
+    {
+      "path": "compiler/src/middle/carrier.rs",
+      "sha256": "3162fce5a2e10c922382e87f58d87bb7831a5af3bd840c8be6faf4c4aba94c3e"
+    },
+    {
+      "path": "compiler/src/middle/contract_carrier.rs",
+      "sha256": "4a245b15f24a43f2011fdf784585837ecbb2a061c34f417988368e5c35abe533"
+    },
+    {
+      "path": "compiler/src/middle/diverge.rs",
+      "sha256": "eb6a7ac5604939f7f9a1acd7bd227cd02ab4239fda429da149bd706b538c8788"
+    },
+    {
+      "path": "compiler/src/middle/effects.rs",
+      "sha256": "a2ed277ae015f839fa5b3e289948c8605a7e3f406836bcf38bc032e7ef65e969"
+    },
+    {
+      "path": "compiler/src/middle/ifc2/builtins.rs",
+      "sha256": "a393d9e66e26352c3e52a339e575cc5186e53a683aa8c069cc660d076f112af4"
+    },
+    {
+      "path": "compiler/src/middle/ifc2/eval.rs",
+      "sha256": "2683df4293242bf3ddac63b7b2228fe6b525a52cdb08e6c18bb6767037f34fd8"
+    },
+    {
+      "path": "compiler/src/middle/ifc2/mod.rs",
+      "sha256": "0148354573688c5a922edf09b2ad7f06a94d41289af4f622b56d9198b097c20c"
+    },
+    {
+      "path": "compiler/src/middle/ifc2/value.rs",
+      "sha256": "055b3f93fd3bdce2f8dc52d96d38dd4f30978df2e66d5f9ef14b7d8a0a5e7442"
+    },
+    {
+      "path": "compiler/src/middle/infer_params.rs",
+      "sha256": "5cbad6337321609a3bba70fbe4fbf84611c1b718b56fc0e37c13dedf406ad2d2"
+    },
+    {
+      "path": "compiler/src/middle/loopctl.rs",
+      "sha256": "634cd5f9438edb87fbe521cc3602d005d8529a870b434abe36a3f1f97c854652"
+    },
+    {
+      "path": "compiler/src/middle/mod.rs",
+      "sha256": "e54cbf893f4335dbced73597a4ddac4850999ce369c188f4dfc0847d3d19298b"
+    },
+    {
+      "path": "compiler/src/middle/proptest.rs",
+      "sha256": "16818f632d3f75cb37e5b0d5d760e31204415a9022b051f10815d04525763e11"
+    },
+    {
+      "path": "compiler/src/middle/research_profile.rs",
+      "sha256": "05dff4c293c0272be0f5d74a974b03503090336b1ac2faa3b81d0bfd20f66ae3"
+    },
+    {
+      "path": "compiler/src/middle/security_label.rs",
+      "sha256": "1db8fad82c753f87e6721f45a8c1e33beaa62c813448ea8cdb8760174c26680f"
+    },
+    {
+      "path": "compiler/src/middle/trifecta.rs",
+      "sha256": "daeaefb17d4bae9f93521cd3fbc50cb34ec51cbb7517d1639cff5a46ca6fceb2"
+    },
+    {
+      "path": "compiler/src/middle/ty.rs",
+      "sha256": "57dd408b944af6b1b5b10f8e457dd1c7bcb0bee2c08bacec334552f276c7113a"
+    },
+    {
+      "path": "compiler/src/middle/visit.rs",
+      "sha256": "1ac395bf4b5ce551b3f28a9b27db5aeabbd6031741702ce156b5265187c195e6"
+    },
+    {
+      "path": "compiler/src/middle/whole.rs",
+      "sha256": "cdc36850459c47d8c92f926d09455d54f3615eca8cab8f7a213059a2019ccaa8"
+    },
+    {
+      "path": "compiler/src/package/cache.rs",
+      "sha256": "6d37a661dcea55ff7c0cc074a973dc16e017463c966dd9a89c76618311103a79"
+    },
+    {
+      "path": "compiler/src/package/confinement.rs",
+      "sha256": "c2d50c5aeae5657a04d824c9a45e0c0e217cfd75be3055b86b3bd55fc32261a2"
+    },
+    {
+      "path": "compiler/src/package/entitlements.rs",
+      "sha256": "1b5f59a38357889b810b75c1a7024549d45633b39e185c9216f606c24d1f0c4d"
+    },
+    {
+      "path": "compiler/src/package/lock.rs",
+      "sha256": "25a8ae65fe2a104780909161a900b62d7e6473b8c3c66659652eef35cfe2bb54"
+    },
+    {
+      "path": "compiler/src/package/merkle.rs",
+      "sha256": "08dd8fc9552c264d54bb337f84b36ad9d8bcb4aabed24cbccfb443fe3e1de378"
+    },
+    {
+      "path": "compiler/src/package/mod.rs",
+      "sha256": "424324f25be2ac49a8428cefba28f3d026ecbe93ffb93b0771c2161816c02534"
+    },
+    {
+      "path": "compiler/src/package/proof.rs",
+      "sha256": "a1fa8615306be27c9a45c76cf35fe07757428f6c2e10d936ae7bd45485f19bf7"
+    },
+    {
+      "path": "compiler/src/package/registry.rs",
+      "sha256": "94069d7e602e6490523d4e120e8a1d25fa46d9269131388850b150ae5ff90ad1"
+    },
+    {
+      "path": "compiler/src/package/resolve_deps.rs",
+      "sha256": "770316e7b52c9ca9cfeaef1edfc54977c1e6e18eb45f13bf579c6d170ab90cc4"
+    },
+    {
+      "path": "compiler/src/package/semver.rs",
+      "sha256": "8e9b73403dc77493e92fb5eb959732af9712eb75dcdce8036875552450e0ab23"
+    },
+    {
+      "path": "compiler/src/package/summary.rs",
+      "sha256": "98d2a4d38f1c8748fddf3243f1821d43a27732ac9ba501cbc53a44a31a9b1439"
+    },
+    {
+      "path": "compiler/src/package/trust.rs",
+      "sha256": "684998d9ed540de17601f35e06b99b5244291f076cf4d21b7a7bf6d7600737b8"
+    },
+    {
+      "path": "compiler/src/project/mod.rs",
+      "sha256": "f3fe4dd948d976ca432391599c712a2a2ade9b7f3ef302cff4ba58e77a949cc0"
+    },
+    {
+      "path": "compiler/src/resolve/mod.rs",
+      "sha256": "d200a6fa1a021c50c9d88a50c1a2d46e24537fb52b6953bf235b59c1373e7076"
+    },
+    {
+      "path": "compiler/src/resource.rs",
+      "sha256": "88184b74707f12bf3d9a91e2963420ba9c4d8bf10d710223e0efb0710dd1c366"
+    },
+    {
+      "path": "compiler/src/selfhost_schema/mod.rs",
+      "sha256": "5087257740b6a71e2c1d570d2525ca418cf2839a803d77ba609590990d99ddf5"
+    },
+    {
+      "path": "compiler/src/stdlib/mod.rs",
+      "sha256": "ef67fc40df701b4a072ae31e3e5f33ed933c9ddbd91ab23c8c04f00325703531"
+    },
+    {
+      "path": "solver/src/blast.rs",
+      "sha256": "37c51f2e7524926aa738c7e97e00908797c28f246df10ede9f3a42cf5de2b39a"
+    },
+    {
+      "path": "solver/src/bv.rs",
+      "sha256": "14c4cc0e799740733ef89969a89c3faab8441db9285b30eb5cc53cfca8162973"
+    },
+    {
+      "path": "solver/src/fp.rs",
+      "sha256": "dec021730c4bff6dd940958b0b0b62e1f2917db1f9135e8bd14f85417d06acd8"
+    },
+    {
+      "path": "solver/src/fragment.rs",
+      "sha256": "0fe073c5427780325f5b979131b937bb84755fdc0429d99f206f24731b203e11"
+    },
+    {
+      "path": "solver/src/lib.rs",
+      "sha256": "9aaa462182d7fdeeb9203cf8d93116121054cdc05599addd25e577411576ade3"
+    },
+    {
+      "path": "solver/src/lrat.rs",
+      "sha256": "633a6a3881b5d76de716de5bd5aa665c652da3e2e097530531d743ebd7a67793"
+    },
+    {
+      "path": "solver/src/parse.rs",
+      "sha256": "c1aab1740eb78111f91ede0df64b8a5de4d357bab3a4f98891df5f1f90bd1872"
+    },
+    {
+      "path": "solver/src/sat.rs",
+      "sha256": "a67af2561dd0cebb885e94ee4fbd4082640902f9c504992bd9829dc1949185a3"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "65507f013c98fe2be25ff7f3f1d084e2733c49854f6bc310bf1df6ac42106643"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "b27a735e13c848f7f26cc05229c4aeb0e7c435a20c26a92502a1635990b14703"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "14035986b8412e40f7865b1a8fea402a1047ec5a8be3140fb3b7afff98a82e9f"
+    },
+    {
+      "path": "compiler/Cargo.toml",
+      "sha256": "550288396fbaa889e8d3a69e014889ee8f2cab2b63e08da8118be173053e1de3"
+    },
+    {
+      "path": "compiler/tests/ifc2_minmax.rs",
+      "sha256": "345c1280213fc7429273c34c7c61ab0ed0a58cbc6b10a3ab21a812b7cd5bb852"
+    }
+  ],
+  "instruments": [
+    {
+      "path": "/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/libanubis_compiler-482da2b9e5eefdcd.rlib",
+      "sha256": "4dc99dd2f91aaff11dea01536c8d868af6c1caa4563da91c52ad203ff2bc8444"
+    },
+    {
+      "path": "/home/sicarii/Work/anubis-mission-20260926/out/minmax/review-regressions",
+      "sha256": "84061dd4a087a2b2b8b4d959d375cb589f187ac2b4a013cf146986db96e987f1"
+    }
+  ],
+  "test_command": [
+    "out/minmax/review-regressions"
+  ],
+  "test_exit_code": 101,
+  "test_compilation": [
+    "rustc",
+    "--edition=2021",
+    "--test",
+    "compiler/tests/ifc2_minmax.rs",
+    "--extern",
+    "anubis_compiler=/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/libanubis_compiler-482da2b9e5eefdcd.rlib",
+    "-L",
+    "dependency=/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps",
+    "-o",
+    "out/minmax/review-regressions"
+  ],
+  "limitations": [
+    "Not a published or release compiler pin",
+    "Compiler library was built with cargo --locked --release using pinned nightly; final test source was compiled directly against that library while unrelated CLI dependencies were still building",
+    "No full-workspace, full-matrix, corpus, or disposable-guest gate receipt"
+  ]
+}

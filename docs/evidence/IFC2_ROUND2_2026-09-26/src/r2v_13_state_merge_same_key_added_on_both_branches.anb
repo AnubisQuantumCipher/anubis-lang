@@ -1,0 +1,14 @@
+fn status(c) {
+    let mut out = {"user": "bob"};
+    if c {
+        out["status"] = "ok";
+    } else {
+        out["status"] = "denied";
+    }
+    out
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let r = status(k > 100);
+    println(keys(r));
+}

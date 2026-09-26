@@ -1,0 +1,8 @@
+fn main() uses(fs.read, fs.write) {
+    let s: secret<i64> = 123456;
+    let mode = read_file("cfg.txt");
+    if mode == "on" {
+        println("feature enabled");
+    }
+    let r = write_file("vault.txt", sha256(str(s)));
+}
