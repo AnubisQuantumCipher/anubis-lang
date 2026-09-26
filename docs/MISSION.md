@@ -74,6 +74,9 @@ The latest reviewed implementation code commit on the isolated local integration
 branch is `ebe4f3edf0ae4b9a93c04b26e467de2ca0f8a05b`. It follows the
 fixture-only guard-write registration and its docs receipt. This docs-only
 checkpoint records the captured-combiner build and selected CLI comparison.
+Fixture-only commit `2ca7afff0df115e9fcaf729ef2a34304e72830af`
+follows it, registering the newly witnessed binder leak and independent
+guard controls before any implementation repair.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
@@ -97,6 +100,13 @@ must still be rederived for the new producer.
 
 The [scoped arm-binder receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
 records the preceding `70b200c7` result. The
+[new shadowed-binder registration](evidence/SHADOWED_MATCH_IFLET_REGISTRATION_2026-09-26.md)
+now records a distinct silent accept inside a reached `if let` expression
+in a match arm, with a direct checked disproof and a native `f(0)` witness.
+It also freezes a valid call before a later binder write and a distinct
+stale-prior-nonmatch case. The proposed guard-write transfer remains on HOLD
+pending independent review of its revised binder handling.
+The
 [statement enum-payload receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md)
 and [value-position enum receipt](evidence/ARM_ENUM_EXPR_PRECISION_2026-09-26.md)
 show the frozen valid dead arms accepted and reachable violated twins

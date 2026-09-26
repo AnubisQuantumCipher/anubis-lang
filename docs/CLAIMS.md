@@ -15,6 +15,15 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — reached shadowed-binder call silently accepted.**
+The [source-bound registration receipt](evidence/SHADOWED_MATCH_IFLET_REGISTRATION_2026-09-26.md)
+for local fixture commit `2ca7afff` records a Safe value-match arm whose
+statement-free `if let` calls `f(0)` through a shadowing binder. The pinned
+checker passes the carrier, disproves direct `f(0)`, and normal Safe native
+execution prints `entered f with 0` on a harmless witness variant. A valid
+call-before-binder-write remains required to pass. The guard-write repair
+drafts have not passed independent review or been integrated.
+
 **UPDATE 2026-09-26 — private captured-project combiner staged.**
 Local code commit `ebe4f3ed` has a
 [scoped local receipt](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md).
