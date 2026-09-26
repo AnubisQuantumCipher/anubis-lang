@@ -4663,6 +4663,23 @@ fn resolve_applied_container_lambda(
 }
 
 impl SemanticContext {
+    /// Stable per typecheck request, including repeated checks in one process and cold replay.
+    /// A numeric prefix is not a source-language identifier; each use keeps its lane suffix.
+    fn fresh_solver_symbol(&mut self, suffix: &str) -> String {
+        let serial = self.solver_fresh;
+        if let Some(next) = serial.checked_add(1) {
+            self.solver_fresh = next;
+        } else {
+            // No proof may leave this request after symbol identities stop being unique.
+            self.push_diag_independent(SemanticDiagnostic {
+                code: Some("ANUBIS_SOLVER_SYMBOL_EXHAUSTED".into()),
+                message: "fresh solver symbol budget exhausted".into(),
+                span: None,
+            });
+        }
+        format!("{serial}{suffix}")
+    }
+
     /// The single diagnostic router for the type-system phase. New static checks (bidirectional
     /// inference, captured generics, trait coherence, typed `?`) emit through this with
     /// `shadow_gated=true`: while a check is in shadow mode AND `self.shadow` is on, its diagnostics
@@ -4836,6 +4853,9 @@ struct SemanticContext {
     carrier_frames: usize,
     /// Counter for fresh carrier symbols, so names are deterministic in program order.
     carrier_fresh: usize,
+    /// Fresh SMT identities belong to this request, never to the compiler process. This
+    /// counter is not reset between functions: distinct lexical sites cannot alias after joins.
+    solver_fresh: u64,
     /// Set while discharging carrier sites: the function whose parameter carried the contract. A
     /// `requires` clause that cannot be encoded in this context becomes an explicit unresolved
     /// obligation instead of being dropped.
@@ -9855,11 +9875,6 @@ fn specialize_int_call_ensures(
         .collect()
 }
 
-/// Process-unique solver symbol for a direct call result used inline as another call's argument.
-/// The decimal prefix cannot be written as an Anubis identifier; the textual suffix keeps it
-/// distinct from the match-binding fresh-symbol namespace.
-static INLINE_CONTRACT_ARG_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// Model `callee(args)` as a temporary integer result only when its declaration supplies enough
 /// information for the existing let-bound composition path: an integer return, non-empty `ensures`,
 /// and no `requires`. The no-requires restriction is the deliberately small first slice: assuming a
@@ -9881,8 +9896,7 @@ fn compose_inline_int_call_argument(
         return None;
     }
 
-    let serial = INLINE_CONTRACT_ARG_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let fresh = format!("{serial}contractarg");
+    let fresh = ctx.fresh_solver_symbol("contractarg");
     let concrete_ensures =
         specialize_int_call_ensures(ctx, callee, inner_args, Expr::Var(fresh.clone()), true);
     if concrete_ensures.is_empty() {
@@ -11328,10 +11342,7 @@ fn enter_pattern_contract_scope(
     for (name, membership, source) in saved {
         invalidate_binding_facts(ctx, assumptions, &name);
         let fresh = source.map(|smt| {
-            let fresh = format!(
-                "{}armbind",
-                MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            );
+            let fresh = ctx.fresh_solver_symbol("armbind");
             ctx.solver_int_vars.insert(fresh.clone());
             ctx.symbolic_widths.insert(fresh.clone(), 64);
             ctx.solver_int_vars.insert(name.clone());
@@ -11361,11 +11372,6 @@ fn leave_pattern_contract_scope(
         }
     }
 }
-
-/// Process-unique counter for minting fresh SMT symbols for whole-value match bindings (see the
-/// `Expr::Match` arm of `discharge_calls_in_expr`). Only used to guarantee distinct names; the value
-/// never affects a verdict or reaches the compiled output, so a global counter is fixpoint-safe.
-static MATCH_BIND_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Rename a whole-value match binding `name` to a FRESH symbol `fresh` in an arm's guard/body, so its
 /// obligations no longer collide with a shadowed outer var of the same mangled SMT name (`anb_<name>`).
@@ -11867,13 +11873,15 @@ fn discharge_calls_in_expr(
                 // over it FAILS CLOSED (rejects — the binding value is unknown), never fail-open. (A FLOAT or
                 // STRING binding gets an int-lane `fresh` with no matching float/string membership, so a
                 // float/string call over it is skipped — fail-OPEN, the pre-existing residual, unchanged.)
-                // The fresh name is a process-unique counter FOLLOWED by letters (`<n>mbind`). It starts with
+                // The fresh name is a request-local counter FOLLOWED by letters (`<n>mbind`). It starts with
                 // a digit, which an Anubis identifier cannot — so no user var mangles to the same `anb_<n>mbind`
                 // symbol — while using only `[0-9A-Za-z_]`, the exact charset `collect_vars_from_smt`
                 // tokenizes as one identifier (a `$` would be split, breaking the alias↔assertion var link).
                 // The counter (not `assumptions.len()`) guarantees a nested rebind gets a DISTINCT symbol even
                 // when the outer pushed no alias. The name never affects a verdict or reaches the compiled
-                // output, so a global counter is fixpoint-safe. Only added state (`fresh` membership + its
+                // output; request-local allocation makes its solver query identities stable across
+                // repeated and cold checks.
+                // Only added state (`fresh` membership + its
                 // alias fact) is introduced, so `truncate(snap)` + `solver_int_vars.remove(fresh)` is exact.
                 let mut fresh_syms: Vec<String> = Vec::new();
                 let mut renamed: Option<(Option<Expr>, Expr)> = None;
@@ -11883,10 +11891,7 @@ fn discharge_calls_in_expr(
                     // chain encode (`match a { p => match p { d => g(d) } }` — the inner alias's scrutinee
                     // is the OUTER fresh symbol, and expr_to_smt_value needs its width; without it a valid
                     // chain was fail-closed over-rejected).
-                    let fresh = format!(
-                        "{}mbind",
-                        MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    );
+                    let fresh = ctx.fresh_solver_symbol("mbind");
                     ctx.solver_int_vars.insert(fresh.clone());
                     ctx.symbolic_widths.insert(fresh.clone(), 64);
                     if is_int_modelable(scrutinee, &ctx.solver_int_vars) {
@@ -11923,10 +11928,7 @@ fn discharge_calls_in_expr(
                         let mut g = arm.guard.clone();
                         let mut b = arm.body.clone();
                         for n in &shadowing {
-                            let fresh = format!(
-                                "{}mbind",
-                                MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                            );
+                            let fresh = ctx.fresh_solver_symbol("mbind");
                             // The fresh symbol joins the SHADOWED var's OWN lane. An int-only fresh
                             // symbol would make a FLOAT/STRING callee requires match NO lane → skipped →
                             // fail-OPEN — flipping the pre-diff behavior (the obligation was built in the
@@ -16566,10 +16568,7 @@ fn analyze_stmts(
                     // verify. The seq `a` is de-modeled by the frame machinery if the body mutates it.
                     if let Expr::Var(seqname) = expr {
                         if is_seq_var(seqname, &ctx.solver_int_vars) {
-                            let idx = format!(
-                                "{}colidx",
-                                MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                            );
+                            let idx = ctx.fresh_solver_symbol("colidx");
                             let cond = Expr::Binary {
                                 op: "<".into(),
                                 lhs: Box::new(Expr::Var(idx.clone())),
@@ -39961,6 +39960,91 @@ mod inline_contract_composition_tests {
         assert_eq!(facts.len(), 1);
         assert!(facts[0].contains("bvslt"));
         assert!(ctx.solver_int_vars.contains(&fresh));
+    }
+
+    #[test]
+    fn fresh_solver_symbols_are_distinct_within_a_request_and_repeat_between_requests() {
+        let mut first = SemanticContext::default();
+        assert_eq!(first.fresh_solver_symbol("contractarg"), "0contractarg");
+        assert_eq!(first.fresh_solver_symbol("mbind"), "1mbind");
+        assert_eq!(first.fresh_solver_symbol("mbind"), "2mbind");
+        assert_eq!(first.fresh_solver_symbol("armbind"), "3armbind");
+        assert_eq!(first.fresh_solver_symbol("colidx"), "4colidx");
+
+        // Another check in the same compiler process starts at the same source identity.
+        let mut second = SemanticContext::default();
+        assert_eq!(second.fresh_solver_symbol("contractarg"), "0contractarg");
+        assert_eq!(second.fresh_solver_symbol("mbind"), "1mbind");
+
+        // An exhausted identifier space must refuse the request rather than reuse a
+        // symbol and allow a falsely discharged obligation to leave the checker.
+        let mut exhausted = SemanticContext {
+            solver_fresh: u64::MAX,
+            ..SemanticContext::default()
+        };
+        let _ = exhausted.fresh_solver_symbol("mbind");
+        assert!(exhausted
+            .diagnostics
+            .iter()
+            .chain(exhausted.independent_after_limit.iter())
+            .any(|diagnostic| {
+                diagnostic.code.as_deref() == Some("ANUBIS_SOLVER_SYMBOL_EXHAUSTED")
+            }));
+    }
+
+    #[test]
+    fn repeated_typechecks_keep_contract_and_match_obligations_byte_stable() {
+        let source = r#"
+fn source() -> i64 ensures(result == 1) { return 1; }
+fn need(v: i64) -> i64 requires(v > 0) { return v; }
+fn main() {
+    match 1 { x => { need(x); } }
+    let value = match 1 { x => need(x) };
+    need(source());
+}
+"#;
+        let check = || {
+            let ast = crate::frontend::parse_source(source).expect("valid source");
+            typecheck_ex_detailed(ast, Mode::Safe, false)
+                .expect("valid contracts")
+                .solver_obligations
+        };
+        let first = check();
+        assert!(
+            first.iter().any(|obligation| {
+                obligation.assertion.contains("contractarg")
+                    || obligation
+                        .assumptions
+                        .iter()
+                        .any(|fact| fact.contains("contractarg"))
+            }),
+            "inline-call result must enter a solver obligation"
+        );
+        assert!(
+            first.iter().any(|obligation| {
+                obligation.assertion.contains("mbind")
+                    || obligation
+                        .assumptions
+                        .iter()
+                        .any(|fact| fact.contains("mbind"))
+            }),
+            "match binder must enter a solver obligation"
+        );
+        assert!(
+            first.iter().any(|obligation| {
+                obligation.assertion.contains("armbind")
+                    || obligation
+                        .assumptions
+                        .iter()
+                        .any(|fact| fact.contains("armbind"))
+            }),
+            "statement-position match binder must enter a solver obligation"
+        );
+        let second = check();
+        assert_eq!(
+            first, second,
+            "same-process check must retain exact identities"
+        );
     }
 
     #[test]
