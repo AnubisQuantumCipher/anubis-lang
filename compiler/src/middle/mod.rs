@@ -5,6 +5,7 @@ use crate::BuildMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 mod analysis_limit;
@@ -146,6 +147,109 @@ pub struct SolverCheck {
 pub(crate) struct IssuedSolverCheck {
     pub(crate) source_ordinal: Option<usize>,
     pub(crate) check: SolverCheck,
+    /// Producer-assigned meaning. The captured bridge never infers this from
+    /// `SolverCheck.detail`, which is presentation text on the public wire.
+    pub(crate) outcome: IssuedSolverOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SolverToolFailure {
+    Spawn,
+    Write,
+    Wait,
+    MalformedResponse,
+    RejectedQuery,
+    NativeDisagreement,
+    ReplayMismatch,
+    NonzeroExit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IssuedSolverOutcome {
+    NoObligations,
+    Proved,
+    Disproved,
+    ContradictoryPremises,
+    Undecided,
+    Unencoded,
+    ToolFailure(SolverToolFailure),
+}
+
+struct ProducedSolverCheck {
+    check: SolverCheck,
+    outcome: IssuedSolverOutcome,
+}
+
+fn produced(check: SolverCheck, outcome: IssuedSolverOutcome) -> ProducedSolverCheck {
+    ProducedSolverCheck { check, outcome }
+}
+
+fn produced_tool_failure(
+    name: &str,
+    smt: String,
+    failure: SolverToolFailure,
+    context: &str,
+    observation: &str,
+) -> ProducedSolverCheck {
+    let prefix = if failure == SolverToolFailure::RejectedQuery {
+        Z3_REJECTED_DETAIL_PREFIX
+    } else {
+        SOLVER_PROTOCOL_ERROR_PREFIX
+    };
+    produced(
+        SolverCheck {
+            name: name.into(),
+            status: "FAIL".into(),
+            detail: format!(
+                "{prefix}: z3 {failure:?} during {context} ({observation}); no proof or counterexample was established"
+            ),
+            model: None,
+            smt,
+        },
+        IssuedSolverOutcome::ToolFailure(failure),
+    )
+}
+
+fn native_unsat_crosscheck(observation: &Z3Observation) -> Result<(), SolverToolFailure> {
+    match observation {
+        Z3Observation::Absent => Ok(()),
+        Z3Observation::Failure { failure, .. } => Err(*failure),
+        Z3Observation::Answer(answer) => match answer.as_str() {
+            "unsat" | "unknown" | Z3_OUT_OF_MEMORY => Ok(()),
+            "sat" => Err(SolverToolFailure::NativeDisagreement),
+            _ => Err(SolverToolFailure::MalformedResponse),
+        },
+    }
+}
+
+/// A model over a widened value or incomplete branch condition is a candidate,
+/// not a source-level disproof. Only the producer's checked counterexample
+/// outcome may be demoted; display text cannot trigger this transfer.
+fn overapproximate_counterexample(
+    mut result: ProducedSolverCheck,
+    obligation: &SolverObligation,
+) -> ProducedSolverCheck {
+    if result.outcome == IssuedSolverOutcome::Disproved
+        && !obligation.over_approx_reasons.is_empty()
+    {
+        let detail = match (
+            obligation
+                .over_approx_reasons
+                .contains(&OverApproxReason::ValueHavoc),
+            obligation
+                .over_approx_reasons
+                .contains(&OverApproxReason::BranchReachability),
+        ) {
+            (true, true) => OVERAPPROX_COMBINED_UNDECIDED_DETAIL,
+            (true, false) => OVERAPPROX_UNDECIDED_DETAIL,
+            (false, true) => BRANCH_REACHABILITY_UNDECIDED_DETAIL,
+            (false, false) => unreachable!(),
+        };
+        result.check.detail = detail.into();
+        result.check.model = None;
+        result.outcome = IssuedSolverOutcome::Undecided;
+    }
+    result
 }
 
 /// Interpret the wire status once, without accepting a future or malformed value by default.
@@ -211,6 +315,7 @@ pub enum SolverStreamIntegrityError {
     InventoryCountMismatch { expected: usize, actual: usize },
     InventoryOriginMismatch { index: usize, actual: Option<usize> },
     InventoryNameMismatch { index: usize },
+    OutcomeStatusMismatch { index: usize },
 }
 
 impl std::fmt::Display for SolverStreamIntegrityError {
@@ -244,6 +349,10 @@ impl std::fmt::Display for SolverStreamIntegrityError {
             Self::InventoryNameMismatch { index } => write!(
                 f,
                 "solver row {index} has a different display name from its source obligation"
+            ),
+            Self::OutcomeStatusMismatch { index } => write!(
+                f,
+                "solver row {index} has a wire status inconsistent with its producer outcome"
             ),
         }
     }
@@ -20837,16 +20946,17 @@ impl SymbolicEngine {
     }
 
     pub fn check_obligations(ir: &TypedIR) -> Vec<SolverCheck> {
-        Self::check_obligations_with(ir, |_, check| check)
+        Self::check_obligations_with(ir, |_, result| result.check)
     }
 
     /// Carry an internal source origin through solver execution for consumers
     /// that compare the emitted stream to the final TypedIR inventory. Public
     /// SolverCheck serialization remains unchanged.
     pub(crate) fn check_obligations_with_origins(ir: &TypedIR) -> Vec<IssuedSolverCheck> {
-        Self::check_obligations_with(ir, |source_ordinal, check| IssuedSolverCheck {
+        Self::check_obligations_with(ir, |source_ordinal, result| IssuedSolverCheck {
             source_ordinal,
-            check,
+            check: result.check,
+            outcome: result.outcome,
         })
     }
 
@@ -20855,46 +20965,24 @@ impl SymbolicEngine {
     // it cannot be reconstructed by enumerating finished check rows.
     fn check_obligations_with<T>(
         ir: &TypedIR,
-        mut issue: impl FnMut(Option<usize>, SolverCheck) -> T,
+        mut issue: impl FnMut(Option<usize>, ProducedSolverCheck) -> T,
     ) -> Vec<T> {
         if ir.solver_obligations.is_empty() {
             return vec![issue(
                 None,
-                SolverCheck {
-                    name: "solver:no-obligations".into(),
-                    status: "PASS".into(),
-                    detail: NO_OBLIGATIONS_DETAIL.into(),
-                    model: None,
-                    smt: "(check-sat)".into(),
-                },
+                produced(
+                    SolverCheck {
+                        name: "solver:no-obligations".into(),
+                        status: "PASS".into(),
+                        detail: NO_OBLIGATIONS_DETAIL.into(),
+                        model: None,
+                        smt: "(check-sat)".into(),
+                    },
+                    IssuedSolverOutcome::NoObligations,
+                ),
             )];
         }
 
-        let overapprox = |check: SolverCheck, obl: &SolverObligation| -> SolverCheck {
-            if check.status == "FAIL"
-                && counterexample_was_replayed(&check)
-                && !obl.over_approx_reasons.is_empty()
-            {
-                let detail = match (
-                    obl.over_approx_reasons
-                        .contains(&OverApproxReason::ValueHavoc),
-                    obl.over_approx_reasons
-                        .contains(&OverApproxReason::BranchReachability),
-                ) {
-                    (true, true) => OVERAPPROX_COMBINED_UNDECIDED_DETAIL,
-                    (true, false) => OVERAPPROX_UNDECIDED_DETAIL,
-                    (false, true) => BRANCH_REACHABILITY_UNDECIDED_DETAIL,
-                    (false, false) => unreachable!(),
-                };
-                SolverCheck {
-                    detail: detail.into(),
-                    model: None,
-                    ..check
-                }
-            } else {
-                check
-            }
-        };
         ir.solver_obligations
             .iter()
             .enumerate()
@@ -20905,13 +20993,16 @@ impl SymbolicEngine {
                 if obl.name.starts_with(UNRESOLVED_REQUIRES_PREFIX) {
                     return issue(
                         Some(source_ordinal),
-                        SolverCheck {
-                            name: obl.name.clone(),
-                            status: "FAIL".into(),
-                            detail: UNRESOLVED_PRECONDITION_DETAIL.into(),
-                            model: None,
-                            smt: unresolved_obligation_smt_comment(obl),
-                        },
+                        produced(
+                            SolverCheck {
+                                name: obl.name.clone(),
+                                status: "FAIL".into(),
+                                detail: UNRESOLVED_PRECONDITION_DETAIL.into(),
+                                model: None,
+                                smt: unresolved_obligation_smt_comment(obl),
+                            },
+                            IssuedSolverOutcome::Unencoded,
+                        ),
                     );
                 }
                 // Faithful complete smt with defs from ir + obligation
@@ -20961,7 +21052,7 @@ impl SymbolicEngine {
                 }
                 smt.push_str(&body);
                 smt.push_str("(check-sat)\n(get-model)\n");
-                let mut check = run_z3_obligation_with_smt(obl, smt);
+                let mut result = run_z3_obligation_with_smt(obl, smt);
                 // Vacuity guard for CONTRACT obligations: `A ⟹ P` is proved by `A ∧ ¬P` UNSAT, but
                 // that is also UNSAT when the assumptions `A` are self-contradictory — a VACUOUS
                 // "proof". A precondition + `assume` that cannot both hold (e.g. `requires(x < 100)`
@@ -20977,16 +21068,31 @@ impl SymbolicEngine {
                     || obl.name.starts_with("requires@")
                     || obl.name.starts_with("loop-invariant-base:")
                     || obl.name.starts_with("assert:");
-                if check.status == "PASS" && is_contract && !obl.assumptions.is_empty() {
-                    apply_vacuity_result(&mut check, assumptions_satisfiable(obl));
+                if result.outcome == IssuedSolverOutcome::Proved
+                    && is_contract
+                    && !obl.assumptions.is_empty()
+                {
+                    let vacuity = assumptions_satisfiable(obl);
+                    result.outcome = match &vacuity {
+                        Vacuity::Satisfiable => result.outcome,
+                        Vacuity::Contradictory => IssuedSolverOutcome::ContradictoryPremises,
+                        Vacuity::Unknown => IssuedSolverOutcome::Undecided,
+                        Vacuity::SolverAlarm { failure, .. } => {
+                            IssuedSolverOutcome::ToolFailure(*failure)
+                        }
+                    };
+                    apply_vacuity_result(&mut result.check, vacuity);
                 }
                 // Keep epistemic status intact. The shared admission rule rejects `UNKNOWN` for
                 // every property, while diagnostics can still report undecided rather than a
                 // counterexample. No obligation-name allowlist is involved in that decision.
-                if solver_outcome(&check) == SolverOutcome::Unknown {
-                    check.model = None;
+                if result.outcome == IssuedSolverOutcome::Undecided {
+                    result.check.model = None;
                 }
-                issue(Some(source_ordinal), overapprox(check, obl))
+                issue(
+                    Some(source_ordinal),
+                    overapproximate_counterexample(result, obl),
+                )
             })
             .collect()
     }
@@ -21080,7 +21186,10 @@ enum Vacuity {
     Contradictory,
     /// The solvers could not be trusted on this query: z3 rejected it as malformed, or the native
     /// solver and z3 disagreed. A compiler soundness alarm, never a program defect.
-    SolverAlarm(String),
+    SolverAlarm {
+        detail: String,
+        failure: SolverToolFailure,
+    },
     /// The premise check returned a literal `unknown`, so non-vacuity was not established.
     Unknown,
 }
@@ -21098,7 +21207,7 @@ fn apply_vacuity_result(check: &mut SolverCheck, result: Vacuity) {
         // A solver alarm is reported AS one (compiler locus): calling it a
         // self-contradictory contract would send whoever reads it to edit a correct
         // program and destroy the evidence of the disagreement.
-        Vacuity::SolverAlarm(detail) => {
+        Vacuity::SolverAlarm { detail, .. } => {
             check.status = "FAIL".into();
             check.detail = detail;
             check.model = None;
@@ -21162,52 +21271,71 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Vacuity {
     // reporting the premises as vacuous (`Some(false)` flips the obligation to FAIL — reject).
     if native_authoritative() {
         if let Some(nat) = anubis_solver::native_check_sat_authoritative(&smt) {
-            if let Some(z) = z3_spawn_first_line(&smt) {
-                if z3_rejected_query(&z) {
-                    eprintln!(
-                        "ANUBIS_NATIVE_DISAGREE(vacuity): native decided, z3 rejected the query \
-                         (`{}`) — failing closed; smt=<<{}>>",
-                        z,
-                        smt.replace('\n', " ")
-                    );
-                    return Vacuity::SolverAlarm(format!(
-                        "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; \
-                         failing closed — a malformed premise query establishes nothing"
-                    ));
-                }
-                let zb = match z.as_str() {
-                    "sat" => Some(true),
-                    "unsat" => Some(false),
-                    _ => None,
-                };
-                if let Some(zb) = zb {
-                    if zb != nat {
-                        eprintln!(
-                            "ANUBIS_NATIVE_DISAGREE(vacuity): native={} z3={} — failing closed; \
-                             smt=<<{}>>",
-                            if nat { "sat" } else { "unsat" },
-                            if zb { "sat" } else { "unsat" },
-                            smt.replace('\n', " ")
-                        );
-                        return Vacuity::SolverAlarm(
-                            "ANUBIS_NATIVE_DISAGREEMENT: the native solver and z3 disagree on whether \
-                             this contract's premises are satisfiable — cross-check soundness alarm; \
-                             failing closed"
-                                .into(),
-                        );
-                    }
-                }
-            }
-            return if nat {
-                Vacuity::Satisfiable
-            } else {
-                Vacuity::Contradictory
-            };
+            return native_vacuity_result(nat, observe_z3_process(&z3_process(&smt), false));
         }
     }
-    let ans = z3_spawn_first_line(&smt);
-    native_shadow_compare(&smt, ans.as_deref());
-    vacuity_answer(ans.as_deref())
+    let observation = observe_z3_process(&z3_process(&smt), false);
+    native_shadow_compare(
+        &smt,
+        match &observation {
+            Z3Observation::Answer(answer) => Some(answer.as_str()),
+            Z3Observation::Absent | Z3Observation::Failure { .. } => None,
+        },
+    );
+    match observation {
+        Z3Observation::Answer(answer) => vacuity_answer(Some(&answer)),
+        Z3Observation::Absent => vacuity_no_answer(SolverToolFailure::Spawn),
+        Z3Observation::Failure { failure, detail } => vacuity_process_failure(failure, &detail),
+    }
+}
+
+fn native_vacuity_result(native_sat: bool, observation: Z3Observation) -> Vacuity {
+    let native_result = || {
+        if native_sat {
+            Vacuity::Satisfiable
+        } else {
+            Vacuity::Contradictory
+        }
+    };
+    match observation {
+        Z3Observation::Absent => native_result(),
+        Z3Observation::Failure { failure, detail } => vacuity_process_failure(failure, &detail),
+        Z3Observation::Answer(answer) => match answer.as_str() {
+            "sat" if native_sat => native_result(),
+            "unsat" if !native_sat => native_result(),
+            "unknown" | Z3_OUT_OF_MEMORY => native_result(),
+            "sat" | "unsat" => Vacuity::SolverAlarm {
+                detail: "ANUBIS_NATIVE_DISAGREEMENT: the native solver and z3 disagree on whether \
+                         this contract's premises are satisfiable — cross-check soundness alarm; \
+                         failing closed"
+                    .into(),
+                failure: SolverToolFailure::NativeDisagreement,
+            },
+            _ => vacuity_process_failure(SolverToolFailure::MalformedResponse, &answer),
+        },
+    }
+}
+
+fn vacuity_process_failure(failure: SolverToolFailure, observation: &str) -> Vacuity {
+    let detail = match failure {
+        SolverToolFailure::RejectedQuery => format!(
+                "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{observation}`) for this contract's vacuity check; failing closed — a malformed premise query establishes nothing"
+            ),
+        SolverToolFailure::MalformedResponse | SolverToolFailure::NonzeroExit => format!(
+            "{SOLVER_PROTOCOL_ERROR_PREFIX}: vacuity query had a {failure:?} result ({observation}); non-vacuity was not established"
+        ),
+        _ => return vacuity_no_answer(failure),
+    };
+    Vacuity::SolverAlarm { detail, failure }
+}
+
+fn vacuity_no_answer(failure: SolverToolFailure) -> Vacuity {
+    Vacuity::SolverAlarm {
+        detail: format!(
+            "{SOLVER_PROTOCOL_ERROR_PREFIX}: vacuity query returned no answer; non-vacuity was not established"
+        ),
+        failure,
+    }
 }
 
 /// Interpret one premise query response, with literal `unknown` distinct from a missing or
@@ -21218,21 +21346,26 @@ fn vacuity_answer(answer: Option<&str>) -> Vacuity {
         Some("unsat") => Vacuity::Contradictory,
         // z3 alone, and it rejected the premise query: the contract's "proof" rests on a query nobody
         // accepted. Fail closed (before, this fell through to "unknown" and the PASS stood).
-        Some(z) if z3_rejected_query(z) => Vacuity::SolverAlarm(format!(
-            "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; failing \
-             closed — a malformed premise query establishes nothing"
-        )),
+        Some(z) if z3_rejected_query(z) => Vacuity::SolverAlarm {
+            detail: format!(
+                "{Z3_REJECTED_DETAIL_PREFIX} (z3: `{z}`) for this contract's vacuity check; failing \
+                 closed — a malformed premise query establishes nothing"
+            ),
+            failure: SolverToolFailure::RejectedQuery,
+        },
         Some("unknown") => Vacuity::Unknown,
-        Some(_) => Vacuity::SolverAlarm(format!(
-            "{SOLVER_PROTOCOL_ERROR_PREFIX}: vacuity query returned an unrecognized response; non-vacuity was not established"
-        )),
-        None => Vacuity::SolverAlarm(format!(
-            "{SOLVER_PROTOCOL_ERROR_PREFIX}: vacuity query returned no answer; non-vacuity was not established"
-        )),
+        Some(Z3_OUT_OF_MEMORY) => Vacuity::Unknown,
+        Some(_) => Vacuity::SolverAlarm {
+            detail: format!(
+                "{SOLVER_PROTOCOL_ERROR_PREFIX}: vacuity query returned an unrecognized response; non-vacuity was not established"
+            ),
+            failure: SolverToolFailure::MalformedResponse,
+        },
+        None => vacuity_no_answer(SolverToolFailure::MalformedResponse),
     }
 }
 
-fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> SolverCheck {
+fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> ProducedSolverCheck {
     // Optional debug dump of the exact SMT handed to z3. Opt-in (ANUBIS_DUMP_SMT) and written to a
     // per-process path so concurrent `anubis check` runs never clobber a shared /tmp file.
     if std::env::var_os("ANUBIS_DUMP_SMT").is_some() {
@@ -21262,82 +21395,83 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     if native_authoritative() {
         match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
-                if let Some(z) = z3_spawn_first_line(&smt) {
-                    if z3_rejected_query(&z) {
-                        eprintln!(
-                            "ANUBIS_NATIVE_DISAGREE(primary): native=unsat z3 rejected the query \
-                             (`{}`) — failing closed; smt=<<{}>>",
-                            z,
-                            smt.replace('\n', " ")
-                        );
-                        return SolverCheck {
-                            name: obligation.name.clone(),
-                            status: "FAIL".into(),
-                            detail: format!(
-                                "solver rejected the emitted SMT (z3: `{z}`) although the native \
-                                 solver decided it; failing closed — a certificate for a malformed \
-                                 obligation is not a proof"
-                            ),
-                            model: None,
-                            smt,
-                        };
-                    }
-                    if z == "sat" {
+                let observation = observe_z3_process(&z3_process(&smt), true);
+                if let Err(failure) = native_unsat_crosscheck(&observation) {
+                    if failure == SolverToolFailure::NativeDisagreement {
                         eprintln!(
                             "ANUBIS_NATIVE_DISAGREE(primary): native=unsat z3=sat — failing \
                              closed; smt=<<{}>>",
                             smt.replace('\n', " ")
                         );
-                        return SolverCheck {
-                            name: obligation.name.clone(),
-                            status: "FAIL".into(),
-                            detail: "ANUBIS_NATIVE_DISAGREEMENT: the native solver proved this \
-                                     obligation but z3 found it satisfiable — cross-check \
-                                     soundness alarm; failing closed"
-                                .into(),
-                            model: None,
-                            smt,
-                        };
                     }
-                    if !matches!(z.as_str(), "unsat" | "unknown" | Z3_OUT_OF_MEMORY) {
-                        return solver_unresolved_answer(&obligation.name, smt, &z);
-                    }
+                    let detail = match &observation {
+                        Z3Observation::Failure { detail, .. } | Z3Observation::Answer(detail) => {
+                            detail.as_str()
+                        }
+                        Z3Observation::Absent => "unexpected absent cross-check",
+                    };
+                    return produced_tool_failure(
+                        &obligation.name,
+                        smt,
+                        failure,
+                        "native UNSAT cross-check",
+                        detail,
+                    );
                 }
-                return SolverCheck {
-                    name: obligation.name.clone(),
-                    status: "PASS".into(),
-                    detail: PROVED_DETAIL_CERTIFIED.into(),
-                    model: None,
-                    smt,
-                };
+                return produced(
+                    SolverCheck {
+                        name: obligation.name.clone(),
+                        status: "PASS".into(),
+                        detail: PROVED_DETAIL_CERTIFIED.into(),
+                        model: None,
+                        smt,
+                    },
+                    IssuedSolverOutcome::Proved,
+                );
             }
             Some(anubis_solver::NativeVerdict::Sat(native_model)) => {
-                if let Some(z) = z3_spawn_first_line(&smt) {
-                    if let Some(refusal) = native_sat_first_z3_answer(&obligation.name, &smt, &z) {
-                        return refusal;
+                match observe_z3_process(&z3_process(&smt), true) {
+                    Z3Observation::Absent => {
+                        // Native replay already checked this model. Actual
+                        // absence is the declared native-only policy.
+                        let mut rendered = String::from("sat\n(\n");
+                        for (name, value, width) in &native_model {
+                            rendered.push_str(&format!(
+                                "  (define-fun {} () (_ BitVec {}) (_ bv{} {}))\n",
+                                name, width, value, width
+                            ));
+                        }
+                        rendered.push_str(")\n");
+                        return produced(
+                            SolverCheck {
+                                name: obligation.name.clone(),
+                                status: "FAIL".into(),
+                                detail: DISPROVED_DETAIL_NATIVE.into(),
+                                model: Some(rendered),
+                                smt,
+                            },
+                            IssuedSolverOutcome::Disproved,
+                        );
                     }
-                    native_sat_seen = true;
-                    // Both say sat → fall through to the z3 path below for its model + replay
-                    // diagnostics (identical user-facing output during the soak).
-                } else {
-                    // z3 absent: the native model carries the counterexample. It was already
-                    // re-verified by the solver's independent evaluator (the native replay), which
-                    // is the same guarantee the z3 path gets from `replay_counterexample`.
-                    let mut rendered = String::from("sat\n(\n");
-                    for (name, value, width) in &native_model {
-                        rendered.push_str(&format!(
-                            "  (define-fun {} () (_ BitVec {}) (_ bv{} {}))\n",
-                            name, width, value, width
-                        ));
+                    Z3Observation::Failure { failure, detail } => {
+                        return produced_tool_failure(
+                            &obligation.name,
+                            smt,
+                            failure,
+                            "native SAT cross-check",
+                            &detail,
+                        );
                     }
-                    rendered.push_str(")\n");
-                    return SolverCheck {
-                        name: obligation.name.clone(),
-                        status: "FAIL".into(),
-                        detail: DISPROVED_DETAIL_NATIVE.into(),
-                        model: Some(rendered),
-                        smt,
-                    };
+                    Z3Observation::Answer(z) => {
+                        if let Some(refusal) =
+                            native_sat_first_z3_answer(&obligation.name, &smt, &z)
+                        {
+                            return refusal;
+                        }
+                        native_sat_seen = true;
+                        // Both say sat → fall through to the model-bearing
+                        // second query and independent replay.
+                    }
                 }
             }
             None => {
@@ -21359,88 +21493,86 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
                          to trust z3 alone",
                         obligation.name
                     );
-                    return SolverCheck {
-                        name: obligation.name.clone(),
-                        status: "FAIL".into(),
-                        detail: "ANUBIS_Z3_ONLY_UNTRUSTED: native solver declined and \
+                    return produced(
+                        SolverCheck {
+                            name: obligation.name.clone(),
+                            status: "FAIL".into(),
+                            detail: "ANUBIS_Z3_ONLY_UNTRUSTED: native solver declined and \
                                  ANUBIS_REQUIRE_NATIVE_PROOFS=1 refuses to trust z3 alone; \
                                  this obligation lives outside the machine-checked native \
                                  fragment (see docs/CLAIMS.md § REG-002)"
-                            .into(),
-                        model: None,
-                        smt,
-                    };
+                                .into(),
+                            model: None,
+                            smt,
+                        },
+                        IssuedSolverOutcome::Undecided,
+                    );
                 }
                 // Otherwise fall through to z3 exactly as before; the JSONL logging is emitted
                 // just after z3 answers so the record captures both the obligation and its verdict.
             }
         }
     }
-    let mut child = match Command::new("z3")
-        .args(Z3_ARGS)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(err) => {
-            return SolverCheck {
-                name: obligation.name.clone(),
-                status: "FAIL".into(),
-                detail: format!("z3 unavailable: {}", err),
-                model: None,
+    let process = z3_process(&smt);
+    let first = match observe_z3_process(&process, true) {
+        Z3Observation::Answer(answer) => answer,
+        Z3Observation::Absent => {
+            return produced_tool_failure(
+                &obligation.name,
                 smt,
-            };
+                SolverToolFailure::Spawn,
+                "primary obligation (z3 absent)",
+                "not found on PATH",
+            );
+        }
+        Z3Observation::Failure { failure, detail } => {
+            return produced_tool_failure(
+                &obligation.name,
+                smt,
+                failure,
+                "primary obligation",
+                &detail,
+            );
         }
     };
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        if let Err(err) = stdin.write_all(smt.as_bytes()) {
-            return SolverCheck {
-                name: obligation.name.clone(),
-                status: "FAIL".into(),
-                detail: format!("z3 stdin failed: {}", err),
-                model: None,
+    let Z3ProcessOutcome::Completed { output, .. } = process else {
+        return produced_tool_failure(
+            &obligation.name,
+            smt,
+            SolverToolFailure::MalformedResponse,
+            "primary obligation",
+            "no completed process behind accepted answer",
+        );
+    };
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(stdout) => stdout,
+        Err(_) => {
+            return produced_tool_failure(
+                &obligation.name,
                 smt,
-            };
-        }
-    }
-
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(err) => {
-            return SolverCheck {
-                name: obligation.name.clone(),
-                status: "FAIL".into(),
-                detail: format!("z3 execution failed: {}", err),
-                model: None,
-                smt,
-            };
+                SolverToolFailure::MalformedResponse,
+                "primary obligation",
+                "non-UTF-8 stdout behind accepted answer",
+            );
         }
     };
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    // The ANSWER line, not merely the first: an `(error …)` before the verdict is a rejection even when
-    // a warning precedes it or z3 answers what was left of the query (see `z3_answer_line`).
-    let answer = z3_answer_line(&stdout).unwrap_or_default();
-    let first = answer.as_str();
     // Shadow the PRIMARY obligation stream too (not just the replay/raw queries): under
     // `ANUBIS_NATIVE_SHADOW=1` the native verdict is compared against z3's right here, where the
     // real proof/counterexample decisions are made. z3's verdict below is returned unchanged.
-    native_shadow_compare(&smt, Some(first));
+    native_shadow_compare(&smt, Some(&first));
     // REG-002 audit hook: when the native authoritative path declined and z3 answered alone,
     // record the SMT + z3's verdict verbatim (opt-in via ANUBIS_Z3_ONLY_LOG). Sound-by-
     // construction: never influences the returned verdict.
     if native_declined {
-        record_z3_only_decision(&smt, Some(first));
+        record_z3_only_decision(&smt, Some(&first));
     }
     classify_obligation_z3_answer(&obligation.name, smt, &stdout, &stderr, native_sat_seen)
 }
 
 /// A checked native SAT model cannot be erased by an unrecognized first z3 response.
 /// Only a matching `sat` may proceed to the model-bearing second query.
-fn native_sat_first_z3_answer(name: &str, smt: &str, answer: &str) -> Option<SolverCheck> {
+fn native_sat_first_z3_answer(name: &str, smt: &str, answer: &str) -> Option<ProducedSolverCheck> {
     if answer == "sat" {
         return None;
     }
@@ -21458,18 +21590,28 @@ fn native_sat_first_z3_answer(name: &str, smt: &str, answer: &str) -> Option<Sol
     } else {
         return Some(solver_unresolved_answer(name, smt.into(), answer));
     };
-    Some(SolverCheck {
-        name: name.into(),
-        status: if answer == Z3_OUT_OF_MEMORY {
-            "UNKNOWN"
-        } else {
-            "FAIL"
-        }
-        .into(),
-        detail,
-        model: None,
-        smt: smt.into(),
-    })
+    let outcome = if answer == Z3_OUT_OF_MEMORY {
+        IssuedSolverOutcome::Undecided
+    } else if z3_rejected_query(answer) {
+        IssuedSolverOutcome::ToolFailure(SolverToolFailure::RejectedQuery)
+    } else {
+        IssuedSolverOutcome::ToolFailure(SolverToolFailure::NativeDisagreement)
+    };
+    Some(produced(
+        SolverCheck {
+            name: name.into(),
+            status: if answer == Z3_OUT_OF_MEMORY {
+                "UNKNOWN"
+            } else {
+                "FAIL"
+            }
+            .into(),
+            detail,
+            model: None,
+            smt: smt.into(),
+        },
+        outcome,
+    ))
 }
 
 /// Classify the final z3 answer while retaining any independently checked native SAT verdict.
@@ -21480,49 +21622,63 @@ fn classify_obligation_z3_answer(
     stdout: &str,
     stderr: &str,
     native_sat_seen: bool,
-) -> SolverCheck {
+) -> ProducedSolverCheck {
     let answer = z3_answer_line(stdout).unwrap_or_default();
     let first = answer.as_str();
     match first {
-        "unsat" if native_sat_seen => SolverCheck {
-            name: name.into(),
-            status: "FAIL".into(),
-            detail: "ANUBIS_NATIVE_DISAGREEMENT: an independently checked native counterexample \
+        "unsat" if native_sat_seen => produced(
+            SolverCheck {
+                name: name.into(),
+                status: "FAIL".into(),
+                detail:
+                    "ANUBIS_NATIVE_DISAGREEMENT: an independently checked native counterexample \
                      preceded a contradictory z3 unsat answer; failing closed"
-                .into(),
-            model: None,
-            smt,
-        },
-        "unsat" => SolverCheck {
-            name: name.into(),
-            status: "PASS".into(),
-            detail: PROVED_DETAIL_SOLVER_ONLY.into(),
-            model: None,
-            smt,
-        },
+                        .into(),
+                model: None,
+                smt,
+            },
+            IssuedSolverOutcome::ToolFailure(SolverToolFailure::NativeDisagreement),
+        ),
+        "unsat" => produced(
+            SolverCheck {
+                name: name.into(),
+                status: "PASS".into(),
+                detail: PROVED_DETAIL_SOLVER_ONLY.into(),
+                model: None,
+                smt,
+            },
+            IssuedSolverOutcome::Proved,
+        ),
         "sat" => {
             // Phase-4 B1: every FAIL model must replay. A model that does not re-satisfy the
             // query is an encoder/solver soundness alarm — not a trustworthy counterexample.
             let model = stdout.to_owned();
             if !replay_counterexample(&smt, &model) {
-                SolverCheck {
-                    name: name.into(),
-                    status: "FAIL".into(),
-                    detail: "ANUBIS_REPLAY_MISMATCH: z3 returned sat with a model that does not \
+                produced(
+                    SolverCheck {
+                        name: name.into(),
+                        status: "FAIL".into(),
+                        detail:
+                            "ANUBIS_REPLAY_MISMATCH: z3 returned sat with a model that does not \
                          re-verify under model-substitution replay (encoder-vs-solver soundness \
                          alarm); failing closed"
-                        .into(),
-                    model: Some(model),
-                    smt,
-                }
+                                .into(),
+                        model: Some(model),
+                        smt,
+                    },
+                    IssuedSolverOutcome::ToolFailure(SolverToolFailure::ReplayMismatch),
+                )
             } else {
-                SolverCheck {
-                    name: name.into(),
-                    status: "FAIL".into(),
-                    detail: DISPROVED_DETAIL_Z3.into(),
-                    model: Some(model),
-                    smt,
-                }
+                produced(
+                    SolverCheck {
+                        name: name.into(),
+                        status: "FAIL".into(),
+                        detail: DISPROVED_DETAIL_Z3.into(),
+                        model: Some(model),
+                        smt,
+                    },
+                    IssuedSolverOutcome::Disproved,
+                )
             }
         }
         // z3 refusing for want of memory is a RESOURCE limit, not a malformed query. It became
@@ -21530,30 +21686,46 @@ fn classify_obligation_z3_answer(
         // would report it as "the SMT we emitted is malformed" — blaming this compiler for an
         // obligation that is merely too big, and sending whoever reads it to hunt a bug that does
         // not exist. It is UNDECIDED: fail closed, and name the bound that actually bit.
-        other if other == Z3_OUT_OF_MEMORY || stderr.contains("out of memory") => SolverCheck {
-            name: name.into(),
-            status: "UNKNOWN".into(),
-            detail: UNDECIDED_MEMORY_DETAIL.into(),
-            model: None,
-            smt,
-        },
+        other if other == Z3_OUT_OF_MEMORY || stderr.contains("out of memory") => {
+            // Preserve the legacy wire row, but a malformed stdout answer is
+            // still a producer failure in the captured typed path. Stderr
+            // prose alone cannot establish a solver resource outcome.
+            let outcome = if other == Z3_OUT_OF_MEMORY || other == "unknown" {
+                IssuedSolverOutcome::Undecided
+            } else {
+                IssuedSolverOutcome::ToolFailure(SolverToolFailure::MalformedResponse)
+            };
+            produced(
+                SolverCheck {
+                    name: name.into(),
+                    status: "UNKNOWN".into(),
+                    detail: UNDECIDED_MEMORY_DETAIL.into(),
+                    model: None,
+                    smt,
+                },
+                outcome,
+            )
+        }
         // A z3 parse/sort ERROR means the SMT WE emitted is malformed (e.g. an undeclared symbol).
         // That is our bug, not an undecidable query — treat it as FAIL so it fails CLOSED. Emitting a
         // malformed obligation and then calling it "not a disproof" was the fail-OPEN hole that let a
         // parameter named `model`/`set`/`bvx` slip an unverified overflow contract past `check`.
         "unknown" => solver_unresolved_answer(name, smt, "unknown"),
-        other if other.starts_with("(error") || stderr.contains("error") => SolverCheck {
-            name: name.into(),
-            status: "FAIL".into(),
-            detail: format!(
-                "solver rejected the emitted SMT (z3: `{}` stderr `{}`); failing closed — a \
+        other if other.starts_with("(error") || stderr.contains("error") => produced(
+            SolverCheck {
+                name: name.into(),
+                status: "FAIL".into(),
+                detail: format!(
+                    "solver rejected the emitted SMT (z3: `{}` stderr `{}`); failing closed — a \
                  malformed obligation is not a proof",
-                other,
-                stderr.trim()
-            ),
-            model: None,
-            smt,
-        },
+                    other,
+                    stderr.trim()
+                ),
+                model: None,
+                smt,
+            },
+            IssuedSolverOutcome::ToolFailure(SolverToolFailure::RejectedQuery),
+        ),
         other => solver_unresolved_answer(name, smt, other),
     }
 }
@@ -21561,7 +21733,7 @@ fn classify_obligation_z3_answer(
 /// A literal solver `unknown` is undecided. Empty output or any other answer is a broken solver
 /// protocol and cannot be laundered into a budget-limited result (or a proof). Kept pure so the
 /// protocol boundary can be tested without spawning z3 or relying on timing.
-fn solver_unresolved_answer(name: &str, smt: String, answer: &str) -> SolverCheck {
+fn solver_unresolved_answer(name: &str, smt: String, answer: &str) -> ProducedSolverCheck {
     let (status, detail) = if answer == "unknown" {
         (
             "UNKNOWN",
@@ -21581,13 +21753,21 @@ fn solver_unresolved_answer(name: &str, smt: String, answer: &str) -> SolverChec
             ),
         )
     };
-    SolverCheck {
-        name: name.into(),
-        status: status.into(),
-        detail,
-        model: None,
-        smt,
-    }
+    let outcome = if answer == "unknown" {
+        IssuedSolverOutcome::Undecided
+    } else {
+        IssuedSolverOutcome::ToolFailure(SolverToolFailure::MalformedResponse)
+    };
+    produced(
+        SolverCheck {
+            name: name.into(),
+            status: status.into(),
+            detail,
+            model: None,
+            smt,
+        },
+        outcome,
+    )
 }
 
 /// Parses a z3 `(get-model)` response into a map from declared variable name to its literal
@@ -21753,25 +21933,409 @@ fn z3_rejected_query(first_line: &str) -> bool {
 /// z3's whole answer when `-memory:` bounds it (observed with z3 4.16, exit status 101).
 const Z3_OUT_OF_MEMORY: &str = "(error \"out of memory\")";
 
-/// Bare z3 spawn returning the trimmed first line of stdout (`sat`/`unsat`/`unknown`/`(error…`), or
-/// `None` if z3 could not be spawned or read. No native-solver logic here — this is both the z3 leg
-/// of `z3_check_sat_raw` and the cross-check partner inside the native-authoritative paths.
-fn z3_spawn_first_line(smt: &str) -> Option<String> {
-    let mut child = Command::new("z3")
+/// A missing executable is the only event in which native authority may work
+/// without its optional z3 cross-check. Once an executable was found, a failed
+/// spawn, write, wait, response, or exit is a distinct producer failure.
+#[derive(Debug)]
+enum Z3ProcessOutcome {
+    Absent,
+    Failed {
+        failure: SolverToolFailure,
+        detail: String,
+    },
+    Completed {
+        output: std::process::Output,
+        write_error: Option<String>,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Z3Observation {
+    Absent,
+    Answer(String),
+    Failure {
+        failure: SolverToolFailure,
+        detail: String,
+    },
+}
+
+fn z3_failure(failure: SolverToolFailure, detail: impl Into<String>) -> Z3Observation {
+    Z3Observation::Failure {
+        failure,
+        detail: detail.into(),
+    }
+}
+
+fn z3_executable_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    z3_executable_in_path(&path)
+}
+
+fn z3_executable_in_path(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|directory| directory.join("z3"))
+        // `symlink_metadata` still finds a dangling link. Its failed spawn is
+        // a present-but-broken tool, not permission to use native-only mode.
+        .find(|candidate| std::fs::symlink_metadata(candidate).is_ok())
+}
+
+fn z3_process(smt: &str) -> Z3ProcessOutcome {
+    let executable = z3_executable_on_path();
+    z3_process_at(executable.as_deref(), smt)
+}
+
+/// The explicit path is also the fake-solver test seam. Always close stdin
+/// and call `wait_with_output`, including after a write error, so the owned
+/// child is collected and an early `(error …)` answer is not discarded.
+fn z3_process_at(executable: Option<&Path>, smt: &str) -> Z3ProcessOutcome {
+    z3_process_at_with_leading_args(executable, &[], smt)
+}
+
+/// Test seam for invoking a stable interpreter with a generated fake-solver
+/// script. Production calls pass no leading arguments and execute z3 directly.
+fn z3_process_at_with_leading_args(
+    executable: Option<&Path>,
+    leading_args: &[&std::ffi::OsStr],
+    smt: &str,
+) -> Z3ProcessOutcome {
+    let Some(executable) = executable else {
+        return Z3ProcessOutcome::Absent;
+    };
+    let mut child = match Command::new(executable)
+        .args(leading_args)
         .args(Z3_ARGS)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
-    // A write error is NOT "z3 unavailable": z3 may have rejected the query and exited before reading
-    // all of it (a query larger than the pipe buffer then gets EPIPE). Its answer is still on stdout,
-    // so read it; treating the write error as "no z3" would let a native verdict stand unchecked.
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(smt.as_bytes());
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return Z3ProcessOutcome::Failed {
+                failure: SolverToolFailure::Spawn,
+                detail: error.to_string(),
+            };
+        }
+    };
+    let write_error = match child.stdin.take() {
+        Some(mut stdin) => stdin.write_all(smt.as_bytes()).err().map(|e| e.to_string()),
+        None => Some("solver stdin pipe was unavailable".into()),
+    };
+    match child.wait_with_output() {
+        Ok(output) => Z3ProcessOutcome::Completed {
+            output,
+            write_error,
+        },
+        Err(error) => Z3ProcessOutcome::Failed {
+            failure: SolverToolFailure::Wait,
+            detail: error.to_string(),
+        },
     }
-    let output = child.wait_with_output().ok()?;
-    z3_answer_line(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `get-model` after `unsat` or `unknown` has one source-observed,
+/// location-bearing model-unavailable response. A trailing query error that
+/// merely ends with those words must not authenticate an earlier `unsat`.
+fn expected_post_model_unavailable_error(lines: &[&str], verdict: &str) -> bool {
+    let [answer, error] = lines else {
+        return false;
+    };
+    if *answer != verdict {
+        return false;
+    }
+    let Some(location) = error
+        .strip_prefix("(error \"line ")
+        .and_then(|tail| tail.strip_suffix(": model is not available\")"))
+    else {
+        return false;
+    };
+    let Some((line, column)) = location.split_once(" column ") else {
+        return false;
+    };
+    !line.is_empty()
+        && line.bytes().all(|byte| byte.is_ascii_digit())
+        && !column.is_empty()
+        && column.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Check the bounded framing of the one `(get-model)` reply used by the
+/// primary obligation query. This does not validate sorts, term semantics,
+/// declaration coverage, or the still-open array replay boundary (A-EVID-1).
+/// In this emitted fragment Z3 returns an outer list of `define-fun` entries,
+/// or an empty list for a ground formula.
+fn has_z3_model_response(lines: &[&str]) -> bool {
+    if lines.first() != Some(&"sat") || lines.len() < 2 {
+        return false;
+    }
+    let response = lines[1..].join("\n");
+    let bytes = response.as_bytes();
+    fn skip_gap(bytes: &[u8], index: &mut usize) {
+        loop {
+            while *index < bytes.len() && bytes[*index].is_ascii_whitespace() {
+                *index += 1;
+            }
+            if *index >= bytes.len() || bytes[*index] != b';' {
+                return;
+            }
+            while *index < bytes.len() && bytes[*index] != b'\n' {
+                *index += 1;
+            }
+        }
+    }
+    fn take_quoted(bytes: &[u8], index: &mut usize) -> bool {
+        let Some(&delimiter @ (b'"' | b'|')) = bytes.get(*index) else {
+            return false;
+        };
+        *index += 1;
+        loop {
+            let Some(&byte) = bytes.get(*index) else {
+                return false;
+            };
+            let doubled_quote =
+                delimiter == b'"' && byte == b'"' && bytes.get(*index + 1) == Some(&b'"');
+            let backslash_escape = byte == b'\\' && bytes.get(*index + 1).is_some();
+            if doubled_quote || backslash_escape {
+                *index += 2;
+            } else if byte == delimiter {
+                *index += 1;
+                return true;
+            } else {
+                *index += 1;
+            }
+        }
+    }
+    fn take_item(bytes: &[u8], index: &mut usize) -> bool {
+        skip_gap(bytes, index);
+        match bytes.get(*index) {
+            Some(b'"' | b'|') => take_quoted(bytes, index),
+            Some(b'(') => {
+                let mut depth = 0usize;
+                loop {
+                    let Some(&byte) = bytes.get(*index) else {
+                        return false;
+                    };
+                    match byte {
+                        b'(' => {
+                            depth += 1;
+                            *index += 1;
+                        }
+                        b')' => {
+                            depth -= 1;
+                            *index += 1;
+                            if depth == 0 {
+                                return true;
+                            }
+                        }
+                        b'"' | b'|' => {
+                            if !take_quoted(bytes, index) {
+                                return false;
+                            }
+                        }
+                        b';' => {
+                            while *index < bytes.len() && bytes[*index] != b'\n' {
+                                *index += 1;
+                            }
+                        }
+                        _ => *index += 1,
+                    }
+                }
+            }
+            Some(b')' | b';') | None => false,
+            Some(_) => {
+                let start = *index;
+                while *index < bytes.len()
+                    && !bytes[*index].is_ascii_whitespace()
+                    && !matches!(bytes[*index], b'(' | b')' | b';')
+                {
+                    *index += 1;
+                }
+                *index > start
+            }
+        }
+    }
+    let mut index = 0;
+    skip_gap(bytes, &mut index);
+    if bytes.get(index) != Some(&b'(') {
+        return false;
+    }
+    index += 1;
+    loop {
+        skip_gap(bytes, &mut index);
+        if bytes.get(index) == Some(&b')') {
+            index += 1;
+            skip_gap(bytes, &mut index);
+            return index == bytes.len();
+        }
+        if bytes.get(index) != Some(&b'(') {
+            return false;
+        }
+        index += 1;
+        skip_gap(bytes, &mut index);
+        let command_start = index;
+        if !take_item(bytes, &mut index) || &bytes[command_start..index] != b"define-fun" {
+            return false;
+        }
+        skip_gap(bytes, &mut index);
+        if matches!(bytes.get(index), Some(b'(' | b'"')) || !take_item(bytes, &mut index) {
+            return false;
+        }
+        skip_gap(bytes, &mut index);
+        if bytes.get(index) != Some(&b'(') || !take_item(bytes, &mut index) {
+            return false;
+        }
+        if !take_item(bytes, &mut index) || !take_item(bytes, &mut index) {
+            return false;
+        }
+        skip_gap(bytes, &mut index);
+        if bytes.get(index) != Some(&b')') {
+            return false;
+        }
+        index += 1;
+    }
+}
+
+/// Interpret the process transcript before assigning a solver verdict. z3
+/// exits with code 1 after a normal `unsat` or `unknown` followed by our
+/// unconditional `(get-model)`; accept only the observed model-unavailable
+/// post-verdict shapes, not arbitrary nonzero exits with verdict text.
+fn observe_z3_process(process: &Z3ProcessOutcome, has_get_model: bool) -> Z3Observation {
+    let (output, write_error) = match process {
+        Z3ProcessOutcome::Absent => return Z3Observation::Absent,
+        Z3ProcessOutcome::Failed { failure, detail } => {
+            return z3_failure(*failure, detail.clone());
+        }
+        Z3ProcessOutcome::Completed {
+            output,
+            write_error,
+        } => (output, write_error),
+    };
+    let Ok(stdout) = std::str::from_utf8(&output.stdout) else {
+        return z3_failure(SolverToolFailure::MalformedResponse, "non-UTF-8 stdout");
+    };
+    let mut lines = Vec::new();
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if line.starts_with("WARNING:") && lines.is_empty() {
+            continue;
+        }
+        lines.push(line);
+    }
+    let Some(answer) = lines.first().copied() else {
+        return if let Some(detail) = write_error {
+            z3_failure(SolverToolFailure::Write, detail.clone())
+        } else {
+            z3_failure(SolverToolFailure::MalformedResponse, "empty stdout")
+        };
+    };
+    // A solver that rejected the emitted query can close stdin early. The
+    // observed rejection is more precise than the resulting broken pipe.
+    if z3_rejected_query(answer) {
+        return z3_failure(SolverToolFailure::RejectedQuery, answer);
+    }
+    if let Some(detail) = write_error {
+        return z3_failure(SolverToolFailure::Write, detail.clone());
+    }
+    if !matches!(answer, "sat" | "unsat" | "unknown" | Z3_OUT_OF_MEMORY) {
+        return z3_failure(SolverToolFailure::MalformedResponse, answer);
+    }
+    if !has_get_model && lines.len() != 1 {
+        return z3_failure(
+            SolverToolFailure::MalformedResponse,
+            "extra response after check-sat",
+        );
+    }
+    let expected_unsat_model_error = has_get_model
+        && expected_post_model_unavailable_error(&lines, "unsat")
+        && output.status.code() == Some(1)
+        && output.stderr.is_empty();
+    let expected_unknown_model_error = has_get_model
+        && expected_post_model_unavailable_error(&lines, "unknown")
+        && output.status.code() == Some(1)
+        && output.stderr.is_empty();
+    if answer == "unsat" && has_get_model && !expected_unsat_model_error {
+        let failure = if !output.status.success() && output.status.code() != Some(1) {
+            SolverToolFailure::NonzeroExit
+        } else {
+            SolverToolFailure::MalformedResponse
+        };
+        return z3_failure(failure, "unexpected response after unsat");
+    }
+    if answer == "sat" && lines.iter().skip(1).any(|line| line.starts_with("(error")) {
+        return z3_failure(
+            SolverToolFailure::RejectedQuery,
+            "solver error after sat before a usable model",
+        );
+    }
+    if answer == "sat" && has_get_model && !has_z3_model_response(&lines) {
+        return z3_failure(
+            SolverToolFailure::MalformedResponse,
+            "missing or malformed model response after sat",
+        );
+    }
+    // `get-model` after a real `unknown` reports that no model is available.
+    // Only that single source-observed response with its expected exit and
+    // empty stderr is an undecided solver result. Any other trailing response
+    // is a tool failure, not an ordinary `unknown`.
+    if answer == "unknown" && has_get_model && !expected_unknown_model_error {
+        let failure = if lines.iter().skip(1).any(|line| line.starts_with("(error")) {
+            SolverToolFailure::RejectedQuery
+        } else {
+            SolverToolFailure::MalformedResponse
+        };
+        return z3_failure(failure, "unexpected response after unknown");
+    }
+    if answer == Z3_OUT_OF_MEMORY {
+        if lines.len() != 1 || !output.stderr.is_empty() {
+            return z3_failure(
+                SolverToolFailure::MalformedResponse,
+                "extra output on solver memory refusal",
+            );
+        }
+        // The bounded fake-process control supplies exit 101 for this exact
+        // resource refusal. Other exits have no source-backed resource
+        // classification here; preserve them as tool failures.
+        if output.status.code() != Some(101) {
+            let failure = if output.status.success() {
+                SolverToolFailure::MalformedResponse
+            } else {
+                SolverToolFailure::NonzeroExit
+            };
+            return z3_failure(
+                failure,
+                format!("unexpected memory-refusal exit {}", output.status),
+            );
+        }
+        return Z3Observation::Answer(answer.into());
+    }
+    if matches!(answer, "sat" | "unsat" | "unknown") && !output.stderr.is_empty() {
+        return z3_failure(
+            SolverToolFailure::MalformedResponse,
+            "stderr on solver answer",
+        );
+    }
+    if !output.status.success()
+        && !(answer == "unsat" && expected_unsat_model_error && output.status.code() == Some(1))
+        && !(answer == "unknown" && expected_unknown_model_error)
+    {
+        return z3_failure(
+            SolverToolFailure::NonzeroExit,
+            format!("exit status {}", output.status),
+        );
+    }
+    Z3Observation::Answer(answer.into())
+}
+
+/// Legacy raw-query callers retain an optional answer. Captured producer
+/// paths use `observe_z3_process` directly and never mistake failure for
+/// executable absence.
+fn z3_spawn_first_line(smt: &str) -> Option<String> {
+    match observe_z3_process(&z3_process(smt), smt.trim_end().ends_with("(get-model)")) {
+        Z3Observation::Answer(answer) => Some(answer),
+        Z3Observation::Absent | Z3Observation::Failure { .. } => None,
+    }
 }
 
 /// The line of z3's output that answers the query: an `(error …)` raised BEFORE the verdict (the query
@@ -21803,18 +22367,15 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
     if native_authoritative() {
         if let Some(nat) = anubis_solver::native_check_sat_authoritative(smt) {
             let nat_str = if nat { "sat" } else { "unsat" };
-            if let Some(z) = z3_spawn_first_line(smt) {
-                if z3_rejected_query(&z) {
+            match observe_z3_process(&z3_process(smt), smt.trim_end().ends_with("(get-model)")) {
+                Z3Observation::Absent => {}
+                Z3Observation::Failure { failure, detail } => {
                     eprintln!(
-                        "ANUBIS_NATIVE_DISAGREE(authoritative): native={} z3 rejected the query \
-                         (`{}`) — failing closed; smt=<<{}>>",
-                        nat_str,
-                        z,
-                        smt.replace('\n', " ")
+                        "ANUBIS_SOLVER_PROTOCOL_ERROR(raw cross-check): z3 {failure:?} ({detail})"
                     );
-                    return Some("native-z3-disagreement".to_string());
+                    return Some("native-z3-tool-failure".into());
                 }
-                if (z == "sat" || z == "unsat") && z != nat_str {
+                Z3Observation::Answer(z) if (z == "sat" || z == "unsat") && z != nat_str => {
                     eprintln!(
                         "ANUBIS_NATIVE_DISAGREE(authoritative): native={} z3={} — failing closed; \
                          smt=<<{}>>",
@@ -21824,6 +22385,7 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
                     );
                     return Some("native-z3-disagreement".to_string());
                 }
+                Z3Observation::Answer(_) => {}
             }
             return Some(nat_str.to_string());
         }
@@ -41458,31 +42020,81 @@ mod certificate_coverage_tests {
             "",
             false,
         );
-        assert_eq!(solver_outcome(&refused), SolverOutcome::Fail);
-        assert!(refused.detail.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
+        assert_eq!(solver_outcome(&refused.check), SolverOutcome::Fail);
+        assert_eq!(
+            refused.outcome,
+            IssuedSolverOutcome::ToolFailure(SolverToolFailure::MalformedResponse)
+        );
+        assert!(refused
+            .check
+            .detail
+            .starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
     }
 
     #[test]
     fn literal_unknown_is_undecided_but_empty_and_malformed_solver_answers_are_tool_errors() {
         let unknown = solver_unresolved_answer("wrap-safety:add", String::new(), "unknown");
-        assert_eq!(solver_outcome(&unknown), SolverOutcome::Unknown);
+        assert_eq!(solver_outcome(&unknown.check), SolverOutcome::Unknown);
+        assert_eq!(unknown.outcome, IssuedSolverOutcome::Undecided);
         assert_eq!(
-            classify_assertion_fail(&unknown),
+            classify_assertion_fail(&unknown.check),
             AssertionFailKind::Undecided
         );
-        assert_eq!(refusal_locus(&unknown), RefusalLocus::Capability);
-        assert!(format_check_failures(&[unknown]).starts_with("ANUBIS_ASSERTION_UNDECIDED:"));
+        assert_eq!(refusal_locus(&unknown.check), RefusalLocus::Capability);
+        assert!(format_check_failures(&[unknown.check]).starts_with("ANUBIS_ASSERTION_UNDECIDED:"));
 
         for answer in ["", "WARNING: solver unavailable", "maybe"] {
             let broken = solver_unresolved_answer("ensures:x", String::new(), answer);
-            assert_eq!(solver_outcome(&broken), SolverOutcome::Fail);
-            assert!(broken.detail.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
-            assert_eq!(refusal_locus(&broken), RefusalLocus::Environment);
+            assert_eq!(solver_outcome(&broken.check), SolverOutcome::Fail);
+            assert_eq!(
+                broken.outcome,
+                IssuedSolverOutcome::ToolFailure(SolverToolFailure::MalformedResponse)
+            );
+            assert!(broken
+                .check
+                .detail
+                .starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
+            assert_eq!(refusal_locus(&broken.check), RefusalLocus::Environment);
             assert!(
-                format_check_failures(&[broken]).starts_with("ANUBIS_SOLVER_PROTOCOL_ERROR:"),
+                format_check_failures(&[broken.check]).starts_with("ANUBIS_SOLVER_PROTOCOL_ERROR:"),
                 "{answer:?}"
             );
         }
+    }
+
+    #[test]
+    fn overapproximation_demotes_only_a_producer_checked_counterexample() {
+        let obligation = SolverObligation {
+            name: "assert:x".into(),
+            assumptions: Vec::new(),
+            assertion: "true".into(),
+            vars: Vec::new(),
+            strings: false,
+            guard_assumptions: Vec::new(),
+            over_approx_reasons: BTreeSet::from([OverApproxReason::ValueHavoc]),
+        };
+        let mut raw = check("FAIL", DISPROVED_DETAIL_Z3, "assert:x");
+        raw.model = Some("candidate model".into());
+        let undecided = overapproximate_counterexample(
+            produced(raw.clone(), IssuedSolverOutcome::Disproved),
+            &obligation,
+        );
+        assert_eq!(undecided.outcome, IssuedSolverOutcome::Undecided);
+        assert_eq!(undecided.check.detail, OVERAPPROX_UNDECIDED_DETAIL);
+        assert!(undecided.check.model.is_none());
+
+        let alarm = overapproximate_counterexample(
+            produced(
+                raw.clone(),
+                IssuedSolverOutcome::ToolFailure(SolverToolFailure::ReplayMismatch),
+            ),
+            &obligation,
+        );
+        assert_eq!(alarm.check, raw);
+        assert_eq!(
+            alarm.outcome,
+            IssuedSolverOutcome::ToolFailure(SolverToolFailure::ReplayMismatch)
+        );
     }
 
     #[test]
@@ -41492,16 +42104,24 @@ mod certificate_coverage_tests {
         for answer in ["unsat", "(error \"sort mismatch\")", "", "maybe"] {
             let refusal = native_sat_first_z3_answer("assert:x", smt, answer)
                 .expect("only matching sat can reach the model query");
-            assert!(solver_check_requires_refusal(&refusal), "{answer:?}");
-            assert!(refusal.model.is_none());
+            assert!(solver_check_requires_refusal(&refusal.check), "{answer:?}");
+            assert!(refusal.check.model.is_none());
         }
         let changed = classify_obligation_z3_answer("assert:x", smt.into(), "unsat\n", "", true);
-        assert_eq!(solver_outcome(&changed), SolverOutcome::Fail);
-        assert!(changed.detail.starts_with("ANUBIS_NATIVE_DISAGREEMENT"));
-        assert!(changed.model.is_none());
+        assert_eq!(solver_outcome(&changed.check), SolverOutcome::Fail);
+        assert_eq!(
+            changed.outcome,
+            IssuedSolverOutcome::ToolFailure(SolverToolFailure::NativeDisagreement)
+        );
+        assert!(changed
+            .check
+            .detail
+            .starts_with("ANUBIS_NATIVE_DISAGREEMENT"));
+        assert!(changed.check.model.is_none());
 
         let z3_only = classify_obligation_z3_answer("assert:x", smt.into(), "unsat\n", "", false);
-        assert_eq!(solver_outcome(&z3_only), SolverOutcome::Pass);
+        assert_eq!(solver_outcome(&z3_only.check), SolverOutcome::Pass);
+        assert_eq!(z3_only.outcome, IssuedSolverOutcome::Proved);
     }
 
     #[test]
@@ -41514,13 +42134,14 @@ mod certificate_coverage_tests {
             "error: model is not available",
             false,
         );
-        assert_eq!(solver_outcome(&unknown), SolverOutcome::Unknown);
+        assert_eq!(solver_outcome(&unknown.check), SolverOutcome::Unknown);
         assert_eq!(
-            classify_assertion_fail(&unknown),
+            classify_assertion_fail(&unknown.check),
             AssertionFailKind::Undecided
         );
-        assert!(solver_check_requires_refusal(&unknown));
-        assert!(unknown.model.is_none());
+        assert_eq!(unknown.outcome, IssuedSolverOutcome::Undecided);
+        assert!(solver_check_requires_refusal(&unknown.check));
+        assert!(unknown.check.model.is_none());
 
         let rejected = classify_obligation_z3_answer(
             "assert:x",
@@ -41529,8 +42150,12 @@ mod certificate_coverage_tests {
             "",
             false,
         );
-        assert_eq!(solver_outcome(&rejected), SolverOutcome::Fail);
-        assert!(rejected.detail.starts_with(Z3_REJECTED_DETAIL_PREFIX));
+        assert_eq!(solver_outcome(&rejected.check), SolverOutcome::Fail);
+        assert_eq!(
+            rejected.outcome,
+            IssuedSolverOutcome::ToolFailure(SolverToolFailure::RejectedQuery)
+        );
+        assert!(rejected.check.detail.starts_with(Z3_REJECTED_DETAIL_PREFIX));
 
         let exhausted = classify_obligation_z3_answer(
             "assert:x",
@@ -41539,8 +42164,9 @@ mod certificate_coverage_tests {
             "",
             false,
         );
-        assert_eq!(solver_outcome(&exhausted), SolverOutcome::Unknown);
-        assert_eq!(exhausted.detail, UNDECIDED_MEMORY_DETAIL);
+        assert_eq!(solver_outcome(&exhausted.check), SolverOutcome::Unknown);
+        assert_eq!(exhausted.outcome, IssuedSolverOutcome::Undecided);
+        assert_eq!(exhausted.check.detail, UNDECIDED_MEMORY_DETAIL);
     }
 
     #[test]
@@ -41553,12 +42179,20 @@ mod certificate_coverage_tests {
         assert!(matches!(vacuity_answer(Some("unknown")), Vacuity::Unknown));
         for answer in [None, Some(""), Some("WARNING: no answer")] {
             match vacuity_answer(answer) {
-                Vacuity::SolverAlarm(detail) => {
+                Vacuity::SolverAlarm { detail, failure } => {
                     assert!(detail.starts_with(SOLVER_PROTOCOL_ERROR_PREFIX));
+                    assert_eq!(failure, SolverToolFailure::MalformedResponse);
                 }
                 _ => panic!("vacuity probe accepted {answer:?}"),
             }
         }
+        assert!(matches!(
+            vacuity_answer(Some("(error \"sort mismatch\")")),
+            Vacuity::SolverAlarm {
+                failure: SolverToolFailure::RejectedQuery,
+                ..
+            }
+        ));
         let original = check("PASS", PROVED_DETAIL_SOLVER_ONLY, "ensures:x");
         let mut satisfied = original.clone();
         apply_vacuity_result(&mut satisfied, Vacuity::Satisfiable);
@@ -41890,5 +42524,401 @@ mod relevance_slicing_tests {
         let declared = set(&["anb_x", "anb_y", "anb_z"]);
         let kept = relevant_assumptions(&a, "(fp.gt anb_z ((_ to_fp 11 53) RNE 0.0))", &declared);
         assert!(kept.is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod z3_process_outcome_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn fake_z3(body: &str) -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("z3");
+        // Publish the fake script only after its writer is closed. Direct
+        // script exec observed ETXTBSY in parallel tests even after an atomic
+        // rename, so tests pass this path to the stable /bin/sh interpreter.
+        let staging = directory.path().join("z3.staging");
+        let mut file = std::fs::File::create(&staging).unwrap();
+        use std::io::Write as _;
+        file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+            .unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let mut permissions = std::fs::metadata(&staging).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&staging, permissions).unwrap();
+        std::fs::rename(&staging, &executable).unwrap();
+        (directory, executable)
+    }
+
+    fn fake_z3_process(script: &Path, smt: &str) -> Z3ProcessOutcome {
+        z3_process_at_with_leading_args(Some(Path::new("/bin/sh")), &[script.as_os_str()], smt)
+    }
+
+    #[test]
+    fn missing_executable_is_distinct_from_present_broken_process() {
+        assert_eq!(
+            observe_z3_process(&z3_process_at(None, "(check-sat)\n"), false),
+            Z3Observation::Absent
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("z3");
+        assert!(z3_executable_in_path(directory.path().as_os_str()).is_none());
+        std::fs::write(&path, "not an executable").unwrap();
+        assert_eq!(
+            z3_executable_in_path(directory.path().as_os_str()),
+            Some(path.clone())
+        );
+        assert!(matches!(
+            observe_z3_process(&z3_process_at(Some(&path), "(check-sat)\n"), false),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::Spawn,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn completed_z3_transcript_distinguishes_expected_model_error_from_bad_exit() {
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' unsat '(error \"line 6 column 10: model is not available\")'\nexit 1",
+        );
+        let smt = "(check-sat)\n(get-model)\n";
+        let normal = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert_eq!(normal, Z3Observation::Answer("unsat".into()));
+        assert!(native_unsat_crosscheck(&normal).is_ok());
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), false),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' unsat '(error \"line 6 column 10: model is not available\")'\nexit 0",
+        );
+        let wrong_unsat_exit = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(matches!(
+            &wrong_unsat_exit,
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        assert_eq!(
+            native_unsat_crosscheck(&wrong_unsat_exit),
+            Err(SolverToolFailure::MalformedResponse)
+        );
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' unsat\nexit 0");
+        let truncated_unsat = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(matches!(
+            &truncated_unsat,
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        assert_eq!(
+            native_unsat_crosscheck(&truncated_unsat),
+            Err(SolverToolFailure::MalformedResponse)
+        );
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' unknown '(error \"line 7 column 10: model is not available\")'\nexit 1",
+        );
+        let normal_unknown = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert_eq!(normal_unknown, Z3Observation::Answer("unknown".into()));
+        assert!(native_unsat_crosscheck(&normal_unknown).is_ok());
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), false),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' unknown '(error \"line 7 column 10: model is not available\")'\nexit 0",
+        );
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), true),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::RejectedQuery,
+                ..
+            }
+        ));
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' unsat\nexit 7");
+        let bad_exit = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(matches!(
+            &bad_exit,
+            Z3Observation::Failure {
+                failure: SolverToolFailure::NonzeroExit,
+                ..
+            }
+        ));
+        assert_eq!(
+            native_unsat_crosscheck(&bad_exit),
+            Err(SolverToolFailure::NonzeroExit)
+        );
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' unsat '(error \"sort mismatch\")'\nexit 1");
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), true),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' unsat '(error \"sort mismatch: model is not available\")'\nexit 1",
+        );
+        let disguised_rejection = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(matches!(
+            &disguised_rejection,
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        assert_eq!(
+            native_unsat_crosscheck(&disguised_rejection),
+            Err(SolverToolFailure::MalformedResponse)
+        );
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' sat '(error \"model failed\")'\nexit 0",
+        );
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), true),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::RejectedQuery,
+                ..
+            }
+        ));
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' unknown '(error \"sort mismatch\")'\nexit 0",
+        );
+        let unknown_error = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(matches!(
+            &unknown_error,
+            Z3Observation::Failure {
+                failure: SolverToolFailure::RejectedQuery,
+                ..
+            }
+        ));
+        assert_eq!(
+            native_unsat_crosscheck(&unknown_error),
+            Err(SolverToolFailure::RejectedQuery)
+        );
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' unknown unexpected-tail\nexit 0",
+        );
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), true),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' unknown\nexit 0");
+        let unknown_only = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(matches!(
+            &unknown_only,
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        assert_eq!(
+            native_unsat_crosscheck(&unknown_only),
+            Err(SolverToolFailure::MalformedResponse)
+        );
+        assert_eq!(
+            observe_z3_process(&fake_z3_process(&executable, smt), false),
+            Z3Observation::Answer("unknown".into())
+        );
+    }
+
+    #[test]
+    fn sat_requires_one_complete_model_response() {
+        assert!(has_z3_model_response(&["sat", "(", ")"]));
+        assert!(has_z3_model_response(&[
+            "sat",
+            "(",
+            "(define-fun s () String",
+            "\")\")",
+            ")",
+        ]));
+        assert!(!has_z3_model_response(&["sat"]));
+        assert!(!has_z3_model_response(&["sat", "("]));
+        assert!(!has_z3_model_response(&["sat", "(garbage)"]));
+        assert!(!has_z3_model_response(&["sat", "((define-fun x))"]));
+        assert!(!has_z3_model_response(&["sat", "((define-fun x () Int))"]));
+        assert!(!has_z3_model_response(&[
+            "sat",
+            "((define-fun x () Int 1 extra))",
+        ]));
+        assert!(has_z3_model_response(&[
+            "sat",
+            "((define-fun |x)| () String \"x\"))",
+        ]));
+        assert!(!has_z3_model_response(&["sat", "(", ")", "extra"]));
+
+        let smt = "(check-sat)\n(get-model)\n";
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' sat\nexit 0");
+        let bare = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(matches!(
+            &bare,
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+        assert_eq!(
+            native_unsat_crosscheck(&bare),
+            Err(SolverToolFailure::MalformedResponse)
+        );
+        assert_eq!(
+            observe_z3_process(&fake_z3_process(&executable, smt), false),
+            Z3Observation::Answer("sat".into())
+        );
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' sat '((define-fun x))'\nexit 0",
+        );
+        let malformed_entry = observe_z3_process(&fake_z3_process(&executable, smt), true);
+        assert!(
+            matches!(
+                &malformed_entry,
+                Z3Observation::Failure {
+                    failure: SolverToolFailure::MalformedResponse,
+                    ..
+                }
+            ),
+            "{malformed_entry:?}"
+        );
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' sat '(' ')'\nexit 0");
+        assert_eq!(
+            observe_z3_process(&fake_z3_process(&executable, smt), true),
+            Z3Observation::Answer("sat".into())
+        );
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' sat '(' ')' 'WARNING: post-verdict warning'\nexit 0",
+        );
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), true),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn memory_refusal_requires_exact_output_and_bounded_exit() {
+        let smt = "(check-sat)\n";
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' '(error \"out of memory\")'\nexit 101",
+        );
+        let bounded = observe_z3_process(&fake_z3_process(&executable, smt), false);
+        assert_eq!(bounded, Z3Observation::Answer(Z3_OUT_OF_MEMORY.into()));
+        assert!(native_unsat_crosscheck(&bounded).is_ok());
+
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' '(error \"out of memory\")'\nexit 77",
+        );
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), false),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::NonzeroExit,
+                ..
+            }
+        ));
+        let (_directory, executable) = fake_z3(
+            "while IFS= read -r line; do :; done\nprintf '%s\\n' '(error \"out of memory\")'\nprintf '%s\\n' unexpected >&2\nexit 101",
+        );
+        assert!(matches!(
+            observe_z3_process(&fake_z3_process(&executable, smt), false),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::MalformedResponse,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fake_z3_response_classes_reach_the_native_vacuity_transfer() {
+        let smt = "(check-sat)\n";
+        for (body, expected) in [
+            ("while IFS= read -r line; do :; done\nprintf '%s\\n' sat\nexit 0", Some("sat")),
+            (
+                "while IFS= read -r line; do :; done\nprintf '%s\\n' unknown\nexit 0",
+                Some("unknown"),
+            ),
+            (
+                "while IFS= read -r line; do :; done\nprintf '%s\\n' '(error \"out of memory\")'\nexit 101",
+                Some(Z3_OUT_OF_MEMORY),
+            ),
+            ("while IFS= read -r line; do :; done\nprintf '%s\\n' maybe\nexit 0", None),
+            ("while IFS= read -r line; do :; done\nexit 0", None),
+        ] {
+            let (_directory, executable) = fake_z3(body);
+            let observation = observe_z3_process(&fake_z3_process(&executable, smt), false);
+            assert_eq!(
+                match &observation {
+                    Z3Observation::Answer(answer) => Some(answer.as_str()),
+                    Z3Observation::Absent | Z3Observation::Failure { .. } => None,
+                },
+                expected,
+                "body={body:?} observation={observation:?}"
+            );
+            let vacuity = native_vacuity_result(true, observation);
+            if expected.is_some() {
+                assert!(matches!(vacuity, Vacuity::Satisfiable));
+            } else {
+                assert!(matches!(vacuity, Vacuity::SolverAlarm { .. }));
+            }
+        }
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' '(error \"sort mismatch\")'\nexit 1");
+        let rejection = observe_z3_process(&fake_z3_process(&executable, smt), false);
+        let rejection_debug = format!("{rejection:?}");
+        assert!(
+            matches!(
+                native_vacuity_result(true, rejection),
+                Vacuity::SolverAlarm {
+                    failure: SolverToolFailure::RejectedQuery,
+                    ..
+                }
+            ),
+            "{rejection_debug}"
+        );
+    }
+
+    #[test]
+    fn observed_rejection_outweighs_a_simulated_partial_write() {
+        let (_directory, executable) =
+            fake_z3("while IFS= read -r line; do :; done\nprintf '%s\\n' '(error \"sort mismatch\")'\nexit 1");
+        let process = fake_z3_process(&executable, "(check-sat)\n");
+        let Z3ProcessOutcome::Completed { output, .. } = process else {
+            panic!("fake z3 did not complete")
+        };
+        let with_write_error = Z3ProcessOutcome::Completed {
+            output,
+            write_error: Some("broken pipe".into()),
+        };
+        assert!(matches!(
+            observe_z3_process(&with_write_error, false),
+            Z3Observation::Failure {
+                failure: SolverToolFailure::RejectedQuery,
+                ..
+            }
+        ));
+        assert!(matches!(
+            native_unsat_crosscheck(&observe_z3_process(&with_write_error, false)),
+            Err(SolverToolFailure::RejectedQuery)
+        ));
     }
 }

@@ -293,6 +293,10 @@ pub(crate) enum CapturedSafeCheckFailure {
         checks: Vec<crate::middle::SolverCheck>,
         issue: crate::middle::SolverStreamIntegrityError,
     },
+    ToolFailure {
+        checks: Vec<crate::middle::SolverCheck>,
+        failures: Vec<(usize, crate::middle::SolverToolFailure)>,
+    },
     Lowering {
         detail: String,
     },
@@ -321,6 +325,9 @@ impl std::fmt::Display for CapturedSafeCheckFailure {
             }
             Self::SolverStreamInvalid { issue, .. } => {
                 write!(f, "captured Safe compiler solver stream invalid: {issue}")
+            }
+            Self::ToolFailure { failures, .. } => {
+                write!(f, "captured Safe solver tool failed: {failures:?}")
             }
             Self::Lowering { detail } => write!(f, "captured Safe lowering failed: {detail}"),
         }
@@ -361,10 +368,14 @@ fn check_captured_solver_inventory(
         is_no_obligations_sentinel, validate_solver_stream, SolverStreamIntegrityError,
     };
 
-    let (origins, checks): (Vec<_>, Vec<_>) = issued
-        .into_iter()
-        .map(|issued| (issued.source_ordinal, issued.check))
-        .unzip();
+    let mut origins = Vec::with_capacity(issued.len());
+    let mut outcomes = Vec::with_capacity(issued.len());
+    let mut checks = Vec::with_capacity(issued.len());
+    for result in issued {
+        origins.push(result.source_ordinal);
+        outcomes.push(result.outcome);
+        checks.push(result.check);
+    }
     let invalid = |issue| CapturedSafeCheckFailure::SolverStreamInvalid {
         checks: checks.clone(),
         issue,
@@ -387,6 +398,11 @@ fn check_captured_solver_inventory(
                     actual: origins[0],
                 },
             ));
+        }
+        if outcomes[0] != crate::middle::IssuedSolverOutcome::NoObligations {
+            return Err(invalid(SolverStreamIntegrityError::OutcomeStatusMismatch {
+                index: 0,
+            }));
         }
     } else {
         if is_no_obligations_sentinel(&checks) {
@@ -419,7 +435,41 @@ fn check_captured_solver_inventory(
                     index,
                 }));
             }
+            if outcomes[index] == crate::middle::IssuedSolverOutcome::NoObligations {
+                return Err(invalid(SolverStreamIntegrityError::OutcomeStatusMismatch {
+                    index,
+                }));
+            }
         }
+    }
+    for (index, (outcome, check)) in outcomes.iter().zip(&checks).enumerate() {
+        let status_matches = match outcome {
+            crate::middle::IssuedSolverOutcome::NoObligations
+            | crate::middle::IssuedSolverOutcome::Proved => check.status == "PASS",
+            crate::middle::IssuedSolverOutcome::Disproved
+            | crate::middle::IssuedSolverOutcome::ContradictoryPremises
+            | crate::middle::IssuedSolverOutcome::Unencoded => check.status == "FAIL",
+            crate::middle::IssuedSolverOutcome::Undecided
+            | crate::middle::IssuedSolverOutcome::ToolFailure(_) => {
+                matches!(check.status.as_str(), "FAIL" | "UNKNOWN")
+            }
+        };
+        if !status_matches {
+            return Err(invalid(SolverStreamIntegrityError::OutcomeStatusMismatch {
+                index,
+            }));
+        }
+    }
+    let failures = outcomes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, outcome)| match outcome {
+            crate::middle::IssuedSolverOutcome::ToolFailure(failure) => Some((index, *failure)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        return Err(CapturedSafeCheckFailure::ToolFailure { checks, failures });
     }
     // Shape and source inventory are valid. A genuine FAIL or UNKNOWN still
     // belongs to the obligation-refusal path, not an inventory error.
@@ -1261,8 +1311,13 @@ mod tests {
             model: None,
             smt: "(check-sat)".into(),
         };
-        let issued = |origin, check| IssuedSolverCheck {
+        let issued = |origin, check: SolverCheck| IssuedSolverCheck {
             source_ordinal: origin,
+            outcome: if check.status == "PASS" {
+                crate::middle::IssuedSolverOutcome::Proved
+            } else {
+                crate::middle::IssuedSolverOutcome::Undecided
+            },
             check,
         };
         let expected = [obligation("assert:same"), obligation("assert:same")];
@@ -1372,8 +1427,15 @@ mod tests {
             model: None,
             smt: "(check-sat)".into(),
         };
-        let issued = |origin, check| IssuedSolverCheck {
+        let issued = |origin, check: SolverCheck| IssuedSolverCheck {
             source_ordinal: origin,
+            outcome: if check.name == "solver:no-obligations" {
+                crate::middle::IssuedSolverOutcome::NoObligations
+            } else if check.status == "PASS" {
+                crate::middle::IssuedSolverOutcome::Proved
+            } else {
+                crate::middle::IssuedSolverOutcome::Undecided
+            },
             check,
         };
         let sentinel = SolverCheck {
@@ -1418,6 +1480,20 @@ mod tests {
         assert!(matches!(
             check_captured_solver_inventory(
                 std::slice::from_ref(&obligation),
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: check("UNKNOWN", "unresolved"),
+                    outcome: crate::middle::IssuedSolverOutcome::Disproved,
+                }],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::OutcomeStatusMismatch { index: 0 },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
                 vec![
                     issued(None, sentinel),
                     issued(Some(0), check("PASS", "proved"))
@@ -1451,9 +1527,69 @@ mod tests {
         assert!(matches!(
             check_captured_solver_inventory(
                 std::slice::from_ref(&obligation),
-                vec![issued(Some(0), environment)],
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: environment,
+                    outcome: crate::middle::IssuedSolverOutcome::ToolFailure(
+                        crate::middle::SolverToolFailure::Spawn,
+                    ),
+                }],
+            ),
+            Err(CapturedSafeCheckFailure::ToolFailure { failures, .. })
+                if failures == vec![(0, crate::middle::SolverToolFailure::Spawn)]
+        ));
+        // The wire detail is only presentation. The producer outcome, rather
+        // than a phrase such as "z3 unavailable", selects the failure lane.
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: check("FAIL", "z3 unavailable: forged display text"),
+                    outcome: crate::middle::IssuedSolverOutcome::Disproved,
+                }],
             ),
             Err(CapturedSafeCheckFailure::SolverRefused { .. })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: check("PASS", "proved"),
+                    outcome: crate::middle::IssuedSolverOutcome::ToolFailure(
+                        crate::middle::SolverToolFailure::Wait,
+                    ),
+                }],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::OutcomeStatusMismatch { index: 0 },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &[obligation.clone(), obligation.clone()],
+                vec![
+                    IssuedSolverCheck {
+                        source_ordinal: Some(0),
+                        check: check("FAIL", "checked counterexample"),
+                        outcome: crate::middle::IssuedSolverOutcome::Disproved,
+                    },
+                    IssuedSolverCheck {
+                        source_ordinal: Some(1),
+                        check: check("FAIL", "tool failed to write"),
+                        outcome: crate::middle::IssuedSolverOutcome::ToolFailure(
+                            crate::middle::SolverToolFailure::Write,
+                        ),
+                    },
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::ToolFailure { checks, failures })
+                if checks.len() == 2
+                    && checks[0].detail == "checked counterexample"
+                    && checks[1].detail == "tool failed to write"
+                    && failures == vec![(1, crate::middle::SolverToolFailure::Write)]
         ));
         let unencoded = SolverObligation {
             name: "requires-unresolved@probe".into(),
