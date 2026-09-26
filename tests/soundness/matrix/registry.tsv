@@ -2454,3 +2454,5 @@ d9q_v3_nested_clean_public_write_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carr
 d9q_v3_nested_secret_public_write_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A value-position branch that writes a secret into public n must not leave a stale clean field shape at the following egress.
 d9q_released_public_field_rewrite_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	After releasing the old Row, a new clean write to public n may be printed without exposing declared secret k.
 d9q_released_secret_field_rewrite_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	After releasing the old Row, a new write to declared secret k must restore its protection at the following println.
+d9q_public_pc_public_sibling_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A public branch guard writing clean literals to public Row.n must stay usable even when the distinct Row.k field is secret.
+d9q_secret_pc_public_sibling_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret branch guard writing public Row.n leaks its choice even when Row.k already labels the root secret; retain a direct implicit-flow or equivalent confidentiality refusal alongside IFC2.
