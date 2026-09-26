@@ -2436,3 +2436,15 @@ ifc2r2_minmax_min_by_negated_fixed_key_valid	IFC2-MINMAX-CALLBACK	slice	ACCEPT	c
 ifc2r2_minmax_max_by_negated_fixed_key_valid	IFC2-MINMAX-CALLBACK	slice	ACCEPT	carrier	Negating a fixed captured secret yields the same key on every max_by callback; public println(x) keeps a fixed schedule.
 ifc2r2_minmax_min_by_helper_fixed_key_valid	IFC2-MINMAX-CALLBACK	slice	ACCEPT	carrier	An unannotated direct helper returns its fixed captured secret argument as a min_by key; public println(x) keeps a fixed schedule.
 ifc2r2_minmax_max_by_helper_fixed_key_valid	IFC2-MINMAX-CALLBACK	slice	ACCEPT	carrier	An unannotated direct helper returns its fixed captured secret argument as a max_by key; public println(x) keeps a fixed schedule.
+d9q_public_field_projection_unannotated_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A helper may print the public field n of a Row whose distinct k field is secret; the unannotated formal must retain field-level precision.
+d9q_public_field_projection_annotated_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	An explicit Row formal must also allow printing public n while retaining secret k.
+d9q_secret_field_projection_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Printing the declared secret k field through an unannotated Row formal is an egress violation.
+d9q_whole_struct_egress_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Printing the whole Row exposes its declared secret k field.
+d9q_secret_wrapper_public_projection_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret<Row> wrapper labels even n, so an unannotated helper may not print it.
+d9q_clean_struct_public_projection_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A clean Row with a public n field remains useful through an unannotated helper.
+d9q_direct_public_field_projection_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	Reading public n directly remains valid even when another field k is secret.
+d9q_alias_public_field_projection_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A Row alias preserves public-field projection precision through a helper.
+d9q_forward_public_field_projection_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	Forwarding a Row through two unannotated helpers may print only public n.
+d9q_public_field_secret_init_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret value in public n must not be made printable through a Row helper.
+d9q_public_field_secret_write_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Writing secret data to public n before a helper call must not launder the label.
+d9q_computed_whole_struct_comparison_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Whole-Row equality depends on secret k even when public n matches, so its public result is forbidden.

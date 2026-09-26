@@ -1,0 +1,3 @@
+struct Row { k: secret<i64>, n: i64 }
+fn show(p) { println(p.n); }
+fn main() { let row = Row { k: 42, n: 7 }; show(row); }
