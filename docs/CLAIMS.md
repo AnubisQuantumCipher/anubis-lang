@@ -15,6 +15,13 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — no-default-feature CLI lint gate restored locally.**
+The [scoped code and Safe smoke receipt](evidence/NO_DEFAULT_PROVE_CLI_2026-09-26.md)
+binds commit `5e3f76df`: the no-`prove` Clippy gate now passes, ordinary
+`run --input-json` still executes, and proof/receipt commands return their
+feature-unavailable errors. This follows the failed extra lint attempt in
+the PCA v4 receipt below; it is a separate code unit, not a release gate.
+
 **UPDATE 2026-09-26 — honest FAIL check evidence integrated, scoped.**
 Code commit `fc72526b` and its [source-bound local receipt](evidence/HONEST_FAIL_SOURCE_CHECK_2026-09-26.md)
 introduce PCA v4 source-check scope. A Safe tainted-egress check now emits a

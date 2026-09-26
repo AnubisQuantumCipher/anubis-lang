@@ -1,0 +1,36 @@
+{
+  "binary_sha256": "fb75d68e3b14818aed7da894e511353400ae3efc242eadc3965eeb84be10edea",
+  "commands": {
+    "child_unavailable": {
+      "exit": 1,
+      "stderr": "Error: this binary was built without the `prove` feature \u2014 risc0 proving is unavailable",
+      "stderr_sha256": "dabd1e2bda21e9cc818be9e1348c6016602b50b158c98e8b31292a2c12e50895",
+      "stdout": "",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "prove_unavailable": {
+      "exit": 1,
+      "stderr": "Error: this binary was built without the `prove` feature \u2014 proving is unavailable.\nRebuild with: cargo build -p anubis (default features include `prove`)",
+      "stderr_sha256": "2faac7cab410dcdfc65335dd38d1af68115e7db1bad57b2194314e11e12a5ad7",
+      "stdout": "",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "receipt_unavailable": {
+      "exit": 1,
+      "stderr": "Error: this binary was built without the `prove` feature \u2014 receipt verification is unavailable",
+      "stderr_sha256": "93561cf478ba7c562b67a78e7a7a23d3fde960a624be156c9d6a10284c49840a",
+      "stdout": "",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "run_input_json": {
+      "exit": 0,
+      "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done",
+      "stderr_sha256": "02776341b72726ded7e9392b27a873f3136d6d0b605d2d209b992a850ef7b620",
+      "stdout": "5",
+      "stdout_sha256": "f0b5c2c2211c8d67ed15e75e656c7862d086e9245420892a7de62cd9ec582a06"
+    }
+  },
+  "source_commit": "5e3f76dfb7ef92faf0bb99c7a42e341a29f5df4b",
+  "source_sha256": "5d38d27d920353cb117cb9b8db941eb3e5ec3f7737728801f80511738c8f0c7c",
+  "source_tree": "42f746203812d602df48ce456ce59e03ba6dda87"
+}

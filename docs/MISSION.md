@@ -113,6 +113,10 @@ program is approved. Independent static review gave GO for lead testing. The
 extra no-default-features Clippy attempt failed; multi-leaf correspondence,
 per-obligation backend provenance and archived v3 producer compatibility
 remain open. No full workspace gate was run.
+The separate [no-`prove` CLI receipt](evidence/NO_DEFAULT_PROVE_CLI_2026-09-26.md)
+binds `5e3f76df`: both named Clippy configurations now pass, a Safe
+`run --input-json` twin works, and unsupported proof commands return explicit
+errors. This does not change the evidence claim scope or supply a proof run.
 
 The next soundness implementation dependency is a typed distinction between protected
 struct fields and whole-value secrecy, carried through direct reads, calls,
