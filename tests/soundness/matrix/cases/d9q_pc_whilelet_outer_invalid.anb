@@ -1,0 +1,10 @@
+fn emit(s: secret<i64>) {
+    let out = 1;
+    while let Some(item) = (if s > 0 { Some(s) } else { None }) {
+        out = 2;
+        break;
+    }
+    println(out);
+}
+
+fn main() { emit(42); }

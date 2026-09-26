@@ -2456,3 +2456,17 @@ d9q_released_public_field_rewrite_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	car
 d9q_released_secret_field_rewrite_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	After releasing the old Row, a new write to declared secret k must restore its protection at the following println.
 d9q_public_pc_public_sibling_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A public branch guard writing clean literals to public Row.n must stay usable even when the distinct Row.k field is secret.
 d9q_secret_pc_public_sibling_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret branch guard writing public Row.n leaks its choice even when Row.k already labels the root secret; retain a direct implicit-flow or equivalent confidentiality refusal alongside IFC2.
+d9q_pc_for_inner_guard_local_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A secret inner guard updates only a for-body local counter; constant output stays public. Existing baseline precision defect.
+d9q_pc_for_inner_guard_outer_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret inner guard updates an outer public value that is later printed.
+d9q_pc_whilelet_binder_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A secret-derived while-let pattern binder is modified locally; only a constant is printed. Existing baseline precision defect.
+d9q_pc_whilelet_outer_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret-dependent while-let match updates an outer public value that is printed.
+d9q_pc_shadow_protected_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A protected inner binding shadows a public outer binding; only the untouched outer value is printed. Existing baseline precision defect.
+d9q_pc_shadow_outer_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Without the protected shadow binding a secret guard updates the printed public outer value.
+d9q_pc_uncalled_lambda_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	An uncalled closure body does not execute its captured write; constant output stays public.
+d9q_pc_called_lambda_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	Calling a closure and printing its secret-dependent result exposes the guarded choice.
+d9q_pc_for_secret_bound_local_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A secret-bound loop writes only its local counter and prints a constant; timing and resource channels are outside this output-flow oracle.
+d9q_pc_for_secret_bound_outer_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A secret-bound loop updates an outer public value and prints it.
+d9q_pc_match_unreachable_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A secret guard contains a literal-unreachable match arm writing public Row.n; only a constant is printed.
+d9q_pc_match_reachable_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A reachable match arm writes public Row.n under secret control and its value is printed.
+d9q_pc_if_unreachable_valid	D9-QUALIFIER-PRECISION	shared	ACCEPT	carrier	A nested if false prevents a public Row.n write under secret control; only a constant is printed.
+d9q_pc_if_reachable_invalid	D9-QUALIFIER-PRECISION	shared	REJECT	carrier	A nested reachable public Row.n write under secret control affects the later printed field.
