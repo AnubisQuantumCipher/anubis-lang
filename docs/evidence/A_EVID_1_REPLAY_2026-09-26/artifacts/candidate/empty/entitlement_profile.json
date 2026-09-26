@@ -1,0 +1,64 @@
+{
+  "schema": "anubis.entitlements.v1",
+  "package": "package",
+  "version": "0.0.0",
+  "source_merkle": "4d6ab161876804e1375310d76f5b9d399282716fe26c8eb95dce6e9913aa877b",
+  "effects_bounded": true,
+  "capabilities_present": [],
+  "entitlements": [
+    {
+      "key": "com.apple.security.app-sandbox",
+      "enabled": true,
+      "reason": "language-derived profiles default to App Sandbox ON (restrictive packaging posture)",
+      "apple_enforced_claim": false
+    },
+    {
+      "key": "com.apple.security.files.user-selected.read-only",
+      "enabled": false,
+      "reason": "no proven fs.read/fs.write — file access denied",
+      "apple_enforced_claim": false
+    },
+    {
+      "key": "com.apple.security.files.user-selected.read-write",
+      "enabled": false,
+      "reason": "no proven fs.write — read-write file access denied",
+      "apple_enforced_claim": false
+    },
+    {
+      "key": "com.apple.security.network.client",
+      "enabled": false,
+      "reason": "no proven net.send — network.client disabled",
+      "apple_enforced_claim": false
+    },
+    {
+      "key": "com.apple.security.network.server",
+      "enabled": false,
+      "reason": "no language effect maps to inbound server sockets in this slice — always off",
+      "apple_enforced_claim": false
+    }
+  ],
+  "sandbox": {
+    "enabled": true,
+    "network_client": false,
+    "network_server": false,
+    "file_read": false,
+    "file_write": false,
+    "process_exec": false,
+    "notes": [
+      "Sandbox posture is language-derived from the proven effect set; host PATHS and actual OS enforcement require codesign + App Sandbox enablement (needs_human)."
+    ],
+    "needs_human": [
+      "codesign the binary with the generated program.entitlements plist (or entitlement_profile.json keys)",
+      "enable App Sandbox in the target packaging surface; this profile is derived + sealed, not OS-enforced until signed"
+    ],
+    "advisory": [
+      "apple_enforced_claim is false on every key: derivation is not host enforcement",
+      "toolchain VZ entitlement com.apple.security.virtualization is intentionally absent from this app profile",
+      "Keychain/SE: runtime may bind cap_acquire_nonexportable on macOS (kc:/se: tokens); production SE isolation still needs codesign + access groups + operator attestation (not claimed by derivation alone)"
+    ]
+  },
+  "notes": [
+    "This profile reflects the DECLARED + inferred effect surface (checker enforces inferred ⊆ declared). Under-grant is intentional: a MISSED capability yields a MORE restrictive profile, so a mis-analysed program breaks rather than over-privileges.",
+    "Re-derived on verify (ANUBIS_ENTITLEMENT_DRIFT). Forged permissive keys fail closed."
+  ]
+}

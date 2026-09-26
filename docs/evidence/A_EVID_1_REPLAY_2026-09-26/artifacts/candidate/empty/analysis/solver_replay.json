@@ -1,0 +1,18 @@
+{
+  "obligations": [
+    {
+      "detail": "no assertions to discharge",
+      "index": 0,
+      "obligation": "solver:no-obligations",
+      "replay_attempted": false,
+      "replay_valid": false,
+      "smt": "analysis/proofs/obligation_0000.smt2",
+      "solver_status": "PASS",
+      "status": "not_applicable_no_obligations"
+    }
+  ],
+  "replay_valid": false,
+  "schema": "anubis-solver-replay-v1",
+  "scope": "all_solver_checks",
+  "status": "not_applicable"
+}

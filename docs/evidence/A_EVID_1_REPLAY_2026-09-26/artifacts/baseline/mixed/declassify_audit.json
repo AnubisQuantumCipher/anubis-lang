@@ -1,0 +1,7 @@
+{
+  "schema": "anubis.declassify_audit.v1",
+  "package": "package",
+  "version": "0.0.0",
+  "source_merkle": "fa7f82cca826343b1ebad4145061e5e39de3194c47bdda14d663912f42593d3c",
+  "declassifications": []
+}

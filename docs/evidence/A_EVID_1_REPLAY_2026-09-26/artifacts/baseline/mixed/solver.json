@@ -1,0 +1,16 @@
+[
+  {
+    "detail": "assertion proved: assumptions imply assertion (native QF_BV solver; machine-checked bit-blaster)",
+    "model": null,
+    "name": "assert:(= anb_x (_ bv1 64))",
+    "smt": "(set-logic QF_BV)\n(declare-const anb_x (_ BitVec 64))\n(assert (= anb_x (_ bv1 64)))\n(assert (not (= anb_x (_ bv1 64))))\n(check-sat)\n(get-model)\n",
+    "status": "PASS"
+  },
+  {
+    "detail": "counterexample satisfies assumptions and negates assertion (replayed)",
+    "model": "sat\n(\n  (define-fun anb_x () (_ BitVec 64)\n    #x0000000000000001)\n)\n",
+    "name": "assert:(= anb_x (_ bv2 64))",
+    "smt": "(set-logic QF_BV)\n(declare-const anb_x (_ BitVec 64))\n(assert (= anb_x (_ bv1 64)))\n(assert (not (= anb_x (_ bv2 64))))\n(check-sat)\n(get-model)\n",
+    "status": "FAIL"
+  }
+]

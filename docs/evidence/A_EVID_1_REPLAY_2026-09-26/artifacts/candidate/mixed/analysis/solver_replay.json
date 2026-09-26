@@ -1,0 +1,28 @@
+{
+  "obligations": [
+    {
+      "detail": "assertion proved: assumptions imply assertion (native QF_BV solver; machine-checked bit-blaster)",
+      "index": 0,
+      "obligation": "assert:(= anb_x (_ bv1 64))",
+      "replay_attempted": false,
+      "replay_valid": false,
+      "smt": "analysis/proofs/obligation_0000.smt2",
+      "solver_status": "PASS",
+      "status": "not_applicable"
+    },
+    {
+      "detail": "counterexample satisfies assumptions and negates assertion (replayed)",
+      "index": 1,
+      "obligation": "assert:(= anb_x (_ bv2 64))",
+      "replay_attempted": true,
+      "replay_valid": true,
+      "smt": "analysis/proofs/obligation_0001.smt2",
+      "solver_status": "FAIL",
+      "status": "counterexample_replayed"
+    }
+  ],
+  "replay_valid": true,
+  "schema": "anubis-solver-replay-v1",
+  "scope": "all_solver_checks",
+  "status": "counterexample_replayed"
+}

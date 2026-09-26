@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/lib.rs (<TARGET>/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 4 tests
+test evidence::pca_tests::replay_record_success_needs_an_actual_trusted_model_replay ... ok
+test evidence::pca_tests::replay_record_failed_replay_dominates_later_success ... ok
+test evidence::pca_tests::replay_record_empty_check_has_no_replay_claim ... ok
+test evidence::pca_tests::replay_record_never_promotes_a_pass_or_untrusted_failure_to_replay ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 914 filtered out; finished in 0.00s

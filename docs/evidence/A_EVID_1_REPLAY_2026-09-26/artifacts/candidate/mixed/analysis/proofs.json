@@ -1,0 +1,25 @@
+{
+  "note": "Re-checkable proof objects. DIMACS CNF + DRAT refutation per proven obligation; verify with drat-trim or any DRAT checker. No Anubis binary required.",
+  "obligations": [
+    {
+      "checker": "anubis-solver::lrat::check_proof",
+      "checker_version": "0.1.0",
+      "cnf_dimacs": "analysis/proofs/obligation_0000.cnf",
+      "num_clauses": 192,
+      "num_vars": 128,
+      "obligation": "assert:(= anb_x (_ bv1 64))",
+      "proof": "rup_refutation",
+      "proof_drat": "analysis/proofs/obligation_0000.drat",
+      "replay": "drat-trim analysis/proofs/obligation_0000.cnf analysis/proofs/obligation_0000.drat",
+      "smt": "analysis/proofs/obligation_0000.smt2",
+      "status": "PASS",
+      "steps": 1
+    },
+    {
+      "obligation": "assert:(= anb_x (_ bv2 64))",
+      "proof": "counterexample_no_refutation",
+      "smt": "analysis/proofs/obligation_0001.smt2",
+      "status": "FAIL"
+    }
+  ]
+}

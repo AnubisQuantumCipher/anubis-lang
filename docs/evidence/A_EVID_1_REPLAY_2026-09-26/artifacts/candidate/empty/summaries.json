@@ -1,0 +1,15 @@
+{
+  "schema": "anubis.summaries.v2",
+  "package": "package",
+  "version": "0.0.0",
+  "source_merkle": "4d6ab161876804e1375310d76f5b9d399282716fe26c8eb95dce6e9913aa877b",
+  "functions": [
+    {
+      "name": "main",
+      "public": false,
+      "effects": [],
+      "params": [],
+      "returns_tainted": false
+    }
+  ]
+}

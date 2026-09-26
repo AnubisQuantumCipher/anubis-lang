@@ -1,0 +1,4 @@
+anubis check <OUT>/empty.anb (evidence=true, verified=false)
+evidence bundle: <OUT>/candidate-empty/evidence-20260926-094912-safe
+verdict: PASS
+check passed (no policy violations)
