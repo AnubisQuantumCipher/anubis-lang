@@ -1,0 +1,6 @@
+{
+  "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.soundness.matrix.test_run",
+  "exit": 0,
+  "log_sha256": "62f5c792845db1c1762b7da06e15135d397250358deb757ed777acd92846e6d3",
+  "source_head": "253dd4e3979d1846b584062acc2e3d28a059ad45"
+}

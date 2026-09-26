@@ -1,0 +1,83 @@
+{
+  "candidate_manifest_sha256": "ee1f7a7eba590d3e9d92033d1e7a79461100d9ae85211b48d19883b11603fc90",
+  "changed": [
+    {
+      "id": "d9q_pc_protected_shadow_renamed_valid",
+      "intent": "ACCEPT",
+      "post_codes": [],
+      "post_exit": 0,
+      "post_summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      },
+      "pre_codes": [
+        [
+          "ANUBIS_IMPLICIT_FLOW",
+          "refused"
+        ]
+      ],
+      "pre_exit": 1,
+      "pre_summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "id": "d9q_pc_shadow_protected_valid",
+      "intent": "ACCEPT",
+      "post_codes": [],
+      "post_exit": 0,
+      "post_summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      },
+      "pre_codes": [
+        [
+          "ANUBIS_IMPLICIT_FLOW",
+          "refused"
+        ]
+      ],
+      "pre_exit": 1,
+      "pre_summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    }
+  ],
+  "pre_manifest_sha256": "583821da0085b2409e0aee7f891e6725673fb36fbe29126583f614ca30481931",
+  "schema": "anubis-d9q-differential/1",
+  "source_identity_errors": [],
+  "tool_errors": []
+}

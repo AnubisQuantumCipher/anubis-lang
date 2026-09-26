@@ -211,14 +211,31 @@ Independent static reviews held both unintegrated AST binding-inventory
 drafts: [v1](mission/review/D9_V7_BINDING_INVENTORY_V1_HOLD_2026-09-26.md)
 could skip enclosed expressions for an empty Or pattern; [v2](mission/review/D9_V7_BINDING_INVENTORY_V2_HOLD_2026-09-26.md)
 fixed that traversal but its function-local observation may disappear from a
-release build. Neither patch was applied or lead-built. The next executable
-step is a reviewed, narrow production consumer of stable binding identities
-in the direct D9 producer, with explicit unresolved/multiple-candidate
-handling and same-source negative/valid controls. Then integrate a bounded
-code slice, run lead-owned focused checks, lint, format, and actual-diff
-review. In parallel, the private captured-project path
-still needs typed producer/tool outcomes and source-to-obligation checks
-before any public CLI consumer or evidence admission.
+release build. Neither patch was applied or lead-built. A smaller direct-PC
+consumer is now committed at `e4bfe3001df96e2c1799710cf16532c4d57e4df7`:
+the [binding-site receipt](evidence/D9_PC_BINDING_SITES_2026-09-26/README.md)
+binds its compiler source, CLI, selected Safe baseline and candidate, native
+positive run, focused tests, Clippy, format, and independent actual-diff plus
+raw-evidence review. The two protected-shadow valid cases now pass; every
+D9q negative remains refused in that scoped comparison. Nine D9q valid cases
+still refuse. The next executable soundness dependency is a reviewed binding
+and effect model for the remaining loop, field, call, and early-exit forms,
+with a same-source negative/valid comparison and explicit unresolved
+outcomes. The private captured-project typed producer/tool outcome
+[v1](mission/review/CAPTURED_TOOL_OUTCOME_V1_HOLD_2026-09-26.md) patch was
+held because a present but failed z3 process could be treated as absent in
+native-authoritative paths. Scratch
+[v2](mission/review/CAPTURED_TOOL_OUTCOME_V2_HOLD_2026-09-26.md) fixed those
+paths but was held because `unknown` followed by a tool error could still be
+classified as an ordinary undecided answer or permit a native proof. Scratch
+v3 received preliminary static GO, then a real z3 `unknown` plus normal
+`(get-model)` model-unavailable response exposed an over-strict tool-failure
+classification. V3 is held for a narrow correction. No version is integrated;
+source-bound process controls and a same-corpus public-output comparison
+remain required.
+Source-to-obligation checks and a public
+captured-build consumer remain later dependencies; package or evidence
+admission must not expand in the meantime.
 
 No current full workspace, disposable-guest, independent clean-room,
 protected-branch, product-release, or full trust-chain result is claimed.

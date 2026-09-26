@@ -40,6 +40,9 @@ provenance, and ignored logs. The raw-output pointer above, versioned
 and [v2](../../mission/review/D9_V7_BINDING_INVENTORY_V2_HOLD_2026-09-26.md)
 reviews, and staged logs resolve those publication conditions. The two
 inventory patches remain unintegrated.
+The [final read-only docs-review addendum](INDEPENDENT_DOCS_REVIEW_FINAL_ADDENDUM.md)
+checked the committed receipt and gave GO for its limited documentation
+claim; it did not run the checker or upgrade the implementation review.
 
 A preliminary documentation-drift rerun failed closed while this README was
 being edited; its [derivation error](preliminary-drift-failure.err) is retained.

@@ -118,6 +118,23 @@ Neither was built or graded by the lead. A consumer that uses binding IDs in
 the direct producer still needs design review, lead-run gates, and actual-diff
 review.
 
+**UPDATE 2026-09-26 — narrow direct-PC protected-shadow precision repaired.**
+Fixture commit `253dd4e3` and code commit `e4bfe300` have a
+[source-bound Safe receipt](evidence/D9_PC_BINDING_SITES_2026-09-26/README.md).
+The direct `Stmt::If` producer now distinguishes straight-line assignments
+to explicit protected branch-local `let` bindings from writes to an outer or
+public binding. The two frozen protected-shadow ACCEPT controls changed from
+direct `ANUBIS_IMPLICIT_FLOW` refusal to acceptance; the new public-inner,
+pre-shadow outer-write, and expression-position-write negatives retain that
+direct refusal. All registered D9q REJECT sources still refuse in the scoped
+same-source comparison. A Safe native run of the renamed positive prints its
+unchanged outer public value. Independent applied-diff and raw-evidence review
+corroborated this selected comparison, without release or broad integration
+sign-off. Other D9q valid refusals, field/call qualifier
+loss, loop binders, writer-located field PC obligations, and general
+binding/continuation coverage remain OPEN. This is not full matrix, hosted,
+formal, or release evidence.
+
 **UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
 Local code commits `88a2903c` and `6b85cf22` have separate
 [guard-transfer](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md) and
