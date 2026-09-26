@@ -14077,4 +14077,209 @@ math = { git = "https://example.invalid/math.git" }
             }
         }
     }
+
+    #[test]
+    fn arm_binder_contracts_keep_reachable_calls_and_skip_exactly_dead_paths() {
+        fn call_checks(src: &str) -> Vec<middle::SolverCheck> {
+            let ir = typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
+                .expect("typecheck");
+            SymbolicEngine::check_obligations(&ir)
+                .into_iter()
+                .filter(|check| {
+                    check.name.starts_with("requires@")
+                        || check.name.starts_with(middle::UNRESOLVED_REQUIRES_PREFIX)
+                })
+                .collect()
+        }
+        let prefix = "fn f(x: i64) -> i64 requires(x > 0) { return x; } ";
+        let invalid_value = format!(
+            "{prefix}fn main() {{ let z = if let Some(x) = Some(1) {{ f(-1) }} else {{ 0 }}; print(z); }}"
+        );
+        let invalid = call_checks(&invalid_value);
+        assert!(
+            invalid.iter().any(|check| {
+                check.status == "FAIL"
+                    && middle::classify_assertion_fail(check)
+                        == middle::AssertionFailKind::Disproved
+            }),
+            "a reachable value-position then call must be disproved: {invalid:?}"
+        );
+
+        for src in [
+            format!("{prefix}fn main() {{ let z = if let Some(x) = Some(-1) {{ f(x) }} else {{ 0 }}; print(z); }}"),
+            format!("{prefix}fn main() {{ match Some(-1) {{ Some(x) => {{ f(x); }} _ => {{ }} }} }}"),
+            format!("{prefix}fn main() {{ match [f(-1)] {{ [x, y] => {{ }} _ => {{ }} }} }}"),
+            format!("{prefix}fn opaque() -> i64 {{ return 2; }} fn main() {{ let y = 1; match y {{ x if y > 0 => {{ f(-1); y = opaque(); }} _ => {{ }} }} }}"),
+        ] {
+            let checks = call_checks(&src);
+            assert!(checks.iter().any(|check| {
+                check.status == "FAIL"
+                    && middle::classify_assertion_fail(check)
+                        == middle::AssertionFailKind::Disproved
+            }), "a reachable call must be disproved even when an arm is dead: {src}; checks: {checks:?}");
+        }
+
+        for src in [
+            format!("{prefix}fn main() {{ let z = if let Some(x) = Some(1) {{ f(x) }} else {{ 0 }}; print(z); }}"),
+            format!("{prefix}fn main() {{ match Some(1) {{ Some(x) => {{ f(x); }} _ => {{ }} }} }}"),
+            format!("{prefix}fn main() {{ if let Some(x) = Some(1) {{ f(x); }} else {{ f(-1); }} }}"),
+            format!("{prefix}fn main() {{ let x = 1; match 0 {{ 0 => {{ f(x); }} x => {{ }} }} }}"),
+            format!("{prefix}fn main() {{ let y = 1; match y {{ x if (if true {{ y = -1; true }} else {{ false }}) => {{ f(x); }} _ => {{ }} }} }}"),
+            format!("{prefix}fn opaque() -> i64 {{ return 2; }} fn main() {{ let y = 1; match y {{ x if y > 0 => {{ f(x); y = opaque(); }} _ => {{ }} }} }}"),
+        ] {
+            let checks = call_checks(&src);
+            assert!(checks.iter().any(|check| {
+                check.name.starts_with("requires@f:") && check.status == "PASS"
+            }), "a satisfied arm call must emit and discharge its obligation: {src}; checks: {checks:?}");
+            assert!(checks.iter().all(|check| check.status != "FAIL"),
+                "a satisfied arm call must not be refused: {src}; checks: {checks:?}");
+        }
+
+        for src in [
+            format!("{prefix}fn main() {{ let z = if let Some(x) = None {{ f(-1) }} else {{ 0 }}; print(z); }}"),
+            format!("{prefix}fn main() {{ let z = if let Some(x) = Some(1) {{ f(x) }} else {{ f(-1) }}; print(z); }}"),
+            format!("{prefix}fn main() {{ let z = if let [x, y] = [1] {{ f(-1) }} else {{ 0 }}; print(z); }}"),
+            format!("{prefix}fn main() {{ match [1] {{ [x, y] => {{ f(-1); }} _ => {{ }} }} }}"),
+            format!("{prefix}fn main() {{ match [1] {{ [2] => {{ f(-1); }} _ => {{ }} }} }}"),
+            format!("{prefix}fn main() {{ match [1] {{ [x] => {{ }} _ => {{ f(-1); }} }} }}"),
+            format!("{prefix}fn main() {{ let x = 1; let z = if let Some(x) = Some(2) {{ x = 3; 0 }} else {{ 0 }}; f(x); print(z); }}"),
+        ] {
+            let checks = call_checks(&src);
+            assert!(checks.iter().all(|check| check.status != "FAIL"),
+                "valid or unreachable arm must remain accepted: {src}; checks: {checks:?}");
+        }
+
+        let invalid_write = format!("{prefix}fn main() {{ let y = -1; match y {{ x if (if true {{ y = 1; true }} else {{ false }}) => {{ f(x); }} _ => {{ }} }} }}");
+        let checks = call_checks(&invalid_write);
+        assert!(
+            checks.iter().any(|check| {
+                check.status == "FAIL"
+                    && middle::classify_assertion_fail(check)
+                        == middle::AssertionFailKind::Undecided
+            }),
+            "an unmodeled write-bearing guard must yield a typed unresolved result: {checks:?}"
+        );
+        assert!(
+            checks.iter().all(|check| {
+                check.status != "FAIL"
+                    || middle::classify_assertion_fail(check)
+                        != middle::AssertionFailKind::Disproved
+            }),
+            "a candidate without encoded guard reachability is not a checked disproof: {checks:?}"
+        );
+
+        // The literal alternative of `0 | x` does not bind x. Its body writes the outer x,
+        // so the pre-match `x == 1` fact cannot certify the later f(x) call.
+        let outer_write = format!("{prefix}fn main() {{ let x = 1; match 0 {{ 0 | x => {{ x = -1; }} _ => {{ }} }} f(x); }}");
+        let checks = call_checks(&outer_write);
+        assert!(checks.iter().any(|check| check.status == "FAIL"),
+            "an or-pattern alternative that writes an outer binding must invalidate its old fact: {checks:?}");
+    }
+
+    #[test]
+    fn statement_match_exact_guards_preserve_calls_and_fallthrough_status() {
+        fn call_checks(src: &str) -> Vec<middle::SolverCheck> {
+            let ir = typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
+                .expect("typecheck");
+            SymbolicEngine::check_obligations(&ir)
+                .into_iter()
+                .filter(|check| {
+                    check.name.starts_with("requires@f:")
+                        || check.name.starts_with(middle::UNRESOLVED_REQUIRES_PREFIX)
+                })
+                .collect()
+        }
+
+        let prefix = "fn f(x: i64) -> i64 requires(x > 0) { return x; } ";
+        for src in [
+            format!("{prefix}fn main() {{ match 0 {{ x if true => {{ }} x => {{ f(-1); }} }} }}"),
+            format!(
+                "{prefix}fn main() {{ match [1] {{ [x] if false => {{ f(-1); }} _ => {{ }} }} }}"
+            ),
+        ] {
+            let checks = call_checks(&src);
+            assert!(
+                checks.is_empty(),
+                "a dead arm body must not retain a call obligation: {src}; checks: {checks:?}"
+            );
+        }
+
+        let false_guard = format!("{prefix}fn main() {{ match 1 {{ x if (f(1) > 0 && false) => {{ f(-1); }} _ => {{ }} }} }}");
+        let checks = call_checks(&false_guard);
+        assert_eq!(
+            checks.len(),
+            1,
+            "the evaluated guard call must remain while its dead body call is omitted: {checks:?}"
+        );
+        assert_eq!(
+            checks[0].status, "PASS",
+            "the satisfied guard call must pass: {checks:?}"
+        );
+
+        let invalid =
+            format!("{prefix}fn main() {{ match 1 {{ x if true => {{ f(-1); }} _ => {{ }} }} }}");
+        let checks = call_checks(&invalid);
+        assert!(
+            checks.iter().any(|check| {
+                check.status == "FAIL"
+                    && middle::classify_assertion_fail(check)
+                        == middle::AssertionFailKind::Disproved
+            }),
+            "a definitely reached guarded call must be disproved: {checks:?}"
+        );
+
+        let valid =
+            format!("{prefix}fn main() {{ match 1 {{ x if true => {{ f(x); }} _ => {{ }} }} }}");
+        let checks = call_checks(&valid);
+        assert!(
+            checks.iter().any(|check| check.status == "PASS"),
+            "a satisfied guarded call must emit a passing obligation: {checks:?}"
+        );
+        assert!(
+            checks.iter().all(|check| check.status != "FAIL"),
+            "a satisfied guarded call must remain accepted: {checks:?}"
+        );
+
+        let fallthrough_invalid =
+            format!("{prefix}fn main() {{ match 1 {{ x if false => {{ }} x => {{ f(-1); }} }} }}");
+        let checks = call_checks(&fallthrough_invalid);
+        assert!(
+            checks.iter().any(|check| {
+                check.status == "FAIL"
+                    && middle::classify_assertion_fail(check)
+                        == middle::AssertionFailKind::Disproved
+            }),
+            "a false guard must leave the next arm reachable: {checks:?}"
+        );
+
+        let fallthrough_valid =
+            format!("{prefix}fn main() {{ match 1 {{ x if false => {{ }} x => {{ f(x); }} }} }}");
+        let checks = call_checks(&fallthrough_valid);
+        assert!(
+            checks.iter().any(|check| check.status == "PASS"),
+            "a satisfied call after a false guard must emit a passing obligation: {checks:?}"
+        );
+        assert!(
+            checks.iter().all(|check| check.status != "FAIL"),
+            "a satisfied call after a false guard must remain accepted: {checks:?}"
+        );
+
+        for src in [
+            format!("{prefix}fn gate() -> bool {{ return true; }} fn main() {{ match 0 {{ _ if gate() => {{ }} _ => {{ f(-1); }} }} }}"),
+            format!("{prefix}fn caller(y: i64) {{ match 0 {{ _ if y > 0 => {{ }} _ => {{ f(-1); }} }} }}"),
+            format!("{prefix}fn caller(xs) {{ match xs {{ [x] => {{ }} _ => {{ f(-1); }} }} }}"),
+        ] {
+            let checks = call_checks(&src);
+            assert!(checks.iter().any(|check| {
+                check.status == "FAIL"
+                    && middle::classify_assertion_fail(check)
+                        == middle::AssertionFailKind::Undecided
+            }), "unmodeled earlier fallthrough must remain typed undecided: {src}; checks: {checks:?}");
+            assert!(checks.iter().all(|check| {
+                check.status != "FAIL"
+                    || middle::classify_assertion_fail(check)
+                        != middle::AssertionFailKind::Disproved
+            }), "an unencoded fallthrough is not a checked disproof: {src}; checks: {checks:?}");
+        }
+    }
 }

@@ -10902,23 +10902,133 @@ fn match_position_irrefutable(pattern: &crate::frontend::Pattern) -> bool {
     }
 }
 
-/// A narrow, exact dead-arm test used before joining writes from match arms. Both operands are
-/// runtime Int values here (the i64 literal parser accepted them), and integer literal patterns
-/// compare Int scrutinees by value. Every other spelling/shape stays potentially reachable.
+/// A narrow, exact dead-arm test used before joining writes from match arms. Integer literals
+/// compare runtime Int values, literal lists have an exact length, and constructed enum tags are
+/// exact. Every other spelling/shape stays potentially reachable.
 fn match_position_literal_misses(scrutinee: &Expr, pattern: &crate::frontend::Pattern) -> bool {
     match (scrutinee, pattern) {
         (Expr::Literal(value), crate::frontend::Pattern::Literal(expected)) => {
             match (value.parse::<i64>(), expected.parse::<i64>()) {
                 (Ok(value), Ok(expected)) => value != expected,
-                _ => false,
+                _ => matches!(
+                    (value.as_str(), expected.as_str()),
+                    ("true", "false") | ("false", "true")
+                ),
             }
         }
+        (Expr::StrLiteral(value), crate::frontend::Pattern::StrLiteral(expected)) => {
+            value != expected
+        }
+        (Expr::ArrayLiteral { elements }, crate::frontend::Pattern::List(patterns)) => {
+            elements.len() != patterns.len()
+                || elements
+                    .iter()
+                    .zip(patterns)
+                    .any(|(value, pattern)| match_position_literal_misses(value, pattern))
+        }
+        (
+            Expr::EnumConstruct {
+                enum_name, variant, ..
+            },
+            crate::frontend::Pattern::EnumVariant {
+                enum_name: expected_enum,
+                variant: expected_variant,
+                ..
+            },
+        ) => enum_name != expected_enum || variant != expected_variant,
+        (value, crate::frontend::Pattern::Or(alternatives)) => alternatives
+            .iter()
+            .all(|alternative| match_position_literal_misses(value, alternative)),
         _ => false,
     }
 }
 
+/// A deliberately narrow definite-match test. It is used only to avoid checking the unreachable
+/// `else` of a value-position `if let`; an unknown result retains both branches. Constructor
+/// payloads must themselves be irrefutable before a matching tag proves the whole pattern.
+fn match_position_definitely_matches(scrutinee: &Expr, pattern: &crate::frontend::Pattern) -> bool {
+    use crate::frontend::Pattern;
+    match pattern {
+        Pattern::Wildcard | Pattern::Binding(_) => true,
+        Pattern::Literal(expected) => match scrutinee {
+            Expr::Literal(value) => match (value.parse::<i64>(), expected.parse::<i64>()) {
+                (Ok(value), Ok(expected)) => value == expected,
+                _ => matches!(
+                    (value.as_str(), expected.as_str()),
+                    ("true", "true") | ("false", "false")
+                ),
+            },
+            _ => false,
+        },
+        Pattern::StrLiteral(expected) => {
+            matches!(scrutinee, Expr::StrLiteral(value) if value == expected)
+        }
+        Pattern::Or(alternatives) => alternatives
+            .iter()
+            .any(|alternative| match_position_definitely_matches(scrutinee, alternative)),
+        Pattern::List(patterns) => {
+            matches!(scrutinee, Expr::ArrayLiteral { elements }
+                if elements.len() == patterns.len()
+                    && elements.iter().zip(patterns).all(|(value, pattern)|
+                        match_position_definitely_matches(value, pattern)))
+        }
+        Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+            named_bindings,
+        } => matches!(scrutinee, Expr::EnumConstruct {
+            enum_name: value_enum,
+            variant: value_variant,
+            ..
+        } if value_enum == enum_name
+            && value_variant == variant
+            && bindings.iter().all(Pattern::is_irrefutable)
+            && named_bindings.iter().all(|(_, p)| p.is_irrefutable())),
+        Pattern::Struct { .. } => false,
+    }
+}
+
+/// A guard's result when its boolean structure fixes it regardless of values produced by
+/// subexpressions. The guard is still evaluated by the normal call/effect walkers: for example,
+/// `f(x) && false` is false if evaluation returns, but `f(x)` still executes.
+fn match_guard_exact_bool(guard: &Expr) -> Option<bool> {
+    match guard {
+        Expr::Literal(value) if value == "true" => Some(true),
+        Expr::Literal(value) if value == "false" => Some(false),
+        Expr::Unary { op, expr } if op == "!" => match_guard_exact_bool(expr).map(|v| !v),
+        Expr::Binary { op, lhs, rhs } if op == "&&" => {
+            let left = match_guard_exact_bool(lhs);
+            let right = match_guard_exact_bool(rhs);
+            if left == Some(false) || right == Some(false) {
+                Some(false)
+            } else if left == Some(true) {
+                right
+            } else if right == Some(true) {
+                left
+            } else {
+                None
+            }
+        }
+        Expr::Binary { op, lhs, rhs } if op == "||" => {
+            let left = match_guard_exact_bool(lhs);
+            let right = match_guard_exact_bool(rhs);
+            if left == Some(true) || right == Some(true) {
+                Some(true)
+            } else if left == Some(false) {
+                right
+            } else if right == Some(false) {
+                left
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Give the pre-analysis write join a view of a direct match that excludes only arms proven
-/// impossible by an exact integer-literal mismatch. The source AST is unchanged and every
+/// impossible by an exact pattern mismatch. The source AST is unchanged and every
 /// potentially reachable arm (including guards) remains visible to the normal analyzer.
 fn prune_literal_miss_match(expr: &Expr) -> Option<Expr> {
     let Expr::Match {
@@ -10981,32 +11091,165 @@ fn unfold_branch_bool_helpers(expr: &Expr, ctx: &SemanticContext, depth: u32) ->
 /// which silently accepted a violated precondition inside a match/if-let arm (e.g.
 /// `match 1 { 1 => { f(-1); } _ => {} }` with `f` requiring `x > 0`).
 ///
-/// An obligation that mentions a pattern binder is still dropped: the binder's value is not modeled
-/// outside the arm, so keeping it could be unsound or spurious. That stays deferred exactly as before
-/// — a narrower residual than dropping everything. The caller pushes the arm's pattern fact (via
-/// `match_arm_pattern_fact`) before analysis so a call whose precondition the arm's own literal guard
-/// establishes still proves rather than being over-rejected.
-fn retain_arm_call_preconditions(
-    ctx: &mut SemanticContext,
-    obl_mark: usize,
-    binder_names: &BTreeSet<String>,
-) {
+/// Pattern binders are modeled in the arm's own solver scope before this filter runs. An
+/// unmodelable binder generates an explicit unresolved precondition; a sibling's binder must
+/// never erase a call obligation about an outer binding with the same spelling.
+fn retain_arm_call_preconditions(ctx: &mut SemanticContext, obl_mark: usize) {
     if ctx.solver_obligations.len() <= obl_mark {
         return;
     }
-    let binder_smt: BTreeSet<String> = binder_names.iter().map(|n| smt_var(n)).collect();
     let pushed = ctx.solver_obligations.split_off(obl_mark);
     for o in pushed {
         let is_precondition =
             o.name.starts_with("requires@") || o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX);
-        let mentions_binder = o.vars.iter().any(|v| binder_smt.contains(v));
-        if is_precondition && !mentions_binder {
+        if is_precondition {
             ctx.solver_obligations.push(o);
         }
     }
     // The vector may have shrunk below the over-approximation scan position; later obligations must
     // still be scanned (those kept here were already scanned inside the arms).
     ctx.over_approx_scan = ctx.over_approx_scan.min(ctx.solver_obligations.len());
+}
+
+/// Extract a pattern-bound scalar only when the source expression itself gives the exact
+/// runtime value. Built-in Option/Result payloads preserve their source value; nominal struct
+/// fields and user enum payloads are left unmodeled until their declared boundary semantics have
+/// a checked correspondence here.
+fn exact_pattern_binding_values(
+    pattern: &crate::frontend::Pattern,
+    value: &Expr,
+    out: &mut BTreeMap<String, Expr>,
+) {
+    use crate::frontend::Pattern;
+    match (pattern, value) {
+        (Pattern::Binding(name), value) => {
+            out.insert(name.clone(), value.clone());
+        }
+        (
+            Pattern::EnumVariant {
+                enum_name,
+                variant,
+                bindings,
+                named_bindings,
+            },
+            Expr::EnumConstruct {
+                enum_name: value_enum,
+                variant: value_variant,
+                fields,
+                ..
+            },
+        ) if matches!(enum_name.as_str(), "Option" | "Result")
+            && enum_name == value_enum
+            && variant == value_variant =>
+        {
+            if named_bindings.is_empty() && bindings.len() == fields.len() {
+                for (p, v) in bindings.iter().zip(fields) {
+                    exact_pattern_binding_values(p, v, out);
+                }
+            }
+        }
+        (Pattern::List(patterns), Expr::ArrayLiteral { elements })
+            if patterns.len() == elements.len() =>
+        {
+            for (p, v) in patterns.iter().zip(elements) {
+                exact_pattern_binding_values(p, v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A source binding's current literal integer fact can be copied into a saved match value.
+/// Other SMT terms may depend on a value that a guard/body can write, so they need an explicit
+/// pre-write version before they can justify a payload relation here.
+fn exact_ground_binding_fact(assumptions: &[String], name: &str) -> Option<String> {
+    let prefix = format!("(= {} ", smt_var(name));
+    assumptions.iter().rev().find_map(|fact| {
+        let rhs = fact.strip_prefix(&prefix)?.strip_suffix(')')?;
+        smt_bv_const_u64(rhs).map(|_| rhs.to_string())
+    })
+}
+
+/// Enter a pattern's lexical solver scope without changing the AST used by the security lanes.
+/// First forget facts about any shadowed outer name. A modelable scalar source is copied to a
+/// fresh saved-value symbol, then the arm-local name is equated to that symbol. The source is
+/// encoded before names are rebound, and a self-referential source is deliberately left unknown:
+/// reusing `anb_x` for both outer and inner `x` would be a false proof. Unmodeled bound names stay
+/// absent from the modelability sets, so a call over one becomes `requires-unresolved@…`.
+fn enter_pattern_contract_scope(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    scrutinee: &Expr,
+    pattern: &crate::frontend::Pattern,
+    source_stable: bool,
+    later_writes: &BTreeSet<String>,
+) -> Vec<(String, BindingMembership, Option<String>)> {
+    let names = pattern.bound_names();
+    let bound: BTreeSet<String> = names.iter().cloned().collect();
+    let mut sources = BTreeMap::new();
+    exact_pattern_binding_values(pattern, scrutinee, &mut sources);
+    let saved: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let membership = capture_binding_membership(ctx, name);
+            let source = sources.get(name).and_then(|value| {
+                let mut vars = BTreeSet::new();
+                collect_expr_vars(value, &mut vars);
+                if source_stable
+                    && vars.is_disjoint(&bound)
+                    && is_int_modelable(value, &ctx.solver_int_vars)
+                {
+                    let encoded = expr_to_smt_value(value, &ctx.symbolic_widths)?;
+                    if vars.is_disjoint(later_writes) {
+                        Some(encoded)
+                    } else if let Expr::Var(source_name) = value {
+                        exact_ground_binding_fact(assumptions, source_name)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            (name.clone(), membership, source)
+        })
+        .collect();
+    let mut entered = Vec::new();
+    for (name, membership, source) in saved {
+        invalidate_binding_facts(ctx, assumptions, &name);
+        let fresh = source.map(|smt| {
+            let fresh = format!(
+                "{}armbind",
+                MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            ctx.solver_int_vars.insert(fresh.clone());
+            ctx.symbolic_widths.insert(fresh.clone(), 64);
+            ctx.solver_int_vars.insert(name.clone());
+            ctx.symbolic_widths.insert(name.clone(), 64);
+            assumptions.push(format!("(= {} {smt})", smt_var(&fresh)));
+            assumptions.push(format!("(= {} {})", smt_var(&name), smt_var(&fresh)));
+            fresh
+        });
+        entered.push((name, membership, fresh));
+    }
+    entered
+}
+
+fn leave_pattern_contract_scope(
+    ctx: &mut SemanticContext,
+    entered: Vec<(String, BindingMembership, Option<String>)>,
+) {
+    for (name, membership, fresh) in entered {
+        clear_binding_modelability(&mut ctx.solver_int_vars, &name);
+        ctx.solver_float_vars.remove(&name);
+        ctx.solver_string_vars.remove(&name);
+        ctx.symbolic_widths.remove(&name);
+        restore_binding_membership(ctx, &name, membership);
+        if let Some(fresh) = fresh {
+            ctx.solver_int_vars.remove(&fresh);
+            ctx.symbolic_widths.remove(&fresh);
+        }
+    }
 }
 
 /// Process-unique counter for minting fresh SMT symbols for whole-value match bindings (see the
@@ -12013,20 +12256,112 @@ fn discharge_calls_in_expr(
                 ctx.symbolic_widths.remove(n);
             }
         }
-        // `if let PATTERN = scrutinee { then } else { else_ }` in value position: the SCRUTINEE is evaluated
-        // unconditionally, so discharge contracted calls in it (like a `match` scrutinee). The THEN branch is
-        // left deferred — its pattern-bound names are unmodeled and could SHADOW an outer modeled var, which
-        // would discharge a body call against the wrong facts (the shadow-conflation false accept the `match`
-        // handler neutralizes with fresh symbols); handling it soundly needs that same machinery, a separate
-        // residual. The ELSE branch binds nothing, so its calls discharge safely under the enclosing facts.
+        // A value-position `if let` evaluates its scrutinee before either branch. Check the then
+        // body with the same scoped pattern-value relation as a statement-position arm, and the
+        // else body with the original outer bindings. Exact constructor/tag and list-length facts
+        // skip an impossible branch; unknown reachability is recorded on any counterexample.
         Expr::IfLet {
-            scrutinee, else_, ..
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
         } => {
+            let scrutinee_writes = havoc_match_position_expr_writes(ctx, assumptions, scrutinee);
             discharge_calls_in_expr(ctx, assumptions, scope, scrutinee);
-            discharge_calls_in_expr(ctx, assumptions, scope, else_);
+            let fact_snapshot = assumptions.clone();
+            let guard_snapshot = ctx.active_branch_guards.clone();
+            let model_int = ctx.solver_int_vars.clone();
+            let model_float = ctx.solver_float_vars.clone();
+            let model_string = ctx.solver_string_vars.clone();
+            let model_widths = ctx.symbolic_widths.clone();
+            let model_shadowed = ctx.shadowed_string_preds.clone();
+            let then_dead = match_position_literal_misses(scrutinee, pattern);
+            let else_dead = match_position_definitely_matches(scrutinee, pattern);
+            let pattern_fact = if scrutinee_writes.is_empty() {
+                match_arm_pattern_fact(scrutinee, pattern)
+                    .filter(|fact| path_condition_smt(ctx, fact).is_some())
+            } else {
+                None
+            };
+            if !then_dead {
+                if let Some(fact) = &pattern_fact {
+                    push_branch_path_condition(ctx, assumptions, fact, false);
+                }
+                let mut then_scope = scope.clone();
+                for name in pattern.bound_names() {
+                    // An arm binding shadows an outer callable as well as an outer scalar.
+                    then_scope.insert(
+                        name.clone(),
+                        labelled_param_binding(&name, false, None, false),
+                    );
+                }
+                let mut then_writes = BTreeSet::new();
+                expr_assigned_roots(then, &mut then_writes);
+                let entered = enter_pattern_contract_scope(
+                    ctx,
+                    assumptions,
+                    scrutinee,
+                    pattern,
+                    scrutinee_writes.is_empty(),
+                    &then_writes,
+                );
+                let obligation_mark = ctx.solver_obligations.len();
+                discharge_calls_in_expr(ctx, assumptions, &then_scope, then);
+                if !else_dead && pattern_fact.is_none() {
+                    for obligation in &mut ctx.solver_obligations[obligation_mark..] {
+                        if obligation.name.starts_with("requires@") {
+                            obligation
+                                .over_approx_reasons
+                                .insert(OverApproxReason::BranchReachability);
+                        }
+                    }
+                }
+                leave_pattern_contract_scope(ctx, entered);
+            }
+            *assumptions = fact_snapshot.clone();
+            ctx.active_branch_guards = guard_snapshot.clone();
+            ctx.solver_int_vars = model_int.clone();
+            ctx.solver_float_vars = model_float.clone();
+            ctx.solver_string_vars = model_string.clone();
+            ctx.symbolic_widths = model_widths.clone();
+            ctx.shadowed_string_preds = model_shadowed.clone();
+            if !else_dead {
+                if let Some(fact) = &pattern_fact {
+                    push_branch_path_condition(ctx, assumptions, fact, true);
+                }
+                let obligation_mark = ctx.solver_obligations.len();
+                discharge_calls_in_expr(ctx, assumptions, scope, else_);
+                if !then_dead && pattern_fact.is_none() {
+                    for obligation in &mut ctx.solver_obligations[obligation_mark..] {
+                        if obligation.name.starts_with("requires@") {
+                            obligation
+                                .over_approx_reasons
+                                .insert(OverApproxReason::BranchReachability);
+                        }
+                    }
+                }
+            }
+            *assumptions = fact_snapshot;
+            ctx.active_branch_guards = guard_snapshot;
+            ctx.solver_int_vars = model_int;
+            ctx.solver_float_vars = model_float;
+            ctx.solver_string_vars = model_string;
+            ctx.symbolic_widths = model_widths;
+            ctx.shadowed_string_preds = model_shadowed;
+            let mut written = BTreeSet::new();
+            let mut then_writes = BTreeSet::new();
+            expr_assigned_roots(then, &mut then_writes);
+            for name in pattern_always_bound_names(pattern) {
+                then_writes.remove(&name);
+            }
+            written.extend(then_writes);
+            expr_assigned_roots(else_, &mut written);
+            for name in &written {
+                invalidate_binding_facts(ctx, assumptions, name);
+            }
         }
-        // Remaining deferred positions: an `if let` THEN branch (pattern-bound scope, see above) and lambda
-        // bodies. Leaves (Var/Literal/Symbolic/…) hold no call. Undischarged.
+        // Lambda bodies and leaves (Var/Literal/Symbolic/…) hold no immediate call.
         _ => {}
     }
 }
@@ -13996,18 +14331,14 @@ fn analyze_stmts(
                 let mut scrutinee_fact_safe = scrutinee_writes.is_empty();
                 let mut scrutinee_vars = BTreeSet::new();
                 collect_expr_vars(scrutinee, &mut scrutinee_vars);
-                // A later alternative is tried only when each earlier guardless literal did not
-                // match. Keep these as scoped path facts, not contract premises: an unreachable
-                // later guard must not turn its call into a counterexample or a vacuity error.
+                // A later alternative is tried only when each earlier arm fell through. Exact
+                // guardless/true literal nonmatches become scoped path facts; other fallthrough
+                // conditions remain explicitly uncertain on later call obligations.
                 let mut prior_nonmatch: Vec<Expr> = Vec::new();
-                // Arm bodies are analyzed for SECURITY value-flow only — a `match`/`if let` arm body is a
-                // deferred-to-runtime position for CONTRACTS (an arm-body `assert` is NOT solver-proved, so
-                // a shadowed-binder assert `Some(s) => assert(s=="a")` can never be falsely proved). Roll
-                // back any solver obligation the arm walk pushes to this mark to preserve that design (the
-                // `qfs_binding_shadow` test locks it in); the scope-level taint/secret/fn_alias tracking we
-                // DO keep (that is the leak fix).
-                let obl_mark = ctx.solver_obligations.len();
-                let mut guard_obligations: Vec<SolverObligation> = Vec::new();
+                let mut fallthrough_reachability_unknown = false;
+                // Arm-body assertions remain runtime-enforced, while call preconditions are
+                // retained per reachable arm. The security walk still sees the original AST and
+                // its scope labels; only the scoped contract facts change below.
                 let mut terminal_arm_seen = false;
                 let before = scope.clone();
                 // Arms are tried in order: a guard that runs and fails leaves what it wrote to the
@@ -14016,11 +14347,13 @@ fn analyze_stmts(
                 let mut arm_scopes = Vec::new();
                 // An or-pattern arm one alternative at a time ([`sub_arms`]).
                 for (arm, pattern) in sub_arms(arms) {
+                    let arm_obl_mark = ctx.solver_obligations.len();
+                    let prior_fallthrough_unknown = fallthrough_reachability_unknown;
+                    let exact_guard = arm.guard.as_ref().and_then(match_guard_exact_bool);
                     // Still analyze dead source for ordinary semantic diagnostics, but never
                     // retain its runtime obligations or merge its effects into reachable paths.
                     let dead_arm =
                         terminal_arm_seen || match_position_literal_misses(scrutinee, pattern);
-                    let dead_obl_mark = ctx.solver_obligations.len();
                     let mut arm_scope = tried.clone();
                     seed_effect_pattern(
                         &mut arm_scope,
@@ -14046,22 +14379,34 @@ fn analyze_stmts(
                     }
                     let mut arm_asm = fallthrough_asm.clone();
                     let g0 = ctx.active_branch_guards.len();
+                    let mut pattern_fact_modeled = false;
                     if !dead_arm && scrutinee_fact_safe {
                         for fact in &prior_nonmatch {
                             push_branch_path_condition(ctx, &mut arm_asm, fact, true);
                         }
                         if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                            pattern_fact_modeled = path_condition_smt(ctx, &fact).is_some();
                             push_branch_path_condition(ctx, &mut arm_asm, &fact, false);
                         }
                     }
+                    let mut later_writes = BTreeSet::new();
+                    if let Some(guard) = &arm.guard {
+                        expr_assigned_roots(guard, &mut later_writes);
+                    }
+                    expr_assigned_roots(&arm.body, &mut later_writes);
+                    let entered_contract = enter_pattern_contract_scope(
+                        ctx,
+                        &mut arm_asm,
+                        scrutinee,
+                        pattern,
+                        scrutinee_fact_safe,
+                        &later_writes,
+                    );
                     let mut restore_after_arm: Vec<(String, BindingMembership)> = Vec::new();
                     if let Some(guard) = &arm.guard {
                         if !dead_arm {
-                            // A guard executes after its pattern binds, before the body. Discharge its
-                            // calls under the pattern fact. Do not let a same-named outer solver binding
-                            // stand in for an unmodeled pattern binder; unresolved preconditions remain
-                            // typed obligations. Guard obligations are saved separately so the legacy
-                            // arm-body filter cannot erase one because a sibling binds the same name.
+                            // A guard executes after its pattern binds, before the body. The
+                            // arm-local solver scope above has already removed shadowed outer facts.
                             let binders: BTreeSet<String> =
                                 pattern.bound_names().into_iter().collect();
                             let memberships: Vec<(String, BindingMembership)> = binders
@@ -14069,20 +14414,9 @@ fn analyze_stmts(
                                 .map(|name| (name.clone(), capture_binding_membership(ctx, name)))
                                 .collect();
                             let mut guard_asm = arm_asm.clone();
-                            for name in &binders {
-                                invalidate_binding_facts(ctx, &mut guard_asm, name);
-                            }
                             let guard_writes =
                                 havoc_match_position_expr_writes(ctx, &mut guard_asm, guard);
-                            let guard_mark = ctx.solver_obligations.len();
                             discharge_calls_in_expr(ctx, &mut guard_asm, &arm_scope, guard);
-                            let pushed = ctx.solver_obligations.split_off(guard_mark);
-                            guard_obligations.extend(pushed.into_iter().filter(|o| {
-                                o.name.starts_with("requires@")
-                                    || o.name.starts_with(UNRESOLVED_REQUIRES_PREFIX)
-                            }));
-                            ctx.over_approx_scan =
-                                ctx.over_approx_scan.min(ctx.solver_obligations.len());
                             for (name, membership) in memberships {
                                 if guard_writes.contains(&name) {
                                     restore_after_arm.push((name, membership));
@@ -14100,11 +14434,7 @@ fn analyze_stmts(
                                 }
                             }
                             if guard_writes.is_empty() {
-                                let mut guard_vars = BTreeSet::new();
-                                collect_expr_vars(guard, &mut guard_vars);
-                                if guard_vars.is_disjoint(&binders) {
-                                    push_branch_path_condition(ctx, &mut arm_asm, guard, false);
-                                }
+                                push_branch_path_condition(ctx, &mut arm_asm, guard, false);
                             }
                             if guard_writes.iter().any(|name| {
                                 !binders.contains(name) && scrutinee_vars.contains(name)
@@ -14143,6 +14473,15 @@ fn analyze_stmts(
                         }
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
                     }
+                    // Classify guard reachability now, before a body-only write can remove
+                    // the modelability that justified the guard at entry. A SAT candidate
+                    // under a write-bearing or unmodeled guard remains undecided.
+                    let guard_reachability_unknown = arm.guard.as_ref().is_some_and(|guard| {
+                        let mut writes = BTreeSet::new();
+                        expr_assigned_roots(guard, &mut writes);
+                        exact_guard.is_none()
+                            && (!writes.is_empty() || path_condition_smt(ctx, guard).is_none())
+                    });
                     // The guard's failed path can reach later alternatives; the arm body cannot.
                     // Capture modelability after guard evaluation and restore it after the body,
                     // just as `fallthrough_asm` already excludes body-only assumptions. Otherwise
@@ -14153,6 +14492,7 @@ fn analyze_stmts(
                     let fallthrough_string = ctx.solver_string_vars.clone();
                     let fallthrough_widths = ctx.symbolic_widths.clone();
                     let fallthrough_shadowed_preds = ctx.shadowed_string_preds.clone();
+                    let body_obl_mark = ctx.solver_obligations.len();
                     analyze_value_block(
                         &arm.body,
                         mode,
@@ -14162,6 +14502,34 @@ fn analyze_stmts(
                         &mut arm_asm,
                         ctx,
                     );
+                    // An exact-false guard still evaluates (and may contain contracted calls),
+                    // but its body never runs. Drop only obligations emitted by that body.
+                    if exact_guard == Some(false) {
+                        ctx.solver_obligations.truncate(body_obl_mark);
+                        ctx.over_approx_scan =
+                            ctx.over_approx_scan.min(ctx.solver_obligations.len());
+                    }
+                    if guard_reachability_unknown {
+                        for obligation in &mut ctx.solver_obligations[body_obl_mark..] {
+                            if obligation.name.starts_with("requires@") {
+                                obligation
+                                    .over_approx_reasons
+                                    .insert(OverApproxReason::BranchReachability);
+                            }
+                        }
+                    }
+                    let pattern_reachability_unknown =
+                        !match_position_definitely_matches(scrutinee, pattern)
+                            && !pattern_fact_modeled;
+                    if pattern_reachability_unknown || prior_fallthrough_unknown {
+                        for obligation in &mut ctx.solver_obligations[arm_obl_mark..] {
+                            if obligation.name.starts_with("requires@") {
+                                obligation
+                                    .over_approx_reasons
+                                    .insert(OverApproxReason::BranchReachability);
+                            }
+                        }
+                    }
                     ctx.solver_int_vars = fallthrough_int;
                     ctx.solver_float_vars = fallthrough_float;
                     ctx.solver_string_vars = fallthrough_string;
@@ -14170,29 +14538,44 @@ fn analyze_stmts(
                     for (name, membership) in restore_after_arm {
                         restore_binding_membership(ctx, &name, membership);
                     }
+                    leave_pattern_contract_scope(ctx, entered_contract);
                     ctx.active_branch_guards.truncate(g0);
                     if dead_arm {
-                        ctx.solver_obligations.truncate(dead_obl_mark);
+                        ctx.solver_obligations.truncate(arm_obl_mark);
                         ctx.over_approx_scan =
                             ctx.over_approx_scan.min(ctx.solver_obligations.len());
                     } else {
-                        arm_scopes.push(arm_scope);
-                        if arm.guard.is_none() && scrutinee_fact_safe {
-                            if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
-                                prior_nonmatch.push(fact);
+                        retain_arm_call_preconditions(ctx, arm_obl_mark);
+                        if exact_guard == Some(false) {
+                            // Only the guard's failed path reaches the join; body labels are
+                            // not an executable path for this arm.
+                            arm_scopes.push(tried.clone());
+                        } else {
+                            arm_scopes.push(arm_scope);
+                            let guard_always_true =
+                                arm.guard.is_none() || exact_guard == Some(true);
+                            if guard_always_true {
+                                if match_position_irrefutable(pattern)
+                                    || match_position_definitely_matches(scrutinee, pattern)
+                                {
+                                    terminal_arm_seen = true;
+                                } else if scrutinee_fact_safe && pattern_fact_modeled {
+                                    if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                                        prior_nonmatch.push(fact);
+                                    }
+                                } else {
+                                    fallthrough_reachability_unknown = true;
+                                }
+                            } else {
+                                // A refutable pattern followed by a nonconstant guard has a
+                                // disjunctive fallthrough (pattern miss OR guard false). No
+                                // source value is invented for that path.
+                                fallthrough_reachability_unknown = true;
                             }
-                        }
-                        if arm.guard.is_none() && match_position_irrefutable(pattern) {
-                            terminal_arm_seen = true;
                         }
                     }
                 }
                 *assumptions = snap_asm;
-                let arm_binders: BTreeSet<String> =
-                    arms.iter().flat_map(|a| a.pattern.bound_names()).collect();
-                retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
-                ctx.solver_obligations.extend(guard_obligations);
-                ctx.over_approx_scan = ctx.over_approx_scan.min(ctx.solver_obligations.len());
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_scopes.iter().collect();
                 // What the lane's own interpretation found a binding may be as a function, on any path.
                 merge_whole_captures_over(scope, &refs, ctx);
@@ -14253,7 +14636,6 @@ fn analyze_stmts(
                     reject_implicit_flow_under_secret_pc(mode, ss, &assigned, scope, ctx);
                 }
                 let snap_asm = assumptions.clone();
-                let obl_mark = ctx.solver_obligations.len();
                 let before = scope.clone();
                 let mut then_scope = scope.clone();
                 seed_effect_pattern(
@@ -14277,11 +14659,33 @@ fn analyze_stmts(
                 }
                 let mut then_asm = snap_asm.clone();
                 let g0 = ctx.active_branch_guards.len();
+                let model_before_then = (
+                    ctx.solver_int_vars.clone(),
+                    ctx.solver_float_vars.clone(),
+                    ctx.solver_string_vars.clone(),
+                    ctx.symbolic_widths.clone(),
+                    ctx.shadowed_string_preds.clone(),
+                );
+                let then_dead = match_position_literal_misses(scrutinee, pattern);
+                let else_dead = match_position_definitely_matches(scrutinee, pattern);
+                let mut pattern_fact_modeled = false;
                 if scrutinee_writes.is_empty() {
                     if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                        pattern_fact_modeled = path_condition_smt(ctx, &fact).is_some();
                         push_branch_path_condition(ctx, &mut then_asm, &fact, false);
                     }
                 }
+                let mut then_writes = BTreeSet::new();
+                expr_assigned_roots(then, &mut then_writes);
+                let entered_contract = enter_pattern_contract_scope(
+                    ctx,
+                    &mut then_asm,
+                    scrutinee,
+                    pattern,
+                    scrutinee_writes.is_empty(),
+                    &then_writes,
+                );
+                let then_obl_mark = ctx.solver_obligations.len();
                 analyze_value_block(
                     then,
                     mode,
@@ -14291,9 +14695,38 @@ fn analyze_stmts(
                     &mut then_asm,
                     ctx,
                 );
+                if then_dead {
+                    ctx.solver_obligations.truncate(then_obl_mark);
+                    ctx.over_approx_scan = ctx.over_approx_scan.min(ctx.solver_obligations.len());
+                } else {
+                    if !else_dead && !pattern_fact_modeled {
+                        for obligation in &mut ctx.solver_obligations[then_obl_mark..] {
+                            if obligation.name.starts_with("requires@") {
+                                obligation
+                                    .over_approx_reasons
+                                    .insert(OverApproxReason::BranchReachability);
+                            }
+                        }
+                    }
+                    retain_arm_call_preconditions(ctx, then_obl_mark);
+                }
+                leave_pattern_contract_scope(ctx, entered_contract);
                 ctx.active_branch_guards.truncate(g0);
+                // The else branch begins from the state after the scrutinee, never from solver
+                // memberships created by the then body (including its pattern binding).
+                ctx.solver_int_vars = model_before_then.0;
+                ctx.solver_float_vars = model_before_then.1;
+                ctx.solver_string_vars = model_before_then.2;
+                ctx.symbolic_widths = model_before_then.3;
+                ctx.shadowed_string_preds = model_before_then.4;
                 let mut else_scope = scope.clone();
                 let mut else_asm = snap_asm.clone();
+                if pattern_fact_modeled {
+                    if let Some(fact) = match_arm_pattern_fact(scrutinee, pattern) {
+                        push_branch_path_condition(ctx, &mut else_asm, &fact, true);
+                    }
+                }
+                let else_obl_mark = ctx.solver_obligations.len();
                 analyze_value_block(
                     else_,
                     mode,
@@ -14303,9 +14736,22 @@ fn analyze_stmts(
                     &mut else_asm,
                     ctx,
                 );
+                if else_dead {
+                    ctx.solver_obligations.truncate(else_obl_mark);
+                    ctx.over_approx_scan = ctx.over_approx_scan.min(ctx.solver_obligations.len());
+                } else {
+                    if !then_dead && !pattern_fact_modeled {
+                        for obligation in &mut ctx.solver_obligations[else_obl_mark..] {
+                            if obligation.name.starts_with("requires@") {
+                                obligation
+                                    .over_approx_reasons
+                                    .insert(OverApproxReason::BranchReachability);
+                            }
+                        }
+                    }
+                    retain_arm_call_preconditions(ctx, else_obl_mark);
+                }
                 *assumptions = snap_asm;
-                let arm_binders: BTreeSet<String> = pattern.bound_names().into_iter().collect();
-                retain_arm_call_preconditions(ctx, obl_mark, &arm_binders);
                 // What the lane's own interpretation found a binding may be as a function, on any path.
                 merge_whole_captures_over(scope, &[&then_scope, &else_scope], ctx);
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
@@ -27008,6 +27454,44 @@ fn expr_let_bound(e: &Expr, out: &mut BTreeSet<String>) {
 /// Collect assignment roots hidden INSIDE an expression — an assignment can live in a block, `if`,
 /// `match`, or `if let` used in expression position (a `let` initializer, a call argument, a branch
 /// value). Mutually recursive with `collect_assigned_roots` via `Expr::Block`.
+fn pattern_always_bound_names(pattern: &crate::frontend::Pattern) -> BTreeSet<String> {
+    use crate::frontend::Pattern;
+    match pattern {
+        Pattern::Binding(name) => BTreeSet::from([name.clone()]),
+        Pattern::Or(alternatives) => {
+            let mut alternatives = alternatives.iter();
+            let Some(first) = alternatives.next() else {
+                return BTreeSet::new();
+            };
+            let mut common = pattern_always_bound_names(first);
+            for alternative in alternatives {
+                let names = pattern_always_bound_names(alternative);
+                common.retain(|name| names.contains(name));
+            }
+            common
+        }
+        Pattern::List(parts) => parts.iter().flat_map(pattern_always_bound_names).collect(),
+        Pattern::Struct { fields, .. } => fields
+            .iter()
+            .flat_map(|(_, part)| pattern_always_bound_names(part))
+            .collect(),
+        Pattern::EnumVariant {
+            bindings,
+            named_bindings,
+            ..
+        } => bindings
+            .iter()
+            .flat_map(pattern_always_bound_names)
+            .chain(
+                named_bindings
+                    .iter()
+                    .flat_map(|(_, part)| pattern_always_bound_names(part)),
+            )
+            .collect(),
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::StrLiteral(_) => BTreeSet::new(),
+    }
+}
+
 fn expr_assigned_roots(e: &Expr, out: &mut BTreeSet<String>) {
     match e {
         Expr::Block { stmts, tail } => {
@@ -27024,24 +27508,37 @@ fn expr_assigned_roots(e: &Expr, out: &mut BTreeSet<String>) {
             expr_assigned_roots(else_, out);
         }
         Expr::IfLet {
+            pattern,
             scrutinee,
             then,
             else_,
             ..
         } => {
             expr_assigned_roots(scrutinee, out);
-            expr_assigned_roots(then, out);
+            let mut then_writes = BTreeSet::new();
+            expr_assigned_roots(then, &mut then_writes);
+            // The pattern's names exist only in `then`; assigning one does not write an
+            // outer binding with the same spelling. `else` still sees the outer binding.
+            for name in pattern_always_bound_names(pattern) {
+                then_writes.remove(&name);
+            }
+            out.extend(then_writes);
             expr_assigned_roots(else_, out);
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             expr_assigned_roots(scrutinee, out);
-            for a in arms {
+            for (a, pattern) in sub_arms(arms) {
+                let mut arm_writes = BTreeSet::new();
                 if let Some(g) = &a.guard {
-                    expr_assigned_roots(g, out);
+                    expr_assigned_roots(g, &mut arm_writes);
                 }
-                expr_assigned_roots(&a.body, out);
+                expr_assigned_roots(&a.body, &mut arm_writes);
+                for name in pattern_always_bound_names(pattern) {
+                    arm_writes.remove(&name);
+                }
+                out.extend(arm_writes);
             }
         }
         Expr::Lambda { body, .. } => expr_assigned_roots(body, out),
