@@ -15,7 +15,16 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — private captured-byte reader, no admission claim.**
+**UPDATE 2026-09-26 — value-position enum match precision remains open.**
+Fixture-only commit `c6955cd45fd92c16a56e129697b012c2b40ff051`
+adds [frozen valid and invalid expression-match controls](evidence/ARM_ENUM_EXPR_REGISTRATION_2026-09-26.md).
+The immutable pre-fix checkers DISPROVE both the reachable violations and the
+valid dead arms; the latter are incorrect counterexamples, not progress on
+soundness. The earlier `r2arm_*` selected receipt predates these new cases
+and must not be read as a current complete subset result. The value-position
+repair and a new source-bound comparison are the next soundness dependency.
+
+**Earlier update 2026-09-26 — private captured-byte reader, no admission claim.**
 Local code commit `4ba7455f1fbb2f696685a0ad202c43ebf51e04dc`
 has a [scoped reader receipt](evidence/SOURCE_GRAPH_READER_2026-09-26.md).
 It captures bounded source bytes from held inodes on this Linux host and

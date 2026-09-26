@@ -66,7 +66,7 @@ matrix is the reference for open defects.
 
 ## Current checkpoint and next executable step (2026-09-26)
 
-The isolated local integration branch is at `4ba7455f1fbb2f696685a0ad202c43ebf51e04dc`.
+The isolated local integration branch is at `c6955cd45fd92c16a56e129697b012c2b40ff051`.
 It includes the evidence, package-refusal and provisional-matrix units listed
 in [CLAIMS](CLAIMS.md), a source-snapshot check before evidence-producing native
 builds, and typed diagnostic refusal context. Commit `72e1390b` adds only the
@@ -82,15 +82,22 @@ records the preceding `70b200c7` result and its then-open enum precision
 control. The [enum-payload receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md)
 records the current source-bound local CLI: the frozen valid positional and
 named dead arms now PASS, and their reachable violated twins are DISPROVED.
-The selected `r2arm_*` Safe cases show only the expected classified flips.
+The selected `r2arm_*` Safe cases at that frozen receipt show only the
+expected classified flips. The later
+[value-position registration](evidence/ARM_ENUM_EXPR_REGISTRATION_2026-09-26.md)
+adds valid constructed-enum dead arms that the same pinned checker incorrectly
+DISPROVES; they remain open precision defects, paired with reachable invalid
+twins. The code after the source reader is otherwise unchanged.
 The full matrix runner remains `INCOMPLETE` by design. The local unfiltered
 compiler-library attempt on the preceding head was interrupted after a
 Research execution test was identified in this Linux guest; it is not a
 required suite witness. No disposable Tart, hosted, full workspace,
 independent rebuild or release gate is claimed for this head.
 
-Next, connect captured bytes to resolver/checker input with parsed-import
-correspondence and one immutable program input, then to versioned package
+Next, repair the frozen value-position enum match precision cases without
+losing reachable invalid or scrutinee obligations. In parallel, connect
+captured bytes to resolver/checker input with parsed-import correspondence
+and one immutable program input, then to versioned package
 and evidence closure claims before restoring transitive verified admission.
 The honest FAIL-bundle verifier also needs source-derived sidecar and security
 context checks while preserving historical PCA verification; revised draft
