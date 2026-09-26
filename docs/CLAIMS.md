@@ -1663,6 +1663,17 @@ and cannot verify later repairs.
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
 
+    **UPDATE 2026-09-26 — statement match/if-let contract probes remain open.**
+    The canonical matrix now registers separate `M-ARM-BINDER` and
+    `M-CALL-POSITION` mechanisms. A source-bound checker pin silently accepted
+    violated calls in a `match` scrutinee, a `match` guard, and an `if let`
+    scrutinee while direct-call twins were disproved. Same-binder violated
+    calls were undecided rather than disproved; valid same-binder, dead-path,
+    and guarded calls were also undecided. The [focused result rows and
+    source hashes](evidence/ARM_BINDER_REGISTRATION_2026-09-26/README.md)
+    record the exact scope. Neither `e99db1d1` nor a binder-only repair closes
+    these expression-position omissions or the valid-case precision defects.
+
     **UPDATE 2026-09-26 — IFC v2 (`e516b1f3`): the semantic foundation of mandate section 6.**
     - An abstract interpreter over labeled values mirrors the runtime's value semantics, closures,
       call resolution, method dispatch and builtins, and runs in every Safe-mode check beside the
