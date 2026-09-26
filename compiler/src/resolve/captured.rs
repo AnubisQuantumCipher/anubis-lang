@@ -289,6 +289,10 @@ pub(crate) enum CapturedSafeCheckFailure {
         checks: Vec<crate::middle::SolverCheck>,
         refusals: Vec<crate::middle::SolverCheck>,
     },
+    SolverStreamInvalid {
+        checks: Vec<crate::middle::SolverCheck>,
+        issue: crate::middle::SolverStreamIntegrityError,
+    },
     Lowering {
         detail: String,
     },
@@ -315,6 +319,9 @@ impl std::fmt::Display for CapturedSafeCheckFailure {
                     crate::middle::format_build_check_failures(refusals)
                 )
             }
+            Self::SolverStreamInvalid { issue, .. } => {
+                write!(f, "captured Safe compiler solver stream invalid: {issue}")
+            }
             Self::Lowering { detail } => write!(f, "captured Safe lowering failed: {detail}"),
         }
     }
@@ -325,7 +332,20 @@ impl std::error::Error for CapturedSafeCheckFailure {}
 fn check_captured_solver_stream(
     checks: Vec<crate::middle::SolverCheck>,
 ) -> Result<(), CapturedSafeCheckFailure> {
-    let refusals = crate::middle::solver_stream_refusals(&checks);
+    // A synthetic stream-integrity row currently uses wire `FAIL` for legacy
+    // consumers. Keep it out of the captured check's obligation refusal path:
+    // neither it nor an invalid wire status denotes a disproved contract.
+    crate::middle::validate_solver_stream(&checks).map_err(|issue| {
+        CapturedSafeCheckFailure::SolverStreamInvalid {
+            checks: checks.clone(),
+            issue,
+        }
+    })?;
+    let refusals = checks
+        .iter()
+        .filter(|check| crate::middle::solver_check_requires_refusal(check))
+        .cloned()
+        .collect::<Vec<_>>();
     if refusals.is_empty() {
         Ok(())
     } else {
@@ -1078,7 +1098,6 @@ mod tests {
         for (status, expected) in [
             ("FAIL", crate::middle::SolverOutcome::Fail),
             ("UNKNOWN", crate::middle::SolverOutcome::Unknown),
-            ("unexpected", crate::middle::SolverOutcome::InvalidStatus),
         ] {
             let error = check_captured_solver_stream(vec![check(status)]).unwrap_err();
             match error {
@@ -1090,11 +1109,60 @@ mod tests {
                 other => panic!("wrong typed stage: {other}"),
             }
         }
+        let mixed = check_captured_solver_stream(vec![check("FAIL"), check("UNKNOWN")]);
+        assert!(matches!(
+            mixed,
+            Err(CapturedSafeCheckFailure::SolverRefused { refusals, .. })
+                if refusals.len() == 2
+                    && crate::middle::solver_outcome(&refusals[0])
+                        == crate::middle::SolverOutcome::Fail
+                    && crate::middle::solver_outcome(&refusals[1])
+                        == crate::middle::SolverOutcome::Unknown
+        ));
+        assert!(matches!(
+            check_captured_solver_stream(vec![check("unexpected")]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: crate::middle::SolverStreamIntegrityError::InvalidStatus { index: 0 },
+                ..
+            })
+        ));
         assert!(matches!(
             check_captured_solver_stream(vec![]),
-            Err(CapturedSafeCheckFailure::SolverRefused { checks, refusals })
-                if checks.is_empty()
-                    && refusals.iter().any(|row| row.name == "solver:stream-integrity")
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                checks,
+                issue: crate::middle::SolverStreamIntegrityError::Empty,
+            }) if checks.is_empty()
+        ));
+        assert!(matches!(
+            check_captured_solver_stream(vec![crate::middle::SolverCheck {
+                name: "solver:stream-integrity".into(),
+                status: "FAIL".into(),
+                detail: crate::middle::SOLVER_STREAM_INVALID_DETAIL.into(),
+                model: None,
+                smt: String::new(),
+            }]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: crate::middle::SolverStreamIntegrityError::SyntheticIntegrityRow {
+                    index: 0
+                },
+                ..
+            })
+        ));
+        let renamed_integrity = crate::middle::SolverCheck {
+            name: "assert:x".into(),
+            status: "FAIL".into(),
+            detail: crate::middle::SOLVER_STREAM_INVALID_DETAIL.into(),
+            model: None,
+            smt: String::new(),
+        };
+        assert!(matches!(
+            check_captured_solver_stream(vec![renamed_integrity]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: crate::middle::SolverStreamIntegrityError::SyntheticIntegrityRow {
+                    index: 0
+                },
+                ..
+            })
         ));
     }
 

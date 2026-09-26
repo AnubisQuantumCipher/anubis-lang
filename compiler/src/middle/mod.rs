@@ -183,6 +183,68 @@ pub fn reserves_no_obligations_identity(check: &SolverCheck) -> bool {
 pub const SOLVER_STREAM_INVALID_DETAIL: &str = "ANUBIS_SOLVER_STREAM_INVALID: missing checks \
      or malformed synthetic no-obligations marker; compiler solver inventory is incomplete";
 
+const SOLVER_STREAM_INTEGRITY_NAME: &str = "solver:stream-integrity";
+
+fn reserves_solver_stream_integrity_identity(check: &SolverCheck) -> bool {
+    check.name == SOLVER_STREAM_INTEGRITY_NAME || check.detail == SOLVER_STREAM_INVALID_DETAIL
+}
+
+/// A compiler-owned stream failure, distinct from any solver verdict about an
+/// obligation. The row index refers to the original wire stream, if present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolverStreamIntegrityError {
+    Empty,
+    MalformedNoObligations,
+    SyntheticIntegrityRow { index: usize },
+    InvalidStatus { index: usize },
+}
+
+impl std::fmt::Display for SolverStreamIntegrityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "solver emitted no check rows"),
+            Self::MalformedNoObligations => {
+                write!(f, "solver emitted a malformed no-obligations marker")
+            }
+            Self::SyntheticIntegrityRow { index } => write!(
+                f,
+                "solver stream contains a synthetic integrity refusal at row {index}"
+            ),
+            Self::InvalidStatus { index } => {
+                write!(f, "solver emitted an invalid status at row {index}")
+            }
+        }
+    }
+}
+
+/// Validate the raw stream before a consumer assigns epistemic meaning to a
+/// `FAIL` or `UNKNOWN` row. The reserved synthetic name and detail are checked
+/// only to *reject* a helper-generated integrity row; they can never confer a
+/// proof or counterexample. Other display text is not part of this decision.
+pub fn validate_solver_stream(checks: &[SolverCheck]) -> Result<(), SolverStreamIntegrityError> {
+    if checks.is_empty() {
+        return Err(SolverStreamIntegrityError::Empty);
+    }
+    if let Some((index, _)) = checks
+        .iter()
+        .enumerate()
+        .find(|(_, check)| reserves_solver_stream_integrity_identity(check))
+    {
+        return Err(SolverStreamIntegrityError::SyntheticIntegrityRow { index });
+    }
+    if checks.iter().any(reserves_no_obligations_identity) && !is_no_obligations_sentinel(checks) {
+        return Err(SolverStreamIntegrityError::MalformedNoObligations);
+    }
+    if let Some((index, _)) = checks
+        .iter()
+        .enumerate()
+        .find(|(_, check)| solver_outcome(check) == SolverOutcome::InvalidStatus)
+    {
+        return Err(SolverStreamIntegrityError::InvalidStatus { index });
+    }
+    Ok(())
+}
+
 fn solver_stream_shape_valid(checks: &[SolverCheck]) -> bool {
     !checks.is_empty()
         && (!checks.iter().any(reserves_no_obligations_identity)
@@ -198,7 +260,7 @@ pub fn solver_stream_refusals(checks: &[SolverCheck]) -> Vec<SolverCheck> {
         .collect();
     if !solver_stream_shape_valid(checks) {
         refusals.push(SolverCheck {
-            name: "solver:stream-integrity".into(),
+            name: SOLVER_STREAM_INTEGRITY_NAME.into(),
             status: "FAIL".into(),
             detail: SOLVER_STREAM_INVALID_DETAIL.into(),
             model: None,
@@ -40854,6 +40916,83 @@ mod certificate_coverage_tests {
         let mut check = check("PASS", NO_OBLIGATIONS_DETAIL, "solver:no-obligations");
         check.smt = "(check-sat)".into();
         check
+    }
+
+    #[test]
+    fn typed_stream_integrity_never_turns_a_malformed_row_into_a_verdict() {
+        assert_eq!(
+            validate_solver_stream(&[]),
+            Err(SolverStreamIntegrityError::Empty)
+        );
+        assert!(validate_solver_stream(&[no_obligations()]).is_ok());
+        assert!(validate_solver_stream(&[check("PASS", "proved", "assert:x")]).is_ok());
+        assert!(validate_solver_stream(&[
+            check("FAIL", "counterexample", "assert:x"),
+            check("UNKNOWN", "undecided", "assert:y"),
+        ])
+        .is_ok());
+        assert_eq!(
+            validate_solver_stream(&[
+                check("FAIL", "refused", "assert:x"),
+                check("unexpected", "invalid wire", "assert:y"),
+            ]),
+            Err(SolverStreamIntegrityError::InvalidStatus { index: 1 })
+        );
+        assert_eq!(
+            validate_solver_stream(&[check(
+                "FAIL",
+                SOLVER_STREAM_INVALID_DETAIL,
+                SOLVER_STREAM_INTEGRITY_NAME,
+            )]),
+            Err(SolverStreamIntegrityError::SyntheticIntegrityRow { index: 0 })
+        );
+        assert_eq!(
+            validate_solver_stream(&[check(
+                "PASS",
+                "forged success",
+                SOLVER_STREAM_INTEGRITY_NAME,
+            )]),
+            Err(SolverStreamIntegrityError::SyntheticIntegrityRow { index: 0 })
+        );
+        assert_eq!(
+            validate_solver_stream(&[check("FAIL", SOLVER_STREAM_INVALID_DETAIL, "assert:x")]),
+            Err(SolverStreamIntegrityError::SyntheticIntegrityRow { index: 0 })
+        );
+        assert_eq!(
+            validate_solver_stream(&[
+                check("FAIL", "counterexample", "assert:x"),
+                check("FAIL", SOLVER_STREAM_INVALID_DETAIL, "assert:y"),
+            ]),
+            Err(SolverStreamIntegrityError::SyntheticIntegrityRow { index: 1 })
+        );
+        assert_eq!(
+            validate_solver_stream(&[no_obligations(), check("PASS", "proved", "assert:x")]),
+            Err(SolverStreamIntegrityError::MalformedNoObligations)
+        );
+        let sentinel = no_obligations();
+        for malformed in [
+            SolverCheck {
+                status: "UNKNOWN".into(),
+                ..sentinel.clone()
+            },
+            SolverCheck {
+                detail: "changed detail".into(),
+                ..sentinel.clone()
+            },
+            SolverCheck {
+                model: Some("forged".into()),
+                ..sentinel.clone()
+            },
+            SolverCheck {
+                smt: "(check-sat)\n".into(),
+                ..sentinel.clone()
+            },
+        ] {
+            assert_eq!(
+                validate_solver_stream(&[malformed]),
+                Err(SolverStreamIntegrityError::MalformedNoObligations)
+            );
+        }
     }
 
     #[test]
