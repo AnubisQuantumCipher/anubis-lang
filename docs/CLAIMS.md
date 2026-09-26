@@ -15,6 +15,18 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — honest FAIL check evidence integrated, scoped.**
+Code commit `fc72526b` and its [source-bound local receipt](evidence/HONEST_FAIL_SOURCE_CHECK_2026-09-26.md)
+introduce PCA v4 source-check scope. A Safe tainted-egress check now emits a
+replayable `FAIL` bundle with a typed security refusal and an honest
+`solver_execution: not_run`; its clean declassified twin emits `PASS`. The
+source-bound release CLI and focused tests passed, and independent static
+review approved the integrated diff. This does not make a FAIL program
+admissible, verify multi-file source closure, identify each deciding solver,
+or close the open full matrix. The additional no-default-features Clippy
+attempt failed on feature-gated warnings. Earlier notes below describe their
+own pins and are superseded on the FAIL-bundle integration state.
+
 **UPDATE 2026-09-26 — struct qualifier precision frozen before repair.**
 Fixture commit `d49f32b1` and its [registration receipt](evidence/D9_QUALIFIER_PRECISION_REGISTRATION_2026-09-26/README.md)
 show that the pinned Safe checker refuses public `Row.n` reads when a distinct

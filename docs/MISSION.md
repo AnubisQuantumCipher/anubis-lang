@@ -105,6 +105,15 @@ design review approved the oracles and held a call-boundary-only workaround:
 the direct source walker and interprocedural summary also collapse protected
 fields into root secrecy.
 
+The [PCA v4 check-evidence receipt](evidence/HONEST_FAIL_SOURCE_CHECK_2026-09-26.md)
+binds code commit `fc72526b`, focused Safe tests, a local clean-head release
+binary and a replayed FAIL/PASS twin. A source-derived security refusal is now
+verifiable as a recorded FAIL without claiming that a solver ran or that the
+program is approved. Independent static review gave GO for lead testing. The
+extra no-default-features Clippy attempt failed; multi-leaf correspondence,
+per-obligation backend provenance and archived v3 producer compatibility
+remain open. No full workspace gate was run.
+
 The next soundness implementation dependency is a typed distinction between protected
 struct fields and whole-value secrecy, carried through direct reads, calls,
 aliases, returns, joins and writes. Preserve the negative controls and compare
@@ -112,12 +121,11 @@ all frozen forms on the same source-bound pins before claiming restored
 precision. In parallel, connect the
 [captured source graph](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md)
 to checker/lowering and package admission; the valid transitive package still
-fails at `ANUBIS_DEP_PROOF_UNVERIFIED`. The honest FAIL-bundle verifier v10
-scratch patch remains withheld after a destructive rebase and source-scope
-overclaim. Later independent review required an honest no-solver-query status,
-removed an active Research host test and closed stripped-refusal authority
-paths. The frozen v15 scratch patch is awaiting lead-owned source-bound tests;
-its archived v3 producer compatibility is explicitly unproved. The matrix
+fails at `ANUBIS_DEP_PROOF_UNVERIFIED`. The D9 scratch v2 patch remains
+withheld after independent review found possible label laundering through
+uncertified call-returned structs and stale field shapes after nested writes.
+New matched witnesses require frozen baseline registration before its next
+implementation revision. The matrix
 [canonical-manifest dependency](mission/REQUIREMENTS.md) remains open despite
 the new fixed-path loader: production diagnostics still lack complete stable
 source locators. Preserve the old `history.tsv` and add compact event history
