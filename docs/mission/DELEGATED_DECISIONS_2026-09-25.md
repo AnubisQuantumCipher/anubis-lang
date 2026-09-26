@@ -107,3 +107,61 @@ by that gate. It is run memory-capped (`capped.sh`, no core dumps) like every ot
 Deliberately adversarial memory- and stack-exhaustion probing of the checker (the checker-limits
 reviews' memory-pressure runner) is closer to the rule's intent; those runs stay capped, their
 isolation is reported as "host, memory-capped scope", and they are never described as isolated.
+
+## Later decisions (2026-09-26)
+
+Three more questions came up while landing IFC v2 (mandate section 6). They are decided the same
+way, and are equally reversible.
+
+## D6. `exit` and `panic` end the program like a `return`
+
+**Question.** D1 keeps termination channels outside the confidentiality claim. Is
+`if secret { exit(0) } print("after")` (or the same with `panic`) such a channel, or an implicit
+flow D1 covers?
+
+**Decision.** An implicit flow. Both runs terminate normally and print different things: the
+presence of the later egress depends on the secret exactly as it does after
+`if secret { return }` in `main`, which every lane already refuses. `exit(code)` and `panic(msg)`
+are explicit statements the program chose to execute, so IFC v2 treats them as ending the program
+under the program counter they run at: the rest of the function, and of every caller, runs under
+that label (their message and status are egress as before). What stays outside the claim is the
+implicit abort of a runtime trap (an out-of-range index, a missing key, a failed assertion) and
+divergence.
+
+**Evidence.** The adversarial review of IFC v2 (round 1) witnessed `exit` under a secret condition
+followed by a print (CTL-L12, `ifc2r1_ctl_l12_exit_under_secret`).
+
+## D7. A runtime trap's message carries no operand value
+
+**Question.** The runtime's fail-closed traps printed their operands to stderr (the out-of-range
+index and the list's length, the missing key, a negative count, the unmatched match value, a file
+path). A secret operand then reaches stderr although no `print` in the program touches it. Model
+every trap as egress in the checker, or change the messages?
+
+**Decision.** Change the messages: a trap names its error code and what went wrong, never the
+program's data. The checker cannot sensibly treat every index expression as an egress of its
+operand, and the diagnostic value of the operand in the message is small next to what it leaks.
+Operand type names (`expected a list, got int`) are still printed: a type-dependent trap already
+discloses the type by trapping, and they carry most of the diagnostic value; that residual is
+stated with the termination channel.
+
+**Evidence.** Review round 1 witnessed `xs[k]` and `m[str(k)]` printing the secret `k` in the trap
+message (L17, L21); the runtime test `runtime_traps_do_not_print_operand_values` holds the fix for
+the core runtime (e516b1f3). Review round 2 reported further messages that still print an
+operand (in the crypto and exploit-kit runtimes, and the arity trap of a builtin used as a
+value); they are the next unit, not covered by this entry's evidence.
+
+## D8. How IFC v2 is enforced
+
+**Question.** The mandate asks for a semantic foundation for information flow (an analysis that
+mirrors the runtime's value semantics) rather than more syntactic special cases. When it lands,
+does it replace the existing flow lanes, run beside them, or run in a shadow mode?
+
+**Decision.** Beside them, always on in Safe mode: a program is refused if any lane, IFC v2
+included, finds a flow. Replacing the lanes would require IFC v2 to be at least as strict on every
+registered case, and measured over the matrix it is not (117 registered rejections are contract,
+capability or effect cases that are not information flow, and IFC v2 reports only information
+flow). A shadow mode would leave the 58 registered leaks the lanes accept open while IFC v2 already
+refuses them. The union adds no over-refusal on the corpus (968 programs, 0 verdict changes) and
+none on the matrix's valid cases. `anubis ifc2-report` shows IFC v2's findings alone for
+measurement. Retiring flow lanes that IFC v2 subsumes is a later decision, taken on the matrix.

@@ -66,6 +66,16 @@ matrix is the reference for open defects.
 
 See the last section of this file's history in git, and the next-dependency line below.
 
+**Next dependency (2026-09-26, after e516b1f3):** IFC v2 (the semantic foundation) runs in every
+Safe-mode check and the matrix has no silent accept. Next: its review round 2 (fixes, then a third
+round until a round finds nothing an independent verifier reproduces); then decide on the matrix
+whether IFC v2 becomes the authority for information flow (the lanes' flow findings refuse 65
+registered valid programs IFC v2 accepts); the remaining work order (ordinary-lane review, round 40
+of the whole-struct lane, the ninth checker-limits review) and the finish-line units of the
+[requirement map](mission/REQUIREMENTS.md). Decisions D6-D8 are in
+[DELEGATED_DECISIONS_2026-09-25.md](mission/DELEGATED_DECISIONS_2026-09-25.md); the design is
+[IFC_V2.md](mission/IFC_V2.md).
+
 **Next dependency (2026-09-25, after d61c33d8):** close the whole-struct round-39 bands
 regression (R39B-F1a/F1b), then land round 39's boundary, fnret and loose units; in parallel,
 build the semantic-foundation analysis (mandate section 6: an information-flow interpreter that

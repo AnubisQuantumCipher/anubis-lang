@@ -589,3 +589,39 @@ Still open with a probe and no matrix case (not information flow; they need thei
 | A-SOLVER-1 (= CLAIMS item 6) | S2 | an obligation trusted to z3 with no certificate passes | `p/m/as2` | **open** |
 | GEN-STRING-HEURISTIC | S2 | generics are a string heuristic: a long type-parameter name is wrongly refused, an Option annotation accepts a string | `p/m/gen1`, `gen2` | **open** |
 | R-IFEXPR-FOLD | S3 | a struct-literal field in an if-expression initializer is wrongly refused | `p/m/rif1` | **open** |
+
+### Follow-up: e516b1f3 (IFC v2: the information-flow interpreter, in every Safe-mode check)
+
+Mandate section 6's semantic foundation lands: IFC v2 ([design](IFC_V2.md)), an abstract
+interpreter that evaluates the program the way the runtime executes it, runs beside the other
+lanes in every Safe-mode check (decision D8). Before landing, an independent adversarial review
+(round 1: five lenses and a verifier) confirmed 107 findings against its first version (67
+leaks, 31 over-refusals, 9 robustness); all are fixed and registered (family `IFC2-REVIEW-1`,
+107 cases). Two of them were the runtime's own trap messages, fixed in the runtime (decision
+D7). Decisions D6-D8 are in [DELEGATED_DECISIONS_2026-09-25.md](DELEGATED_DECISIONS_2026-09-25.md).
+
+Measured before the round-1 cases were registered (2206 cases), IFC v2 alone against the lanes
+(pin `anubis-ord3x4l`): it rejects all 58 registered leaks the lanes accept, accepts 105 valid
+programs the lanes refuse, refuses no valid program the lanes accept, and reaches no limit; the
+117 registered rejections it does not make are contract, capability and effect cases. Corpus
+(968 programs) with IFC v2 beside the lanes: 0 verdict changes, certificates unchanged. Matrix at
+e516b1f3 (pin `anubis-ifc2land-1`): 2319 cases, 2196 PASS, 0 silent accepts, 112 wrong-class, 11 INVALID (of the 113 cases added, 111 PASS; `ifc2r1_l20_duplicate_struct_literal_field` is refused as ANUBIS_DUPLICATE_FIELD before any flow check (INVALID) and `ifc2r1_or_12_max_nodes_fold_merges_record_fields` is refused by the lanes (wrong-class; IFC v2 alone accepts it); the 58 former silent accepts all PASS). Evidence:
+[docs/evidence/IFC2_2026-09-26/](../evidence/IFC2_2026-09-26/).
+
+| id | sev | defect | evidence | state |
+|---|---|---|---|---|
+| IFC-PC-EGRESS | S1 | an egress executed under a secret-decided condition (decision D1) | the D1 probes, `ifc2r1_ctl_*`, `ifc2r1_l06_*`, `ifc2r1_l12_*` | **fixed** e516b1f3 (IFC v2 refuses it in every Safe-mode check; the syntactic lanes alone still miss shapes of it) |
+| FV-OPEN-6-R39 | S1 | the four ordinary-lane-dependent leaks of round 39 bands | `open_rv39_bands_t3_*` | **fixed** e516b1f3 (IFC v2) |
+| TY-UNENFORCED-R39 | S1 | a declared type the runtime does not check lets a leak through | `open_rv39_loose_*`, `open_rv39_xc_f6_onelet`, `…l9_var_of_place`, `…l10_var_of_index`, `…l3b_place_direct` | **fixed** e516b1f3 (IFC v2 uses declared types only to add labels) |
+| RECONCILE open leaks | S1 | the 19 open leaks registered by d052f817 (M-SINK-ARGS, M-JOIN-CLOSURE, IFC-LOOP-CARRIED-VALUEBLOCK, IFC-CALLBACK-RETURN on the ordinary lane, 1696925b's summary cluster) | `open_rc25_*` | **fixed** e516b1f3 (IFC v2) |
+| earlier open leaks | S1 | the remaining registered open leaks of the value-join, whole-struct and ordinary-return families | `open_whole*`, `open_rv37x_*`, `open_rv38c_*`, `open_ord3_alias_defer_*`, `open_ro1_*`, `open_closure_returning_secret_fn`, `open_reentry_closure_capturing_secret`, `open_struct_field_reassigned_after_use_secret` | **fixed** e516b1f3 (IFC v2) |
+| F-RESOLVE-1 | S1 | a module's struct with a secret field overridden by a same-named public struct in `main` | `docs/evidence/RECONCILE_2026-09-25/p/fres2/` (refused) | **fixed** e516b1f3 (IFC v2 gives a field every type either definition declares); no matrix case (the matrix runs single files) |
+| RT-TRAP-OPERAND | S1 | the runtime's fail-closed traps printed their operands to stderr (index and length, missing key, counts, the unmatched value, file paths), so a secret index reached stderr | `ifc2r1_l17_*`, `ifc2r1_l21_*`; runtime test `runtime_traps_do_not_print_operand_values` | **fixed** e516b1f3 for the core runtime (decision D7); review round 2 reported more messages in the crypto and exploit-kit runtimes and the arity trap of a builtin used as a value: **open** |
+| IFC2-REVIEW-1 | S1-S3 | the 107 findings of IFC v2's first review | `ifc2r1_*`; [findings table](../evidence/IFC2_2026-09-26/review1-findings.tsv) | **fixed** e516b1f3 |
+| RT-TRAP-TYPENAME | S4 | a trap's message still names its operand's runtime type | decision D7 | documented (termination-channel family) |
+| OR-LANES-UNION | S3 | IFC v2 accepts 105 registered valid programs the syntactic lanes refuse; the union still refuses them | `ifc2-alone-vs-lanes.tsv` in the evidence | **open** (retiring lanes IFC v2 subsumes is a later decision, on the matrix) |
+| IFC2-REVIEW-2 | S1-S3 | review round 2 of IFC v2 (pin `anubis-ifc2-v8e`, the fixed version before its final landing changes): 75 findings, all confirmed by the independent verifier, none a repeat of round 1: 41 leaks (the lanes accept every one: existing silent accepts of the checker, not regressions), 28 over-refusals (22 of them valid programs the lanes accept, which IFC v2 in the union newly refuses; none is in the matrix or the corpus), 6 robustness | review report retained with the next unit, which registers every program | **open** (the next unit) |
+| IFC2-STACK | S2 | found by the landing's own verification: IFC v2's recursion was not under the checker's stack guard, so 70 closures nested 60 lists deep on a 4 MiB stack overflowed (`closure_analysis_limit::deep_bodies_on_a_small_stack_refuse_instead_of_overflowing` aborted; the test run's summary counted no failure because the binary printed no result line) | `compiler/tests/closure_analysis_limit.rs` | **fixed** e516b1f3 (IFC v2 checks `analysis_limit::cut()` at every step; `ifc2-report` runs as a guarded request) |
+| RT-LAMBDA-PARAM-SHADOWS-FN-VALUE | S2 | a user function named in value position (`[show, show]`) is lowered as a local when a lambda parameter anywhere in the same function has that name, so the native build fails (E0425) on a program `check` accepts | `docs/evidence/IFC2_2026-09-26/shadowfn.anb` (check rc 0; run: E0425); the same cause makes `rv39_xc_nr_a1_lamparam` and `rv39_xc_nr_a3_callb` unrunnable, so their ACCEPT intents have no runtime witness | **open** (the lowering's local set is flow-insensitive: `collect_local_names`) |
+| IFC2-PRECISION-LAND | S3 | valid programs IFC v2 alone still refused after round 1: a group-by over computed map keys (an operand with no value gave a secret scalar), `false && …` and other constant conditions, `take`/`drop`/`chunk`/`window` with a literal count, a helper applied to 33 different callbacks past its context budget (one summary joined every callback) | `rv28_valid_or_b3_group_by_map`, `rv29_valid_or1_annotated_map_groupby_in_helper`, `rv33_valid_r33_o1_constant_short_circuit`, `rv29_valid_r29d_s04`, `rv33_valid_o01_nesting_builtins_lose_positions`, `rv32_valid_o6_33_closures_to_one_helper_shared_spec` | **fixed** e516b1f3 in IFC v2 (the lanes still refuse them: OR-LANES-UNION); `rv33_valid_r33_o3_continue_join_counter_reset` (a counter reset across a `continue`) stays refused (needs value tracking) |
+| IFC-PC-EGRESS cases | — | the decision-D1 probes had no matrix case | `d1_pc_egress_*` (5 REJECT, 1 ACCEPT control; 5 with a runtime witness) | registered e516b1f3 |

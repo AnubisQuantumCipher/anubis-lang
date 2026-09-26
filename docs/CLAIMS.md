@@ -15,6 +15,18 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — IFC v2 runs in every Safe-mode check (`e516b1f3`).** An information-flow
+interpreter that evaluates the program the way the runtime executes it ([design](mission/IFC_V2.md))
+runs beside the other lanes; a program is refused if any lane finds a flow. After its first
+independent review (107 confirmed findings, all fixed and registered), the whole matrix has no
+silent accept (58 before) and the corpus verdicts are unchanged. Behaviour change: the core
+runtime's fail-closed trap messages no longer print their operands (index, key, count, path, the
+unmatched value), which could be secret; they still name the operand's type, and some messages in
+the crypto and exploit-kit runtimes still print operands (the next unit). Its second review round
+confirmed 75 more findings (41 leaks the lanes also accept, 28 over-refusals of which 22 are valid
+programs the lanes accept and the union now refuses, 6 robustness); they are the next unit. Green
+still means no KNOWN defects, and these are known.
+
 **UPDATE 2026-09-25 — closure-effects worklist prototype rejected.** It restores a valid
 wrapper but accepts retained-printer controls that disclose an annotated secret. The
 [rejected-design receipt](evidence/ALIAS_CLOSURE_WORKLIST_REJECTED_2026-09-25/README.md)
@@ -1611,6 +1623,20 @@ and cannot verify later repairs.
     a local container or out of a callee; a higher-order builtin over a non-literal collection; an
     unannotated formal whose argument type is not provable (container element). "Original reproduction
     closed" is a statement about those eleven specimens, not about the item-21 class.
+
+    **UPDATE 2026-09-26 — IFC v2 (`e516b1f3`): the semantic foundation of mandate section 6.**
+    - An abstract interpreter over labeled values mirrors the runtime's value semantics, closures,
+      call resolution, method dispatch and builtins, and runs in every Safe-mode check beside the
+      lanes (decision D8). Its first adversarial review found 107 defects (67 leaks, 31
+      over-refusals, 9 robustness); all fixed, registered as `ifc2r1_*`. Decisions D6 (`exit` and
+      `panic` end the program like a return) and D7 (trap messages carry no operand) came with it.
+    - Closed by it: IFC-PC-EGRESS, FV-OPEN-6-R39, TY-UNENFORCED-R39, F-RESOLVE-1, the 19 open leaks
+      the reconciliation registered, and every other registered open leak (58 in all). Still open:
+      the lanes' own over-refusals (the registered valid programs the lanes refuse stay refused by
+      the union), the contract, capability and effect items, and review round 2's 75 confirmed
+      findings (41 leaks the lanes also accept; 22 valid programs the lanes accept that the union
+      newly refuses; the next unit).
+      Matrix at e516b1f3: 2319 cases, 2196 PASS, 0 silent accepts, 112 wrong-class, 11 INVALID.
 
     **UPDATE 2026-09-26 — reconciliation of the open items (`d052f817`).**
     - Every open item here and in DEFECTS.md was re-measured on the head checker; 15 turned out already
