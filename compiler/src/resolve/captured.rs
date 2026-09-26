@@ -1,17 +1,22 @@
 //! Private project-only resolver over a previously captured source tree.
 //!
 //! This comparison path does no filesystem I/O. It deliberately does not
-//! admit packages, attach source-graph v2 identities, or change the production
-//! checker, CLI, or native lowerer. `CapturedTree` already owns the project
-//! bytes; embedded stdlib bytes come from the compiler's static registry.
+//! admit packages or change the production checker, CLI, or native lowerer.
+//! It can derive a compilation-only source-graph identity from parsed imports.
+//! `CapturedTree` already owns the project bytes; embedded stdlib bytes come
+//! from the compiler's static registry.
 //! Dependency mounts and published-package surface enumeration are separate
 //! work and must not be inferred from a successful compilation graph here.
 
 use super::{collect_enum_names, collect_fn_names, collect_imports, import_alias, module_prefix};
 use crate::frontend::{parse_source, Item, Span, AST};
-use crate::package::source_graph::PortablePath;
+use crate::package::source_graph::{
+    GraphCoverage, GraphError, GraphLimits, ImportEdge, PortablePath, SourceGraphSnapshot,
+    SourceKey, SourceNode, SourceOrigin,
+};
 use crate::package::source_graph_reader::CapturedTree;
 use crate::stdlib;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
@@ -178,6 +183,11 @@ pub(crate) enum CapturedResolveError {
     },
     #[error("captured module combine failed: {message}")]
     Combine { message: String },
+    #[error("captured compilation graph invalid: {source}")]
+    SourceGraph {
+        #[source]
+        source: GraphError,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,6 +242,126 @@ pub(crate) fn load_captured_project<'a>(
         entry,
         modules: state.modules,
     })
+}
+
+/// One compilation input derived from a single capture. The AST is exactly the
+/// combined program parsed from the graph's saved bytes. Its graph is a
+/// compilation identity, not a package-publish or independently verified claim.
+#[derive(Debug)]
+pub(crate) struct PreparedCapturedProject {
+    ast: AST,
+    source_graph: SourceGraphSnapshot,
+}
+
+impl PreparedCapturedProject {
+    /// Borrow the compilation identity without allowing a caller to replace the
+    /// captured graph or the AST that is checked and lowered with it.
+    pub fn source_graph(&self) -> &SourceGraphSnapshot {
+        &self.source_graph
+    }
+
+    pub fn entry_bytes(&self) -> &[u8] {
+        &self.source_graph.nodes()[self.source_graph.entry()].bytes
+    }
+
+    /// Check and lower this prepared Safe program as one captured input. This
+    /// returns Rust source for comparison; it neither builds a native artifact
+    /// nor grants package or evidence admission.
+    pub fn check_and_lower_safe_rust(&self) -> Result<String, String> {
+        use crate::frontend::{program_mode, Mode};
+        use crate::middle::{solver_stream_refusals, typecheck, SymbolicEngine, TaintPass};
+
+        if !matches!(program_mode(&self.ast.items), None | Some(Mode::Safe)) {
+            return Err("captured comparison only supports Safe programs".into());
+        }
+        let typed = typecheck(self.ast.clone(), Mode::Safe)?;
+        let tainted = TaintPass::apply(typed.clone());
+        let checks = SymbolicEngine::check_obligations(&tainted);
+        let refusals = solver_stream_refusals(&checks);
+        if !refusals.is_empty() {
+            return Err(crate::middle::format_build_check_failures(&refusals));
+        }
+        crate::backends::run::lower_program_to_rust_with_mono(
+            &self.ast.items,
+            false,
+            &typed.mono_specializations,
+            &typed.mono_call_sites,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+pub(crate) fn prepare_captured_project(
+    tree: &CapturedTree,
+    entry: PortablePath,
+) -> Result<PreparedCapturedProject, CapturedResolveError> {
+    prepare_captured_project_with_limits(tree, entry, ResolveLimits::default())
+}
+
+fn prepare_captured_project_with_limits(
+    tree: &CapturedTree,
+    entry: PortablePath,
+    limits: ResolveLimits,
+) -> Result<PreparedCapturedProject, CapturedResolveError> {
+    let graph = load_captured_project(tree, entry, limits)?;
+    let ast = super::combine_captured_project(&graph)?;
+    let source_graph = compilation_identity(&graph)?;
+    Ok(PreparedCapturedProject { ast, source_graph })
+}
+
+fn compilation_identity(
+    graph: &CapturedProjectGraph<'_>,
+) -> Result<SourceGraphSnapshot, CapturedResolveError> {
+    // The embedded registry manifest is canonical for this compiler build.
+    // This digest names those bytes; it does not establish external trust.
+    let registry_hash = Sha256::digest(stdlib::manifest_text().as_bytes());
+    let mut registry_digest = [0_u8; 32];
+    registry_digest.copy_from_slice(&registry_hash);
+    let key_for = |key: &ModuleKey| -> Result<SourceKey, CapturedResolveError> {
+        match key {
+            ModuleKey::Project(path) => Ok(SourceKey::new(SourceOrigin::Project, path.clone())),
+            ModuleKey::EmbeddedStdlib(name) => {
+                let path = PortablePath::parse(&format!("{}.anb", name.replace('.', "/")))
+                    .map_err(|source| CapturedResolveError::SourceGraph { source })?;
+                Ok(SourceKey::new(
+                    SourceOrigin::EmbeddedStdlib { registry_digest },
+                    path,
+                ))
+            }
+        }
+    };
+
+    // Construct every node and occurrence from the same parser-resolved graph;
+    // no caller may supply an unrelated edge list or replacement source bytes.
+    let mut nodes = Vec::with_capacity(graph.modules.len());
+    let mut edges = Vec::new();
+    for module in &graph.modules {
+        let key = key_for(&module.key)?;
+        nodes.push(SourceNode {
+            path: key.path.clone(),
+            namespace: module.namespace.clone(),
+            origin: key.origin.clone(),
+            bytes: module.bytes.to_vec(),
+        });
+        for import in &module.imports {
+            edges.push(ImportEdge {
+                source: key_for(&import.importer)?,
+                target: key_for(&import.target)?,
+                requested: import.requested.clone(),
+                target_namespace: import.requested.clone(),
+                span_start: import.span.start,
+                span_end: import.span.end,
+            });
+        }
+    }
+    SourceGraphSnapshot::new(
+        key_for(&graph.entry)?,
+        GraphCoverage::Compilation,
+        nodes,
+        edges,
+        GraphLimits::default(),
+    )
+    .map_err(|source| CapturedResolveError::SourceGraph { source })
 }
 
 impl<'a> State<'a> {
@@ -546,6 +676,99 @@ mod tests {
 
     fn entry() -> PortablePath {
         PortablePath::parse("main.anb").unwrap()
+    }
+
+    #[test]
+    fn prepared_project_checks_and_lowers_the_saved_import_after_disk_mutation() {
+        let entry_source = b"import util;\nfn main() { print(util::value()); }";
+        let captured_import = b"pub fn value() { return \"captured-before\"; }";
+        let changed_import = b"pub fn value() { return \"disk-after\"; }";
+        let (temp, tree) = capture(&[("main.anb", entry_source), ("util.anb", captured_import)]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        fs::write(temp.path().join("util.anb"), changed_import).unwrap();
+
+        assert_eq!(prepared.entry_bytes(), entry_source);
+        assert_eq!(prepared.source_graph().edges().len(), 1);
+        assert!(prepared.source_graph().nodes().values().any(|module| {
+            module.namespace == "util" && module.bytes.as_slice() == captured_import
+        }));
+        let lowered = prepared.check_and_lower_safe_rust().unwrap();
+        assert!(lowered.contains("util__value"));
+        assert!(lowered.contains("anubis_mk_str(\"captured-before\".to_string())"));
+        assert!(!lowered.contains("anubis_mk_str(\"disk-after\".to_string())"));
+    }
+
+    #[test]
+    fn prepared_project_keeps_imported_trait_authority_through_check_and_lower() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import api;\nfn main() { return api::value(); }",
+            ),
+            (
+                "api.anb",
+                b"struct Circle { r: u32 }\ntrait Shape { fn area(self); }\nimpl Shape for Circle { fn area(self) { return 1; } }\npub fn value() { return 1; }",
+            ),
+        ]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.ast.trait_env.traits.contains_key("Shape"));
+        assert!(prepared
+            .ast
+            .trait_env
+            .impls
+            .iter()
+            .any(|imp| imp.trait_name == "Shape" && imp.type_name == "Circle"));
+        let lowered = prepared.check_and_lower_safe_rust().unwrap();
+        assert!(lowered.contains("api__value"));
+    }
+
+    #[test]
+    fn prepared_project_refuses_non_safe_mode_before_check_or_lower() {
+        // This test only parses and classifies sources. It never executes a
+        // Research or Exploit program, compiles one, or grants consent.
+        let sources: &[&[u8]] = &[
+            b"fn main() {}\n@research(authorization: \"unit-test\") fn probe() {}",
+            b"fn main() {}\nfn probe() { exploit {} }",
+        ];
+        for source in sources {
+            let (_temp, tree) = capture(&[("main.anb", source)]);
+            let prepared = prepare_captured_project(&tree, entry()).unwrap();
+            let error = prepared.check_and_lower_safe_rust().unwrap_err();
+            assert!(
+                error.contains("only supports Safe programs"),
+                "unexpected non-Safe classification: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_project_retains_collision_and_source_limit_refusals() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import api;\ntrait Shape { fn area(self); }\nfn main() { return 0; }",
+            ),
+            ("api.anb", b"trait Shape { fn area(self); }"),
+        ]);
+        assert!(matches!(
+            prepare_captured_project(&tree, entry()),
+            Err(CapturedResolveError::TraitNameCollision { name, .. }) if name == "Shape"
+        ));
+        let error = prepare_captured_project_with_limits(
+            &tree,
+            entry(),
+            ResolveLimits {
+                parsed_bytes: 1,
+                ..ResolveLimits::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CapturedResolveError::Limit {
+                kind: "parsed byte"
+            }
+        ));
     }
 
     #[test]
