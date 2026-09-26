@@ -17,13 +17,15 @@ mod vz_native;
 // The signed Keychain run path (codesign + NE bind) exists only on macOS.
 #[cfg(target_os = "macos")]
 use anubis_compiler::backends::run::compile_sign_and_run_source;
+#[cfg(feature = "prove")]
+use anubis_compiler::backends::run::lower_program_to_guest;
 #[cfg(all(test, not(feature = "prove")))]
 use anubis_compiler::evidence::verify_pca;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
-        compile_native_rust_to_exe, lower_program_to_guest, lower_program_to_rust_with_mono,
-        resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
+        compile_native_rust_to_exe, lower_program_to_rust_with_mono, resolved_run_timeout,
+        run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
@@ -5127,10 +5129,10 @@ fn cli_main() -> Result<()> {
                     &evidence,
                     &out,
                 );
-                return Err(anyhow!(
+                Err(anyhow!(
                     "this binary was built without the `prove` feature — proving is unavailable.\n\
                      Rebuild with: cargo build -p anubis (default features include `prove`)"
-                ));
+                ))
             }
             #[cfg(feature = "prove")]
             {
@@ -5642,9 +5644,9 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             #[cfg(not(feature = "prove"))]
             {
                 let _ = (&elf, &image_id, &receipt, &verify_log, &proof_input);
-                return Err(anyhow!(
+                Err(anyhow!(
                     "this binary was built without the `prove` feature — risc0 proving is unavailable"
-                ));
+                ))
             }
             #[cfg(feature = "prove")]
             run_risc0_prove_child(
@@ -5659,9 +5661,9 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             #[cfg(not(feature = "prove"))]
             {
                 let _ = (&receipt, &image_id);
-                return Err(anyhow!(
+                Err(anyhow!(
                     "this binary was built without the `prove` feature — receipt verification is unavailable"
-                ));
+                ))
             }
             #[cfg(feature = "prove")]
             {
@@ -7144,6 +7146,7 @@ enum ResearchBoundaryRequirement {
 #[derive(Debug, Clone, Copy)]
 enum ProgramArtifactAction {
     Build,
+    #[cfg(feature = "prove")]
     Prove,
     Repl,
     Run,
@@ -7176,6 +7179,7 @@ fn require_program_research_boundary(
         ResearchBoundaryRequirement::MissingConsent => {
             let (code, command) = match action {
                 ProgramArtifactAction::Build => ("ANUBIS_BUILD_RESEARCH_REQUIRES_ALLOW", "build"),
+                #[cfg(feature = "prove")]
                 ProgramArtifactAction::Prove => ("ANUBIS_PROVE_RESEARCH_REQUIRES_ALLOW", "prove"),
                 ProgramArtifactAction::Repl => ("ANUBIS_REPL_RESEARCH_REQUIRES_ALLOW", "repl"),
                 ProgramArtifactAction::Run => ("ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW", "run"),
@@ -7188,6 +7192,7 @@ fn require_program_research_boundary(
         ResearchBoundaryRequirement::DisposableVz => {
             let label = match action {
                 ProgramArtifactAction::Build => "build --allow-research",
+                #[cfg(feature = "prove")]
                 ProgramArtifactAction::Prove => "prove --allow-research",
                 ProgramArtifactAction::Repl => "repl --allow-research",
                 ProgramArtifactAction::Run => "run --allow-research",
@@ -8209,6 +8214,7 @@ fn cargo_tree_uses_vendor_patch(vendor: &Path) -> bool {
             .is_some_and(|canonical| text.contains(canonical))
 }
 
+#[cfg(feature = "prove")]
 fn extract_anubis_id(text: &str) -> Option<Vec<String>> {
     // Support ANUBIS_ID (hybrid) or GUEST_ID (risc0-build default for guest) or any *_ID
     for needle in ["ANUBIS_ID", "GUEST_ID", "_ID"] {
