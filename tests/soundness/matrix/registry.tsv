@@ -2379,3 +2379,8 @@ r2arm_dead_binder_after_return	M-ARM-BINDER	slice	ACCEPT	carrier	f(x) follows re
 r2arm_guard_false_binder_valid	M-ARM-BINDER	slice	ACCEPT	carrier	f(x) is under a false match guard and cannot execute; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
 r2arm_guard_establishes_binder_valid	M-ARM-BINDER	slice	ACCEPT	carrier	guard x > 0 establishes f(x) requires in the taken arm; pinned baseline ANUBIS_ASSERTION_UNDECIDED (precision defect).
 r2arm_quoted_string_symbol_valid	M-ARM-BINDER	slice	ACCEPT	carrier	f("anb_x") satisfies its string requires; unrelated match binder x must not be inferred from quoted SMT text; pinned baseline check passed.
+r2arm_contract_call_scrutinee_satisfied	M-CALL-POSITION	slice	ACCEPT	carrier	match scrutinee evaluates f(1), satisfying its requires; positive twin of f(-1) scrutinee leak.
+r2arm_contract_call_guard_satisfied	M-CALL-POSITION	slice	ACCEPT	carrier	taken match guard evaluates f(1), satisfying its requires; positive twin of f(-1) guard leak.
+r2arm_iflet_scrutinee_call_satisfied	M-CALL-POSITION	slice	ACCEPT	carrier	if-let scrutinee evaluates f(1), satisfying its requires; positive twin of f(-1) scrutinee leak.
+r2arm_contract_call_guard_short_circuit	M-CALL-POSITION	slice	ACCEPT	carrier	false left operand short-circuits match guard before f(-1); violated precondition is unreachable.
+r2arm_contract_call_guard_after_wildcard	M-CALL-POSITION	slice	ACCEPT	carrier	first unguarded wildcard arm always matches; later guard f(-1) never executes.
