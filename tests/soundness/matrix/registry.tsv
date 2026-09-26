@@ -2409,3 +2409,8 @@ r2arm_expr_match_untaken_guard_alias_valid	M-CALL-POSITION	slice	ACCEPT	carrier	
 r2arm_expr_match_live_guard_alias_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	let initializer match scrutinee 1 selects literal 1 guard assigning h=f; later h(-1) violates f requires.
 r2arm_arm_tail_write_fact_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	nested match-arm tail if has a branch write and reachable else f(-1); branch facts must not suppress the precondition.
 r2arm_arm_tail_guarded_valid	M-CALL-POSITION	slice	ACCEPT	carrier	match-arm tail nested if guards f(-1) behind false x>0; valid control for branch-fact isolation.
+r2arm_enum_payload_dead_valid	M-ARM-ENUM-PRECISION	slice	ACCEPT	carrier	Frozen constructed Some(1) versus Some(2) dead-payload control; pre-fix baseline DISPROVED and scoped binder head UNDECIDED, so a refusal remains a precision defect.
+r2arm_enum_payload_live_invalid	M-ARM-ENUM-PRECISION	slice	REJECT	carrier	Matching constructed Some(2) payload reaches violated f(-1); rejection twin of the frozen dead-payload control.
+r2arm_enum_scrutinee_call_invalid	M-ARM-ENUM-PRECISION	slice	REJECT	carrier	The contracted f(-1) in a constructor scrutinee executes before any dead-arm pruning; its obligation must remain.
+r2arm_enum_named_dead_valid	M-ARM-ENUM-PRECISION	slice	ACCEPT	carrier	Named enum payload a=1 cannot match arm a=2, so its violated call is unreachable.
+r2arm_enum_named_live_invalid	M-ARM-ENUM-PRECISION	slice	REJECT	carrier	Named enum payload a=2 matches arm a=2 and reaches the violated call.

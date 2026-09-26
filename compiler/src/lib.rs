@@ -14177,6 +14177,92 @@ math = { git = "https://example.invalid/math.git" }
     }
 
     #[test]
+    fn constructed_enum_payload_mismatch_prunes_only_dead_contract_calls() {
+        fn call_checks(src: &str) -> Vec<middle::SolverCheck> {
+            let ir = typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
+                .expect("typecheck");
+            SymbolicEngine::check_obligations(&ir)
+                .into_iter()
+                .filter(|check| {
+                    check.name.starts_with("requires@")
+                        || check.name.starts_with(middle::UNRESOLVED_REQUIRES_PREFIX)
+                })
+                .collect()
+        }
+        let prefix = "fn f(x: i64) -> i64 requires(x > 0) { return x; } ";
+        for body in [
+            "match Some(1) { Some(2) => { f(-1); } _ => {} }",
+            "match Some([1]) { Some([2]) => { f(-1); } _ => {} }",
+            "let z = if let Some(2) = Some(1) { f(-1) } else { 0 };",
+            "let z = if let Some([2]) = Some([1]) { f(-1) } else { 0 };",
+        ] {
+            let src = format!("{prefix}fn main() {{ {body} }}");
+            let checks = call_checks(&src);
+            assert!(
+                checks.iter().all(|check| check.status != "FAIL"),
+                "a mismatched constructed payload cannot execute its contract call: {src}; checks: {checks:?}"
+            );
+        }
+        for body in [
+            "match Some(2) { Some(2) => { f(-1); } _ => {} }",
+            "match Some([2]) { Some([2]) => { f(-1); } _ => {} }",
+            "let z = if let Some(2) = Some(2) { f(-1) } else { 0 };",
+            "match Some(f(-1)) { Some(2) => { } _ => { } }",
+        ] {
+            let src = format!("{prefix}fn main() {{ {body} }}");
+            let checks = call_checks(&src);
+            assert!(
+                checks.iter().any(|check| {
+                    check.status == "FAIL"
+                        && middle::classify_assertion_fail(check)
+                            == middle::AssertionFailKind::Disproved
+                }),
+                "a matching constructed payload must retain its violated precondition: {src}; checks: {checks:?}"
+            );
+        }
+        let unknown = format!("{prefix}fn source() -> i64 {{ return 2; }} fn main() {{ match Some(source()) {{ Some(2) => {{ f(-1); }} _ => {{ }} }} }}");
+        let checks = call_checks(&unknown);
+        assert!(
+            checks.iter().any(|check| check.status == "FAIL"),
+            "an unknown payload cannot prove the arm dead: {checks:?}"
+        );
+
+        let named_prefix = format!("{prefix}enum E {{ V {{ a: i64 }} }} ");
+        for (body, should_disprove) in [
+            (
+                "match E::V { a: 1 } { E::V { a: 2 } => { f(-1); } _ => {} }",
+                false,
+            ),
+            (
+                "match E::V { a: 2 } { E::V { a: 2 } => { f(-1); } _ => {} }",
+                true,
+            ),
+            (
+                "let z = if let E::V { a: 2 } = E::V { a: 1 } { f(-1) } else { 0 };",
+                false,
+            ),
+        ] {
+            let src = format!("{named_prefix}fn main() {{ {body} }}");
+            let checks = call_checks(&src);
+            assert_eq!(
+                checks.iter().any(|check| {
+                    check.status == "FAIL"
+                        && middle::classify_assertion_fail(check)
+                            == middle::AssertionFailKind::Disproved
+                }),
+                should_disprove,
+                "named enum payload reachability must follow the runtime: {src}; checks: {checks:?}"
+            );
+            if !should_disprove {
+                assert!(
+                    checks.iter().all(|check| check.status != "FAIL"),
+                    "a dead named enum arm must be accepted, not merely lack a counterexample: {src}; checks: {checks:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn statement_match_exact_guards_preserve_calls_and_fallthrough_status() {
         fn call_checks(src: &str) -> Vec<middle::SolverCheck> {
             let ir = typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)

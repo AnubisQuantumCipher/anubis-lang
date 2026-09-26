@@ -10903,8 +10903,10 @@ fn match_position_irrefutable(pattern: &crate::frontend::Pattern) -> bool {
 }
 
 /// A narrow, exact dead-arm test used before joining writes from match arms. Integer literals
-/// compare runtime Int values, literal lists have an exact length, and constructed enum tags are
-/// exact. Every other spelling/shape stays potentially reachable.
+/// compare runtime Int values, literal lists have an exact length, and constructed enums have
+/// exact tags and payloads. Enum fields are lowered without coercion; positional and named
+/// pattern lookups use the runtime's Int(0) default for a missing field. An unknown payload
+/// expression stays potentially reachable even when its surrounding constructor is known.
 fn match_position_literal_misses(scrutinee: &Expr, pattern: &crate::frontend::Pattern) -> bool {
     match (scrutinee, pattern) {
         (Expr::Literal(value), crate::frontend::Pattern::Literal(expected)) => {
@@ -10928,14 +10930,38 @@ fn match_position_literal_misses(scrutinee: &Expr, pattern: &crate::frontend::Pa
         }
         (
             Expr::EnumConstruct {
-                enum_name, variant, ..
+                enum_name,
+                variant,
+                fields,
+                field_names,
+                ..
             },
             crate::frontend::Pattern::EnumVariant {
                 enum_name: expected_enum,
                 variant: expected_variant,
-                ..
+                bindings,
+                named_bindings,
             },
-        ) => enum_name != expected_enum || variant != expected_variant,
+        ) => {
+            if enum_name != expected_enum || variant != expected_variant {
+                return true;
+            }
+            // `pattern_test_and_binds` reads positional fields by index and named fields by
+            // the FIRST matching name. A missing field is Int(0), not an absent value. Keep
+            // that exact default here, including an inconsistent names/values vector.
+            let missing = Expr::Literal("0".to_string());
+            bindings.iter().enumerate().any(|(index, subpattern)| {
+                let value = fields.get(index).unwrap_or(&missing);
+                match_position_literal_misses(value, subpattern)
+            }) || named_bindings.iter().any(|(name, subpattern)| {
+                let value = field_names
+                    .iter()
+                    .position(|field_name| field_name == name)
+                    .and_then(|index| fields.get(index))
+                    .unwrap_or(&missing);
+                match_position_literal_misses(value, subpattern)
+            })
+        }
         (value, crate::frontend::Pattern::Or(alternatives)) => alternatives
             .iter()
             .all(|alternative| match_position_literal_misses(value, alternative)),
@@ -10943,9 +10969,9 @@ fn match_position_literal_misses(scrutinee: &Expr, pattern: &crate::frontend::Pa
     }
 }
 
-/// A deliberately narrow definite-match test. It is used only to avoid checking the unreachable
-/// `else` of a value-position `if let`; an unknown result retains both branches. Constructor
-/// payloads must themselves be irrefutable before a matching tag proves the whole pattern.
+/// A deliberately narrow definite-match test. It also proves that an exact constructed enum
+/// arm is terminal, and that the `else` of a value-position `if let` is unreachable. Every
+/// payload subpattern must itself be proven to match; an unknown result retains both paths.
 fn match_position_definitely_matches(scrutinee: &Expr, pattern: &crate::frontend::Pattern) -> bool {
     use crate::frontend::Pattern;
     match pattern {
@@ -10977,15 +11003,99 @@ fn match_position_definitely_matches(scrutinee: &Expr, pattern: &crate::frontend
             variant,
             bindings,
             named_bindings,
-        } => matches!(scrutinee, Expr::EnumConstruct {
-            enum_name: value_enum,
-            variant: value_variant,
-            ..
-        } if value_enum == enum_name
-            && value_variant == variant
-            && bindings.iter().all(Pattern::is_irrefutable)
-            && named_bindings.iter().all(|(_, p)| p.is_irrefutable())),
+        } => {
+            let Expr::EnumConstruct {
+                enum_name: value_enum,
+                variant: value_variant,
+                fields,
+                field_names,
+                ..
+            } = scrutinee
+            else {
+                return false;
+            };
+            if value_enum != enum_name || value_variant != variant {
+                return false;
+            }
+            let missing = Expr::Literal("0".to_string());
+            bindings.iter().enumerate().all(|(index, subpattern)| {
+                let value = fields.get(index).unwrap_or(&missing);
+                match_position_definitely_matches(value, subpattern)
+            }) && named_bindings.iter().all(|(name, subpattern)| {
+                let value = field_names
+                    .iter()
+                    .position(|field_name| field_name == name)
+                    .and_then(|index| fields.get(index))
+                    .unwrap_or(&missing);
+                match_position_definitely_matches(value, subpattern)
+            })
+        }
         Pattern::Struct { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod constructed_enum_match_reachability_tests {
+    use super::*;
+    use crate::frontend::{Pattern, Span};
+
+    fn constructed(fields: Vec<Expr>, field_names: Vec<&str>) -> Expr {
+        Expr::EnumConstruct {
+            enum_name: "E".to_string(),
+            variant: "A".to_string(),
+            fields,
+            field_names: field_names
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect(),
+            span: Span { start: 0, end: 0 },
+        }
+    }
+
+    fn pattern(positional: Vec<Pattern>, named: Vec<(&str, Pattern)>) -> Pattern {
+        Pattern::EnumVariant {
+            enum_name: "E".to_string(),
+            variant: "A".to_string(),
+            bindings: positional,
+            named_bindings: named
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn missing_and_duplicate_fields_follow_runtime_lookup() {
+        // Runtime substitutes Int(0) when a positional field is absent.
+        let missing = constructed(vec![], vec![]);
+        let zero = pattern(vec![Pattern::Literal("0".to_string())], vec![]);
+        let one = pattern(vec![Pattern::Literal("1".to_string())], vec![]);
+        assert!(match_position_definitely_matches(&missing, &zero));
+        assert!(!match_position_literal_misses(&missing, &zero));
+        assert!(match_position_literal_misses(&missing, &one));
+
+        // Named lookup takes the first matching name; a missing name also gives Int(0).
+        let duplicate = constructed(
+            vec![
+                Expr::Literal("1".to_string()),
+                Expr::Literal("2".to_string()),
+            ],
+            vec!["value", "value"],
+        );
+        let first = pattern(vec![], vec![("value", Pattern::Literal("1".to_string()))]);
+        let second = pattern(vec![], vec![("value", Pattern::Literal("2".to_string()))]);
+        let absent = pattern(vec![], vec![("other", Pattern::Literal("0".to_string()))]);
+        assert!(match_position_definitely_matches(&duplicate, &first));
+        assert!(match_position_literal_misses(&duplicate, &second));
+        assert!(match_position_definitely_matches(&duplicate, &absent));
+    }
+
+    #[test]
+    fn unknown_payload_keeps_both_reachability_options() {
+        let unknown = constructed(vec![Expr::Var("payload".to_string())], vec![]);
+        let two = pattern(vec![Pattern::Literal("2".to_string())], vec![]);
+        assert!(!match_position_literal_misses(&unknown, &two));
+        assert!(!match_position_definitely_matches(&unknown, &two));
     }
 }
 

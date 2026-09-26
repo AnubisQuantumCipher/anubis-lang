@@ -1,0 +1,8 @@
+enum E { V { a: i64 } }
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() {
+    match E::V { a: 2 } {
+        E::V { a: 2 } => { f(-1); }
+        _ => {}
+    }
+}
