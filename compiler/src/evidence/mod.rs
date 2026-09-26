@@ -112,6 +112,91 @@ fn undecided_provenance(detail: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// Record what this bundle actually replayed. A solver PASS is a proof claim, never a
+/// counterexample replay; a FAIL with an untrusted model is not one either. Rows use the
+/// solver-check index because display names can repeat at distinct call sites.
+fn solver_replay_record<F>(
+    solver_checks: &[crate::middle::SolverCheck],
+    mut replay: F,
+) -> serde_json::Value
+where
+    F: FnMut(&str, &str) -> bool,
+{
+    let mut rows = Vec::with_capacity(solver_checks.len());
+    let mut failed_replay = false;
+    let mut incomplete = false;
+    let mut replayed = false;
+
+    for (index, check) in solver_checks.iter().enumerate() {
+        let mut attempted = false;
+        let mut valid = false;
+        let status = if check.detail == crate::middle::UNRESOLVED_PRECONDITION_DETAIL {
+            incomplete = true;
+            "not_encoded"
+        } else if let Some((_, replay_status)) = undecided_provenance(&check.detail) {
+            incomplete = true;
+            replay_status
+        } else if check.detail == crate::middle::NO_OBLIGATIONS_DETAIL {
+            "not_applicable_no_obligations"
+        } else if check.status == "PASS" {
+            "not_applicable"
+        } else if check.status == "FAIL" {
+            if let Some(model) = check.model.as_deref() {
+                if crate::middle::counterexample_was_replayed(check) {
+                    attempted = true;
+                    valid = replay(&check.smt, model);
+                    if valid {
+                        replayed = true;
+                        "counterexample_replayed"
+                    } else {
+                        failed_replay = true;
+                        "replay_failed"
+                    }
+                } else {
+                    incomplete = true;
+                    "not_replayed_untrusted_model"
+                }
+            } else {
+                incomplete = true;
+                "not_replayed_no_model"
+            }
+        } else if check.status == "UNKNOWN" {
+            incomplete = true;
+            "not_replayed_undecided"
+        } else {
+            incomplete = true;
+            "not_replayed_unknown_status"
+        };
+        rows.push(serde_json::json!({
+            "index": index,
+            "obligation": check.name,
+            "solver_status": check.status,
+            "detail": check.detail,
+            "smt": format!("analysis/proofs/obligation_{index:04}.smt2"),
+            "status": status,
+            "replay_attempted": attempted,
+            "replay_valid": valid,
+        }));
+    }
+
+    let (status, replay_valid) = if failed_replay {
+        ("replay_failed", false)
+    } else if incomplete {
+        ("incomplete", false)
+    } else if replayed {
+        ("counterexample_replayed", true)
+    } else {
+        ("not_applicable", false)
+    };
+    serde_json::json!({
+        "schema": "anubis-solver-replay-v1",
+        "scope": "all_solver_checks",
+        "status": status,
+        "replay_valid": replay_valid,
+        "obligations": rows,
+    })
+}
+
 pub fn build_evidence_bundle(
     source: &str,
     mode: &str,
@@ -508,8 +593,8 @@ fn build_evidence_bundle_tree_inner(
                 // save smt and replay for gate7
                 // PROOF ARTIFACTS, not just verdicts.
                 //
-                // The bundle recorded solver status + the first SMT query + a replay flag. All of
-                // that is the compiler's own account of its work, so an auditor checking whether the
+                // The bundle records solver status, every SMT query, and what replay actually ran.
+                // That is still the compiler's own account of its work, so an auditor checking whether
                 // proofs hold has to trust the component under audit. These files are the objects a
                 // THIRD PARTY can re-check with `drat-trim` / `cake_lpr` and no Anubis binary:
                 // the exact query, the exact blasted CNF, and the refutation over it.
@@ -613,34 +698,16 @@ fn build_evidence_bundle_tree_inner(
                     );
                 }
                 if let Some(first) = solver_checks.first() {
-                    let _ = std::fs::write(dir.join("analysis").join("solver.smt2"), &first.smt);
-                    let replay = if first.status == "FAIL" && first.model.is_some() {
-                        crate::middle::replay_counterexample(
-                            &first.smt,
-                            first.model.as_deref().unwrap_or(""),
-                        )
-                    } else {
-                        true
-                    };
-                    // An unencoded obligation has no counterexample to replay; say so rather than
-                    // reporting a replay that never happened.
-                    let replay_json = if first.detail
-                        == crate::middle::UNRESOLVED_PRECONDITION_DETAIL
-                    {
-                        serde_json::json!({ "status": "not_encoded", "replay_valid": false })
-                    } else if let Some((_, replay_status)) = undecided_provenance(&first.detail) {
-                        serde_json::json!({ "status": replay_status, "replay_valid": false })
-                    } else {
-                        serde_json::json!({
-                            "status": if replay { "counterexample_replayed" } else { "replay_failed" },
-                            "replay_valid": replay
-                        })
-                    };
-                    let _ = std::fs::write(
-                        dir.join("analysis").join("solver_replay.json"),
-                        serde_json::to_string_pretty(&replay_json).unwrap(),
-                    );
+                    std::fs::write(dir.join("analysis").join("solver.smt2"), &first.smt)
+                        .map_err(|e| format!("write analysis/solver.smt2: {e}"))?;
                 }
+                let replay_json =
+                    solver_replay_record(&solver_checks, crate::middle::replay_counterexample);
+                std::fs::write(
+                    dir.join("analysis").join("solver_replay.json"),
+                    serde_json::to_string_pretty(&replay_json).unwrap(),
+                )
+                .map_err(|e| format!("write analysis/solver_replay.json: {e}"))?;
 
                 checks.push(Check {
                     name: "typecheck".into(),
@@ -2185,6 +2252,230 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod pca_tests {
     use super::*;
+
+    fn replay_check(
+        name: &str,
+        status: &str,
+        detail: &str,
+        model: Option<&str>,
+    ) -> crate::middle::SolverCheck {
+        crate::middle::SolverCheck {
+            name: name.into(),
+            status: status.into(),
+            detail: detail.into(),
+            model: model.map(str::to_owned),
+            smt: format!("; {name}\n(check-sat)\n"),
+        }
+    }
+
+    #[test]
+    fn replay_record_never_promotes_a_pass_or_untrusted_failure_to_replay() {
+        let checks = vec![
+            replay_check("same", "PASS", crate::middle::PROVED_DETAIL_CERTIFIED, None),
+            replay_check(
+                "same",
+                "FAIL",
+                crate::middle::DISPROVED_DETAIL_Z3,
+                Some("good"),
+            ),
+            replay_check("unknown", "UNKNOWN", "solver unknown", None),
+            replay_check("no-model", "FAIL", "solver declined", None),
+            replay_check(
+                "untrusted",
+                "FAIL",
+                "ANUBIS_REPLAY_MISMATCH",
+                Some("forged"),
+            ),
+            replay_check(
+                "unencoded",
+                "FAIL",
+                crate::middle::UNRESOLVED_PRECONDITION_DETAIL,
+                Some("forged"),
+            ),
+            replay_check(
+                "value",
+                "FAIL",
+                crate::middle::OVERAPPROX_UNDECIDED_DETAIL,
+                Some("forged"),
+            ),
+            replay_check(
+                "branch",
+                "FAIL",
+                crate::middle::BRANCH_REACHABILITY_UNDECIDED_DETAIL,
+                Some("forged"),
+            ),
+            replay_check(
+                "combined",
+                "FAIL",
+                crate::middle::OVERAPPROX_COMBINED_UNDECIDED_DETAIL,
+                Some("forged"),
+            ),
+            replay_check("empty", "PASS", crate::middle::NO_OBLIGATIONS_DETAIL, None),
+            replay_check("future", "DEFERRED", "unrecognized status", None),
+        ];
+        let mut attempted = Vec::new();
+        let record = solver_replay_record(&checks, |smt, model| {
+            attempted.push((smt.to_owned(), model.to_owned()));
+            model == "good"
+        });
+        assert_eq!(record["schema"], "anubis-solver-replay-v1");
+        assert_eq!(record["scope"], "all_solver_checks");
+        assert_eq!(record["status"], "incomplete");
+        assert_eq!(record["replay_valid"], false);
+        assert_eq!(attempted, vec![(checks[1].smt.clone(), "good".into())]);
+        let rows = record["obligations"].as_array().unwrap();
+        let statuses: Vec<&str> = rows
+            .iter()
+            .map(|row| row["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                "not_applicable",
+                "counterexample_replayed",
+                "not_replayed_undecided",
+                "not_replayed_no_model",
+                "not_replayed_untrusted_model",
+                "not_encoded",
+                "overapproximated_not_replayed",
+                "branch_reachability_not_replayed",
+                "value_and_branch_reachability_not_replayed",
+                "not_applicable_no_obligations",
+                "not_replayed_unknown_status",
+            ]
+        );
+        assert_eq!(rows[0]["obligation"], "same");
+        assert_eq!(rows[1]["obligation"], "same");
+        assert_eq!(rows[1]["index"], 1);
+        assert_eq!(rows[1]["smt"], "analysis/proofs/obligation_0001.smt2");
+        assert_eq!(rows[0]["replay_attempted"], false);
+        assert_eq!(rows[1]["replay_attempted"], true);
+    }
+
+    #[test]
+    fn replay_record_failed_replay_dominates_later_success() {
+        let checks = vec![
+            replay_check(
+                "bad",
+                "FAIL",
+                crate::middle::DISPROVED_DETAIL_Z3,
+                Some("bad"),
+            ),
+            replay_check(
+                "good",
+                "FAIL",
+                crate::middle::DISPROVED_DETAIL_NATIVE,
+                Some("good"),
+            ),
+        ];
+        let record = solver_replay_record(&checks, |_, model| model == "good");
+        assert_eq!(record["status"], "replay_failed");
+        assert_eq!(record["replay_valid"], false);
+        assert_eq!(record["obligations"][0]["replay_attempted"], true);
+        assert_eq!(record["obligations"][0]["replay_valid"], false);
+        assert_eq!(record["obligations"][1]["replay_valid"], true);
+    }
+
+    #[test]
+    fn replay_record_success_needs_an_actual_trusted_model_replay() {
+        let checks = vec![
+            replay_check(
+                "proved",
+                "PASS",
+                crate::middle::PROVED_DETAIL_CERTIFIED,
+                None,
+            ),
+            replay_check(
+                "disproved",
+                "FAIL",
+                crate::middle::DISPROVED_DETAIL_Z3,
+                Some("rechecked model"),
+            ),
+        ];
+        let record = solver_replay_record(&checks, |_, model| model == "rechecked model");
+        assert_eq!(record["status"], "counterexample_replayed");
+        assert_eq!(record["replay_valid"], true);
+        assert_eq!(record["obligations"][0]["replay_attempted"], false);
+        assert_eq!(record["obligations"][1]["replay_attempted"], true);
+    }
+
+    #[test]
+    fn replay_record_empty_check_has_no_replay_claim() {
+        let record = solver_replay_record(&[], |_, _| panic!("no model exists to replay"));
+        assert_eq!(record["status"], "not_applicable");
+        assert_eq!(record["replay_valid"], false);
+        assert_eq!(record["obligations"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn safe_bundle_replay_rows_match_every_solver_check_and_are_manifest_bound() {
+        let root = tempfile::tempdir().unwrap();
+        let source = "fn main() { let x = 1; assert(x == 1); assert(x == 2); }";
+        let bundle = build_evidence_bundle(source, "safe", None, vec![], root.path(), None, None)
+            .expect("safe evidence bundle");
+        let checks: Vec<crate::middle::SolverCheck> =
+            serde_json::from_slice(&std::fs::read(bundle.dir.join("solver.json")).unwrap())
+                .unwrap();
+        let record: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(bundle.dir.join("analysis/solver_replay.json")).unwrap(),
+        )
+        .unwrap();
+        let rows = record["obligations"].as_array().unwrap();
+        assert_eq!(rows.len(), checks.len());
+        assert!(checks.iter().any(|check| check.status == "PASS"));
+        assert!(checks.iter().any(|check| check.status == "FAIL"));
+        assert_eq!(record["status"], "counterexample_replayed");
+        assert_eq!(record["replay_valid"], true);
+        for (index, (check, row)) in checks.iter().zip(rows).enumerate() {
+            assert_eq!(row["index"], index);
+            assert_eq!(row["obligation"], check.name);
+            assert_eq!(row["solver_status"], check.status);
+            assert_eq!(row["detail"], check.detail);
+            let smt = row["smt"].as_str().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(bundle.dir.join(smt)).unwrap(),
+                check.smt
+            );
+            if check.status == "PASS" {
+                assert_eq!(row["status"], "not_applicable");
+                assert_eq!(row["replay_attempted"], false);
+                assert_eq!(row["replay_valid"], false);
+            } else if check.status == "FAIL" {
+                assert_eq!(row["status"], "counterexample_replayed");
+                assert_eq!(row["replay_attempted"], true);
+                assert_eq!(row["replay_valid"], true);
+            }
+        }
+        assert!(validate_manifest_hashes(&bundle.dir).unwrap());
+        std::fs::write(bundle.dir.join("analysis/solver_replay.json"), b"{}").unwrap();
+        assert!(!validate_manifest_hashes(&bundle.dir).unwrap());
+    }
+
+    #[test]
+    fn safe_bundle_without_obligations_never_claims_a_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; }",
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            None,
+            None,
+        )
+        .expect("safe evidence bundle");
+        let record: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(bundle.dir.join("analysis/solver_replay.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["status"], "not_applicable");
+        assert_eq!(record["replay_valid"], false);
+        let rows = record["obligations"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["status"], "not_applicable_no_obligations");
+        assert_eq!(rows[0]["replay_attempted"], false);
+        assert!(validate_manifest_hashes(&bundle.dir).unwrap());
+    }
 
     #[test]
     fn undecided_evidence_preserves_value_and_branch_provenance() {
