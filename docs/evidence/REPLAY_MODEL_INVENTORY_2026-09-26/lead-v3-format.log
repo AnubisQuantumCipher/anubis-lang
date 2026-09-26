@@ -1,0 +1,18 @@
+Diff in $CHECKOUT/compiler/src/middle/mod.rs:9:
+ use std::process::{Command, Stdio};
+
+ mod analysis_limit;
+-#[cfg(test)]
+-mod replay_inventory;
+ pub(crate) mod capability;
+ /// Compile-time carrier classification. TOTAL over `Expr` with no wildcard arm, so adding a
+ /// variant BREAKS THE BUILD until someone states what it can carry — the forcing function that
+Diff in $CHECKOUT/compiler/src/middle/mod.rs:25:
+ mod infer_params;
+ pub mod loopctl;
+ pub mod proptest;
++#[cfg(test)]
++mod replay_inventory;
+ /// Security research HIR types (Phase 3 stubs — profiles, scoped targets, effect IR).
+ pub mod research_profile;
+ pub(crate) mod security_label;

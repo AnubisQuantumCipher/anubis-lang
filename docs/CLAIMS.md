@@ -15,6 +15,19 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**UPDATE 2026-09-26 — value-position `if let` witnesses registered.**
+The archived `mi1`, `mi2`, `mi6` and valid `mi7` sources are copied unchanged
+into the matrix by `f344987d`, with a [selected-check receipt](evidence/M_IFLET_EXPR_REGISTRATION_2026-09-26/README.md).
+The current negative checks are typed `UNDECIDED` and the valid twin passes.
+These are no longer unregistered witnesses or current silent accepts on that
+pin, but M-IFLET-EXPR remains open for precise arm reachability and binder
+values. No full-matrix or checked-disproof result follows.
+
+The [test-only replay inventory](evidence/REPLAY_MODEL_INVENTORY_2026-09-26/README.md)
+at `da19222a` has focused test, format, strict lint and independent review
+witnesses. It does not change production replay. Complete typed value pinning
+and honest unsupported/mismatch propagation remain required for A-EVID-1.
+
 **UPDATE 2026-09-26 — captured solver process outcomes banked,
 broader proof authority still open.** Code commit `2683669c` has a
 [source-bound local receipt](evidence/CAPTURED_TOOL_OUTCOME_2026-09-26/README.md).

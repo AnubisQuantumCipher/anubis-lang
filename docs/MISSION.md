@@ -245,11 +245,31 @@ dependencies; package or evidence admission must not expand in the meantime.
 
 No current full workspace, disposable-guest, independent clean-room,
 protected-branch, product-release, or full trust-chain result is claimed.
-A separate main-based front-page correction is now open as
-[PR #45](https://github.com/AnubisQuantumCipher/anubis-lang/pull/45). The
-earlier reviewed local docs-only alternative through
-`90ebeaa34a38bf6286298700a71fafec76038864` remains unpushed; do not open
-a duplicate. Draft [PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44)
+The approved main-based front-page correction is pushed and open as
+[PR #48](https://github.com/AnubisQuantumCipher/anubis-lang/pull/48), head
+`472160b16e9daf395540417b44f9e71c4cfc8b6e`, including the reviewed follow-up
+to `90ebeaa3`. It is unmerged. Its body supersedes the alternate
+[PR #45](https://github.com/AnubisQuantumCipher/anubis-lang/pull/45), which
+is still open; do not merge both. The push run
+[passed](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36274397254),
+while the pull-request run [failed G3_test](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36274422605)
+on an identical Git tree. The failed run did not retain its Cargo log, so
+the underlying test/error is unknown. A separate main-based CI diagnostic
+artifact repair is being prepared; a successful retry cannot explain this
+failure. Draft [PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44)
 and the [local review stack](mission/PR44_LOCAL_SPLIT_2026-09-26.md) still need
 reviewable integration units and human review. Protected integration retains
 its applicable authorization boundary.
+
+Latest local code checkpoint: `da19222aed7695e6eaa3d5f4cab6d05933e27d77` on
+`codex/register-round2-20260926`. The [replay inventory receipt](evidence/REPLAY_MODEL_INVENTORY_2026-09-26/README.md)
+binds a reviewed test-only module; the next executable evidence dependency is
+production typed value pinning and unsupported/mismatch propagation. The
+[value-position if-let registration](evidence/M_IFLET_EXPR_REGISTRATION_2026-09-26/README.md)
+is also banked, with negative cases undecided and the valid twin accepted.
+The direct-field precision design is being amended for lexical stores,
+loop fixed points and point-specific consumer invalidation before any clean
+projection may suppress a legacy source. The proposed clause-based docs
+scanner patch remains withheld because independent review found dropped
+existing stamps. Preserve the scanner and gate floor while adding explicit
+structured claim coverage. These are open dependencies, not completed gates.

@@ -39,3 +39,7 @@ disproofs**. The remaining implementation dependency is to prove reachability
 of the constructed `Some` arm, carry its binder value to the obligation, and
 retain the valid twin. These selected outcomes do not establish a full-matrix
 pass, source-to-obligation correspondence, or product assurance.
+
+The subsequent [independent receipt review](RECEIPT_REVIEW.md) binds the final
+docs-only patch and checks the retained source, output and binary digests.
+It reviewed the recorded checks without rerunning the compiler.

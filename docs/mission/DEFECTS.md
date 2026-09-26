@@ -658,3 +658,14 @@ e516b1f3 (pin `anubis-ifc2land-1`): 2319 cases, 2196 PASS, 0 silent accepts, 112
 | RT-LAMBDA-PARAM-SHADOWS-FN-VALUE | S2 | a user function named in value position (`[show, show]`) is lowered as a local when a lambda parameter anywhere in the same function has that name, so the native build fails (E0425) on a program `check` accepts | `docs/evidence/IFC2_2026-09-26/shadowfn.anb` (check rc 0; run: E0425); the same cause makes `rv39_xc_nr_a1_lamparam` and `rv39_xc_nr_a3_callb` unrunnable, so their ACCEPT intents have no runtime witness | **open** (the lowering's local set is flow-insensitive: `collect_local_names`) |
 | IFC2-PRECISION-LAND | S3 | valid programs IFC v2 alone still refused after round 1: a group-by over computed map keys (an operand with no value gave a secret scalar), `false && …` and other constant conditions, `take`/`drop`/`chunk`/`window` with a literal count, a helper applied to 33 different callbacks past its context budget (one summary joined every callback) | `rv28_valid_or_b3_group_by_map`, `rv29_valid_or1_annotated_map_groupby_in_helper`, `rv33_valid_r33_o1_constant_short_circuit`, `rv29_valid_r29d_s04`, `rv33_valid_o01_nesting_builtins_lose_positions`, `rv32_valid_o6_33_closures_to_one_helper_shared_spec` | **fixed** e516b1f3 in IFC v2 (the lanes still refuse them: OR-LANES-UNION); `rv33_valid_r33_o3_continue_join_counter_reset` (a counter reset across a `continue`) stays refused (needs value tracking) |
 | IFC-PC-EGRESS cases | — | the decision-D1 probes had no matrix case | `d1_pc_egress_*` (5 REJECT, 1 ACCEPT control; 5 with a runtime witness) | registered e516b1f3 |
+
+### Forward reconciliation: value-position if-let registration
+
+The earlier M-IFLET-EXPR rows describe their historical revisions. Fixture
+commit `f344987d` now registers the archived `mi1`, `mi2`, `mi6` and valid
+`mi7` sources unchanged. The [current selected-check receipt](../evidence/M_IFLET_EXPR_REGISTRATION_2026-09-26/README.md)
+records typed `UNDECIDED` for the violated controls and a passing valid twin
+on its identified immutable CLI. Precise arm reachability and binder values
+remain unresolved; registration and fail-closed results do not close the
+mechanism or establish checked counterexamples. Current claim authority
+remains [CLAIMS.md](../CLAIMS.md).

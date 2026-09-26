@@ -1,0 +1,77 @@
+{
+  "scope": "test-only declaration/model inventory; no production replay consumer",
+  "base_commit": "603aa736c84ae9cb3f24d047be86485afd3c5d50",
+  "patch_sha256": "cc62d25e9d503f66ec6917edbc1cc2f988224aa72388762b1645082fab9ec04d",
+  "sources": {
+    "compiler/src/middle/mod.rs": "08b072c4129d876337222ad93d36d47e2944de5abe30c6b8ffa71d97b88b8e54",
+    "compiler/src/middle/replay_inventory.rs": "fd99112dca06d72d7295acce8caaccca92b217454e8e80489a3af4fe73fee992"
+  },
+  "toolchain": {
+    "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+    "cargo": "cargo 1.97.0-nightly (a343accce 2026-05-08)"
+  },
+  "checks": {
+    "format": {
+      "exit": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "replay-inventory-tests": {
+      "exit": 0,
+      "log_sha256": "57ff2d53e9b55af8e8878040e433d761abfb425701d33d30bc8112a5801176fa"
+    },
+    "clippy": {
+      "exit": 0,
+      "log_sha256": "5e509fb5483afeec2035dfbd24d75f58c2f8b66dfd40e418d8f1e0e5fea8e695"
+    }
+  },
+  "code_commit": "da19222aed7695e6eaa3d5f4cab6d05933e27d77",
+  "logs": {
+    "lead-v3-final-format.log": {
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": 0
+    },
+    "lead-v3-final-replay-inventory-tests.log": {
+      "original_sha256": "57ff2d53e9b55af8e8878040e433d761abfb425701d33d30bc8112a5801176fa",
+      "published_sha256": "fbb2774d29e516afd2fe6fffce7f0f55c905f3815185503c25f1ede2532e34d3",
+      "exit": 0
+    },
+    "lead-v3-final-clippy.log": {
+      "original_sha256": "5e509fb5483afeec2035dfbd24d75f58c2f8b66dfd40e418d8f1e0e5fea8e695",
+      "published_sha256": "7c2f5a080a563f96b699f798963c4b02a9b3733d438b6dda5d60bd3e9474af1b",
+      "exit": 0
+    },
+    "lead-v3-replay-inventory-tests.log": {
+      "original_sha256": "8e9dddff4be74c24ff7f4e658e054c6f9813dfce901c39cd5bcf55023cc4f4e6",
+      "published_sha256": "59746fe6b3db5f00d7e9222fba63af81d6e37299aeb68488c8dd27a2bc7c4cdf",
+      "exit": 101
+    },
+    "lead-v3-format.log": {
+      "original_sha256": "accebbea3ec579eba0c5424ee2fc8c73447a80e8cd48fffe86271653408e9d09",
+      "published_sha256": "9b840444633acb04299955e98849599ec3edd35cedbeb4321085ca041d9ccb20",
+      "exit": 1
+    },
+    "lead-v3-clippy.log": {
+      "original_sha256": "07abd979083f08617fac136947ce48c52cdfacf9c75aecbcb2b1ce0ddafd4e7b",
+      "published_sha256": "5b7bd05a5ec1bd2e34759a13ed24b47cf9cac021611ed860bcd4f0217322354d",
+      "exit": 101
+    },
+    "lead-v3-clippy-corrected.log": {
+      "original_sha256": "f7395fc2c1dfade98133764c04a917d05347b0647cee3c2638cee824b28bd7a9",
+      "published_sha256": "f9ff2e66dbbca1ca67661ef6eed7e1118ec311f2a5e132333dae0e89349d3915",
+      "exit": 101
+    },
+    "lead-v3-format-final.log": {
+      "original_sha256": "cf1e09d9e326abd42dc94eb2c2d8d1a18575b6de740c29f9367ee52046c004fa",
+      "published_sha256": "88e83ec2f413e9d161a244c5b93a7449827f0632dcc97363c2910e703d8515f4",
+      "exit": 1
+    }
+  },
+  "review_sha256": "a4e4a95109defd96045ea69c7f2eeb81249e5e8f34b6f35066985e508514848e",
+  "log_transforms": [
+    "replace checkout absolute path with $CHECKOUT",
+    "replace lead target absolute path with $LEAD_TARGET",
+    "remove terminal SGR and ASCII-character-set escape controls",
+    "remove trailing spaces/tabs and terminal blank lines"
+  ]
+}

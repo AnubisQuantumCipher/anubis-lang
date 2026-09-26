@@ -1,0 +1,11 @@
+Diff in $CHECKOUT/compiler/src/middle/replay_inventory.rs:194:
+                     let Some(&byte) = bytes.get(self.cursor) else {
+                         return Err(InventoryError::Malformed("unclosed quote"));
+                     };
+-                    if (quote == b'"'
+-                        && byte == b'"'
+-                        && bytes.get(self.cursor + 1) == Some(&b'"'))
++                    if (quote == b'"' && byte == b'"' && bytes.get(self.cursor + 1) == Some(&b'"'))
+                         || (byte == b'\\' && bytes.get(self.cursor + 1).is_some())
+                     {
+                         self.cursor += 2;
