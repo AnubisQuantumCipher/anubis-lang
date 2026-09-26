@@ -14,7 +14,11 @@ monomorphization inventory. This is a private compiler API; it produces Rust
 source for comparison, not a native artifact or verified seal.
 
 The [machine-readable gate receipt](gate-receipt.json) binds the code commit,
-source file hashes, exact commands, and complete path-normalized logs. On the
+source file hashes, exact commands, raw-log hashes, and retained logs with
+local paths replaced and terminal blank lines trimmed. The preceding local
+docs commit retained terminal blank lines in three logs; this transparent
+correction updates their stored hashes without changing the commands,
+message lines, source, or verdicts. On the
 final source, the captured-resolver tests passed with `26 passed; 0 failed`,
 the focused evidence and frontend controls each passed, compiler Clippy with
 `-D warnings` passed, and workspace format and diff checks passed. All Cargo

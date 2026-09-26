@@ -58,7 +58,7 @@
     "sha256": "1481e26be7dc70ed1742d722ccc234457b292af06f5a9da0f839aae3525faa5e",
     "status": "GO for scoped compiler-side diff"
   },
-  "log_normalization": "complete stdout/stderr, replacing only the local checkout and isolated target prefixes with <checkout> and <target>",
+  "log_normalization": "complete stdout/stderr message lines; local checkout/isolated-target prefixes replaced with <checkout>/<target>, and terminal blank lines trimmed",
   "not_run": [
     "public CLI captured build",
     "native artifact",
@@ -69,11 +69,19 @@
     "disposable-guest seal"
   ],
   "open_boundary": "Malformed solver streams are synthetic FAIL rows; public status adapters need a typed tool-error outcome before they can label a refusal disproved.",
+  "raw_log_sha256": {
+    "captured-pass.log": "3de902679e7359ce8bf81f551c710b55b54be0e6473583e06fd24856519fd231",
+    "clippy-pass.log": "2ea6894887064d4f3de532a850aad29f66e553812e16fe086d46f04ec171daa1",
+    "evidence-pass.log": "c501319d8caa13b9bfc6029e9fc7e411ac57d3787b4096454507fb18501f35d4",
+    "frontend-pass.log": "b144175d0cc5a23f89372241cb732c32a2071244924796df822f943d1363013f",
+    "initial-captured-fail.log": "0feac0940baa4b6c8a00717295f1af8d024152f627536a6efb58085a89f7a76e"
+  },
+  "receipt_correction": "The preceding local documentation commit retained terminal blank lines in three logs, causing git diff --check warnings. This docs-only correction trims those blank lines and updates stored hashes; the raw logs, code commit, commands and verdicts are unchanged.",
   "retained_log_sha256": {
-    "captured-pass.log": "f1db78e2a1cbb0bcc82f544e7397a35fc23420b9f5d547fc3312e31b43e134a5",
+    "captured-pass.log": "b0cca8291fc38e5e5cdc20b4e2f64f549e50a180a78c80e75cae16b2a1f62f6a",
     "clippy-pass.log": "5fc8d9a8b3a60cfeafd2f8bf78d979e1c9c558511f303aeae39657d7fa136ebc",
-    "evidence-pass.log": "4b9d502183c12810b78bf42b3c293c9977a8aada0704b49b6950c373a774aa8f",
-    "frontend-pass.log": "1cd336fc18ab953e947289164a5711dc83a65021c85c81fd673dad9e533cf371",
+    "evidence-pass.log": "df6842da87f839911f48a6ded00711528e5bad08f03fe1566608e7eedb91f40b",
+    "frontend-pass.log": "eed5658d61c25c04a85f91caf8c14d844e30d013b4699dc66445e4d524a31833",
     "initial-captured-fail.log": "489395657cc3a1226676f9482d45c46d978958bfe853bbf3323565d4f86d2ca0"
   },
   "schema": "anubis.captured-safe-check-result/1",
