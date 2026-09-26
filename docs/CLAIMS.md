@@ -18,8 +18,10 @@ table, and "green = no KNOWN defects" with equal weight.
 **UPDATE 2026-09-26 — bool result-kind correction; min/max still withheld.** The
 [bool-commit slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md) corrects the
 runtime result kind in `b835b94b`; focused full-Safe library controls pass and
-the original native leak is reproduced. Current full CLI, workspace, matrix,
-guest-journal and final platform gates are not claimed. The expanded
+the original native leak is reproduced. The source-attributed CLI build completed
+successfully, and its focused full-Safe/IFC2 checks report 14 PASS observations.
+Full workspace, full matrix, guest-journal and final platform gates remain open;
+this technical pin is not a release. The expanded
 [min/max candidate](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md) restores
 the original equal-captured-key control but newly refuses comparisons, negation
 and a deterministic helper over fixed captures. Its required suite reports

@@ -10,16 +10,27 @@ The bool fix, tests, matrix cases and classified native test target are committe
 separately from this evidence. PR44 remains the draft integration stack, not a
 mergeable whole-stack release. Re-query the remote before further publication.
 
-The full CLI build from that worktree is running in exec session **77431**:
+The full CLI build from that worktree **completed with exit status 0**; session
+**77431** is no longer pending. The command was
 `cargo build --locked --release -j 2 -p anubis`, using the existing capped runner,
 explicit user runtime/D-Bus environment and
 `CARGO_TARGET_DIR=/home/sicarii/.cache/anubis-wt/target-codex-round2`.
-Actual log and exit receipt: `out/proof-bool/cli-build.txt` and
-`out/proof-bool/cli-build.rc` (the latter exists only after completion).
-Do not start a duplicate build. On success, copy and hash a new immutable CLI
-pin, bind it to the recorded source manifest, run the registered finite bool
-checks and controls, and retain actual matrix history. Do not call the current
-library-test executable a CLI pin.
+Its copied log and exit receipt are `cli-build.txt` and `cli-build.rc` beside this
+checkpoint. The build began at `b835b94b` and ended after documentation commit
+`e3b8e1a11cd1dc05c76419bce56009fd901a819d`; compiler/solver/CLI/vendor/toolchain
+inputs remained unchanged as recorded in `source-stability.json`. Do not rewrite
+the original source manifest's code-commit binding.
+
+The immutable technical CLI pin is
+`/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8`,
+SHA-256 `c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7`.
+`cli-pin.json` records its attribution. The registered finite bool controls now
+report **14 PASS** observations across full Safe checking and IFC2-only reports,
+with harness exit status `0` and an unchanged binary hash. Complete commands,
+sources and stdout/stderr are retained in `cli-checks/results.json`; the focused
+full-Safe history rows are appended once under `proof-bool-focused-b835b94b`.
+The build/check subtask is finished; broad workspace, matrix, guest-journal and
+platform gates remain open. This pin is not a release or independent rebuild.
 
 Min/max worktree: `/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability`,
 branch `codex/minmax-repeatability-20260926`, based on `f48a5c9a`, still dirty
@@ -29,9 +40,12 @@ with exit 143 after confirmed compatibility regressions; session 67290 is finish
 The expanded test executable is retained immutably as recorded in
 `candidate-test-pin.json`. No min/max code is in the bool commit.
 
-The next min/max implementation must use the extension design plus independent
-design review. Stable unary/comparison terms and resolved helper frames need
-runtime parity, shared budgets and full-Safe/IFC2 entry-point precision tests.
+The active min/max extension worktree is
+`/home/sicarii/.cache/anubis-wt/codex-minmax-extended`, based on `e3b8e1a1`;
+its work follows the extension design plus independent design review. This bool
+receipt establishes no result for that separate candidate. Stable unary/comparison
+terms and resolved helper frames need runtime parity, shared budgets and
+full-Safe/IFC2 entry-point precision tests.
 Do not treat typed/inferred helper annotations or scalar abstract equality as
 runtime identity evidence. Preserve all required passing tests. All reviewers
 so far were static; lead execution is separately recorded in logs.

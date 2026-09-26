@@ -1,7 +1,8 @@
 # Bool proof-commit result kind — 2026-09-26
 
 Implementation: `b835b94b44fa8705dd973eb1133f862706fd04a8`. This is a bounded
-compiler-library correction, not round-2, proof-journal, platform or mission completion.
+compiler correction with focused library and CLI evidence, not round-2, proof-journal,
+platform or mission completion.
 
 `proof_commit_bool` returns an integer after truth conversion in both native and
 guest lowering. IFC2 previously returned its argument's abstract shape. When that
@@ -34,19 +35,40 @@ that its runtime does not evaluate.
   retained immutable integration-test executable. This executable is a static
   library test instrument, not a published `anubis` CLI or release pin.
 - `REVIEW.md`: independent final review and the subsequent test/CI review.
+- `cli-build.txt` and `cli-build.rc`: `cargo build --locked --release -j 2 -p anubis`
+  finished successfully with exit status `0`. It began at `b835b94b` and finished
+  after the documentation commit `e3b8e1a1`; `source-stability.json` records no
+  changed compiler/solver/CLI/vendor/toolchain inputs. The existing source manifest
+  remains bound to `b835b94b`. This is not an independent byte-for-byte rebuild.
+- `cli-pin.json`: retained CLI
+  `/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8`,
+  SHA-256 `c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7`.
+  This is a source-attributed technical pin, not a release artifact.
+- `cli-checks/results.json`, `cli-checks.txt` and `cli-checks.rc`: **14 PASS**
+  observations across full Safe `check` and IFC2-only `ifc2-report`; harness exit
+  status `0`. Original method-fallback, literal-scalar direct, helper-return and
+  secret-truth controls produce `ANUBIS_SECRET_EXFILTRATION`; public, released and
+  ordinary-struct controls remain accepted. Each observation retains its command,
+  source hash, exit status and complete stdout/stderr. The CLI hash matches before
+  and after these checks. `check_cli.py` is the exact retained focused harness.
+- `cli-checks/history.tsv`: the full Safe observations appended once to matrix
+  history under `proof-bool-focused-b835b94b`; the direct control remains a
+  `compare` row. IFC2-only reports are preserved separately in the JSON receipt.
+  `cli-followup-validation.json` records static copy/hash/history validation.
 
 The original fixture is inlined in the Rust test and was checked byte-for-byte
 against the recovered source. The native Linux allowlist binds its test-source
 hash and exact names, so changing that source requires classification renewal.
 The matrix retains the intended outcomes of the registered cases and direct control.
-No current full-matrix history is fabricated from these focused tests.
+The appended history covers only these registered finite bool-result controls;
+it does not represent a full-matrix run.
 
 ## Remaining boundaries
 
-A full CLI build was started from this code commit; its pending handle belongs
-in the continuation checkpoint until it produces a result. No current full
-workspace, full matrix, final native-hosted or mandatory guest-journal receipt
-exists for this slice. Keep those gates open.
+The full CLI build and focused CLI checks are complete. No current full workspace,
+full matrix, final native-hosted or mandatory guest-journal receipt exists for this
+slice. Keep those gates open. The technical pin and focused observations do not
+establish a release, a new runtime witness or proof-journal execution.
 
 Journal-PC behavior, the conservative deep journal policy, and the differing
 native/guest `proof_commit_u32` return behavior remain separate work. This change
