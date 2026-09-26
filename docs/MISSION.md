@@ -48,7 +48,7 @@ See the [authority reconciliation](mission/REQUIREMENTS.md#authority-reconciliat
 |---|---|
 | Working branch | `mission/anubis-1.0`, stacked on `item21/soundness-slices` |
 | `origin/main` | `e34d0c89c2181e8bd02ff52b0ab5d50cf97bac4b` (PR #43) |
-| Evidence stack (pushed as `origin/evidence/validate-replays-proofs`, no PR) | 12 commits `6aa6fd92`..`7220c4b15e6c6bfd5527e9197b3c7dcb2c008965` |
+| Evidence stack (pushed as `origin/evidence/validate-replays-proofs`, no PR) | 12 commits `6aa6fd92`..`7220c4b15e6c6bfd5527e9197b3c7dcb2c008965` (historical entry; corrected below) |
 | Item-21 stack (local, not pushed) | `13373e314d4b7d7e728ec63bc12e967c7acfcff8`, `029d5538151a545f3418b1d6e8932370d60a2e13`, `84296cef66c2d7aadf0c02393bf6d16324a7e29c`, `c87ad1cfa8d279435a094304515e9d9edb8ead5e` |
 | Open PRs | #1 (draft, 2026-07-26, unrelated) |
 | Host | Omarchy 4.0.3 on Arch Linux ARM, aarch64, **QEMU guest**; `/dev/kvm` present; no Tart; bwrap, Landlock and seccomp available |
@@ -57,6 +57,10 @@ See the [authority reconciliation](mission/REQUIREMENTS.md#authority-reconciliat
 
 "9 of 11" in earlier notes means nine of the eleven leaks in the original reproduction. The expanded
 matrix is the reference for open defects.
+
+Correction 2026-09-26: Git's inclusive `e34d0c89..7220c4b1` range contains
+13 commits. The first [local PR 44 split](mission/PR44_LOCAL_SPLIT_2026-09-26.md)
+records dependency-correct review refs without rewriting published history.
 
 ## Integration units
 
