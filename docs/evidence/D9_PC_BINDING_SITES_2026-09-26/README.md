@@ -72,6 +72,10 @@ is a redacted copy of one scratch review, not a second review. The earlier
 [static review](INDEPENDENT_STATIC_REVIEW.md) gave GO for lead-owned testing
 only. The applied-diff review and actual source-matched outcomes are separate
 evidence.
+An [independent final staged-documentation review](INDEPENDENT_FINAL_STAGED_DOCS_REVIEW.md)
+checked the exact staged index committed as `f62b79b36efe61adaa64d986eedc13b254e21c0c`.
+That review is versioned in a later documentation commit and does not alter
+the reviewed receipt bytes.
 
 This slice does not restore public-field precision across calls or aliases,
 fix `For`/`WhileLet` binders, establish writer-located PC diagnostics for
