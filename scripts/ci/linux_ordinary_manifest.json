@@ -1,0 +1,72 @@
+{
+  "schema": "anubis.linux-ordinary-classification.v1",
+  "scope": "Explicit ordinary tests only; changes require source reclassification; no full gate or release claim.",
+  "targets": [
+    {
+      "package": "anubis-compiler",
+      "target": "security_label_correspondence_observer",
+      "source": "compiler/tests/security_label_correspondence_observer.rs",
+      "sha256": "0b56b3f0623059134adfa950195024d4478e65d18cffa181f2bb59a66174692a",
+      "tests": [
+        "public_observer_emits_declared_row_count",
+        "public_observer_row_shape_is_tsv_with_op_prefix",
+        "public_observer_keys_are_unique",
+        "public_observer_emit_to_env_path"
+      ],
+      "classification": "ordinary-finite",
+      "review": "Codex static source review, 2026-09-25; no execution claimed",
+      "reason": "Finite production label observer; no parser recursion or generated random input."
+    },
+    {
+      "package": "anubis",
+      "target": "closure_names_function_value",
+      "source": "tools/anubis/tests/closure_names_function_value.rs",
+      "sha256": "92030321d06edb9256b4183103537b94aeaa9f45aa47ebf106262a09c966bf07",
+      "tests": [
+        "closure_returning_a_user_function_compiles_and_runs",
+        "closure_returning_a_builtin_compiles_and_runs",
+        "a_local_shadowing_a_builtin_is_still_captured"
+      ],
+      "classification": "ordinary-finite",
+      "review": "Codex static source review, 2026-09-25; no execution claimed",
+      "reason": "Fixed benign closure/name native execution programs."
+    },
+    {
+      "package": "anubis",
+      "target": "struct_string_index_reads_named_field",
+      "source": "tools/anubis/tests/struct_string_index_reads_named_field.rs",
+      "sha256": "548cd05cb5122aca17492abfcae3a6cb749ef4cead5fb5487cd61953e679fc45",
+      "tests": [
+        "string_key_reads_the_named_field_not_the_first",
+        "public_string_key_does_not_release_a_secret_first_field"
+      ],
+      "classification": "ordinary-finite",
+      "review": "Codex static source review, 2026-09-25; no execution claimed",
+      "reason": "Fixed benign native struct field reads including synthetic secret label."
+    },
+    {
+      "package": "anubis",
+      "target": "run_input_json",
+      "source": "tools/anubis/tests/run_input_json.rs",
+      "sha256": "332a4b807c977d9ee26890b7fb3cf9763c21db53eb72b3221fab717bb28ea03c",
+      "tests": [
+        "run_input_json_feeds_proof_inputs_to_native_run"
+      ],
+      "classification": "ordinary-finite",
+      "review": "Codex static source review, 2026-09-25; no execution claimed",
+      "reason": "Fixed benign native proof-input round trip."
+    },
+    {
+      "package": "anubis",
+      "target": "evidence_source_binding",
+      "source": "tools/anubis/tests/evidence_source_binding.rs",
+      "sha256": "415e703ca73dc04395527b673c4cff184705eeaa0d1c00a1d5a9dfaa4f7742de",
+      "tests": [
+        "manifestless_build_evidence_binds_only_the_requested_program"
+      ],
+      "classification": "ordinary-finite",
+      "review": "Codex static source review, 2026-09-25; no execution claimed",
+      "reason": "Finite source-binding build and offline evidence verification in scratch directory."
+    }
+  ]
+}
