@@ -1,0 +1,2 @@
+fn f(z: i64) requires(z > 0) { }
+fn main(y: i64) { let mut x = 1; match 1 { _ => { if true { if y > 0 { x = 2; } else { f(-1); } true } else { false } } } }

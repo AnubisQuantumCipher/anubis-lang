@@ -2398,3 +2398,14 @@ r2arm_untaken_literal_guard_alias_valid	M-CALL-POSITION	slice	ACCEPT	carrier	lit
 r2arm_guard_unmodelable_if_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	nonmodelable pred() is true, so nested statement-if body calls f(-1) inside a match guard; direct twin disproves.
 r2arm_guard_unmodelable_if_valid	M-CALL-POSITION	slice	ACCEPT	carrier	nonmodelable pred() is true and nested match-guard statement-if body calls f(1), satisfying requires.
 r2arm_guard_unmodelable_if_dead	M-CALL-POSITION	slice	ACCEPT	carrier	nonmodelable pred() returns false, so nested match-guard statement-if body f(-1) does not execute.
+r2arm_partial_guard_pred_false_valid	M-CALL-POSITION	slice	ACCEPT	carrier	pred() returns false while x>0 is true; a partially encoded conjunction must not produce a disproof for unreachable f(-1).
+r2arm_partial_guard_live_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	pred() and x>0 are true; nested match-guard statement-if reaches f(-1); direct twin disproves.
+r2arm_partial_guard_live_valid	M-CALL-POSITION	slice	ACCEPT	carrier	pred() and x>0 are true; nested match-guard statement-if reaches satisfied f(1).
+r2arm_partial_guard_dead_valid	M-CALL-POSITION	slice	ACCEPT	carrier	pred() is true but x>0 is false; nested f(-1) cannot execute.
+r2arm_duplicate_direct_before_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	reachable direct f(-1) precedes a same-display-name call under pred() false; direct counterexample must survive per-obligation uncertainty.
+r2arm_duplicate_direct_after_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	reachable direct f(-1) follows a same-display-name call under pred() false; direct counterexample must survive per-obligation uncertainty.
+r2arm_duplicate_both_valid	M-CALL-POSITION	slice	ACCEPT	carrier	direct and conditional calls use satisfied f(1); duplicate displayed obligation names must not force refusal.
+r2arm_expr_match_untaken_guard_alias_valid	M-CALL-POSITION	slice	ACCEPT	carrier	let initializer match scrutinee 1 cannot select literal 0 guard assigning h=f; later h(-1) calls safe.
+r2arm_expr_match_live_guard_alias_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	let initializer match scrutinee 1 selects literal 1 guard assigning h=f; later h(-1) violates f requires.
+r2arm_arm_tail_write_fact_invalid	M-CALL-POSITION	slice	REJECT	carrier,direct	nested match-arm tail if has a branch write and reachable else f(-1); branch facts must not suppress the precondition.
+r2arm_arm_tail_guarded_valid	M-CALL-POSITION	slice	ACCEPT	carrier	match-arm tail nested if guards f(-1) behind false x>0; valid control for branch-fact isolation.
