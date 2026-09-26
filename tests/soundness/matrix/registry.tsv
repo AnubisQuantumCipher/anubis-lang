@@ -2414,3 +2414,7 @@ r2arm_enum_payload_live_invalid	M-ARM-ENUM-PRECISION	slice	REJECT	carrier	Matchi
 r2arm_enum_scrutinee_call_invalid	M-ARM-ENUM-PRECISION	slice	REJECT	carrier	The contracted f(-1) in a constructor scrutinee executes before any dead-arm pruning; its obligation must remain.
 r2arm_enum_named_dead_valid	M-ARM-ENUM-PRECISION	slice	ACCEPT	carrier	Named enum payload a=1 cannot match arm a=2, so its violated call is unreachable.
 r2arm_enum_named_live_invalid	M-ARM-ENUM-PRECISION	slice	REJECT	carrier	Named enum payload a=2 matches arm a=2 and reaches the violated call.
+r2arm_enum_expr_payload_dead_valid	M-ARM-ENUM-EXPR-PRECISION	slice	ACCEPT	carrier	Value-position match Some(1) cannot take Some(2) arm; frozen pre-fix checker DISPROVED despite unreachable f(-1).
+r2arm_enum_expr_payload_live_invalid	M-ARM-ENUM-EXPR-PRECISION	slice	REJECT	carrier	Value-position match Some(2) reaches violated f(-1); paired rejection control.
+r2arm_enum_expr_named_dead_valid	M-ARM-ENUM-EXPR-PRECISION	slice	ACCEPT	carrier	Value-position match named enum payload a=1 cannot take arm a=2; frozen pre-fix checker DISPROVED.
+r2arm_enum_expr_named_live_invalid	M-ARM-ENUM-EXPR-PRECISION	slice	REJECT	carrier	Value-position match named enum payload a=2 reaches violated f(-1); paired rejection control.
