@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anubis-compiler = { path = "../../compiler" }
+anubis-solver = { path = "../../solver" }
 clap.workspace = true
 anyhow.workspace = true
 serde = { workspace = true }
@@ -20,6 +21,7 @@ sha2.workspace = true
 hex.workspace = true
 walkdir.workspace = true
 tempfile.workspace = true
+libc = "0.2"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 bincode = "1.3"
@@ -46,4 +48,3 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-virtualization = "0.3"
 block2 = "0.6"
-libc = "0.2"

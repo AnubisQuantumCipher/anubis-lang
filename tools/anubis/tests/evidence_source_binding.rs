@@ -77,4 +77,39 @@ fn manifestless_build_evidence_binds_only_the_requested_program() {
         String::from_utf8_lossy(&verify.stdout),
         String::from_utf8_lossy(&verify.stderr)
     );
+
+    let (secret_key, _public_key) = anubis_compiler::evidence::generate_keypair().unwrap();
+    anubis_compiler::evidence::sign_pca(bundle, &secret_key).unwrap();
+    for command in ["verify", "validate"] {
+        let signed = Command::new(env!("CARGO_BIN_EXE_anubis"))
+            .arg(command)
+            .arg(bundle)
+            .output()
+            .unwrap();
+        assert!(
+            signed.status.success(),
+            "signed {command} failed: {}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+    }
+    let signature_path = bundle.join("pca.sig");
+    let mut signature: serde_json::Value =
+        serde_json::from_slice(&fs::read(&signature_path).unwrap()).unwrap();
+    signature["signature"] = serde_json::Value::String("0".repeat(128));
+    fs::write(
+        &signature_path,
+        serde_json::to_vec_pretty(&signature).unwrap(),
+    )
+    .unwrap();
+    for command in ["verify", "validate"] {
+        let invalid = Command::new(env!("CARGO_BIN_EXE_anubis"))
+            .arg(command)
+            .arg(bundle)
+            .output()
+            .unwrap();
+        assert!(
+            !invalid.status.success(),
+            "{command} must refuse an invalid present signature"
+        );
+    }
 }

@@ -26,7 +26,7 @@ use anubis_compiler::{
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
         build_rejected_evidence_bundle_tree, generate_keypair, pca_signature_status, sign_pca,
-        verify_pca, ClaimBlock, EvidenceManifest,
+        validate_bundle, verify_pca, ClaimBlock, EvidenceManifest,
     },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
@@ -356,7 +356,8 @@ enum Commands {
         strict: bool,
     },
 
-    /// Alias for verify; validates bundle hashes and PASS verdict.
+    /// Validate the bundle and require a PASS artifact (unlike `verify`, which
+    /// also checks an honestly recorded FAIL claim).
     Validate { bundle: PathBuf },
 
     /// Security research domain packs (PoC / fuzz / crypto / bounty / emulation).
@@ -1910,6 +1911,8 @@ fn run_package_cmd(action: PackageCmd) -> Result<()> {
                     "ANUBIS_DEP_UNRESOLVED: [package] name and version required to publish"
                 ));
             }
+            anubis_compiler::package::proof::ensure_single_module_publishable(&layout.root, &entry)
+                .map_err(|e| anyhow!("{e}"))?;
             // Typecheck package sources.
             let items = combine_from_entry_opts(
                 &entry,
@@ -5982,19 +5985,14 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             // PCA verification: hash/tamper validation PLUS re-deriving the claim block from the
             // bundle's own source and confirming it matches the recorded pca.json (fail-closed).
             let mut ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
-            // A2: when the PCA claims a ZK receipt, cryptographically re-verify it against the
-            // ImageID (re-derive, not re-trust). A tampered receipt, a wrong ImageID, or a
-            // mismatched journal fails closed here.
-            #[cfg(feature = "prove")]
+            // An advertised ZK receipt is checked by the same gate used by
+            // validate and evidence-verify. A binary without `prove` cannot
+            // declare that claim valid.
             if ok {
-                if let Err(e) = verify_bundle_zk_receipt(&bundle) {
+                if let Err(e) = verify_zk_claim_if_present(&bundle) {
                     eprintln!("zk receipt verification FAILED: {}", e);
                     ok = false;
                 }
-            }
-            #[cfg(not(feature = "prove"))]
-            if ok {
-                eprintln!("warning: ZK receipt re-verification skipped (binary built without `prove` feature)");
             }
             // Report (and optionally require) the signature.
             match pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))? {
@@ -6006,6 +6004,10 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                         sig_ok,
                         anubis_compiler::diagnostics::printable(&signer)
                     );
+                    if !sig_ok {
+                        eprintln!("present PCA signature is invalid");
+                        ok = false;
+                    }
                     if let Some(expected) = &pubkey {
                         if !sig_ok || signer != expected.trim() {
                             eprintln!("signature required by --pubkey did not match");
@@ -6059,14 +6061,30 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 let ok = verify_unverified_build_evidence(&bundle)?;
                 println!("assurance: UNVERIFIED (integrity only; no proof claim)");
                 println!("bundle valid: {}", ok);
-                if !ok {
-                    std::process::exit(1);
-                }
-                return Ok(());
+                return Err(anyhow!(
+                    "ANUBIS_EVIDENCE_UNVERIFIED: validate requires a re-derived PASS artifact"
+                ));
             }
-            let ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
-            if ok {
+            let claim_valid = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
+            if claim_valid {
                 print_verified_pca_scope(&bundle)?;
+            }
+            // `validate` has historically required a PASS artifact. Unlike it,
+            // `verify` may validate an honest FAIL claim and report that verdict.
+            let mut ok = claim_valid && validate_bundle(&bundle).map_err(|e| anyhow!("{}", e))?;
+            if let Some((sig_ok, _)) =
+                pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))?
+            {
+                if !sig_ok {
+                    eprintln!("present PCA signature is invalid");
+                    ok = false;
+                }
+            }
+            if ok {
+                if let Err(e) = verify_zk_claim_if_present(&bundle) {
+                    eprintln!("zk receipt verification FAILED: {}", e);
+                    ok = false;
+                }
             }
             println!("bundle valid: {}", ok);
             if !ok {
@@ -7641,14 +7659,16 @@ fn write_unverified_build_evidence(
     let artifact_src = artifact.ok_or_else(|| anyhow!("UNVERIFIED artifact was not emitted"))?;
     let artifact_path = dir.join("artifact");
     std::fs::copy(artifact_src, &artifact_path)?;
+    let source_hash = sha256_regular_file_bounded(&source_path, MAX_UNVERIFIED_SOURCE_BYTES)?;
+    let artifact_hash = sha256_regular_file_bounded(&artifact_path, MAX_UNVERIFIED_ARTIFACT_BYTES)?;
     let record = serde_json::json!({
         "schema_version": "1.0",
         "tool": "anubis",
         "record": "unverified-build",
         "status": "UNVERIFIED",
         "input": input.to_string_lossy(),
-        "source_sha256": sha256_of_file_or("MISSING", &source_path),
-        "artifact_sha256": sha256_of_file_or("MISSING", &artifact_path),
+        "source_sha256": source_hash.as_str(),
+        "artifact_sha256": artifact_hash.as_str(),
         "truth": {
             "contracts_verified": false,
             "solver_obligations_discharged": false,
@@ -7658,38 +7678,160 @@ fn write_unverified_build_evidence(
         }
     });
     let record_path = dir.join("unverified.json");
-    std::fs::write(&record_path, serde_json::to_string_pretty(&record)?)?;
+    let record_bytes = serde_json::to_vec_pretty(&record)?;
+    std::fs::write(&record_path, &record_bytes)?;
     let manifest = format!(
         "{}  source.anubis\n{}  artifact\n{}  unverified.json\n",
-        sha256_of_file_or("MISSING", &source_path),
-        sha256_of_file_or("MISSING", &artifact_path),
-        sha256_of_file_or("MISSING", &record_path),
+        source_hash,
+        artifact_hash,
+        sha256_bytes(&record_bytes),
     );
     std::fs::write(dir.join("MANIFEST.sha256"), manifest)?;
     Ok(dir)
 }
 
-fn verify_unverified_build_evidence(bundle: &Path) -> Result<bool> {
-    let record_path = bundle.join("unverified.json");
-    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record_path)?)?;
+const MAX_UNVERIFIED_METADATA_BYTES: u64 = 1024 * 1024;
+const MAX_UNVERIFIED_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_UNVERIFIED_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnverifiedBuildTruth {
+    contracts_verified: bool,
+    solver_obligations_discharged: bool,
+    proof_execution_claimed: bool,
+    receipt_verified: bool,
+    unsafe_bypass_explicit: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnverifiedBuildRecord {
+    schema_version: String,
+    tool: String,
+    record: String,
+    status: String,
+    input: String,
+    source_sha256: String,
+    artifact_sha256: String,
+    truth: UnverifiedBuildTruth,
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Hash only a regular, non-symlink file under a fixed verifier byte budget.
+/// This intentionally never substitutes the producer's `MISSING` marker for a digest.
+fn sha256_regular_file_bounded(path: &Path, max_bytes: u64) -> Result<String> {
+    use std::io::Read;
+
+    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(anyhow!(
+            "unverified artifact is not a regular file: {}",
+            path.display()
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return Err(anyhow!(
+            "unverified artifact byte limit or file type exceeded: {}",
+            path.display()
+        ));
+    }
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = [0_u8; 65536];
+    let mut total = 0_u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| anyhow!("unverified artifact byte count overflow"))?;
+        if total > max_bytes {
+            return Err(anyhow!("unverified artifact byte limit exceeded"));
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if total != metadata.len() {
+        return Err(anyhow!("unverified artifact changed during hash"));
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// All public CLI evidence commands call this same integrity-only gate. A valid
+/// result does not establish a contract proof, signature, or build provenance.
+pub(crate) fn verify_unverified_build_evidence(bundle: &Path) -> Result<bool> {
+    if !std::fs::symlink_metadata(bundle)?.file_type().is_dir() {
+        return Err(anyhow!("unverified envelope is not a regular directory"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(bundle)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| anyhow!("unverified envelope has a non-UTF-8 file name"))?;
+        if !matches!(
+            name,
+            "source.anubis" | "artifact" | "unverified.json" | "MANIFEST.sha256"
+        ) || !entry.file_type()?.is_file()
+        {
+            return Ok(false);
+        }
+        seen.insert(name.to_owned());
+    }
+    if seen.len() != 4 {
+        return Ok(false);
+    }
+
     let source = bundle.join("source.anubis");
     let artifact = bundle.join("artifact");
-    let manifest = std::fs::read_to_string(bundle.join("MANIFEST.sha256"))?;
+    let record_path = bundle.join("unverified.json");
+    let record_bytes = read_zk_verify_sidecar(&record_path, MAX_UNVERIFIED_METADATA_BYTES)?;
+    let record: UnverifiedBuildRecord = serde_json::from_slice(&record_bytes)?;
+    if record.schema_version != "1.0"
+        || record.tool != "anubis"
+        || record.record != "unverified-build"
+        || record.status != "UNVERIFIED"
+        || record.input.is_empty()
+        || !is_lowercase_sha256(&record.source_sha256)
+        || !is_lowercase_sha256(&record.artifact_sha256)
+        || record.truth.contracts_verified
+        || record.truth.solver_obligations_discharged
+        || record.truth.proof_execution_claimed
+        || record.truth.receipt_verified
+        || !record.truth.unsafe_bypass_explicit
+    {
+        return Ok(false);
+    }
+
+    let source_hash = sha256_regular_file_bounded(&source, MAX_UNVERIFIED_SOURCE_BYTES)?;
+    let artifact_hash = sha256_regular_file_bounded(&artifact, MAX_UNVERIFIED_ARTIFACT_BYTES)?;
+    let record_hash = sha256_bytes(&record_bytes);
     let expected_manifest = format!(
-        "{}  source.anubis\n{}  artifact\n{}  unverified.json\n",
-        sha256_of_file_or("MISSING", &source),
-        sha256_of_file_or("MISSING", &artifact),
-        sha256_of_file_or("MISSING", &record_path),
+        "{source_hash}  source.anubis\n{artifact_hash}  artifact\n{record_hash}  unverified.json\n"
     );
-    Ok(record["status"] == "UNVERIFIED"
-        && record["truth"]["contracts_verified"] == false
-        && record["truth"]["solver_obligations_discharged"] == false
-        && record["truth"]["proof_execution_claimed"] == false
-        && record["truth"]["receipt_verified"] == false
-        && record["truth"]["unsafe_bypass_explicit"] == true
-        && record["source_sha256"] == sha256_of_file_or("MISSING", &source)
-        && record["artifact_sha256"] == sha256_of_file_or("MISSING", &artifact)
-        && manifest == expected_manifest)
+    let manifest = read_zk_verify_sidecar(
+        &bundle.join("MANIFEST.sha256"),
+        MAX_UNVERIFIED_METADATA_BYTES,
+    )?;
+    Ok(record.source_sha256 == source_hash
+        && record.artifact_sha256 == artifact_hash
+        && manifest.as_slice() == expected_manifest.as_bytes())
 }
 
 fn command_succeeds(program: &str, args: &[&str]) -> bool {
@@ -7987,6 +8129,73 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(feature = "prove")]
+const MAX_ZK_VERIFY_RECEIPT_BYTES: u64 = 512 * 1024 * 1024;
+#[cfg(feature = "prove")]
+const MAX_ZK_VERIFY_GUEST_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_ZK_VERIFY_METADATA_BYTES: u64 = 32 * 1024 * 1024;
+
+fn read_zk_verify_sidecar(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+
+    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(anyhow!(
+            "ZK sidecar is not a regular file: {}",
+            path.display()
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return Err(anyhow!(
+            "ZK sidecar byte limit or file type exceeded: {}",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "ZK sidecar changed or exceeded byte limit: {}",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
+fn pca_claims_zk(bundle: &Path) -> Result<bool> {
+    let path = bundle.join("pca.json");
+    let pca: ClaimBlock = serde_json::from_slice(&read_zk_verify_sidecar(
+        &path,
+        MAX_ZK_VERIFY_METADATA_BYTES,
+    )?)?;
+    Ok(pca.zk_present)
+}
+
+/// Require the same receipt assurance from every public evidence command.
+fn verify_zk_claim_if_present(bundle: &Path) -> Result<()> {
+    if !pca_claims_zk(bundle)? {
+        return Ok(());
+    }
+    #[cfg(feature = "prove")]
+    {
+        verify_bundle_zk_receipt(bundle)
+    }
+    #[cfg(not(feature = "prove"))]
+    {
+        Err(anyhow!(
+            "ANUBIS_ZK_UNVERIFIED: this binary lacks the prove feature required to verify the claimed receipt"
+        ))
+    }
+}
+
+#[cfg(feature = "prove")]
 /// A2: cryptographically re-verify the ZK receipt a PCA claims to carry. Nothing here is trusted
 /// from the recorded claim — it re-reads the bundle's own receipt, ImageID, and guest ELF and:
 ///   1. ties the ImageID to the bundle's guest ELF (`compute_image_id(elf) == ImageID`), which
@@ -7999,10 +8208,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 ///      receipt (`zk_present=false`) — there is nothing to re-verify.
 fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
     let pca_path = bundle.join("pca.json");
-    if !pca_path.exists() {
-        return Ok(());
+    match std::fs::symlink_metadata(&pca_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
-    let pca: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pca_path)?)?;
+    let pca: serde_json::Value = serde_json::from_slice(&read_zk_verify_sidecar(
+        &pca_path,
+        MAX_ZK_VERIFY_METADATA_BYTES,
+    )?)?;
     if pca.get("zk_present").and_then(|v| v.as_bool()) != Some(true) {
         return Ok(());
     }
@@ -8020,10 +8234,11 @@ fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
         .ok_or_else(|| anyhow!("zk_present=true but the claim carries no zk_journal_sha256"))?;
 
     let r = bundle.join("backend").join("risc0");
-    let receipt_data =
-        std::fs::read(r.join("receipt.bin")).map_err(|e| anyhow!("read receipt.bin: {}", e))?;
-    let id_text = std::fs::read_to_string(r.join("image_id.txt"))
-        .map_err(|e| anyhow!("read image_id.txt: {}", e))?;
+    let receipt_data = read_zk_verify_sidecar(&r.join("receipt.bin"), MAX_ZK_VERIFY_RECEIPT_BYTES)?;
+    let id_text = String::from_utf8(read_zk_verify_sidecar(
+        &r.join("image_id.txt"),
+        MAX_ZK_VERIFY_METADATA_BYTES,
+    )?)?;
 
     if id_text.trim() != claimed_id.trim() {
         return Err(anyhow!(
@@ -8037,20 +8252,19 @@ fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
     }
     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("bundle ImageID: {}", e))?;
 
-    // Tie the ImageID to the bundle's guest ELF (which is hash-bound in the manifest).
+    // A receipt alone only authenticates execution of an ImageID. Require the
+    // manifest-covered guest image so this result is bound to the bundled code.
     let elf_path = r.join("guest.elf");
-    if elf_path.exists() {
-        let elf_bytes = std::fs::read(&elf_path)?;
-        let computed = risc0_zkvm::compute_image_id(&elf_bytes)
-            .map_err(|e| anyhow!("compute_image_id(guest.elf): {}", e))?;
-        let claimed_digest: risc0_zkvm::Digest = id_words.into();
-        if computed != claimed_digest {
-            return Err(anyhow!(
-                "guest.elf ImageID {} does not match the receipt's ImageID {}",
-                computed,
-                claimed_digest
-            ));
-        }
+    let elf_bytes = read_zk_verify_sidecar(&elf_path, MAX_ZK_VERIFY_GUEST_BYTES)?;
+    let computed = risc0_zkvm::compute_image_id(&elf_bytes)
+        .map_err(|e| anyhow!("compute_image_id(guest.elf): {}", e))?;
+    let claimed_digest: risc0_zkvm::Digest = id_words.into();
+    if computed != claimed_digest {
+        return Err(anyhow!(
+            "guest.elf ImageID {} does not match the receipt's ImageID {}",
+            computed,
+            claimed_digest
+        ));
     }
 
     // The real cryptographic check: the receipt verifies against the ImageID and yields its journal.
@@ -8061,10 +8275,6 @@ fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
             "receipt journal does not match the claim's zk_journal_sha256"
         ));
     }
-    println!(
-        "zk: receipt re-verified against ImageID (journal sha256 {})",
-        sha256_hex(&journal_bytes)
-    );
     Ok(())
 }
 
@@ -8365,6 +8575,166 @@ pub(crate) fn program_mode(items: &[Item]) -> Option<Mode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unverified_test_bundle() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let built = root.path().join("built-program");
+        std::fs::write(&built, b"native test artifact").unwrap();
+        let bundle = write_unverified_build_evidence(
+            root.path(),
+            Path::new("sample.anb"),
+            "fn main() { print(1); }",
+            Some(built.to_str().unwrap()),
+        )
+        .unwrap();
+        (root, bundle)
+    }
+
+    fn rewrite_unverified_record_and_manifest(bundle: &Path, record: &serde_json::Value) {
+        let record_path = bundle.join("unverified.json");
+        std::fs::write(&record_path, serde_json::to_vec_pretty(record).unwrap()).unwrap();
+        let manifest = format!(
+            "{}  source.anubis\n{}  artifact\n{}  unverified.json\n",
+            sha256_bytes(&std::fs::read(bundle.join("source.anubis")).unwrap()),
+            sha256_bytes(&std::fs::read(bundle.join("artifact")).unwrap()),
+            sha256_bytes(&std::fs::read(&record_path).unwrap()),
+        );
+        std::fs::write(bundle.join("MANIFEST.sha256"), manifest).unwrap();
+    }
+
+    #[test]
+    fn unverified_envelope_uses_one_integrity_only_gate() {
+        let (_root, bundle) = unverified_test_bundle();
+        assert!(verify_unverified_build_evidence(&bundle).unwrap());
+        let report =
+            evidence_verify::verify_path(&bundle, &evidence_verify::EvidenceVerifyOpts::default())
+                .unwrap();
+        assert!(!report.ok, "{:?}", report.checks);
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.classification == "UNVERIFIED"
+                && check.status == evidence_verify::CheckStatus::Pass));
+        assert!(report.checks.iter().any(|check| {
+            check.id.ends_with(".assurance") && check.status == evidence_verify::CheckStatus::Fail
+        }));
+
+        let signed = evidence_verify::EvidenceVerifyOpts {
+            pubkey: Some("required-key".into()),
+            ..Default::default()
+        };
+        assert!(!evidence_verify::verify_path(&bundle, &signed).unwrap().ok);
+    }
+
+    #[test]
+    fn unverified_envelope_rejects_rehashed_false_claims_and_extra_files() {
+        let (_root, bundle) = unverified_test_bundle();
+        let record_path = bundle.join("unverified.json");
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+        record["status"] = serde_json::Value::String("PASS".into());
+        rewrite_unverified_record_and_manifest(&bundle, &record);
+        assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+
+        record["status"] = serde_json::Value::String("UNVERIFIED".into());
+        record["truth"]["contracts_verified"] = serde_json::Value::Bool(true);
+        rewrite_unverified_record_and_manifest(&bundle, &record);
+        assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+
+        record["truth"]["contracts_verified"] = serde_json::Value::Bool(false);
+        rewrite_unverified_record_and_manifest(&bundle, &record);
+        assert!(verify_unverified_build_evidence(&bundle).unwrap());
+
+        std::fs::write(bundle.join("source.anubis"), b"tampered source").unwrap();
+        rewrite_unverified_record_and_manifest(&bundle, &record);
+        assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+        assert!(
+            !evidence_verify::verify_path(&bundle, &evidence_verify::EvidenceVerifyOpts::default())
+                .unwrap()
+                .ok
+        );
+
+        record["source_sha256"] = serde_json::Value::String("MISSING".into());
+        rewrite_unverified_record_and_manifest(&bundle, &record);
+        assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+
+        let original_source = "fn main() { print(1); }";
+        std::fs::write(bundle.join("source.anubis"), original_source).unwrap();
+        record["source_sha256"] =
+            serde_json::Value::String(sha256_bytes(original_source.as_bytes()));
+        rewrite_unverified_record_and_manifest(&bundle, &record);
+        assert!(verify_unverified_build_evidence(&bundle).unwrap());
+
+        std::fs::write(bundle.join("unlisted.txt"), b"not in manifest").unwrap();
+        assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+        std::fs::remove_file(bundle.join("unlisted.txt")).unwrap();
+        std::fs::write(
+            bundle.join("MANIFEST.sha256"),
+            format!(
+                "{}  ../source.anubis\n",
+                record["source_sha256"].as_str().unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+    }
+
+    #[test]
+    fn unverified_envelope_refuses_missing_symlinked_and_oversized_files() {
+        let (_root, bundle) = unverified_test_bundle();
+        let source = bundle.join("source.anubis");
+        std::fs::remove_file(&source).unwrap();
+        assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(bundle.join("artifact"), &source).unwrap();
+            assert!(!verify_unverified_build_evidence(&bundle).unwrap());
+            std::fs::remove_file(&source).unwrap();
+        }
+
+        let sparse = std::fs::File::create(&source).unwrap();
+        sparse.set_len(MAX_UNVERIFIED_SOURCE_BYTES + 1).unwrap();
+        assert!(verify_unverified_build_evidence(&bundle)
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "prove"))]
+    fn a_claimed_zk_receipt_is_unverified_without_the_prove_feature() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/zk_prove_bundle");
+        assert!(verify_pca(&fixture).unwrap());
+        let error = verify_zk_claim_if_present(&fixture)
+            .expect_err("a no-prove binary cannot validate a claimed ZK receipt");
+        assert!(error.to_string().contains("ANUBIS_ZK_UNVERIFIED"));
+    }
+
+    #[test]
+    #[cfg(feature = "prove")]
+    fn zk_sidecar_reader_rejects_sparse_oversize_and_symlink_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("receipt.bin");
+        std::fs::write(&path, b"receipt").unwrap();
+        assert_eq!(
+            read_zk_verify_sidecar(&path, MAX_ZK_VERIFY_RECEIPT_BYTES).unwrap(),
+            b"receipt"
+        );
+        let sparse = std::fs::File::create(&path).unwrap();
+        sparse.set_len(MAX_ZK_VERIFY_RECEIPT_BYTES + 1).unwrap();
+        assert!(read_zk_verify_sidecar(&path, MAX_ZK_VERIFY_RECEIPT_BYTES)
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit"));
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("target"), &path).unwrap();
+            assert!(read_zk_verify_sidecar(&path, MAX_ZK_VERIFY_RECEIPT_BYTES).is_err());
+        }
+    }
 
     #[test]
     fn build_exit_remains_fail_closed_over_nonpass_evidence_verdicts() {
@@ -8729,6 +9099,16 @@ module nested {
         assert!(
             verify_bundle_zk_receipt(&dir).is_err(),
             "wrong ImageID must fail closed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (4) A genuine receipt without its guest image proves an ImageID, but
+        // does not bind that ID to the code this bundle claims to ship.
+        let dir = stage_zk_bundle("missing-guest");
+        std::fs::remove_file(dir.join("backend/risc0/guest.elf")).unwrap();
+        assert!(
+            verify_bundle_zk_receipt(&dir).is_err(),
+            "a missing guest image must not receive a bound ZK verdict"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

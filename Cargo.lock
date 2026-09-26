@@ -162,6 +162,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anubis-compiler",
+ "anubis-solver",
  "anyhow",
  "base64",
  "bincode",

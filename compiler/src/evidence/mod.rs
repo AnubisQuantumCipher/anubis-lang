@@ -1017,57 +1017,174 @@ fn build_evidence_bundle_tree_inner(
 }
 
 pub fn validate_bundle(dir: &Path) -> Result<bool, String> {
+    validate_bundle_recorded_files(dir, true)
+}
+
+#[cfg(test)]
+mod build_check_integrity_tests {
+    use super::*;
+
+    #[test]
+    fn rehashed_empty_or_truncated_check_list_is_not_a_pass() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = build_evidence_bundle(
+            "fn main() { let x = 1; }",
+            "safe",
+            None,
+            vec![],
+            root.path(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(validate_bundle(&bundle.dir).unwrap());
+        let path = bundle.dir.join("evidence.json");
+        let original = std::fs::read(&path).unwrap();
+        for missing in ["all", "solver", "source_hash", "typecheck"] {
+            let mut evidence: EvidenceManifest = serde_json::from_slice(&original).unwrap();
+            if missing == "all" {
+                evidence.checks.clear();
+            } else {
+                evidence.checks.retain(|check| check.name != missing);
+            }
+            std::fs::write(&path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+            refresh_manifest_hashes(&bundle.dir).unwrap();
+            assert!(!validate_bundle(&bundle.dir).unwrap(), "missing {missing}");
+        }
+        std::fs::write(&path, original).unwrap();
+        refresh_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle(&bundle.dir).unwrap());
+    }
+}
+
+/// Check the bundle's recorded files without requiring the program or build to
+/// have passed. A checked counterexample is valid evidence of a FAIL verdict;
+/// callers that require an acceptable artifact must use `validate_bundle` as
+/// well as semantic PCA verification.
+fn validate_bundle_recorded_files(dir: &Path, require_pass: bool) -> Result<bool, String> {
     let manifest_path = dir.join("evidence.json");
     if !manifest_path.exists() {
         return Err("no evidence.json".into());
     }
-    let manifest_text = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
+    // Validate the bounded complete file inventory before parsing or re-reading
+    // any attacker-controlled evidence. The former order could read an unbounded
+    // evidence.json even when MANIFEST itself was empty or invalid.
+    if !validate_manifest_hashes(dir)? {
+        return Ok(false);
+    }
+    let Some(manifest_text) = read_regular_evidence_text(&manifest_path, MAX_EVIDENCE_JSON_BYTES)?
+    else {
+        return Ok(false);
+    };
     let manifest: EvidenceManifest =
         serde_json::from_str(&manifest_text).map_err(|e| e.to_string())?;
 
-    let manifest_entries_ok = validate_manifest_hashes(dir)?;
+    let mut hashed_bytes = 0;
     // Single-file: source_hash == sha256(source.anubis). Multi-file: matches recorded merkle.
-    let source_ok = sha256_file(&dir.join("source.anubis"))
-        .is_some_and(|hash| hash == manifest.source_hash)
-        || dir.join("source-merkle-leaves.json").is_file()
-            && std::fs::read_to_string(dir.join("source-merkle-leaves.json"))
-                .ok()
-                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-                .and_then(|v| {
-                    v.get("source_merkle_root")
-                        .and_then(|r| r.as_str())
-                        .map(|r| r == manifest.source_hash)
-                })
-                .unwrap_or(false);
+    let source_ok = hash_evidence_file(
+        &dir.join("source.anubis"),
+        &mut hashed_bytes,
+        MAX_EVIDENCE_HASH_BYTES,
+    )?
+    .is_some_and(|hash| hash == manifest.source_hash)
+        || read_regular_evidence_text(
+            &dir.join("source-merkle-leaves.json"),
+            MAX_EVIDENCE_JSON_BYTES,
+        )?
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| {
+            v.get("source_merkle_root")
+                .and_then(|r| r.as_str())
+                .map(|r| r == manifest.source_hash)
+        })
+        .unwrap_or(false);
     let build_log_ok = manifest.build_log_hash.is_empty()
-        || sha256_file(&dir.join("build.log")).is_some_and(|hash| hash == manifest.build_log_hash);
+        || hash_evidence_file(
+            &dir.join("build.log"),
+            &mut hashed_bytes,
+            MAX_EVIDENCE_HASH_BYTES,
+        )?
+        .is_some_and(|hash| hash == manifest.build_log_hash);
     let artifact_ok = match &manifest.artifact_hash {
-        Some(expected) => sha256_file(&dir.join("artifact")).is_some_and(|hash| hash == *expected),
+        Some(expected) => hash_evidence_file(
+            &dir.join("artifact"),
+            &mut hashed_bytes,
+            MAX_EVIDENCE_HASH_BYTES,
+        )?
+        .is_some_and(|hash| hash == *expected),
         None => true,
     };
     let env_ok = manifest.environment_hash.is_empty()
-        || sha256_file(&dir.join("environment.json"))
-            .is_some_and(|hash| hash == manifest.environment_hash);
+        || hash_evidence_file(
+            &dir.join("environment.json"),
+            &mut hashed_bytes,
+            MAX_EVIDENCE_HASH_BYTES,
+        )?
+        .is_some_and(|hash| hash == manifest.environment_hash);
     let source_tree_ok = manifest.source_tree_hash.is_empty()
-        || sha256_file(&dir.join("source-tree.json"))
-            .is_some_and(|hash| hash == manifest.source_tree_hash);
+        || hash_evidence_file(
+            &dir.join("source-tree.json"),
+            &mut hashed_bytes,
+            MAX_EVIDENCE_HASH_BYTES,
+        )?
+        .is_some_and(|hash| hash == manifest.source_tree_hash);
     let sarif_ok = manifest.sarif_hash.is_empty()
-        || sha256_file(&dir.join("checks.sarif")).is_some_and(|hash| hash == manifest.sarif_hash);
+        || hash_evidence_file(
+            &dir.join("checks.sarif"),
+            &mut hashed_bytes,
+            MAX_EVIDENCE_HASH_BYTES,
+        )?
+        .is_some_and(|hash| hash == manifest.sarif_hash);
     let report_ok = manifest.bounty_report_hash.is_empty()
-        || sha256_file(&dir.join("bounty-report.md"))
-            .is_some_and(|hash| hash == manifest.bounty_report_hash);
+        || hash_evidence_file(
+            &dir.join("bounty-report.md"),
+            &mut hashed_bytes,
+            MAX_EVIDENCE_HASH_BYTES,
+        )?
+        .is_some_and(|hash| hash == manifest.bounty_report_hash);
+    // A vacuous or truncated check list is not a successful build record.
+    // These rows are still producer-reported outcomes; source/PCA re-derivation
+    // and signer policy provide separate evidence, not the row labels alone.
+    let mut seen_checks = std::collections::BTreeSet::new();
+    let checks_well_formed = !manifest.checks.is_empty()
+        && manifest.checks.iter().all(|check| {
+            !check.name.is_empty()
+                && seen_checks.insert(check.name.as_str())
+                && matches!(check.status.as_str(), "PASS" | "FAIL")
+        });
+    let recorded = |name: &str| manifest.checks.iter().find(|check| check.name == name);
+    let core_rows_present = ["parse", "source_hash", "build_log_hash"]
+        .iter()
+        .all(|name| recorded(name).is_some());
+    let pass_rows_present = ["typecheck", "symbolic", "solver"]
+        .iter()
+        .all(|name| recorded(name).is_some());
+    let hash_rows_consistent = recorded("source_hash")
+        .is_some_and(|check| check.detail == manifest.source_hash)
+        && recorded("build_log_hash").is_some_and(|check| check.detail == manifest.build_log_hash)
+        && match &manifest.artifact_hash {
+            Some(expected) => {
+                recorded("artifact").is_some_and(|check| check.detail == "native emitted")
+                    && recorded("artifact_hash").is_some_and(|check| check.detail == *expected)
+            }
+            None => recorded("artifact").is_none() && recorded("artifact_hash").is_none(),
+        };
     let checks_ok = manifest.checks.iter().all(|c| c.status == "PASS");
+    let recorded_verdict_consistent = manifest.verdict == if checks_ok { "PASS" } else { "FAIL" };
 
-    Ok(manifest_entries_ok
-        && source_ok
+    Ok(source_ok
         && build_log_ok
         && artifact_ok
         && env_ok
         && source_tree_ok
         && sarif_ok
         && report_ok
-        && checks_ok
-        && manifest.verdict == "PASS")
+        && checks_well_formed
+        && core_rows_present
+        && hash_rows_consistent
+        && (!checks_ok || pass_rows_present)
+        && recorded_verdict_consistent
+        && (!require_pass || checks_ok))
 }
 
 /// The Proof-Carrying Artifact claim block: a deterministic, independently-checkable summary of what
@@ -1258,20 +1375,39 @@ pub struct ZkBinding {
 }
 
 pub fn derive_zk_binding(dir: &Path) -> Option<ZkBinding> {
+    use std::io::Read;
+
     let r = dir.join("backend").join("risc0");
+    for ancestor in [dir.to_path_buf(), dir.join("backend"), r.clone()] {
+        if !std::fs::symlink_metadata(ancestor)
+            .ok()?
+            .file_type()
+            .is_dir()
+        {
+            return None;
+        }
+    }
     let receipt_path = r.join("receipt.bin");
     let image_id_path = r.join("image_id.txt");
     let meta_path = r.join("risc0_metadata.json");
     if !receipt_path.exists() || !image_id_path.exists() || !meta_path.exists() {
         return None;
     }
-    let receipt_bytes = std::fs::read(&receipt_path).ok()?;
-    // A placeholder receipt is written when proving failed — it is never a binding.
-    if receipt_bytes.starts_with(b"RISC0_RECEIPT_NOT_GENERATED") {
+    let (mut receipt_file, receipt_len) = open_regular_evidence_file(&receipt_path).ok()??;
+    if receipt_len > MAX_EVIDENCE_HASH_BYTES {
         return None;
     }
-    let image_id = std::fs::read_to_string(&image_id_path)
-        .ok()?
+    // A placeholder receipt is written when proving failed — it is never a binding.
+    let marker = b"RISC0_RECEIPT_NOT_GENERATED";
+    if receipt_len >= marker.len() as u64 {
+        let mut prefix = [0_u8; b"RISC0_RECEIPT_NOT_GENERATED".len()];
+        receipt_file.read_exact(&mut prefix).ok()?;
+        if prefix == *marker {
+            return None;
+        }
+    }
+    let image_id = read_regular_evidence_text(&image_id_path, 1024)
+        .ok()??
         .trim()
         .to_string();
     // A real ImageID is eight whitespace-separated u32 words (not the failure sentinel).
@@ -1279,8 +1415,10 @@ pub fn derive_zk_binding(dir: &Path) -> Option<ZkBinding> {
     if words.len() != 8 || words.iter().any(|w| w.parse::<u32>().is_err()) {
         return None;
     }
-    let meta: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
+    let meta: serde_json::Value = serde_json::from_str(
+        &read_regular_evidence_text(&meta_path, MAX_EVIDENCE_JSON_BYTES).ok()??,
+    )
+    .ok()?;
     let is_real = meta.get("verify_status").and_then(|v| v.as_str()) == Some("passed")
         && meta
             .get("fresh_receipt_generated")
@@ -1304,9 +1442,15 @@ pub fn derive_zk_binding(dir: &Path) -> Option<ZkBinding> {
         .get("committed_journal_sha256")
         .and_then(|v| v.as_str())?
         .to_string();
+    if !evidence_digest_ok(&journal_sha256) {
+        return None;
+    }
+    let mut hashed_bytes = 0;
+    let receipt_sha256 =
+        hash_evidence_file(&receipt_path, &mut hashed_bytes, MAX_EVIDENCE_HASH_BYTES).ok()??;
     Some(ZkBinding {
         image_id,
-        receipt_sha256: sha256_bytes(&receipt_bytes),
+        receipt_sha256,
         journal_sha256,
     })
 }
@@ -1359,8 +1503,51 @@ fn claim_semantically_matches(fresh: &ClaimBlock, recorded: &ClaimBlock) -> bool
     neutralized == *recorded
 }
 
+fn finish_pca_rederivation(
+    matches: bool,
+    derived: &Derived,
+    recorded: &ClaimBlock,
+) -> Result<bool, String> {
+    // A limit can produce the same FAIL-shaped booleans on both sides without
+    // deciding the claim. Matching serialized fields are not a completed check.
+    if derived.limit.is_some() && !derived.kept_finding {
+        return Err(match derived.limit {
+            Some(crate::middle::AnalysisLimit::Memory) if derived.by_reserve => {
+                "ANUBIS_ANALYSIS_LIMIT: PCA re-derivation reached the memory reserve; the intact claim is undecided"
+            }
+            Some(crate::middle::AnalysisLimit::Memory) => {
+                "ANUBIS_ANALYSIS_LIMIT: PCA re-derivation reached its memory budget; the intact claim is undecided"
+            }
+            _ => "ANUBIS_ANALYSIS_LIMIT: PCA re-derivation reached a stack or closure-depth limit; the intact claim is undecided",
+        }
+        .into());
+    }
+    if !matches && derived.limit == Some(crate::middle::AnalysisLimit::Memory) {
+        if derived.kept_finding && (recorded.typecheck_ok || recorded.verdict == "PASS") {
+            return Ok(false);
+        }
+        return Err(if derived.by_reserve {
+            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the memory left to the \
+             check (on the machine, or in the memory-capped cgroup it runs in) fell below the \
+             reserve the checker keeps free, so the intact bundle is neither confirmed nor \
+             refuted (other processes are using the memory it needs, and raising \
+             ANUBIS_ANALYSIS_MEMORY_MIB does not change that: run it with more memory free)"
+        } else {
+            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the checker's \
+             analysis reached its memory budget on this machine, so the intact bundle is \
+             neither confirmed nor refuted (give the check more memory: \
+             ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
+        }
+        .into());
+    }
+    Ok(matches)
+}
+
 pub fn verify_pca(dir: &Path) -> Result<bool, String> {
-    let hashes_ok = validate_bundle(dir)?;
+    let hashes_ok = validate_bundle_recorded_files(dir, false)?;
+    if !hashes_ok {
+        return Ok(false);
+    }
     let pca_path = dir.join("pca.json");
     if !pca_path.exists() {
         // Semantic verification cannot degrade to hash-only success. Callers that intentionally
@@ -1368,13 +1555,33 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
         // that weaker result as PCA verification.
         return Ok(false);
     }
-    let recorded: ClaimBlock =
-        serde_json::from_str(&std::fs::read_to_string(&pca_path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    if !matches!(recorded.pca_version, 2 | PCA_VERSION_CURRENT) {
+    let Some(pca_text) = read_regular_evidence_text(&pca_path, MAX_EVIDENCE_JSON_BYTES)? else {
+        return Ok(false);
+    };
+    let recorded: ClaimBlock = serde_json::from_str(&pca_text).map_err(|e| e.to_string())?;
+    if !matches!(recorded.pca_version, 2 | PCA_VERSION_CURRENT)
+        || !matches!(recorded.mode.as_str(), "safe" | "research" | "exploit")
+    {
         return Ok(false);
     }
-    let source = std::fs::read_to_string(dir.join("source.anubis")).map_err(|e| e.to_string())?;
+    let Some(manifest_text) =
+        read_regular_evidence_text(&dir.join("evidence.json"), MAX_EVIDENCE_JSON_BYTES)?
+    else {
+        return Ok(false);
+    };
+    let manifest: EvidenceManifest =
+        serde_json::from_str(&manifest_text).map_err(|e| e.to_string())?;
+    // A program-level disproof cannot coexist with an artifact manifest that
+    // reports every recorded check and the whole build as PASS. The converse
+    // is possible: source analysis may pass while a build or platform check
+    // fails, so require only this one-way consistency relation.
+    let verdicts_consistent = recorded.verdict != "FAIL" || manifest.verdict == "FAIL";
+    let modes_consistent = recorded.mode == manifest.mode;
+    let Some(source) =
+        read_regular_evidence_text(&dir.join("source.anubis"), MAX_EVIDENCE_SOURCE_BYTES)?
+    else {
+        return Ok(false);
+    };
     // Explicit source binding: the claim's recorded hash must be the hash of the bundle's own
     // source. (Also implied by `fresh == recorded`, but asserted directly so the source↔claim tie
     // can never drift.)
@@ -1393,12 +1600,15 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     let confine_ok = {
         let cm_path = dir.join(crate::package::confinement::CONFINEMENT_FILENAME);
         if cm_path.exists() {
-            match std::fs::read_to_string(&cm_path)
-                .map_err(|e| e.to_string())
-                .and_then(|s| {
-                    serde_json::from_str::<crate::package::confinement::ConfinementManifest>(&s)
+            match read_regular_evidence_text(&cm_path, MAX_EVIDENCE_JSON_BYTES).and_then(|s| {
+                s.ok_or_else(|| "missing confinement manifest".to_string())
+                    .and_then(|text| {
+                        serde_json::from_str::<crate::package::confinement::ConfinementManifest>(
+                            &text,
+                        )
                         .map_err(|e| e.to_string())
-                }) {
+                    })
+            }) {
                 Ok(sealed) => {
                     crate::package::confinement::verify_confinement_matches_source(&source, &sealed)
                         .is_ok()
@@ -1414,12 +1624,15 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     let entitlement_ok = {
         let ep_path = dir.join(crate::package::entitlements::ENTITLEMENT_PROFILE_FILENAME);
         if ep_path.exists() {
-            match std::fs::read_to_string(&ep_path)
-                .map_err(|e| e.to_string())
-                .and_then(|s| {
-                    serde_json::from_str::<crate::package::entitlements::EntitlementProfile>(&s)
+            match read_regular_evidence_text(&ep_path, MAX_EVIDENCE_JSON_BYTES).and_then(|s| {
+                s.ok_or_else(|| "missing entitlement profile".to_string())
+                    .and_then(|text| {
+                        serde_json::from_str::<crate::package::entitlements::EntitlementProfile>(
+                            &text,
+                        )
                         .map_err(|e| e.to_string())
-                }) {
+                    })
+            }) {
                 Ok(sealed) => {
                     crate::package::entitlements::verify_entitlement_profile_matches_source(
                         &source, &sealed,
@@ -1444,7 +1657,15 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // Integrity decides first, before any re-derivation (which can stop at a limit, or end the
     // process at the hard memory budget): a bundle whose files, source binding, signature,
     // confinement or entitlements do not check is invalid, whatever the analysis could re-derive.
-    if !(hashes_ok && source_bound && sig_ok && confine_ok && entitlement_ok && consistent) {
+    if !(hashes_ok
+        && verdicts_consistent
+        && modes_consistent
+        && source_bound
+        && sig_ok
+        && confine_ok
+        && entitlement_ok
+        && consistent)
+    {
         return Ok(false);
     }
     // Re-derive the full claim — including the ZK binding — from the bundle's own artifacts. A
@@ -1454,31 +1675,7 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     let derived =
         derive_claim_bound_for_version(dir, &source, &recorded.mode, recorded.pca_version);
     let matches = claim_semantically_matches(&derived.claim, &recorded);
-    // A re-derivation stopped by the MEMORY budget of this machine neither confirms nor refutes an
-    // intact bundle's claim: say so, rather than "invalid", which reads as tampering. A stack or
-    // closure-depth limit is the same on every machine, so the claim it could not re-derive is
-    // refuted as it stands. So is a claim that the program type-checks when the stopped analysis
-    // still found something wrong before the limit: that finding holds on any machine.
-    if !matches && derived.limit == Some(crate::middle::AnalysisLimit::Memory) {
-        if derived.kept_finding && (recorded.typecheck_ok || recorded.verdict == "PASS") {
-            return Ok(false);
-        }
-        // The reserve, not the budget, may have stopped it: then more budget does not help (E5).
-        return Err(if derived.by_reserve {
-            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the memory left to the \
-             check (on the machine, or in the memory-capped cgroup it runs in) fell below the \
-             reserve the checker keeps free, so the intact bundle is neither confirmed nor \
-             refuted (other processes are using the memory it needs, and raising \
-             ANUBIS_ANALYSIS_MEMORY_MIB does not change that: run it with more memory free)"
-        } else {
-            "ANUBIS_ANALYSIS_LIMIT: the claim could not be re-derived: the checker's \
-             analysis reached its memory budget on this machine, so the intact bundle is \
-             neither confirmed nor refuted (give the check more memory: \
-             ANUBIS_ANALYSIS_MEMORY_MIB, in MiB)"
-        }
-        .into());
-    }
-    Ok(matches)
+    finish_pca_rederivation(matches, &derived, &recorded)
 }
 
 /// The `pca.sig` sidecar: an Ed25519 signature over the PCA, written OUTSIDE `MANIFEST.sha256` (it
@@ -1503,9 +1700,11 @@ pub fn generate_keypair() -> Result<(String, String), String> {
 /// The bytes a PCA signature covers: `sha256(pca.json) || sha256(MANIFEST.sha256)`. Signing this
 /// binds the signer to both the semantic claim and the whole hashed file tree.
 fn pca_signed_message(dir: &Path) -> Result<Vec<u8>, String> {
-    let pca = std::fs::read(dir.join("pca.json")).map_err(|e| format!("read pca.json: {e}"))?;
+    let pca = read_regular_evidence_bytes(&dir.join("pca.json"), MAX_EVIDENCE_JSON_BYTES)?
+        .ok_or("missing or nonregular pca.json")?;
     let manifest =
-        std::fs::read(dir.join("MANIFEST.sha256")).map_err(|e| format!("read manifest: {e}"))?;
+        read_regular_evidence_bytes(&dir.join("MANIFEST.sha256"), MAX_EVIDENCE_MANIFEST_BYTES)?
+            .ok_or("missing or nonregular MANIFEST.sha256")?;
     let mut msg = Vec::with_capacity(64);
     msg.extend_from_slice(&Sha256::digest(&pca));
     msg.extend_from_slice(&Sha256::digest(&manifest));
@@ -1539,12 +1738,17 @@ pub fn sign_pca(dir: &Path, signing_key_hex: &str) -> Result<String, String> {
 /// `pca.sig` is present — `verified` is whether the signature checks out over the current PCA.
 pub fn pca_signature_status(dir: &Path) -> Result<Option<(bool, String)>, String> {
     let sig_path = dir.join("pca.sig");
-    if !sig_path.exists() {
+    let Some(sig_text) = read_regular_evidence_text(&sig_path, MAX_EVIDENCE_SIGNATURE_BYTES)?
+    else {
+        if std::fs::symlink_metadata(&sig_path).is_ok() {
+            return Err("nonregular pca.sig".into());
+        }
         return Ok(None);
+    };
+    let rec: PcaSignature = serde_json::from_str(&sig_text).map_err(|e| e.to_string())?;
+    if rec.algorithm != "ed25519" || rec.signed != "sha256(pca.json)||sha256(MANIFEST.sha256)" {
+        return Ok(Some((false, rec.public_key)));
     }
-    let rec: PcaSignature =
-        serde_json::from_str(&std::fs::read_to_string(&sig_path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
     let vk_bytes: [u8; 32] = match hex::decode(&rec.public_key)
         .ok()
         .and_then(|b| b.try_into().ok())
@@ -2290,27 +2494,621 @@ fn collect_manifest_hashes(
     Ok(())
 }
 
-fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
-    let text = std::fs::read_to_string(dir.join("MANIFEST.sha256")).map_err(|e| e.to_string())?;
-    for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(expected) = parts.next() else {
+// These are verifier work ceilings, not limits on the language or native artifact format.
+// A bundle exceeding one needs an explicitly reviewed larger-budget verifier; it must not
+// fall back to unbounded reads. There is deliberately no small per-artifact size limit.
+const MAX_EVIDENCE_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_EVIDENCE_TREE_ENTRIES: usize = 200_000;
+const MAX_EVIDENCE_HASH_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_EVIDENCE_PATH_BYTES: usize = 4096;
+const MAX_EVIDENCE_TREE_DEPTH: usize = 64;
+const MAX_EVIDENCE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_EVIDENCE_JSON_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_EVIDENCE_SIGNATURE_BYTES: u64 = 64 * 1024;
+// Both the current writer and the archived PCA v2 fixture carry these semantic
+// inputs. A creator cannot erase one and rehash a smaller MANIFEST into validity.
+// PCA itself is checked separately by verify_pca, which also handles old bundles
+// whose hash layer was intentionally checked without a PCA document.
+const REQUIRED_EVIDENCE_LEAVES: &[&str] = &[
+    "evidence.json",
+    "source.anubis",
+    "solver.json",
+    "build.log",
+    "environment.json",
+    "source-tree.json",
+    "checks.sarif",
+    "bounty-report.md",
+    "hir.json",
+    "mir.json",
+    "taint-traces.json",
+    "validate.sh",
+];
+
+/// Open only an existing regular file. A nonblocking, no-follow open on Unix also
+/// prevents a concurrently substituted FIFO or symlink from becoming a blocking or
+/// out-of-bundle read. Metadata identity is checked after opening.
+fn open_regular_evidence_file(path: &Path) -> Result<Option<(std::fs::File, u64)>, String> {
+    let before = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.to_string()),
+    };
+    if !before.file_type().is_file() {
+        return Ok(None);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|e| e.to_string())?;
+    let opened = file.metadata().map_err(|e| e.to_string())?;
+    if !opened.file_type().is_file() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Ok(None);
+        }
+    }
+    Ok(Some((file, opened.len())))
+}
+
+fn read_regular_evidence_bytes(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+
+    let Some((file, declared_len)) = open_regular_evidence_file(path)? else {
+        return Ok(None);
+    };
+    if declared_len > max_bytes {
+        return Err("evidence input byte budget exceeded".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 != declared_len || bytes.len() as u64 > max_bytes {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
+fn read_regular_evidence_text(path: &Path, max_bytes: u64) -> Result<Option<String>, String> {
+    read_regular_evidence_bytes(path, max_bytes)?
+        .map(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
+        .transpose()
+}
+
+fn evidence_manifest_path_ok(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= MAX_EVIDENCE_PATH_BYTES
+        && !path
+            .bytes()
+            .any(|b| b.is_ascii_control() || b == b'\\' || b == b':')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && !Path::new(path).is_absolute()
+}
+
+fn evidence_digest_ok(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// An archived PCA v2 fixture wrote its journal after MANIFEST, but its
+/// manifest-covered claim names the exact journal digest. This exception is
+/// available only when the PCA bytes match their own listed manifest digest.
+fn legacy_v2_journal_digest(
+    dir: &Path,
+    expected: &std::collections::BTreeMap<String, String>,
+) -> Result<Option<String>, String> {
+    let Some(pca_digest) = expected.get("pca.json") else {
+        return Ok(None);
+    };
+    let Some(bytes) = read_regular_evidence_bytes(&dir.join("pca.json"), MAX_EVIDENCE_JSON_BYTES)?
+    else {
+        return Ok(None);
+    };
+    if sha256_bytes(&bytes) != *pca_digest {
+        return Ok(None);
+    }
+    let Ok(claim) = serde_json::from_slice::<ClaimBlock>(&bytes) else {
+        return Ok(None);
+    };
+    if claim.pca_version != 2 || !claim.zk_present {
+        return Ok(None);
+    }
+    Ok(claim
+        .zk_journal_sha256
+        .filter(|hash| evidence_digest_ok(hash)))
+}
+
+fn hash_evidence_file(
+    path: &Path,
+    hashed_bytes: &mut u64,
+    max_bytes: u64,
+) -> Result<Option<String>, String> {
+    use std::io::Read;
+
+    let Some((mut file, declared_len)) = open_regular_evidence_file(path)? else {
+        return Ok(None);
+    };
+    if hashed_bytes
+        .checked_add(declared_len)
+        .is_none_or(|n| n > max_bytes)
+    {
+        return Err("evidence hash byte budget exceeded".into());
+    }
+    let mut hasher = Sha256::new();
+    let mut actual_len = 0_u64;
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut chunk).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        actual_len = actual_len
+            .checked_add(n as u64)
+            .ok_or("evidence hash byte count overflow")?;
+        if actual_len > declared_len
+            || hashed_bytes
+                .checked_add(actual_len)
+                .is_none_or(|total| total > max_bytes)
+        {
+            return Err("evidence hash byte budget exceeded or file changed".into());
+        }
+        hasher.update(&chunk[..n]);
+    }
+    if actual_len != declared_len
+        || file.metadata().map_err(|e| e.to_string())?.len() != declared_len
+    {
+        return Ok(None);
+    }
+    *hashed_bytes += actual_len;
+    Ok(Some(hex::encode(hasher.finalize())))
+}
+
+fn validate_evidence_tree(
+    current: &Path,
+    prefix: &str,
+    depth: usize,
+    expected: &mut std::collections::BTreeMap<String, String>,
+    legacy_journal_digest: Option<&str>,
+    visited: &mut usize,
+    hashed_bytes: &mut u64,
+) -> Result<bool, String> {
+    if depth > MAX_EVIDENCE_TREE_DEPTH {
+        return Err("evidence tree depth budget exceeded".into());
+    }
+    for entry in std::fs::read_dir(current).map_err(|e| e.to_string())? {
+        *visited = visited
+            .checked_add(1)
+            .ok_or("evidence tree entry count overflow")?;
+        if *visited > MAX_EVIDENCE_TREE_ENTRIES {
+            return Err("evidence tree entry budget exceeded".into());
+        }
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             return Ok(false);
         };
-        let Some(path) = parts.next() else {
-            return Ok(false);
+        let relative = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
         };
-        let actual = sha256_file(&dir.join(path));
-        if actual.as_deref() != Some(expected) {
+        if !evidence_manifest_path_ok(&relative) {
+            return Ok(false);
+        }
+        let path = entry.path();
+        let kind = std::fs::symlink_metadata(&path)
+            .map_err(|e| e.to_string())?
+            .file_type();
+        if kind.is_dir() {
+            if !validate_evidence_tree(
+                &path,
+                &relative,
+                depth + 1,
+                expected,
+                legacy_journal_digest,
+                visited,
+                hashed_bytes,
+            )? {
+                return Ok(false);
+            }
+        } else if kind.is_file() {
+            // The signature is created only after hashing the sealed bundle. Only
+            // the exact archived-v2 journal case below has another exception.
+            if relative == "MANIFEST.sha256" || relative == "pca.sig" {
+                continue;
+            }
+            let recorded = if let Some(hash) = expected.remove(&relative) {
+                hash
+            } else if relative == "backend/risc0/journal.bin" {
+                let Some(hash) = legacy_journal_digest else {
+                    return Ok(false);
+                };
+                hash.to_owned()
+            } else {
+                return Ok(false);
+            };
+            if hash_evidence_file(&path, hashed_bytes, MAX_EVIDENCE_HASH_BYTES)?.as_deref()
+                != Some(recorded.as_str())
+            {
+                return Ok(false);
+            }
+        } else {
+            // Symlinks, devices, sockets, and FIFOs cannot supply evidence bytes.
             return Ok(false);
         }
     }
     Ok(true)
 }
 
+fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
+    use std::io::Read;
+
+    if !std::fs::symlink_metadata(dir)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_dir()
+    {
+        return Ok(false);
+    }
+    let manifest = dir.join("MANIFEST.sha256");
+    let Some((file, manifest_len)) = open_regular_evidence_file(&manifest)? else {
+        return Ok(false);
+    };
+    if manifest_len == 0 || manifest_len > MAX_EVIDENCE_MANIFEST_BYTES {
+        return Err("evidence manifest byte budget exceeded or manifest empty".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_EVIDENCE_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 != manifest_len || bytes.len() as u64 > MAX_EVIDENCE_MANIFEST_BYTES {
+        return Ok(false);
+    }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Ok(false);
+    };
+    if !text.ends_with('\n') {
+        return Ok(false);
+    }
+    let mut expected = std::collections::BTreeMap::new();
+    for line in text.split_terminator('\n') {
+        let Some((digest, path)) = line.split_once("  ") else {
+            return Ok(false);
+        };
+        if !evidence_digest_ok(digest)
+            || !evidence_manifest_path_ok(path)
+            || path == "MANIFEST.sha256"
+            || path == "pca.sig"
+            || expected
+                .insert(path.to_owned(), digest.to_owned())
+                .is_some()
+        {
+            return Ok(false);
+        }
+        if expected.len() > MAX_EVIDENCE_TREE_ENTRIES {
+            return Err("evidence manifest entry budget exceeded".into());
+        }
+    }
+    if REQUIRED_EVIDENCE_LEAVES
+        .iter()
+        .any(|path| !expected.contains_key(*path))
+    {
+        return Ok(false);
+    }
+    let legacy_journal_digest = legacy_v2_journal_digest(dir, &expected)?;
+    let mut visited = 0;
+    let mut hashed_bytes = 0;
+    Ok(validate_evidence_tree(
+        dir,
+        "",
+        0,
+        &mut expected,
+        legacy_journal_digest.as_deref(),
+        &mut visited,
+        &mut hashed_bytes,
+    )? && expected.is_empty())
+}
+
+#[cfg(test)]
+mod manifest_validation_tests {
+    use super::*;
+
+    fn core_bundle() -> tempfile::TempDir {
+        let bundle = tempfile::tempdir().unwrap();
+        for path in REQUIRED_EVIDENCE_LEAVES {
+            std::fs::write(bundle.path().join(path), path.as_bytes()).unwrap();
+        }
+        std::fs::write(bundle.path().join("pca.json"), b"claim").unwrap();
+        write_manifest_hashes(bundle.path()).unwrap();
+        bundle
+    }
+
+    fn refused(dir: &Path) {
+        assert!(
+            !matches!(validate_manifest_hashes(dir), Ok(true)),
+            "an unsafe or incomplete manifest must not validate"
+        );
+    }
+
+    fn omit_journal_row(dir: &Path) {
+        let manifest = dir.join("MANIFEST.sha256");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        let without_journal: String = text
+            .lines()
+            .filter(|line| !line.ends_with("  backend/risc0/journal.bin"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(manifest, without_journal).unwrap();
+    }
+
+    #[test]
+    fn archived_v2_unlisted_journal_is_bound_to_its_manifest_covered_claim() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/zk_prove_bundle");
+        assert!(validate_manifest_hashes(&fixture).unwrap());
+
+        let bundle = core_bundle();
+        let journal = bundle.path().join("backend/risc0/journal.bin");
+        std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join("backend/risc0/journal.bin"), &journal).unwrap();
+        std::fs::copy(fixture.join("pca.json"), bundle.path().join("pca.json")).unwrap();
+        write_manifest_hashes(bundle.path()).unwrap();
+        omit_journal_row(bundle.path());
+        assert!(validate_manifest_hashes(bundle.path()).unwrap());
+
+        std::fs::write(&journal, b"changed").unwrap();
+        refused(bundle.path());
+        std::fs::copy(fixture.join("backend/risc0/journal.bin"), &journal).unwrap();
+
+        let pca_path = bundle.path().join("pca.json");
+        let mut claim: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&pca_path).unwrap()).unwrap();
+        claim["pca_version"] = serde_json::json!(PCA_VERSION_CURRENT);
+        write_json(&pca_path, &claim).unwrap();
+        write_manifest_hashes(bundle.path()).unwrap();
+        omit_journal_row(bundle.path());
+        refused(bundle.path());
+    }
+
+    #[test]
+    fn manifest_requires_all_present_leaves_and_the_archived_core() {
+        let bundle = core_bundle();
+        assert!(validate_manifest_hashes(bundle.path()).unwrap());
+
+        std::fs::write(bundle.path().join("unlisted.json"), b"added after sealing").unwrap();
+        refused(bundle.path());
+        std::fs::remove_file(bundle.path().join("unlisted.json")).unwrap();
+
+        std::fs::remove_file(bundle.path().join("solver.json")).unwrap();
+        write_manifest_hashes(bundle.path()).unwrap();
+        refused(bundle.path());
+    }
+
+    #[test]
+    fn manifest_refuses_empty_duplicate_malformed_and_traversing_rows() {
+        let bundle = core_bundle();
+        let path = bundle.path().join("MANIFEST.sha256");
+        let valid = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "").unwrap();
+        refused(bundle.path());
+
+        let first = valid.lines().next().unwrap();
+        std::fs::write(&path, format!("{valid}{first}\n")).unwrap();
+        refused(bundle.path());
+
+        let digest = sha256_bytes(b"outside");
+        for bad in [
+            "../outside",
+            "analysis/../outside",
+            "/dev/null",
+            "C:/outside",
+        ] {
+            std::fs::write(&path, format!("{valid}{digest}  {bad}\n")).unwrap();
+            refused(bundle.path());
+        }
+        std::fs::write(&path, format!("g{}", &valid[1..])).unwrap();
+        refused(bundle.path());
+        std::fs::write(&path, valid.trim_end_matches('\n')).unwrap();
+        refused(bundle.path());
+    }
+
+    #[test]
+    fn only_the_root_signature_sidecar_may_be_unlisted() {
+        let bundle = core_bundle();
+        std::fs::write(bundle.path().join("pca.sig"), b"later signature").unwrap();
+        assert!(validate_manifest_hashes(bundle.path()).unwrap());
+
+        std::fs::create_dir(bundle.path().join("analysis")).unwrap();
+        std::fs::write(bundle.path().join("analysis/pca.sig"), b"unlisted").unwrap();
+        refused(bundle.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_refuses_symlink_and_special_file_without_opening_them() {
+        use std::os::unix::{fs::symlink, net::UnixListener};
+
+        let bundle = core_bundle();
+        symlink("/dev/zero", bundle.path().join("device_link")).unwrap();
+        refused(bundle.path());
+        std::fs::remove_file(bundle.path().join("device_link")).unwrap();
+
+        let _socket = UnixListener::bind(bundle.path().join("socket")).unwrap();
+        refused(bundle.path());
+    }
+
+    #[test]
+    fn manifest_read_and_file_hashing_have_work_ceilings() {
+        let bundle = core_bundle();
+        let manifest = bundle.path().join("MANIFEST.sha256");
+        std::fs::File::create(&manifest)
+            .unwrap()
+            .set_len(MAX_EVIDENCE_MANIFEST_BYTES + 1)
+            .unwrap();
+        refused(bundle.path());
+
+        let tiny = bundle.path().join("tiny");
+        std::fs::write(&tiny, b"bounded read").unwrap();
+        let mut consumed = 0;
+        assert!(hash_evidence_file(&tiny, &mut consumed, 1).is_err());
+        assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn sparse_source_and_artifact_over_budget_refuse_before_parsing() {
+        let source = core_bundle();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(source.path().join("source.anubis"))
+            .unwrap()
+            .set_len(MAX_EVIDENCE_HASH_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            validate_bundle_recorded_files(source.path(), false),
+            Err(ref reason) if reason.contains("budget")
+        ));
+
+        let artifact = core_bundle();
+        std::fs::File::create(artifact.path().join("artifact"))
+            .unwrap()
+            .set_len(MAX_EVIDENCE_HASH_BYTES + 1)
+            .unwrap();
+        let manifest = artifact.path().join("MANIFEST.sha256");
+        let mut text = std::fs::read_to_string(&manifest).unwrap();
+        text.push_str(&format!("{}  artifact\n", sha256_bytes(b"placeholder")));
+        std::fs::write(manifest, text).unwrap();
+        assert!(matches!(
+            validate_bundle_recorded_files(artifact.path(), false),
+            Err(ref reason) if reason.contains("budget")
+        ));
+    }
+
+    #[test]
+    fn signature_sidecar_is_bounded_and_regular() {
+        let bundle = core_bundle();
+        std::fs::File::create(bundle.path().join("pca.sig"))
+            .unwrap()
+            .set_len(MAX_EVIDENCE_SIGNATURE_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            pca_signature_status(bundle.path()),
+            Err(ref reason) if reason.contains("budget")
+        ));
+    }
+
+    #[test]
+    fn source_and_pca_json_reads_refuse_sparse_oversized_files() {
+        let bundle = core_bundle();
+        let source = bundle.path().join("source.anubis");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_len(MAX_EVIDENCE_SOURCE_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            read_regular_evidence_text(&source, MAX_EVIDENCE_SOURCE_BYTES),
+            Err(ref reason) if reason.contains("budget")
+        ));
+
+        let pca = bundle.path().join("pca.json");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&pca)
+            .unwrap()
+            .set_len(MAX_EVIDENCE_JSON_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            pca_signed_message(bundle.path()),
+            Err(ref reason) if reason.contains("budget")
+        ));
+    }
+
+    #[test]
+    fn zk_binding_streams_receipt_and_bounds_its_text_sidecars() {
+        let bundle = tempfile::tempdir().unwrap();
+        let r = bundle.path().join("backend/risc0");
+        std::fs::create_dir_all(&r).unwrap();
+        let receipt = r.join("receipt.bin");
+        let image_id = r.join("image_id.txt");
+        let metadata = r.join("risc0_metadata.json");
+        std::fs::write(&receipt, b"structural receipt only").unwrap();
+        std::fs::write(&image_id, b"1 2 3 4 5 6 7 8").unwrap();
+        write_json(
+            &metadata,
+            &serde_json::json!({
+                "verify_status": "passed",
+                "fresh_receipt_generated": true,
+                "dev_mode": false,
+                "mock_prover": false,
+                "image_id_is_placeholder": false,
+                "image_id": "1 2 3 4 5 6 7 8",
+                "committed_journal_sha256": sha256_bytes(b"journal"),
+            }),
+        )
+        .unwrap();
+        assert!(derive_zk_binding(bundle.path()).is_some());
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&receipt)
+            .unwrap()
+            .set_len(MAX_EVIDENCE_HASH_BYTES + 1)
+            .unwrap();
+        assert!(derive_zk_binding(bundle.path()).is_none());
+        std::fs::write(&receipt, b"structural receipt only").unwrap();
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&image_id)
+            .unwrap()
+            .set_len(1025)
+            .unwrap();
+        assert!(derive_zk_binding(bundle.path()).is_none());
+        std::fs::write(&image_id, b"1 2 3 4 5 6 7 8").unwrap();
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&metadata)
+            .unwrap()
+            .set_len(MAX_EVIDENCE_JSON_BYTES + 1)
+            .unwrap();
+        assert!(derive_zk_binding(bundle.path()).is_none());
+    }
+}
+
 #[cfg(test)]
 mod pca_tests {
     use super::*;
+
+    #[test]
+    fn matching_fail_fields_from_an_unfinished_analysis_are_undecided() {
+        let mut derived =
+            derive_claim_for_version("fn main() {}", "safe", false, PCA_VERSION_CURRENT);
+        let recorded = derived.claim.clone();
+        assert_eq!(recorded.verdict, "FAIL");
+        derived.limit = Some(crate::middle::AnalysisLimit::Memory);
+        assert!(matches!(
+            finish_pca_rederivation(true, &derived, &recorded),
+            Err(ref reason) if reason.starts_with("ANUBIS_ANALYSIS_LIMIT")
+        ));
+        derived.limit = Some(crate::middle::AnalysisLimit::Depth);
+        assert!(matches!(
+            finish_pca_rederivation(true, &derived, &recorded),
+            Err(ref reason) if reason.starts_with("ANUBIS_ANALYSIS_LIMIT")
+        ));
+    }
 
     fn replay_check(
         name: &str,
@@ -2905,6 +3703,46 @@ fn main() uses(io.read) {
     }
 
     #[test]
+    fn checked_counterexample_is_valid_evidence_but_not_an_accepted_artifact() {
+        let base = unique_dir("honest-disproof");
+        let bundle = build_evidence_bundle(
+            "fn f(x: i64) { assert(x == 0); }",
+            "safe",
+            None,
+            vec![],
+            &base,
+            None,
+            None,
+        )
+        .unwrap();
+        let claim: ClaimBlock =
+            serde_json::from_slice(&std::fs::read(bundle.dir.join("pca.json")).unwrap()).unwrap();
+        assert_eq!(claim.verdict, "FAIL");
+        assert!(!validate_bundle(&bundle.dir).unwrap());
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // An internally contradictory manifest must not become valid by
+        // regenerating the unsigned hash list.
+        let manifest_path = bundle.dir.join("evidence.json");
+        let mut manifest: EvidenceManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.verdict = "PASS".into();
+        write_json(&manifest_path, &manifest).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        assert!(!verify_pca(&bundle.dir).unwrap());
+
+        for check in &mut manifest.checks {
+            check.status = "PASS".into();
+        }
+        write_json(&manifest_path, &manifest).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle(&bundle.dir).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn source_snapshot_never_absorbs_a_binary_leaf() {
         // Regression (evidence-pipeline corruption): a native build artifact (Mach-O/ELF) that slips
         // into the collected file tree must NOT be concatenated into the `source.anubis` snapshot.
@@ -3109,6 +3947,19 @@ fn main() uses(io.read) {
         let (ok, pk) = pca_signature_status(&bundle.dir).unwrap().unwrap();
         assert!(ok && pk == vk);
         assert!(verify_pca(&bundle.dir).unwrap());
+
+        // The sidecar is outside its own signature. Its advertised algorithm
+        // and signed scope must still agree with what the verifier implements.
+        let sig_path = bundle.dir.join("pca.sig");
+        let original_sig = std::fs::read(&sig_path).unwrap();
+        for (field, false_value) in [("algorithm", "other"), ("signed", "sha256(pca.json)")] {
+            let mut sidecar: serde_json::Value = serde_json::from_slice(&original_sig).unwrap();
+            sidecar[field] = serde_json::json!(false_value);
+            write_json(&sig_path, &sidecar).unwrap();
+            assert!(!pca_signature_status(&bundle.dir).unwrap().unwrap().0);
+            assert!(!verify_pca(&bundle.dir).unwrap());
+            std::fs::write(&sig_path, &original_sig).unwrap();
+        }
 
         // Tamper the signed claim block: the signature no longer verifies → fail closed.
         let mut lie = derive_claim_block(good, "safe");
