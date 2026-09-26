@@ -17,17 +17,18 @@ record binds the artifact to the workflow run, exact commit/tree, and observed R
 and Lean tool versions. Raw gate trees, generated source, test-key material, binaries, and
 offensive engagement output are not uploaded by hosted CI.
 
-On a failed job after checkout, a separate `hosted-failure-identifiers` artifact may contain
-`failure_ids.json`. It is diagnostic only and does not turn a red job into `HOSTED_PASS`. The
-workflow runs the extractor's required Python tests. The extractor validates the gate report
+On a failed job after checkout and successful extractor tests, a separate
+`hosted-failure-identifiers` artifact may contain `failure_ids.json`. It is diagnostic only and
+does not turn a red job into `HOSTED_PASS`. The workflow runs the extractor's required Python
+tests. The extractor validates the gate report
 before naming a failure. For G5 it publishes only bounded, sorted IDs of Git-tracked language
 fixtures when the report has a complete, consistent row for every tracked fixture. Otherwise it
-records a typed unavailable reason. G3 remains `no_reviewed_public_test_id_allowlist` because raw Cargo
-logs are not a reviewed source of publishable test names. No raw failure log, source text,
-machine-local path, or diagnostic message is copied into the artifact. A failure before
-checkout cannot run the extractor, so the absence of this artifact does not establish a
-passing gate or identify a cause. The hosted failure-upload behavior requires an actual red
-workflow witness; local extractor tests do not supply it.
+records a typed unavailable reason. G3 remains `no_reviewed_public_test_id_allowlist` because
+raw Cargo logs are not a reviewed source of publishable test names. No raw failure log, source
+text, machine-local path, or diagnostic message is copied into the artifact. A failure before
+checkout, or a failure of the extractor tests, prevents this artifact. Its absence does not
+establish a passing gate or identify a cause. The hosted failure-upload behavior requires an
+actual red workflow witness; local extractor tests do not supply it.
 
 ## Sealed lanes are out of CI
 
