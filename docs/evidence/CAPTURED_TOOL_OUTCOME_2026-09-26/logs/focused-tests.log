@@ -1,0 +1,13 @@
+   Compiling anubis-compiler v0.1.0 (<checkout>/compiler)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.16s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 6 tests
+test middle::z3_process_outcome_tests::missing_executable_is_distinct_from_present_broken_process ... ok
+test middle::z3_process_outcome_tests::observed_rejection_outweighs_a_simulated_partial_write ... ok
+test middle::z3_process_outcome_tests::memory_refusal_requires_exact_output_and_bounded_exit ... ok
+test middle::z3_process_outcome_tests::sat_requires_one_complete_model_response ... ok
+test middle::z3_process_outcome_tests::fake_z3_response_classes_reach_the_native_vacuity_transfer ... ok
+test middle::z3_process_outcome_tests::completed_z3_transcript_distinguishes_expected_model_error_from_bad_exit ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1059 filtered out; finished in 0.10s

@@ -1,0 +1,48 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 42 tests
+test diagnostics::tests::invalid_solver_status_and_protocol_error_are_distinct_tool_refusals ... ok
+test diagnostics::tests::a_missing_solver_asks_for_a_toolchain_fix_and_no_budget ... ok
+test diagnostics::tests::no_budget_is_reported_where_no_solver_ran ... ok
+test diagnostics::tests::identical_solver_refusals_get_distinct_exact_source_occurrences ... ok
+test evidence::pca_tests::unencoded_obligation_rows_do_not_claim_a_solver_run ... ok
+test middle::certificate_coverage_tests::a_missing_solver_is_an_environment_problem_not_a_contract_problem ... ok
+test middle::certificate_coverage_tests::typed_solver_discharge_refuses_unknown_and_invalid_status_for_every_family ... ok
+test diagnostics::tests::a_solver_disagreement_never_asks_for_a_program_edit ... ok
+test diagnostics::tests::a_refusal_from_before_the_solver_still_reports_fail ... ok
+test middle::inline_contract_composition_tests::fresh_solver_symbols_are_distinct_within_a_request_and_repeat_between_requests ... ok
+test resolve::captured::tests::captured_solver_inventory_rejects_missing_or_replaced_rows_with_duplicate_names ... ok
+test resolve::captured::tests::captured_solver_stream_preserves_typed_refusals ... ok
+test resolve::captured::tests::captured_solver_inventory_requires_contextual_sentinel_and_preserves_refusals ... ok
+test package::source_graph::tests::alternate_spelling_for_one_target_is_refused_until_resolver_canonicalizes_it ... ok
+test middle::certificate_coverage_tests::literal_unknown_is_undecided_but_empty_and_malformed_solver_answers_are_tool_errors ... ok
+test evidence::pca_tests::source_with_no_solver_obligations_keeps_a_checked_not_proved_claim ... ok
+test evidence::pca_tests::injected_solver_checks_cannot_launder_unknown_or_invalid_status_into_a_pca_pass ... ok
+test tests::solver_does_not_disprove_loop_carried_assertions ... ok
+test tests::solver_closes_control_flow_false_accepts ... ok
+test resolve::captured::tests::captured_solver_inventory_keeps_a_valid_safe_contract_call ... ok
+test evidence::pca_tests::empty_obligation_inventory_records_no_solver_query_and_refuses_relabeling ... ok
+test tests::solver_invalidates_embedded_control_flow_writes ... ok
+test tests::solver_assume_value_and_builtin_let_binding_soundness ... ok
+test tests::solver_keeps_literal_widths_per_symbolic_variable ... ok
+test tests::solver_models_division_soundly ... ok
+test evidence::pca_tests::safe_bundle_replay_rows_match_every_solver_check_and_are_manifest_bound ... ok
+test tests::solver_modelability_is_function_local_and_shadow_safe ... ok
+test tests::solver_expression_shadow_unsound_assume_and_float_composition ... ok
+test tests::solver_composition_substitutes_into_builtins ... ok
+test tests::solver_never_disproves_unmodelable_assertions ... ok
+test tests::solver_models_shifts_soundly ... ok
+test tests::z3_solver_reports_counterexample_for_failed_assertion ... ok
+test tests::solver_guarded_divisor_respects_loop_shadowing ... ok
+test tests::solver_uses_concrete_let_bindings_as_assumptions ... ok
+test tests::solver_models_i64_signed_not_32bit_unsigned ... ok
+test tests::solver_models_abs_min_max_soundly ... ok
+test backends::run::run_tests::unsigned_and_signed_integer_boundaries_match_solver_contract ... ok
+test tests::solver_models_guarded_variable_divisor_soundly ... ok
+test tests::phase3_float_proptest_solver_matches_oracle ... ok
+test tests::phase3_string_proptest_solver_matches_oracle ... ok
+test tests::evidence_bundle_writes_solver_analysis_sidecars ... ok
+test tests::differential_solver_encoder_matches_runtime_oracle ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 1023 filtered out; finished in 54.67s

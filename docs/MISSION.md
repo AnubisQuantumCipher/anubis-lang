@@ -223,19 +223,25 @@ and effect model for the remaining loop, field, call, and early-exit forms,
 with a same-source negative/valid comparison and explicit unresolved
 outcomes. The private captured-project typed producer/tool outcome
 [v1](mission/review/CAPTURED_TOOL_OUTCOME_V1_HOLD_2026-09-26.md) patch was
-held because a present but failed z3 process could be treated as absent in
+held because a present but failed Z3 process could be treated as absent in
 native-authoritative paths. Scratch
 [v2](mission/review/CAPTURED_TOOL_OUTCOME_V2_HOLD_2026-09-26.md) fixed those
 paths but was held because `unknown` followed by a tool error could still be
-classified as an ordinary undecided answer or permit a native proof. Scratch
-v3 received preliminary static GO, then a real z3 `unknown` plus normal
-`(get-model)` model-unavailable response exposed an over-strict tool-failure
-classification. V3 is held for a narrow correction. No version is integrated;
-source-bound process controls and a same-corpus public-output comparison
-remain required.
-Source-to-obligation checks and a public
-captured-build consumer remain later dependencies; package or evidence
-admission must not expand in the meantime.
+classified as an ordinary undecided answer or permit a native proof. A later
+real-Z3 `unknown` and normal `(get-model)` unavailable response forced a
+narrower classifier. The final independently reviewed process-outcome code is
+committed at `2683669c2ae87ceea66d19ebb0e6995578c289eb`, with a
+[source-bound local receipt](evidence/CAPTURED_TOOL_OUTCOME_2026-09-26/README.md).
+The clean-HEAD CLI matches the immutable selected-check snapshot. Focused
+process controls, solver/captured tests, strict Clippy, format and selected
+D9q/Family-1 Safe comparisons passed; the comparisons show no raw-output
+flips on their selected sources. Existing D9 valid refusals and A-EVID-1 model
+replay gaps remain. No source-to-obligation or solver-encoding correspondence,
+full matrix, hosted gate or release seal follows. The next evidence dependency
+is a typed declaration/model inventory with checked replay; the next soundness
+dependency is reviewed field/call qualifier transfer with valid controls.
+Source-to-obligation checks and a public captured-build consumer remain later
+dependencies; package or evidence admission must not expand in the meantime.
 
 No current full workspace, disposable-guest, independent clean-room,
 protected-branch, product-release, or full trust-chain result is claimed.

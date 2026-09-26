@@ -1,0 +1,28 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 22 tests
+test middle::certificate_coverage_tests::a_vacuous_contract_is_the_programs_fault ... ok
+test middle::certificate_coverage_tests::a_native_proof_is_certified_and_a_z3_proof_is_not ... ok
+test middle::certificate_coverage_tests::a_missing_solver_is_an_environment_problem_not_a_contract_problem ... ok
+test middle::certificate_coverage_tests::an_empty_program_reports_no_coverage_rather_than_zero ... ok
+test middle::certificate_coverage_tests::a_soundness_alarm_is_never_blamed_on_the_program_or_the_budget ... ok
+test middle::certificate_coverage_tests::coverage_counts_and_names_what_has_no_witness ... ok
+test middle::certificate_coverage_tests::an_obligation_that_was_never_decided_is_counted_not_hidden ... ok
+test middle::certificate_coverage_tests::an_ordinary_disproof_and_an_undecided_keep_their_old_owners ... ok
+test middle::certificate_coverage_tests::literal_unknown_keeps_undecided_status_despite_later_get_model_error ... ok
+test middle::certificate_coverage_tests::literal_unknown_is_undecided_but_empty_and_malformed_solver_answers_are_tool_errors ... ok
+test middle::certificate_coverage_tests::native_sat_and_repeated_z3_disagreement_can_never_turn_into_a_pass ... ok
+test middle::certificate_coverage_tests::nothing_unrecognised_is_ever_counted_as_certified ... ok
+test middle::certificate_coverage_tests::exhausting_the_memory_bound_is_undecided_not_a_compiler_bug ... ok
+test middle::certificate_coverage_tests::the_verdict_line_states_the_ratio_and_never_claims_more ... ok
+test middle::certificate_coverage_tests::reserved_no_obligations_identity_only_admits_the_exact_sole_sentinel ... ok
+test middle::certificate_coverage_tests::overapproximation_demotes_only_a_producer_checked_counterexample ... ok
+test middle::certificate_coverage_tests::typed_stream_integrity_never_turns_a_malformed_row_into_a_verdict ... ok
+test middle::certificate_coverage_tests::vacuity_probe_does_not_treat_unknown_or_missing_answer_as_satisfiable ... ok
+test middle::certificate_coverage_tests::z3_answer_only_skips_known_warnings_before_a_verdict ... ok
+test middle::certificate_coverage_tests::the_certified_detail_is_matched_exactly_not_by_prefix ... ok
+test middle::certificate_coverage_tests::the_verdict_never_claims_a_witness_exists_when_none_was_kept ... ok
+test middle::certificate_coverage_tests::typed_solver_discharge_refuses_unknown_and_invalid_status_for_every_family ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.00s

@@ -15,15 +15,26 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**UPDATE 2026-09-26 — private captured solver guards banked; public producer
-still open.** The [solver-stream](evidence/CAPTURED_SOLVER_STREAM_2026-09-26/README.md)
+**UPDATE 2026-09-26 — captured solver process outcomes banked,
+broader proof authority still open.** Code commit `2683669c` has a
+[source-bound local receipt](evidence/CAPTURED_TOOL_OUTCOME_2026-09-26/README.md).
+The captured producer and native cross-check paths now distinguish an absent
+Z3 executable from present spawn/write/wait, query, exit and response failures.
+Only validated response shapes become solver answers. Focused process controls,
+selected Safe CLI comparisons, a clean-HEAD build and independent applied-diff
+review support this scoped unit. SAT model framing does not validate term
+semantics or complete replay. The public captured-build consumer,
+source-to-obligation correspondence and required valid D9 controls remain
+open. No full matrix, hosted or release gate is claimed.
+
+**Earlier update 2026-09-26 — private captured solver stream and row
+inventory banked.** The [solver-stream](evidence/CAPTURED_SOLVER_STREAM_2026-09-26/README.md)
 and [row-inventory](evidence/CAPTURED_SOLVER_INVENTORY_2026-09-26/README.md)
 receipts bind commits `ee4f13bb` and `aa9c33b7`. Malformed private streams
-now return typed integrity errors; missing, copied, extra, or reordered rows
-relative to the final typed inventory fail the captured bridge. This does
-not detect a source obligation omitted before inventory construction or
-authenticate its SMT formula. Distinct typed producer/tool outcomes and a
-public consumer remain open.
+return typed integrity errors; missing, copied, extra or reordered rows
+relative to the final typed inventory fail the captured bridge. These
+checks cannot detect a source obligation omitted before inventory construction
+or authenticate its SMT formula.
 
 **Earlier update 2026-09-26 — captured Safe mode classification banked, CLI trust
 boundary open.** Code commit `365da05d` and its

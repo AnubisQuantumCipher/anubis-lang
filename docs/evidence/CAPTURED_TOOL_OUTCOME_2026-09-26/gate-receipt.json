@@ -1,0 +1,335 @@
+{
+  "clean_head_build": {
+    "built_binary_matches_tested_snapshot": true,
+    "committed_head": "2683669c2ae87ceea66d19ebb0e6995578c289eb",
+    "exit_code": 0,
+    "initial_wrapper_failure": "A preserved first wrapper stopped on a copied digest precondition before Cargo ran; the corrected wrapper produced the recorded build.",
+    "manifest_sha256": "731a490efea318d27508ec5430afeaa4f065f61112c1b15e490f7dfb663d902c"
+  },
+  "focused_repeat": {
+    "parallel_and_serial": "all recorded focused repeats exited 0; each checked source SHA before and after",
+    "raw_results_sha256": "184ca109212df339895d1611361576006f1c9dbaf23c820b87c462aee2c79116"
+  },
+  "gates": [
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "z3_process_outcome_tests"
+      ],
+      "exit_code": 0,
+      "name": "focused-tests",
+      "observed_test_result": "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1059 filtered out; finished in 0.10s",
+      "raw_log_sha256": "19c03f383961707e57cfb3355a86333d0f4a589bfd336458d01c87a1b48c8ad9",
+      "retained_log": "logs/focused-tests.log",
+      "retained_log_sha256": "b0eec06f1fd0153699f3e3bddbb8515da27d99f919a19e5facc129cbd8f79fcd"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "captured_solver"
+      ],
+      "exit_code": 0,
+      "name": "captured-solver-tests",
+      "observed_test_result": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1061 filtered out; finished in 0.04s",
+      "raw_log_sha256": "3fdfe265ebf2588cd8e07af32bf4eee18233635a613db7c70b7a34175c0898d1",
+      "retained_log": "logs/captured-solver-tests.log",
+      "retained_log_sha256": "8ebf82d25d4208ead4bce4b586e685ead86bfc99e9f3b8be015663f68a5e7e28"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "captured_project"
+      ],
+      "exit_code": 0,
+      "name": "captured-project-tests",
+      "observed_test_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1064 filtered out; finished in 0.00s",
+      "raw_log_sha256": "08c4b604b5dfc782df44f3ca528b70090933080df5cc16e623058a0c8a305033",
+      "retained_log": "logs/captured-project-tests.log",
+      "retained_log_sha256": "a997270eacd9882102bdf64c73e5df2b2f55866522689f83d6c9092ad09008b5"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "resolve::captured::tests"
+      ],
+      "exit_code": 0,
+      "name": "captured-module-tests",
+      "observed_test_result": "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 1036 filtered out; finished in 0.04s",
+      "raw_log_sha256": "f59aa5bd94ba9f9d2dbb63b86a9df2309035d777c8a0e3ae0c9718d5d5c6d3eb",
+      "retained_log": "logs/captured-module-tests.log",
+      "retained_log_sha256": "f7684cef73b7d6eebdbd3f6b3129485b14e3c133c6bed154f1f85a1b969e4d9c"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "pc_branch_binding_identity_tests"
+      ],
+      "exit_code": 0,
+      "name": "d9-pc-tests",
+      "observed_test_result": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1061 filtered out; finished in 0.00s",
+      "raw_log_sha256": "f97985064dead20c62cf47f9799cd3edffb84658f6e6a7df0ebf6f3f9ca41183",
+      "retained_log": "logs/d9-pc-tests.log",
+      "retained_log_sha256": "4c5bee37929aa63ab805ce6ce58d70c64b1ec526e1726ad3fa4cb65ce8fa2cc7"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "solver"
+      ],
+      "exit_code": 0,
+      "name": "solver-tests",
+      "observed_test_result": "test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 1023 filtered out; finished in 54.67s",
+      "raw_log_sha256": "a1806aba9cc0395ef971e767783754cbf8812383aba4e1d7ac61ee07434cca4b",
+      "retained_log": "logs/solver-tests.log",
+      "retained_log_sha256": "c97f996f962a69a378232cf67fa55a40f49530929956825630734b33ef4b4103"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "certificate_coverage_tests"
+      ],
+      "exit_code": 0,
+      "name": "certificate-coverage-tests",
+      "observed_test_result": "test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.00s",
+      "raw_log_sha256": "351a01844ecdd6a2f88173957f8cf8300825ab2473ed13363fa8675f287aa9f7",
+      "retained_log": "logs/certificate-coverage-tests.log",
+      "retained_log_sha256": "426a95a1860ddb9ca04239c2c055cac41369fcd6e4f2081e5087a0bb1516a750"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "name": "format",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained_log": "logs/format.log",
+      "retained_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "anubis-compiler",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "name": "clippy",
+      "raw_log_sha256": "e509721089027f80aba8965ddaf846a8504f7592b02ab7c63133dd8d00bf7171",
+      "retained_log": "logs/clippy.log",
+      "retained_log_sha256": "02591961a69dd69f8442990c1af507acefead7401135735a396b0d08d41a86b5"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "anubis"
+      ],
+      "exit_code": 0,
+      "name": "build",
+      "raw_log_sha256": "913046551931ba430eea76bbaa49a920e7c432bcfca56f0cfe6a7443615915f2",
+      "retained_log": "logs/build.log",
+      "retained_log_sha256": "3135188d071aada5b2c9a0219373695c50518c3e8114438cf3fa8acc6a6f5d16"
+    },
+    {
+      "command": [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "TasksMax=256",
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "anubis"
+      ],
+      "exit_code": 0,
+      "name": "clean-head-build",
+      "raw_log_sha256": "0674b29b50c3dec56646820dd880f72135797e8fbae612e62ca8370ee4ddce1c",
+      "retained_log": "logs/clean-head-build.log",
+      "retained_log_sha256": "0674b29b50c3dec56646820dd880f72135797e8fbae612e62ca8370ee4ddce1c"
+    }
+  ],
+  "independent_review": {
+    "disposition": "scoped GO for the reviewed applied code diff; no reviewer build",
+    "path": "INDEPENDENT_REVIEW.md",
+    "sha256": "29b393d2309cd17df3fe404f3beb3d3d582054b2bc04dbabcca40af556af8dc2"
+  },
+  "not_run": [
+    "full workspace suite",
+    "full soundness matrix",
+    "hosted source-matched CI",
+    "formal correspondence",
+    "disposable-guest seal",
+    "independent clean-room reproduction"
+  ],
+  "open_boundaries": [
+    "SAT model envelope does not validate sorts, term semantics, declaration coverage, or array replay",
+    "source-to-obligation completeness and SMT encoding correspondence are unproved",
+    "legacy optional raw-query helper remains outside the typed captured-producer authority",
+    "failed wait_with_output child cleanup is unproved",
+    "D9 valid refusals remain unchanged in the selected comparison"
+  ],
+  "retained_log_normalization": "Only the checkout, isolated Cargo target, and local evidence path prefixes were replaced with placeholders; extra terminal blank lines were trimmed to one final newline. No result line was changed.",
+  "reviewed_patch_sha256": "b241ca11b51c78d9f8d765411110a288599ef305a618a086532a75f77f3b8433",
+  "schema": "anubis.captured-tool-outcome-local/1",
+  "selected_check_summary": {
+    "normalization": "Drops raw stdout/stderr and counterexample text while preserving source IDs/hashes, intent, exits, typed diagnostic/status summaries, and whether full raw streams were identical.",
+    "path": "selected-check-summary.json",
+    "sha256": "38d1f516067295dac9883def5d26a0ac81c5a83a57ae048024504de183d5d52f"
+  },
+  "selected_public_comparisons": {
+    "d9": {
+      "all_raw_streams_identical": true,
+      "complete": true,
+      "raw_json_sha256": "2d818ed23474c1cc377613a88e63dff2e0542e0e9acde91269360c6348e96ea5",
+      "reported_changes": 0,
+      "selected_case_count": 42
+    },
+    "f1": {
+      "all_raw_streams_identical": true,
+      "complete": true,
+      "raw_json_sha256": "d2ea14bdefc1091785b1573702b4ed7e35afbfe040809b3b9bc1b13519abb282",
+      "reported_changes": 0,
+      "selected_case_count": 8
+    }
+  },
+  "source_commit": "2683669c2ae87ceea66d19ebb0e6995578c289eb",
+  "source_matched_cli_sha256": "d5b452c21c2a92d39199a8e93b2a5e9d1fc642fbbda493f45ef88a871448bcfd",
+  "source_sha256": {
+    "Cargo.lock": "0064eaf059d9f4072af0b0b744d2a1833d88c552b6f137d3e91b7d41f93530fe",
+    "compiler/src/middle/mod.rs": "b33ce29df925fd251585568354d14844a0c9ef83102f4e0c51de48c1b08c4ee0",
+    "compiler/src/resolve/captured.rs": "ea5a6795eb25eb948bdfb59bf1d412c28dbecfb719b3aaad8311199b3786ace6"
+  },
+  "toolchain": {
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "cargo_scope": "systemd user scope; MemoryMax=8G; TasksMax=256; lead-owned isolated target",
+    "platform": "Arch Linux ARM aarch64",
+    "raw_manifest_sha256": "50de187de480ca45b5b05644f51d87837254564d4b68bf14c6845b09e430b18d",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "z3": "Z3 version 4.16.0 - 64 bit",
+    "z3_binary_sha256": "fafeabf6c511c393473c034237a0aa0b31438a8f7491b7989c8bff7cb66824e4"
+  },
+  "tracked_source_manifest_sha256": "fd231b7eb62d479e521d2259ef997de79174bfdb27c9f91216da65b6e2cf7886"
+}

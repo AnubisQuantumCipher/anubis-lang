@@ -1,0 +1,2271 @@
+{
+  "comparisons": {
+    "d9": {
+      "baseline_binary_sha256": "f0cefbc6d24e7399f09e945fc8f6deef33bfb399f1b2c638fe7af73546579b15",
+      "candidate_binary_sha256": "d5b452c21c2a92d39199a8e93b2a5e9d1fc642fbbda493f45ef88a871448bcfd",
+      "changes": [],
+      "complete": true,
+      "registry_sha256": "2cf73517a073728a2e20bb91eff65b98fc128bfd2c3b2f938cdb90e6f821b040",
+      "rows": {
+        "d9q_alias_public_field_projection_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "79f9b1e96e6ac074a356214e4c4d4237ab394c35703889762d138307221d0a74"
+        },
+        "d9q_capture_early_g_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "b0009c68a4f38cfdb0ceb2e0e0ce49b3eb2ccf2859d49d244cb009a2c85a4fec"
+        },
+        "d9q_capture_early_g_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "3fc999a97db7e4344642381e663b1c48e4d8a41b16eccf0b566a7d6fbfa0f970"
+        },
+        "d9q_clean_struct_public_projection_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "8f58204e0c67471d2d4ace120994116f653310d45120a62f0d5c20f343710775"
+        },
+        "d9q_computed_whole_struct_comparison_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "3dc29b857423b7648e883945463ce31a6e86529b27f3de6a4519536f0dd5e93d"
+        },
+        "d9q_direct_public_field_projection_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "4cc9c8882c7c8fc503780bedd4e4f8a6e4a910e61eece682928f1d7e6c154b7e"
+        },
+        "d9q_forward_public_field_projection_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "2f13bfecc017d2d5a0241d218790046224857e98348e7d59e45a33799f17a49b"
+        },
+        "d9q_pc_called_lambda_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "204afb40409e85c24ac532ec7dff432d42946a131088dcacf7a36c0410ef76a1"
+        },
+        "d9q_pc_expr_write_before_shadow_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "45b4a90b484d513a2a8f2572eac8ff50538c65584a79d1804f700ff1f4ab0985"
+        },
+        "d9q_pc_for_inner_guard_local_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "2afe67a9c6ada339530bd7b0b017a2a294affd1e67610bb4e8e0dda3001a2d4a"
+        },
+        "d9q_pc_for_inner_guard_outer_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "fec9faec33d9a2d0a8b3000c53e61fa5602e77cc9ba93a868f5b909daa9d38bc"
+        },
+        "d9q_pc_for_secret_bound_local_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "5133e8bc5219f3d2b32ed941ec84a5623b07f7e22df15fbe3cd21c600ca0e4b9"
+        },
+        "d9q_pc_for_secret_bound_outer_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "f26b54fd7ad2ba5d4c9499c33efd0e3fc63656567f18c6614e9221c0cd90f5b7"
+        },
+        "d9q_pc_if_reachable_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "2f676f649a0d8cc2f3c50b4838df91164d550a44ab80ef0be177868e87b718ae"
+        },
+        "d9q_pc_if_unreachable_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "40fd1e00ff92d196c81866778d15c0693b22d6e967099b18733ba24d8f63ff54"
+        },
+        "d9q_pc_match_reachable_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "62a27c20f15c5d2f74d777b3203408f2a30e5649b952aaa1cbf62596f664c41f"
+        },
+        "d9q_pc_match_unreachable_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "edc0da98f8c3f1d5b7155aca05f11241939ee05ddca26ec6593d55a24e65d1f4"
+        },
+        "d9q_pc_protected_shadow_renamed_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "f194af1d1f0826f9e59e24a9ed1120adc554ffcd9754ee1aef15c5f272778b44"
+        },
+        "d9q_pc_public_inner_egress_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "08876a7a29bf147a0b9b0e0cc9ebcb229361e09f6cf8e9ae5c35f160f511e77c"
+        },
+        "d9q_pc_shadow_outer_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "0123ec8b7228afc3dd566869bfc570be947168b732c5d926c359914e2e12bda6"
+        },
+        "d9q_pc_shadow_protected_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "10999612395704655905e0a0e95fcf84ca6c2e66a24b8858fc56f9807375f0d3"
+        },
+        "d9q_pc_uncalled_lambda_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "42ffa9b0f8b3f0a681f465cab73d49d60d7192565501baf46de634df5eec78c4"
+        },
+        "d9q_pc_whilelet_binder_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "2c7ec1e9b2872d4171b3dd62678c08c6694fdb341944a4f74833b7d34a645976"
+        },
+        "d9q_pc_whilelet_outer_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "aa5f55ca2386bb13da0483ca324d1433af705b7927101005c9522084d540e5b6"
+        },
+        "d9q_pc_write_before_protected_shadow_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "1c3251b22759979954edb59a2017f90b84f520fe9aa16f547c629cf1f347d29c"
+        },
+        "d9q_public_field_projection_annotated_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "900f982de19d9be42128fae2eb59be32ce69613c1176c1ece90845b5b85049b5"
+        },
+        "d9q_public_field_projection_unannotated_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "24899bbe10a1d3cbc4302d14167447407a4de12b17dbb6ffb7175c5f4496bc67"
+        },
+        "d9q_public_field_secret_init_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 3,
+                "replay_mismatch": 0,
+                "total": 3,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 3,
+                "replay_mismatch": 0,
+                "total": 3,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "2ee00043d7ae41e40ce499a1f475be1d2d924825d71d816269460bebdb8822c5"
+        },
+        "d9q_public_field_secret_write_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "522f262667c3426ee414875ead48cd2e4b209b8857722d6800b56dee06acffcf"
+        },
+        "d9q_public_pc_public_sibling_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "e6feedb919460a12097679dfe907f25f957f24575834bf066ec43c00c7da213e"
+        },
+        "d9q_released_public_field_rewrite_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "8fce3f0f66ac85a8ca904c48a0819b8e5b3e43c35209b3aab8af30c57c698050"
+        },
+        "d9q_released_secret_field_rewrite_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "0a4bbe679f4b0d2a6efe21d31f82a3e18a332f8abe6089e4403504100e9f54fc"
+        },
+        "d9q_secret_early_return_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_IMPLICIT_FLOW",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "c55d4366f8ad16ad3e16094263e9feb4bd1c8290fc3d6b65ff6c6b0e0af3c485"
+        },
+        "d9q_secret_field_projection_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 4,
+                "replay_mismatch": 0,
+                "total": 4,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 4,
+                "replay_mismatch": 0,
+                "total": 4,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "c4a89e73ab82aff144cf65dfc3777b8e2e75ec5b194c4d16987a0341892d1138"
+        },
+        "d9q_secret_guard_assert_continue_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "50f487c593ed497c3ad1eab86b75be15983c5129bfcda85d321cbb4dbeff7979"
+        },
+        "d9q_secret_pc_public_sibling_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "1be6593f7b04f6819c75aeafeaac7904d9f18ada543f299e79ffcbf3c1375e94"
+        },
+        "d9q_secret_wrapper_public_projection_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "5f22c4bdc679600fea454264732df6058f963b36ca89096227b38028b6c98830"
+        },
+        "d9q_v3_factory_public_field_valid": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "be9238d40aa6c2cc25f351523fdb2dd2c1f02975c1f4fe1a49b8ee6b29e43d47"
+        },
+        "d9q_v3_factory_secret_field_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "d73f31b529ea64508ec4a49c145434f5c3f0a17429086467b6e85e0fdc564421"
+        },
+        "d9q_v3_nested_clean_public_write_valid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 1,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "ae8ca07b8685e96cd3b2fd4b4188db16da92c042656bee2afe7eb674b3e236d8"
+        },
+        "d9q_v3_nested_secret_public_write_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 2,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "16bc78b03d56ac509015f66a6ea0d3bbf6c1f44a48cdd333af333ac62e9dbca2"
+        },
+        "d9q_whole_struct_egress_invalid": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 5,
+                "replay_mismatch": 0,
+                "total": 5,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_TO_PUBLIC",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_INTERPROC_EXFILTRATION",
+              "status": "refused"
+            },
+            {
+              "code": "ANUBIS_SECRET_EXFILTRATION",
+              "status": "refused"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 5,
+                "replay_mismatch": 0,
+                "total": 5,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "c9344a4626bfa3e3dadba85d2508b1446961844ce97cb2ff5f34d51100ed8bd4"
+        }
+      }
+    },
+    "f1": {
+      "baseline_binary_sha256": "f0cefbc6d24e7399f09e945fc8f6deef33bfb399f1b2c638fe7af73546579b15",
+      "candidate_binary_sha256": "d5b452c21c2a92d39199a8e93b2a5e9d1fc642fbbda493f45ef88a871448bcfd",
+      "changes": [],
+      "complete": true,
+      "registry_sha256": "2cf73517a073728a2e20bb91eff65b98fc128bfd2c3b2f938cdb90e6f821b040",
+      "rows": {
+        "c01_uncond": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_DISPROVED",
+              "status": "disproved"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 1,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_DISPROVED",
+              "status": "disproved"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 1,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "6de35951b53750b987eea3f307e4ba007d6b3b21b7ee5eb492b4c1ad4d461b3b"
+        },
+        "c03_if_dead": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "75822dac96102c82f03fb32239cdae9cf207bdcb51b02f4889a1559719e2c27f"
+        },
+        "c04_satisfied": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "6270bd0f2548a8cba8b2f75b840675d4c605b61b30093481e6e6573bb93054a4"
+        },
+        "c10_alias": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_DISPROVED",
+              "status": "disproved"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 1,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_DISPROVED",
+              "status": "disproved"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 1,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 0
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "940daf1b13bfc7e9dceec979b87ca621026e090e90f9226a04667cb7a446b193"
+        },
+        "c11_alias_to_safe": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "94d0ad20c0cb1a3e6b2257cc08336f1e472d0e662ae983811e0124494c266b95"
+        },
+        "c12_alias_from_safe": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_UNDECIDED",
+              "status": "undecided"
+            },
+            {
+              "code": "ANUBIS_ASSERTION_DISPROVED",
+              "status": "disproved"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 1,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 1
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_UNDECIDED",
+              "status": "undecided"
+            },
+            {
+              "code": "ANUBIS_ASSERTION_DISPROVED",
+              "status": "disproved"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 1,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 2,
+                "undecided": 1
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJECT",
+          "source_sha256": "752a98d2c74d0e7e2e843c9df20c7d050f756261a8f164117112bd7f3b3eb263"
+        },
+        "c13_formal_shadowed": {
+          "baseline_diagnostics": [],
+          "baseline_exit": 0,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "candidate_diagnostics": [],
+          "candidate_exit": 0,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 0,
+                "undecided": 0
+              },
+              "verdict": "pass"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "ACCEPT",
+          "source_sha256": "1258bd7ad1b3b1aac530e4acc8b9046a758ff95e00127254e21daafdc85be04e"
+        },
+        "c15_guard_then_reassign": {
+          "baseline_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_UNDECIDED",
+              "status": "undecided"
+            }
+          ],
+          "baseline_exit": 1,
+          "baseline_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 1
+              },
+              "verdict": "fail"
+            }
+          ],
+          "candidate_diagnostics": [
+            {
+              "code": "ANUBIS_ASSERTION_UNDECIDED",
+              "status": "undecided"
+            }
+          ],
+          "candidate_exit": 1,
+          "candidate_summaries": [
+            {
+              "counts": {
+                "disproved": 0,
+                "refused": 0,
+                "replay_mismatch": 0,
+                "total": 1,
+                "undecided": 1
+              },
+              "verdict": "fail"
+            }
+          ],
+          "identical_raw": true,
+          "intent": "REJ|UNRES",
+          "source_sha256": "552ac39856d6ad6077dc39dea0dd5348fb746c2c162c6a641f17939ed1ad127f"
+        }
+      }
+    }
+  },
+  "schema": "anubis-selected-check-summary/1"
+}
