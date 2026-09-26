@@ -199,7 +199,7 @@ cargo run --release -p anubis -- check examples/symbolic_assert_fail.anb --evide
 ```bash
 cargo run --release -p anubis -- prove examples/risc0_receipt.anb \
   --backend risc0 --lane cpu \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --evidence --out out/risc0_cpu
 # then
 cargo run --release -p anubis -- verify-receipt \
@@ -224,7 +224,7 @@ cargo run --release -p anubis -- doctor --metal-reference /path --require-metal 
 ```bash
 cargo run --release -p anubis -- capabilities \
   --apple-native \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --json --evidence --out out/apple_native_capabilities
 ```
 
@@ -237,7 +237,7 @@ The JSON contract is intentionally conservative:
 ### Runtime probe
 ```bash
 cargo run --release -p anubis -- runtime-probe \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --json --evidence --out out/runtime_probe
 ```
 
@@ -266,7 +266,7 @@ cargo run --release -p anubis -- runtime-plan examples/risc0_receipt.anb \
   --backend risc0 \
   --lane metal-hybrid \
   --apple-native \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --json --evidence --out out/runtime_plan
 ```
 

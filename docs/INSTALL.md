@@ -1,12 +1,19 @@
 # Installing and Running Anubis (Local Release-Candidate)
 
-## Build from source (recommended for this host)
+## Build from source
+
+This preview's supported native and virtualization workflow is Apple Silicon. A native Linux
+workflow is being developed in [draft PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44)
+and has not passed its platform gate. Install the pinned Rust toolchain from
+`rust-toolchain.toml`; install Z3 for cross-checking and obligations outside the native solver's
+supported fragment. `doctor` probes Z3 and optional RISC0/Metal dependencies; its `target` and
+`ready` fields do not establish Linux support.
 
 ```bash
 cd /path/to/anubis-lang
 cargo build --release -p anubis
 ./target/release/anubis --version
-./target/release/anubis doctor --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover
+./target/release/anubis doctor --json
 ```
 
 The binary is at `./target/release/anubis`. **Prefer that path** (or a symlink you control). On some
@@ -44,10 +51,10 @@ cargo run --release -p anubis -- --version
 ```bash
 # CLI flag (highest precedence)
 anubis prove foo.anb --backend risc0 --lane cpu \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover
+  --metal-reference /path/to/metal-hybrid-prover
 
 # Env
-ANUBIS_RISC0_METAL_REFERENCE=/Users/sicarii/Desktop/metal-hybrid-prover \
+ANUBIS_RISC0_METAL_REFERENCE=/path/to/metal-hybrid-prover \
   anubis doctor --require-risc0
 
 # Anubis.toml (see Anubis.toml.example)
@@ -59,7 +66,7 @@ Evidence bundles always record which source was used (`config_source`).
 
 ```bash
 bash scripts/build_release_candidate.sh \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --require-metal \
   --out out/release_candidate
 ```

@@ -28,7 +28,7 @@ of a red row is not evidence of absence.
 | **Contract checking** | ✅ | `requires` / `ensures` / `assert` discharged by SMT, with real solver counterexamples; `--suggest-contracts` infers clauses for you |
 | **Verified build front door** | ✅ | Without the explicit `--no-verify` escape hatch, `anubis build` runs the same checker and refuses the currently modeled unproven-contract cases |
 | **Contract lanes** | 🟡 | integer (exact i64) · float **comparison** · string **equality/length** · bounded arrays · loop invariants · struct fields. Outside the modeled fragment the checker **defers** — see the scoped promise below |
-| **Native SMT solver** | ✅ | a zero-dependency, Lean-verified QF_BV solver; **default-authoritative** on the proven integer fragment (opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`); Z3 cross-checks when present |
+| **Native SMT solver** | ✅ | a native solver with Lean-checked models for a declared QF_BV fragment; production Rust correspondence remains in the TCB. It is **default-authoritative** on the admitted integer fragment (opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`); Z3 cross-checks when present |
 | **Mechanized components** | 🟡 | 199 Lean 4 theorems across 16 modules cover the stated encoding, bit-blast, non-interference, effect, and (Phase-8 Slice-1) production-linked SecurityLabel-abstraction lemmas; `run_formal_gate.sh` checks those files and rejects `sorry`/`admit`/`axiom`. **Not** a proof of total language soundness. Hosted CI installs the pinned Lean toolchain and requires this gate; see [CI reality](#ci-reality) below |
 
 ### What a green `check` actually promises
@@ -192,9 +192,9 @@ Deeper: [`LANGUAGE.md`](../LANGUAGE.md) · [`docs/CLI.md`](CLI.md) ·
 
 What the hosted CI workflow is configured to execute on this branch:
 
-- The canonical roster contains **29 named gates**. Hosted CI installs the pinned Lean toolchain,
+- The canonical roster contains **31 named gates**. Hosted CI installs the pinned Lean toolchain,
   runs the formal gate explicitly, then runs `scripts/audit_unified.sh --profile hosted`.
-- A successful hosted result requires **28 PASS plus exactly `G9_poc_kit=EXTERNAL`**. G14 is only
+- A successful hosted result requires **30 PASS plus exactly `G9_poc_kit=EXTERNAL`**. G14 is only
   its non-executing 5-check host-isolation witness. The verdict is `HOSTED_PASS`, never a full seal.
 - G9, the full 34-check G14 battery, and require-Metal parity are separately approved operator-run
   evidence outside public CI. No persistent self-hosted runner is authorized by this design.
