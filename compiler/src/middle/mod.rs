@@ -1442,6 +1442,32 @@ fn join_nested_fn_writes(
     scope: &mut BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) {
+    // A statement match's callable pre-join runs before its ordered arm walk. Exclude only arms
+    // whose integer-literal pattern provably cannot match an integer-literal scrutinee; a write in
+    // such an arm must not make a later guard appear able to call the written function. Keep all
+    // possibly matching arms, including guarded ones, so this does not lose a real write.
+    let live_match = if let Stmt::ExprStmt(Expr::Match {
+        scrutinee,
+        arms,
+        span,
+    }) = stmt
+    {
+        let live: Vec<_> = arms
+            .iter()
+            .filter(|arm| !match_position_literal_misses(scrutinee, &arm.pattern))
+            .cloned()
+            .collect();
+        (live.len() != arms.len()).then(|| {
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee: scrutinee.clone(),
+                arms: live,
+                span: *span,
+            })
+        })
+    } else {
+        None
+    };
+    let stmt = live_match.as_ref().unwrap_or(stmt);
     let mut defs: BlockFnDefs<'_> = BTreeMap::new();
     let mut assigned: BTreeMap<&str, Vec<&Expr>> = BTreeMap::new();
     // (root, access path, value); the path is `None` for a `push` / `insert` slot or a target whose
@@ -10742,6 +10768,21 @@ fn match_position_irrefutable(pattern: &crate::frontend::Pattern) -> bool {
     }
 }
 
+/// A narrow, exact dead-arm test used before joining writes from match arms. Both operands are
+/// runtime Int values here (the i64 literal parser accepted them), and integer literal patterns
+/// compare Int scrutinees by value. Every other spelling/shape stays potentially reachable.
+fn match_position_literal_misses(scrutinee: &Expr, pattern: &crate::frontend::Pattern) -> bool {
+    match (scrutinee, pattern) {
+        (Expr::Literal(value), crate::frontend::Pattern::Literal(expected)) => {
+            match (value.parse::<i64>(), expected.parse::<i64>()) {
+                (Ok(value), Ok(expected)) => value != expected,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// After analyzing a statement-position `match`/`if let` arm — a position where an arm-body `assert`
 /// is deliberately deferred to runtime rather than solver-proved — keep the CALL-PRECONDITION
 /// obligations the arm pushed and drop the rest.
@@ -11505,6 +11546,7 @@ fn discharge_calls_in_expr(
             let mut added_float: Vec<String> = Vec::new();
             let mut added_string: Vec<String> = Vec::new();
             let mut added_width: Vec<String> = Vec::new();
+            let mut block_exited = false;
             for s in stmts {
                 match s {
                     Stmt::Let { name, ty, init, .. } => {
@@ -11613,13 +11655,11 @@ fn discharge_calls_in_expr(
                     // relied on here can be stale. Second, the branch guard is exactly the
                     // `push_branch_path_condition` machinery this walker already uses.
                     //
-                    // The guard is LOAD-BEARING, not a refinement: discharging `g(a)` inside
-                    // `if a > 0 { … }` without `a > 0` in scope would fail to prove a correct
-                    // program — a false REJECT. `push_branch_path_condition` silently no-ops on a
-                    // non-modelable guard, so descending unconditionally would do exactly that.
-                    // Hence: descend ONLY when the push actually added a fact, detected by the
-                    // assumption stack growing. A non-modelable guard keeps the pre-existing
-                    // fail-open rather than trading a false accept for a false reject.
+                    // A modelable guard is a scoped path fact. An unmodelable guard still may
+                    // execute either body: visit its calls under the enclosing facts, but mark
+                    // their candidate counterexamples as over-approximated. A universally proved
+                    // precondition remains valid; a possible violation becomes undecided instead
+                    // of either silently accepted or falsely reported as a reachable disproof.
                     //
                     // The branch body is re-entered through THIS SAME `Expr::Block` arm rather than
                     // a parallel descent, so it inherits the shadow guard and the fact/solver-var
@@ -11632,16 +11672,33 @@ fn discharge_calls_in_expr(
                             let Some(body) = body else { continue };
                             let a0 = assumptions.len();
                             let g0 = ctx.active_branch_guards.len();
+                            let model_int = ctx.solver_int_vars.clone();
+                            let model_float = ctx.solver_float_vars.clone();
+                            let model_string = ctx.solver_string_vars.clone();
+                            let model_widths = ctx.symbolic_widths.clone();
+                            let model_shadowed = ctx.shadowed_string_preds.clone();
                             push_branch_path_condition(ctx, assumptions, cond, negate);
-                            if assumptions.len() > a0 {
-                                let blk = Expr::Block {
-                                    stmts: body.clone(),
-                                    tail: None,
-                                };
-                                discharge_calls_in_expr(ctx, assumptions, scope, &blk);
+                            let condition_modeled = assumptions.len() > a0;
+                            let obl_mark = ctx.solver_obligations.len();
+                            let blk = Expr::Block {
+                                stmts: body.clone(),
+                                tail: None,
+                            };
+                            discharge_calls_in_expr(ctx, assumptions, scope, &blk);
+                            if !condition_modeled {
+                                for obl in &ctx.solver_obligations[obl_mark..] {
+                                    if obl.name.starts_with("requires@") {
+                                        ctx.over_approx_obligations.insert(obl.name.clone());
+                                    }
+                                }
                             }
                             assumptions.truncate(a0);
                             ctx.active_branch_guards.truncate(g0);
+                            ctx.solver_int_vars = model_int;
+                            ctx.solver_float_vars = model_float;
+                            ctx.solver_string_vars = model_string;
+                            ctx.symbolic_widths = model_widths;
+                            ctx.shadowed_string_preds = model_shadowed;
                         }
                     }
                     // The remaining statement-position forms — `while`/`for`/`loop`/`match` —
@@ -11649,6 +11706,14 @@ fn discharge_calls_in_expr(
                     // walker does not model; descending soundly needs the statement-level havoc +
                     // frame machinery in `analyze_stmts`. They stay at the pre-existing fail-open.
                     _ => {}
+                }
+                // An always-exiting statement is evaluated first (including calls in its
+                // arguments). Every later statement and the tail are then unreachable. Keep
+                // visiting them for other diagnostics, but discharge their calls under a scoped
+                // false path fact, as analyze_stmts does for statement-level blocks.
+                if !block_exited && stmt_always_exits(s, ctx) {
+                    push_unreachable(ctx, assumptions);
+                    block_exited = true;
                 }
             }
             if let Some(t) = tail {
@@ -13664,7 +13729,8 @@ fn analyze_stmts(
                 for (arm, pattern) in sub_arms(arms) {
                     // Still analyze dead source for ordinary semantic diagnostics, but never
                     // retain its runtime obligations or merge its effects into reachable paths.
-                    let dead_arm = terminal_arm_seen;
+                    let dead_arm =
+                        terminal_arm_seen || match_position_literal_misses(scrutinee, pattern);
                     let dead_obl_mark = ctx.solver_obligations.len();
                     let mut arm_scope = tried.clone();
                     seed_effect_pattern(
@@ -13767,7 +13833,9 @@ fn analyze_stmts(
                             scope,
                             ctx,
                         );
-                        if expr_nests_stmts(guard) || holds_builtin_push(&[guard], ctx) {
+                        if !dead_arm
+                            && (expr_nests_stmts(guard) || holds_builtin_push(&[guard], ctx))
+                        {
                             seed_value_nested_labels(&[guard], &mut arm_scope, ctx);
                             // What the failed guard wrote reaches the arms after it, but a binder
                             // is not the outer binding of its name: joined by name, the arm binder
@@ -19396,7 +19464,7 @@ impl SymbolicEngine {
 
         let overapprox = |check: SolverCheck| -> SolverCheck {
             if check.status == "FAIL"
-                && check.model.is_some()
+                && counterexample_was_replayed(&check)
                 && ir.over_approx_obligations.contains(&check.name)
             {
                 SolverCheck {
