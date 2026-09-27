@@ -15,6 +15,19 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**Local update 2026-09-27 — scoped IFC2 terminal checker repair; terminal family open.**
+At code commit `3b8d9bfe`, the [local terminal receipt](evidence/IFC2_TERMINAL_EGRESS_LOCAL_2026-09-27.md)
+records typed refusals for the registered secret-controlled builtin `panic`
+and `exit(status)` cases, with the frozen valid controls accepted. The first
+paired grader had an exact diagnostic-code typo; its failed receipt is retained
+and a corrected complete paired check is recorded separately. Independent
+final-diff review gave scoped checker-only GO. First-class zero-argument
+`exit` is still checker-accepted while native lowering appears to trap; this
+requires a semantic repair and authorized guest witness. Named proof-journal
+commits and device-path file egress remain open. The full matrix cannot be
+counted as a compliant Linux-VM gate here, and no terminal-family, product,
+or trust-chain completion is claimed.
+
 **UPDATE 2026-09-26 — value-position `if let` witnesses registered.**
 The archived `mi1`, `mi2`, `mi6` and valid `mi7` sources are copied unchanged
 into the matrix by `f344987d`, with a [selected-check receipt](evidence/M_IFLET_EXPR_REGISTRATION_2026-09-26/README.md).
