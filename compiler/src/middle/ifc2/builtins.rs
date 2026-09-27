@@ -173,7 +173,12 @@ pub(crate) fn call<'a>(
         }
         "proof_commit_u32" | "proof_commit_bool" | "proof_commit_u64" => {
             let data = a.get(1).map(|v| v.deep()).unwrap_or_default();
-            if data.secret() {
+            // Only the implemented named commits have public guest-journal effects. Keep the
+            // existing u64 and invalid-arity treatment until their backend boundary is resolved.
+            // The journal name is extracted from source spelling; only arg[1] is committed data.
+            if matches!(name, "proof_commit_u32" | "proof_commit_bool") && a.len() == 2 {
+                it.egress(name, data, p);
+            } else if data.secret() {
                 it.report(
                     "ANUBIS_SECRET_EXFILTRATION",
                     format!("secret data reaches `{name}` (the proof journal is public)"),
