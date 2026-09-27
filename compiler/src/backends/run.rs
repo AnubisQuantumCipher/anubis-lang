@@ -4609,6 +4609,13 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
     // builtin accepts (probed through `emit_builtin_call`, e.g. `range` takes 2 or 3).
     {
         let mut arms = String::new();
+        // Direct `exit()` is a no-op; preserve that behavior when `exit` is a value.
+        // Do not admit zero arguments for unrelated first-class builtins.
+        if name == "exit" {
+            let call = emit_builtin_call(name, &[])
+                .ok_or_else(|| unsupported_run("`exit` zero-argument lowering is missing"))??;
+            arms.push_str(&format!("0usize => {{ {call} }}, "));
+        }
         for k in 1..=6usize {
             let args: Vec<String> = (0..k)
                 .map(|i| format!("__args[{i}usize].clone()"))
@@ -7490,6 +7497,24 @@ fn main() {
         let src =
             "fn main() { let r = range; print(apply(r, [1, 5])); print(apply(r, [0, 10, 3])); }";
         assert_eq!(run(src), "[1, 2, 3, 4]\n[0, 3, 6, 9]");
+    }
+
+    #[test]
+    fn zero_arg_exit_alias_codegen_matches_direct_lowering() {
+        let ast =
+            crate::frontend::parse_source("fn main() { let stop = exit; stop(); }").expect("parse");
+        let lowered = lower_program_to_rust(&ast.items, false).expect("lower");
+        let zero = emit_builtin_call("exit", &[])
+            .expect("exit builtin")
+            .expect("zero-argument direct exit");
+        let status = emit_builtin_call("exit", &["__args[0usize].clone()".to_string()])
+            .expect("exit builtin")
+            .expect("status-argument direct exit");
+
+        assert!(lowered.contains(&format!("0usize => {{ {zero} }}")));
+        assert!(lowered.contains(&format!("1usize => {{ {status} }}")));
+        assert!(lowered.contains("stop.call_closure(vec![])"));
+        assert!(lowered.contains("ANUBIS_ARITY: builtin `exit` cannot take"));
     }
 
     #[test]
