@@ -1,0 +1,137 @@
+{
+  "binary_path": "<immutable-pin>/anubis-v11-d5b452c21c2a",
+  "build_manifest_sha256": "731a490efea318d27508ec5430afeaa4f065f61112c1b15e490f7dfb663d902c",
+  "compiler": {
+    "binary_match": true,
+    "build_exit": 0,
+    "built_binary_sha256": "d5b452c21c2a92d39199a8e93b2a5e9d1fc642fbbda493f45ef88a871448bcfd",
+    "dirty_candidate_snapshot_sha256": "d5b452c21c2a92d39199a8e93b2a5e9d1fc642fbbda493f45ef88a871448bcfd",
+    "head": "2683669c2ae87ceea66d19ebb0e6995578c289eb",
+    "source_sha256": {
+      "compiler/src/middle/mod.rs": "b33ce29df925fd251585568354d14844a0c9ef83102f4e0c51de48c1b08c4ee0",
+      "compiler/src/resolve/captured.rs": "ea5a6795eb25eb948bdfb59bf1d412c28dbecfb719b3aaad8311199b3786ace6"
+    }
+  },
+  "complete": true,
+  "harness_sha256": "7b8ff8a8ba24e5d18fbb11945d3f1b01d6eee049b3fce15a2a670916706f6fc9",
+  "rows": {
+    "literal_false_loop_under_secret_pc_egress_valid": {
+      "exit": 1,
+      "intent": "ACCEPT",
+      "source_sha256": "3aa16c607df7bd061438c92424b0d6492d7d23bff269185731025b3f379383ec",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+      "stdout": "{\"$type\":\"anubis.diagnostic\",\"schema\":\"anubis-diagnostics/1\",\"code\":\"ANUBIS_SECRET_EXFILTRATION\",\"family\":\"frontend\",\"status\":\"refused\",\"defect_locus\":\"program\",\"agent_action\":\"repair_program\",\"severity\":\"error\",\"build_blocking\":true,\"message\":\"ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\",\"suggestions\":[]}\n{\"$type\":\"anubis.summary\",\"schema\":\"anubis-diagnostics/1\",\"verdict\":\"fail\",\"counts\":{\"total\":1,\"disproved\":0,\"undecided\":0,\"replay_mismatch\":0,\"refused\":1}}\n",
+      "typed": {
+        "diagnostics": [
+          {
+            "code": "ANUBIS_SECRET_EXFILTRATION",
+            "status": "refused"
+          }
+        ],
+        "errors": [],
+        "summaries": [
+          {
+            "counts": {
+              "disproved": 0,
+              "refused": 1,
+              "replay_mismatch": 0,
+              "total": 1,
+              "undecided": 0
+            },
+            "verdict": "fail"
+          }
+        ]
+      }
+    },
+    "loop_carried_public_guard_egress_valid": {
+      "exit": 1,
+      "intent": "ACCEPT",
+      "source_sha256": "0604d7738a848d0b69725454fb73df234dfed9946e28fb9aafcf4283c6a0a91f",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+      "stdout": "{\"$type\":\"anubis.diagnostic\",\"schema\":\"anubis-diagnostics/1\",\"code\":\"ANUBIS_SECRET_EXFILTRATION\",\"family\":\"frontend\",\"status\":\"refused\",\"defect_locus\":\"program\",\"agent_action\":\"repair_program\",\"severity\":\"error\",\"build_blocking\":true,\"message\":\"ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\",\"suggestions\":[]}\n{\"$type\":\"anubis.summary\",\"schema\":\"anubis-diagnostics/1\",\"verdict\":\"fail\",\"counts\":{\"total\":1,\"disproved\":0,\"undecided\":0,\"replay_mismatch\":0,\"refused\":1}}\n",
+      "typed": {
+        "diagnostics": [
+          {
+            "code": "ANUBIS_SECRET_EXFILTRATION",
+            "status": "refused"
+          }
+        ],
+        "errors": [],
+        "summaries": [
+          {
+            "counts": {
+              "disproved": 0,
+              "refused": 1,
+              "replay_mismatch": 0,
+              "total": 1,
+              "undecided": 0
+            },
+            "verdict": "fail"
+          }
+        ]
+      }
+    },
+    "loop_carried_secret_guard_egress_invalid": {
+      "exit": 1,
+      "intent": "REJECT",
+      "source_sha256": "e9b7fe1ac325692ab0c178e3ba938d33e157641cd0dfa9e46d3c554adf0b0afc",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`\n",
+      "stdout": "{\"$type\":\"anubis.diagnostic\",\"schema\":\"anubis-diagnostics/1\",\"code\":\"ANUBIS_SECRET_EXFILTRATION\",\"family\":\"frontend\",\"status\":\"refused\",\"defect_locus\":\"program\",\"agent_action\":\"repair_program\",\"severity\":\"error\",\"build_blocking\":true,\"message\":\"ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\",\"suggestions\":[]}\n{\"$type\":\"anubis.diagnostic\",\"schema\":\"anubis-diagnostics/1\",\"code\":\"ANUBIS_SECRET_EXFILTRATION\",\"family\":\"frontend\",\"status\":\"refused\",\"defect_locus\":\"program\",\"agent_action\":\"repair_program\",\"severity\":\"error\",\"build_blocking\":true,\"message\":\"ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`\",\"suggestions\":[]}\n{\"$type\":\"anubis.summary\",\"schema\":\"anubis-diagnostics/1\",\"verdict\":\"fail\",\"counts\":{\"total\":2,\"disproved\":0,\"undecided\":0,\"replay_mismatch\":0,\"refused\":2}}\n",
+      "typed": {
+        "diagnostics": [
+          {
+            "code": "ANUBIS_SECRET_EXFILTRATION",
+            "status": "refused"
+          },
+          {
+            "code": "ANUBIS_SECRET_EXFILTRATION",
+            "status": "refused"
+          }
+        ],
+        "errors": [],
+        "summaries": [
+          {
+            "counts": {
+              "disproved": 0,
+              "refused": 2,
+              "replay_mismatch": 0,
+              "total": 2,
+              "undecided": 0
+            },
+            "verdict": "fail"
+          }
+        ]
+      }
+    },
+    "secret_field_write_public_projection_valid": {
+      "exit": 1,
+      "intent": "ACCEPT",
+      "source_sha256": "f450c8a02d976e4cacc1966c38a145575497a4c030c2efb708ce552b06cdae57",
+      "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\n",
+      "stdout": "{\"$type\":\"anubis.diagnostic\",\"schema\":\"anubis-diagnostics/1\",\"code\":\"ANUBIS_SECRET_EXFILTRATION\",\"family\":\"frontend\",\"status\":\"refused\",\"defect_locus\":\"program\",\"agent_action\":\"repair_program\",\"severity\":\"error\",\"build_blocking\":true,\"message\":\"ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program\",\"suggestions\":[]}\n{\"$type\":\"anubis.summary\",\"schema\":\"anubis-diagnostics/1\",\"verdict\":\"fail\",\"counts\":{\"total\":1,\"disproved\":0,\"undecided\":0,\"replay_mismatch\":0,\"refused\":1}}\n",
+      "typed": {
+        "diagnostics": [
+          {
+            "code": "ANUBIS_SECRET_EXFILTRATION",
+            "status": "refused"
+          }
+        ],
+        "errors": [],
+        "summaries": [
+          {
+            "counts": {
+              "disproved": 0,
+              "refused": 1,
+              "replay_mismatch": 0,
+              "total": 1,
+              "undecided": 0
+            },
+            "verdict": "fail"
+          }
+        ]
+      }
+    }
+  },
+  "schema": "anubis-selected-safe-baseline/1",
+  "scope": "Safe check only. No source execution, production candidate or full matrix claim."
+}

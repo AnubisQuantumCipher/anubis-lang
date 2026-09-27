@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let mut xs = [];
+    while len(push(xs, 0)) < s {
+    }
+    println(len(xs));
+}

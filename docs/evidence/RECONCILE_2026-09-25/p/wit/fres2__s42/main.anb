@@ -1,0 +1,6 @@
+import lib;
+struct S { k: i64, pub_n: i64 }
+fn main() {
+    let v = lib::mk();
+    print(v.k);
+}

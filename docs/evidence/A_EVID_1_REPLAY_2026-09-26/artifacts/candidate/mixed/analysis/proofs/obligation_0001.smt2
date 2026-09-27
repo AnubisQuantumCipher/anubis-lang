@@ -1,0 +1,6 @@
+(set-logic QF_BV)
+(declare-const anb_x (_ BitVec 64))
+(assert (= anb_x (_ bv1 64)))
+(assert (not (= anb_x (_ bv2 64))))
+(check-sat)
+(get-model)

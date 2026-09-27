@@ -1,0 +1,8 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let xs = [k, k + 1];
+    while xs {
+        let v = pop(xs);
+        print("step");
+    }
+}

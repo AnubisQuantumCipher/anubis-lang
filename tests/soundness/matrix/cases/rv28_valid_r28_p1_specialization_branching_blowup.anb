@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn r(a, n) { if n > 0 { r({ "x": a }, n - 1); r({ "y": a }, n - 1); r({ "z": a }, n - 1); r({ "w": a }, n - 1); r({ "v": a }, n - 1); r({ "u": a }, n - 1); r({ "t": a }, n - 1); r({ "s": a }, n - 1); } print(n); }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p }; r(p, 1); }

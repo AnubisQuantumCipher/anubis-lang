@@ -1,0 +1,10 @@
+fn pick(c) {
+    if c { {"a": [], "b": []} } else { {"b": [], "a": []} }
+}
+fn main() {
+    let k: secret<i64> = 123456;
+    let m = pick(k > 100);
+    for key in m {
+        println(key);
+    }
+}

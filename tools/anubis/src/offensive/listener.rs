@@ -581,7 +581,7 @@ fn dns_loop(eng: &Engagement, engage_dir: &Path, state: Arc<Mutex<State>>) -> Re
             Ok(dq) => {
                 let txts = process_dns_qname(eng, engage_dir, &state, &dq.qname, &peer)
                     .unwrap_or_else(|e| {
-                        vec![format!("ERR")]
+                        vec!["ERR".to_string()]
                             .into_iter()
                             .chain(std::iter::once(e.to_string()))
                             .take(1)

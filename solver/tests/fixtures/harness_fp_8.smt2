@@ -1,0 +1,1 @@
+(declare-const x Float64)(declare-const y Float64)(assert (fp.lt (ite (fp.lt (ite (fp.lt (ite (fp.lt (ite (fp.lt (ite (fp.lt (ite (fp.lt (ite (fp.lt (ite (fp.lt x y) x y) y) x y) y) x y) y) x y) y) x y) y) x y) y) x y) y) x y) y))(check-sat)

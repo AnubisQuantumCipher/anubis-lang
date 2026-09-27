@@ -1,0 +1,82 @@
+[
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "check",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-min_by-42.anb"
+    ],
+    "rc": 0,
+    "stdout": "anubis check /home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-min_by-42.anb (evidence=false, verified=false)\ncheck passed\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "run",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-min_by-42.anb"
+    ],
+    "rc": 0,
+    "stdout": "1\n2\n1\n3\n",
+    "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+  },
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "check",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-min_by-142.anb"
+    ],
+    "rc": 0,
+    "stdout": "anubis check /home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-min_by-142.anb (evidence=false, verified=false)\ncheck passed\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "run",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-min_by-142.anb"
+    ],
+    "rc": 0,
+    "stdout": "1\n2\n1\n3\n",
+    "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+  },
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "check",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-max_by-42.anb"
+    ],
+    "rc": 0,
+    "stdout": "anubis check /home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-max_by-42.anb (evidence=false, verified=false)\ncheck passed\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "run",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-max_by-42.anb"
+    ],
+    "rc": 0,
+    "stdout": "1\n2\n2\n3\n",
+    "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+  },
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "check",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-max_by-142.anb"
+    ],
+    "rc": 0,
+    "stdout": "anubis check /home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-max_by-142.anb (evidence=false, verified=false)\ncheck passed\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "run",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/equal-max_by-142.anb"
+    ],
+    "rc": 0,
+    "stdout": "1\n2\n2\n3\n",
+    "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+  }
+]

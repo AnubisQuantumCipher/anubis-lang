@@ -1,0 +1,20 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn w(x) uses(fs.write) {
+    write_file("wout.txt", "pwned");
+    return 0;
+}
+fn h1(q: S) {
+    let r = 0;
+    if q.pub_n > 100 {
+        r = q.k;
+    }
+    return r;
+}
+fn main() {
+    let n = 3;
+    let c = n > 1;
+    let d = n > 100;
+    let f = if c { w } else { if d { let t = w; t } else { h1 } };
+    let fs = [f];
+    let z = fs[0](1);
+}

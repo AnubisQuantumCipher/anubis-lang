@@ -1,0 +1,6 @@
+{
+  "g4_selfref_old_prints_stmt.anb": "ord3_capture_self_old_print",
+  "g5_mutual_old_prints_stmt.anb": "ord3_capture_mutual_old_print",
+  "scalar_g4_selfref_old_prints_stmt.anb": "ord3_capture_self_old_print_scalar",
+  "scalar_g5_mutual_old_prints_stmt.anb": "ord3_capture_mutual_old_print_scalar"
+}

@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/precision-expansion/check",
+    "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_comparison.anb",
+    "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_helper.anb",
+    "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_negation.anb",
+    "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_comparison.anb",
+    "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_helper.anb",
+    "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_negation.anb"
+  ],
+  "sha256": "e406cde83e827073c2edc90cbe51e599fb2fa36df13bcf7a7d18529c8b0b3886",
+  "returncode": 0,
+  "source": "/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/out/minmax-repeatability/precision-expansion/check.rs"
+}

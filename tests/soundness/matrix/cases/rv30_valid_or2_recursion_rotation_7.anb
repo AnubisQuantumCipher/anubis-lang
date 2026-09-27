@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn rot(a, b, c, d, e, f, g, n) {
+    if n == 0 {
+        return 0;
+    }
+    return 1 + rot(g, a, b, c, d, e, f, n - 1);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(rot(p, 0, 0, 0, 0, 0, 0, 9));
+}

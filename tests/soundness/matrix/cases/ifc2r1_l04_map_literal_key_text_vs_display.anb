@@ -1,0 +1,5 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let m = {"1.5": k};
+    print(m[1.50]);
+}

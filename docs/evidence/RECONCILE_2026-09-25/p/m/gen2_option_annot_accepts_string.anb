@@ -1,0 +1,4 @@
+fn main() {
+    let x: Option<u32> = "hello";
+    print(x);
+}

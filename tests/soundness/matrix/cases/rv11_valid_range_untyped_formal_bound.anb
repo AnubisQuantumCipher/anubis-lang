@@ -1,0 +1,3 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn sum_f(n) requires(n > 1) { return map(range(1, n), f); }
+fn main() { print(sum_f(5)); }

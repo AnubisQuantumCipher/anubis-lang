@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn app(g, y) { let z = if 1 == 1 { let mut t = 5; t = -1; g(t) } else { 5 }; print(z); }
+fn main() { app(f, 0); }

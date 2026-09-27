@@ -1,0 +1,15 @@
+struct Row { k: secret<bool>, n: bool }
+
+fn emit(t: secret<bool>, public_choice: bool) {
+    let s: bool = true;
+    let once: bool = true;
+    let row = Row { k: t, n: false };
+    while s {
+        row.n = !row.n;
+        s = public_choice && once;
+        once = false;
+    }
+    println(row.n);
+}
+
+fn main() { emit(false, false); emit(true, true); }

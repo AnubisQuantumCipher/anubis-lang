@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h2(a, b, c) -> i64 { return a; }
+fn h(p: S) -> i64 {
+    let t = 0;
+    let v = h2(t, (if true { t = p; 1 } else { 0 }), t);
+    print(v);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let r = h(p);
+}

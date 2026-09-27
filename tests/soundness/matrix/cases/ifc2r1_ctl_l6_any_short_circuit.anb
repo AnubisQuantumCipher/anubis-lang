@@ -1,0 +1,9 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let xs = [10, 50, 200000];
+    let found = any(xs, |x| {
+        println(x);
+        x > s
+    });
+    println("done");
+}

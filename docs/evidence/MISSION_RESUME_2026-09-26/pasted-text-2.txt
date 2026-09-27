@@ -1,0 +1,177 @@
+
+● Dynamic workflow "Round-2 adversarial review of IFC v2 (pin anubis-ifc2-v8e, after the 107 round-1 findings were fixed): five lenses attack the new mechanisms and look for leaks, over-refusals and limits with runtime witnesses, then an independent verifier re-runs every finding" completed · 1h 5m 12s
+
+The round-2 review finished (all six agents completed). Tallying the verifier's verdicts: how many findings it confirmed, by kind, and how many the lanes also accept.
+
+  Ran 3 shell commands
+
+Round-2 verification confirmed all 75 findings (41 leaks, 28 over-refusals, 6 robustness), none overlapping round 1—showing IFC v2 introduces new refusals on valid programs outside the matrix/corpus. I'll update the IFC2-REVIEW-2 row in the landing docs to reflect this.
+
+● Bash(cd ~/.cache/anubis-wt/ifc2land && python3 - <<'PY'
+      p='docs/mission/DEFECTS.md'; s=open(p).read()…)
+ok
+ok claims
+Updated docs/mission/DEFECTS.md (+1 -1)
+| IFC2-REVIEW-1 | S1-S3 | the 107 findings of IFC v2's first review | `i
+fc2r1_*`; [findings table](../evidence/IFC2_2026-09-26/review1-findings.
+tsv) | **fixed** e516b1f3 |
+| RT-TRAP-TYPENAME | S4 | a trap's message still names its operand's run
+time type | decision D7 | documented (termination-channel family) |
+| OR-LANES-UNION | S3 | IFC v2 accepts 105 registered valid programs the
+ syntactic lanes refuse; the union still refuses them | `ifc2-alone-vs-l
+anes.tsv` in the evidence | **open** (retiring lanes IFC v2 subsumes is
+a later decision, on the matrix) |
+| IFC2-REVIEW-2 | — | review round 2 of IFC v2 (of the fixed version) |
+in progress when e516b1f3 landed: three of five lenses had reported 51 f
+indings, not yet verified | the next unit |
+| IFC2-REVIEW-2 | S1-S3 | review round 2 of IFC v2 (pin `anubis-ifc2-v8e
+`, the fixed version before its final landing changes): 75 findings, all
+ confirmed by the independent verifier, none a repeat of round 1: 41 lea
+ks (the lanes accept every one: existing silent accepts of the checker,
+not regressions), 28 over-refusals (22 of them valid programs the lanes
+accept, which IFC v2 in the union newly refuses; none is in the matrix o
+r the corpus), 6 robustness | review report retained with the next unit,
+ which registers every program | **open** (the next unit) |
+| IFC2-STACK | S2 | found by the landing's own verification: IFC v2's re
+cursion was not under the checker's stack guard, so 70 closures nested 6
+0 lists deep on a 4 MiB stack overflowed (`closure_analysis_limit::deep_
+bodies_on_a_small_stack_refuse_instead_of_overflowing` aborted; the test
+ run's summary counted no failure because the binary printed no result l
+ine) | `compiler/tests/closure_analysis_limit.rs` | **fixed** e516b1f3 (
+IFC v2 checks `analysis_limit::cut()` at every step; `ifc2-report` runs
+as a guarded request) |
+| RT-LAMBDA-PARAM-SHADOWS-FN-VALUE | S2 | a user function named in value
+ position (`[show, show]`) is lowered as a local when a lambda parameter
+ anywhere in the same function has that name, so the native build fails
+(E0425) on a program `check` accepts | `docs/evidence/IFC2_2026-09-26/sh
+adowfn.anb` (check rc 0; run: E0425); the same cause makes `rv39_xc_nr_a
+1_lamparam` and `rv39_xc_nr_a3_callb` unrunnable, so their ACCEPT intent
+s have no runtime witness | **open** (the lowering's local set is flow-i
+nsensitive: `collect_local_names`) |
+| IFC2-PRECISION-LAND | S3 | valid programs IFC v2 alone still refused a
+fter round 1: a group-by over computed map keys (an operand with no valu
+e gave a secret scalar), `false && …` and other constant conditions, `ta
+ke`/`drop`/`chunk`/`window` with a literal count, a helper applied to 33
+ different callbacks past its context budget (one summary joined every c
+allback) | `rv28_valid_or_b3_group_by_map`, `rv29_valid_or1_annotated_ma
+p_groupby_in_helper`, `rv33_valid_r33_o1_constant_short_circuit`, `rv29_
+valid_r29d_s04`, `rv33_valid_o01_nesting_builtins_lose_positions`, `rv32
+_valid_o6_33_closures_to_one_helper_shared_spec` | **fixed** e516b1f3 in
+ IFC v2 (the lanes still refuse them: OR-LANES-UNION); `rv33_valid_r33_o
+3_continue_join_counter_reset` (a counter reset across a `continue`) sta
+ys refused (needs value tracking) |
+Updated docs/CLAIMS.md (+7 -3)
+silent accept (58 before) and the corpus verdicts are unchanged. Behaviou
+r change: the core
+runtime's fail-closed trap messages no longer print their operands (index
+, key, count, path, the
+unmatched value), which could be secret; they still name the operand's ty
+pe, and some messages in
+the crypto and exploit-kit runtimes still print operands (the next unit).
+ A second review round is
+in progress; green still means no KNOWN defects.
+the crypto and exploit-kit runtimes still print operands (the next unit).
+ Its second review round
+confirmed 75 more findings (41 leaks the lanes also accept, 28 over-refus
+als of which 22 are valid
+programs the lanes accept and the union now refuses, 6 robustness); they
+are the next unit. Green
+still means no KNOWN defects, and these are known.
+
+**UPDATE 2026-09-25 — closure-effects worklist prototype rejected.** It r
+estores a valid
+wrapper but accepts retained-printer controls that disclose an annotated
+secret. The
+
+    - Closed by it: IFC-PC-EGRESS, FV-OPEN-6-R39, TY-UNENFORCED-R39, F-
+RESOLVE-1, the 19 open leaks
+      the reconciliation registered, and every other registered open le
+ak (58 in all). Still open:
+      the lanes' own over-refusals (the registered valid programs the l
+anes refuse stay refused by
+      the union), the contract, capability and effect items, and whatev
+er review round 2 confirms.
+      the union), the contract, capability and effect items, and review
+ round 2's 75 confirmed
+      findings (41 leaks the lanes also accept; 22 valid programs the l
+anes accept that the union
+      newly refuses; the next unit).
+      Matrix at e516b1f3: 2319 cases, 2196 PASS, 0 silent accepts, 112
+wrong-class, 11 INVALID.
+
+    **UPDATE 2026-09-26 — reconciliation of the open items (`d052f817`)
+.**
+
+● Bash(cd ~/.cache/anubis-wt/ifc2land && python3 - <<'PY'
+      p='docs/mission/IFC_V2.md'; s=open(p).read()…)
+ok
+Updated ~/.cache/anubis-wt/ifc2land/docs/mission/IFC_V2.md (+4 -1)
+- The landed tree (e516b1f3), IFC v2 beside the lanes: the whole matrix
+(2319 cases) has no
+  silent accept; the workspace tests, the corpus and every local gate pa
+ss (DEFECTS.md, the
+  e516b1f3 section).
+- Review round 2 (of the fixed version) is recorded in DEFECTS.md when i
+t completes.
+- Review round 2 (of the fixed version, before its final landing changes
+) confirmed 75 more
+  findings: 41 leaks the lanes also accept, 28 over-refusals (22 of vali
+d programs the lanes
+  accept, which the union therefore newly refuses) and 6 robustness (DEF
+ECTS.md, IFC2-REVIEW-2).
+  They are the next unit.
+
+The design doc now carries the round-2 counts. The last blocker for the docs commit is the matrix history record, which is still running. I'll finish the commit when it reports.
+
+  Ran 1 shell command
+
+The record run has only been going for about two minutes, so it needs roughly twenty more. I'll finish the docs commit and push when it reports.
+
+✻ Brewed for 2h 48m 37s · done 12:54 AM · 1 shell still running
+
+● Background command "Wait for the matrix record run to finish" completed (exit code 0)
+
+  Ran 2 shell commands
+
+111 of 113 new cases pass; the two failures are a duplicate-field case rejected pre-flow-check (grading INVALID) and a max-nodes-fold case rejected by lanes but accepted by IFC v2. I'll fill in these results and commit the docs.
+
+● Bash(cd ~/.cache/anubis-wt/ifc2land && python3 - <<'PY'
+      p='docs/mission/DEFECTS.md'; s=open(p).read()…)
+ok
+M  docs/CLAIMS.md
+M  docs/MISSION.md
+… +16 lines
+Updated ~/.cache/anubis-wt/ifc2land/docs/mission/DEFECTS.md (+1 -1)
+programs the lanes refuse, refuses no valid program the lanes accept, an
+d reaches no limit; the
+117 registered rejections it does not make are contract, capability and
+effect cases. Corpus
+(968 programs) with IFC v2 beside the lanes: 0 verdict changes, certific
+ates unchanged. Matrix at
+e516b1f3 (pin `anubis-ifc2land-1`): 2319 cases, 2196 PASS, 0 silent acce
+pts, 112 wrong-class, 11 INVALID (NEWCASES_NOTE). Evidence:
+e516b1f3 (pin `anubis-ifc2land-1`): 2319 cases, 2196 PASS, 0 silent acce
+pts, 112 wrong-class, 11 INVALID (of the 113 cases added, 111 PASS; `ifc
+2r1_l20_duplicate_struct_literal_field` is refused as ANUBIS_DUPLICATE_F
+IELD before any flow check (INVALID) and `ifc2r1_or_12_max_nodes_fold_me
+rges_record_fields` is refused by the lanes (wrong-class; IFC v2 alone a
+ccepts it); the 58 former silent accepts all PASS). Evidence:
+[docs/evidence/IFC2_2026-09-26/](../evidence/IFC2_2026-09-26/).
+
+| id | sev | defect | evidence | state |
+
+Before committing the docs, running the docs-drift gate against these doc changes (verify #3 checked the tree before they existed).
+
+  Ran 2 shell commands
+
+Both commits are in place: e516b1f3 (code and fixtures) and f7e906d1 (docs and history). Pushing through the publish flow.
+
+● Skill(yeet)
+Successfully loaded skill
+
+  Pushed to mission/anubis-1.0
+
+Pushed as a fast-forward (8548248c..f7e906d1). The remote read-back confirms f7e906d1. Now refreshing the PR #44 body, starting from its current structure.
+
+● Running 2 shell commands…
+  ⎿  $ cd ~/.cache/anubis-item21/claude-s2 && sed -n 1,60p pr44-body-before.md; sed -n 76,124p pr44-body-before.md

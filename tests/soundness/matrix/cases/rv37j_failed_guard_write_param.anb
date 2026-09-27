@@ -1,0 +1,2 @@
+fn f(q) { let o = Some(q); let x = 0; match o { Some(v) if (if true { x = v; false } else { false }) => { x = 0; } _ => { } } return x; }
+fn main() { let k: secret<i64> = 42; println(f(k)); }

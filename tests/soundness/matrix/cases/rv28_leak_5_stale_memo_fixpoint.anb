@@ -1,0 +1,18 @@
+struct S { k: secret<i64>, pub_n: i64 }
+
+fn f1(x, n) {
+    if n <= 0 {
+        return x;
+    }
+    let r = f2(x, n);
+    return r;
+}
+
+fn f2(x, n) {
+    return str(f1(x, n - 1));
+}
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(len(f1(p, 1)));
+}

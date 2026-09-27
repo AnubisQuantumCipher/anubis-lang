@@ -1,0 +1,63 @@
+{
+  "captured_rs_sha256": "2bc88a033a72f146f5495e32f965914f867a6b354a90497e0720662c2c97ab9c",
+  "gates": [
+    {
+      "command": [
+        "<local-memory-capped-wrapper>",
+        "cargo",
+        "test",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "resolve::captured::tests::",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "name": "captured-tests",
+      "raw_log_sha256": "d9d01bce42cef2da41bca4f684b5fb3a4f5ec9b99bbd906fba690c8124522f9c",
+      "stored_log": "captured-tests-source-bound.log",
+      "stored_log_sha256": "5daf81cdadcb9917bc8d0dd2f73ecf023d768b76c44a210fa518825bf825fbe9"
+    },
+    {
+      "command": [
+        "<local-memory-capped-wrapper>",
+        "cargo",
+        "clippy",
+        "-p",
+        "anubis-compiler",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "name": "clippy",
+      "raw_log_sha256": "a5f4c585ee974ca44916ac30a98bbc189e067a7e0a6bc6d2e8d6bc525be724af",
+      "stored_log": "clippy-source-bound.log",
+      "stored_log_sha256": "a5f4c585ee974ca44916ac30a98bbc189e067a7e0a6bc6d2e8d6bc525be724af"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "name": "fmt",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_log": "fmt-source-bound.log",
+      "stored_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "host": "Arch Linux ARM aarch64 QEMU guest",
+  "log_sanitization": "One machine-local cargo target prefix was replaced with <local-cargo-target> and terminal blank log lines were normalized in stored logs; raw SHA-256 values are preserved.",
+  "memory_scope": "systemd user scope MemoryMax=8G for cargo gates; fmt direct",
+  "raw_local_manifest_sha256": "d71a736d93a50e5a6d99950ddb551cd4aa0e54139ebff95cf6ff569cc3c4c72a",
+  "schema": "anubis-local-source-bound-gates/1",
+  "source_commit": "339a960a1da0acd7aa65e23f7469a4ae77f77007",
+  "source_tree": "6b9da5a95aea76362ad3c784d1d106d667f72f7d",
+  "toolchain_channel": "nightly-2026-05-10"
+}

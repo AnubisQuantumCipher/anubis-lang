@@ -20,7 +20,7 @@ record() {
 }
 
 mode_of() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 sha_of() {
@@ -71,7 +71,10 @@ import sys
 p = Path(sys.argv[1])
 s = p.read_text()
 start = s.index('fn walk_block_taint(')
-call = s.index('    walk_block_labels(', start)
+# The line of its body that calls the shared walker (`let walked = walk_block_labels(...)` since
+# 1696925b): a statement inserted before it gives the wrapper AST structure of its own.
+call = s.index('walk_block_labels(', start)
+call = s.rindex('\n', start, call) + 1
 s = s[:call] + '    if matches!(stmts.first(), Some(Stmt::Break)) {}\n' + s[call:]
 p.write_text(s)
 PY

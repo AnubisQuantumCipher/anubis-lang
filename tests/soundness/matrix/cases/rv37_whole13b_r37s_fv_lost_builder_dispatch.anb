@@ -1,0 +1,15 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+impl T { fn m(self, g) { return 0; } }
+impl S { fn m(self, g) { print(g(0)); return 0; } }
+fn mk_s(x) { return S { k: x, pub_n: 1 }; }
+fn run(q) {
+    let mk = apply(apply, [identity, [mk_s]]);
+    let r = mk(1);
+    r.m(|x| q);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p);
+}

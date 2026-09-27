@@ -1,0 +1,16 @@
+docs_drift_out=out/proof-bool/docs-drift-cli
+docs_drift_gate
+root=/home/sicarii/.cache/anubis-wt/codex-proof-bool
+scan_root=/home/sicarii/.cache/anubis-wt/codex-proof-bool
+security_fixtures=356  # find examples/security -name '*.anb' | wc -l
+language_fixtures=271  # find tests/fixtures/language_core -name '*.anb' | wc -l
+stdlib_failclosed=104  # ls tests/fixtures/stdlib/*should_fail_closed.anb | wc -l
+stdlib_doc_ok=23  # ls tests/fixtures/stdlib/doc_ok/*.anb | wc -l
+stdlib_modules=13  # ls compiler/stdlib/std/ | wc -l
+native_corpus=968  # python3 scripts/lib/native_corpus_inventory.py --count
+builtins=213  # LIVE five-function union in run.rs (no cache file)
+lean_theorems=199  # comment-stripped ^\\s*theorem 
+lean_modules=16  # modules with ≥1 theorem
+stamps_checked=38 claim_guards_checked=42416 scan_fails=0
+DOCS_DRIFT_GATE: PASS
+Overall: PASS (38 stamps checked, 0 drift)

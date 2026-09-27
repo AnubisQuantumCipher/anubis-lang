@@ -1,0 +1,8 @@
+fn main() {
+    let fs = [|x| x + 1, |x| x * 3, |x| x - 2];
+    let mut h = identity;
+    for g in fs {
+        h = compose(g, h);
+    }
+    println(h(10));
+}

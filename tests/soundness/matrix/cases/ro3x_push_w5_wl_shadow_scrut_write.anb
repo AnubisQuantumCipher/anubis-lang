@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn showo(v) { println(v); return Some(1); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let x = 0;
+    let y = 0;
+    let i = 0;
+    while let Some(x) = if true { let u = showo(x); x = y; u } else { None } {
+        if i == 2 { break; }
+        y = p.k;
+        i = i + 1;
+    }
+}

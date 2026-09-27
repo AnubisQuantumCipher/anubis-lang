@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn compose2(f, g) { return |x| g(f(x)); }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p }; let h = compose2(|s| s.pub_n, |n| n * 2); print(h(p)); }

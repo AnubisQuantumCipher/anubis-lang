@@ -1,0 +1,14 @@
+fn load(path) uses(fs.read) {
+    let text = read_file(path);
+    let mut cur = "";
+    let mut out = [];
+    for row in split(text, "\n") {
+        cur = row;
+        if contains(cur, "=") {
+            cur = declassify(cur, "cfg.row", "validated row");
+            push(out, cur);
+        }
+    }
+    return out;
+}
+fn main() uses(fs.read, io.print) { print(load("rv37j_data.txt")); }

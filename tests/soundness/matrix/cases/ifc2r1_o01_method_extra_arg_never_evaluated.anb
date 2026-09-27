@@ -1,0 +1,20 @@
+struct A { a: i64 }
+struct B { b: i64 }
+impl A {
+    fn m(self, x: i64) -> i64 {
+        self.a
+    }
+}
+impl B {
+    fn m(self) -> i64 {
+        self.b
+    }
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let q = B { b: 2 };
+    if k > 100 {
+        q.m(print("x"));
+    }
+    print("done");
+}

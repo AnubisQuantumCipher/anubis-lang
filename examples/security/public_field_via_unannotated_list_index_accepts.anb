@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Over-rejection guard for D8: a PLAIN field read through the identical unannotated-array carrier
+// must still ACCEPT. `list<P>` is inferred but P.k carries no flow qualifier, so nothing is rejected.
+struct P { k: i64 }
+fn main() { let xs = [P { k: 7 }]; print(xs[0].k); }

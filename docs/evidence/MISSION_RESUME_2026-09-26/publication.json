@@ -1,0 +1,18 @@
+{
+  "publication_base": "b807e0a7cdd759b094a65810f3a90fa923bad6dc",
+  "integrated_code_commit": "b7562cb00fc36d4b99d611e93f83f9e4ae4d4c3a",
+  "original_local_code_commit": "6f038dcb",
+  "evidence_commit_before_this_note": "31cc61b0b51015d709a5bf9d0711af672e71ce44",
+  "worktree": "/home/sicarii/.cache/anubis-wt/codex-round2-publish",
+  "candidate_compiler_patch_included": false,
+  "validation": {
+    "controls": {
+      "log": "docs/evidence/MISSION_RESUME_2026-09-26/linux-preparation/publication-controls.txt",
+      "sha256": "54404fd0bc9e805e1c12d3d51f271359b924baa41a140f8296a387cdbb886f68"
+    },
+    "docs_drift": {
+      "log": "docs/evidence/MISSION_RESUME_2026-09-26/linux-preparation/publication-docs_drift.txt",
+      "sha256": "182cb80ef4fd5bfefb12f94d1c9a923f790b29f48fa3773e976e9d6acd4717ad"
+    }
+  }
+}

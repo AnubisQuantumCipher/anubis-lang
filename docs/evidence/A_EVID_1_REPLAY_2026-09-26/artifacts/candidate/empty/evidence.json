@@ -1,0 +1,56 @@
+{
+  "timestamp": "20260926-094912",
+  "tool": "anubis 0.1.0",
+  "mode": "safe",
+  "source_hash": "4d6ab161876804e1375310d76f5b9d399282716fe26c8eb95dce6e9913aa877b",
+  "build_log_hash": "d21e32c59525a827ce7f460ec222322e1c5c285a59f217bbf4d6d2495c2b0da6",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "237ef3197f5500840ff22de64d232dfd20d09e41deda3eb1ee3cfd7b233d03cc",
+  "source_tree_hash": "35963ef0a00b3685816a9204e7957d9d493e40f497f46d7bd692d9a2c0631e9a",
+  "sarif_hash": "fda06e035897c896813dfd542345adc6ad9d9b1ddd35849b9e9a9efcba9c0b0c",
+  "bounty_report_hash": "6d64dbf6dc7b71518f4a088b339ba16f31f71275580a8f3b8376abd0408785e9",
+  "manifest_sha256": "ff26483f39d1c2719724f62f647090049078fbf4f4ffb52894fadea5ee360d63",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=safe symbols=1 functions=1 mono=0"
+    },
+    {
+      "name": "monomorphization",
+      "status": "PASS",
+      "detail": "static_specializations=0 (codegen remains AnubisValue-erased)"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "name": "solver",
+      "status": "PASS",
+      "detail": "solver:no-obligations=PASS"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "4d6ab161876804e1375310d76f5b9d399282716fe26c8eb95dce6e9913aa877b"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "d21e32c59525a827ce7f460ec222322e1c5c285a59f217bbf4d6d2495c2b0da6"
+    }
+  ],
+  "verdict": "PASS",
+  "security": {
+    "mode": "safe",
+    "note": "language attributes and effects recorded in checks and logs"
+  }
+}

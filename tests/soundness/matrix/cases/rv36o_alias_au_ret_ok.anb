@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn id1(x) { return x; }
+fn zero(x) { return 0; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let c = p.pub_n > 1;
+    let f = if !c { zero } else { id1 };
+    print(f(p.pub_n));
+}

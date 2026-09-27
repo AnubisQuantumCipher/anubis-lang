@@ -1,0 +1,80 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn pub1() -> i64 { return 1; }
+fn pub2() -> i64 { return 2; }
+fn pk(c) { if c > 5 { return safe; } return safe; }
+fn q0_0(c) { if c > 50 { return q1_0(c); } if c > 40 { return q1_1(c); } return q1_2(c); }
+fn q0_1(c) { if c > 50 { return q1_0(c); } if c > 40 { return q1_1(c); } return q1_2(c); }
+fn q0_2(c) { if c > 50 { return q1_0(c); } if c > 40 { return q1_1(c); } return q1_2(c); }
+fn q1_0(c) { if c > 50 { return q2_0(c); } if c > 40 { return q2_1(c); } return q2_2(c); }
+fn q1_1(c) { if c > 50 { return q2_0(c); } if c > 40 { return q2_1(c); } return q2_2(c); }
+fn q1_2(c) { if c > 50 { return q2_0(c); } if c > 40 { return q2_1(c); } return q2_2(c); }
+fn q2_0(c) { if c > 50 { return q3_0(c); } if c > 40 { return q3_1(c); } return q3_2(c); }
+fn q2_1(c) { if c > 50 { return q3_0(c); } if c > 40 { return q3_1(c); } return q3_2(c); }
+fn q2_2(c) { if c > 50 { return q3_0(c); } if c > 40 { return q3_1(c); } return q3_2(c); }
+fn q3_0(c) { if c > 0 { return pub1; } return pub2; }
+fn q3_1(c) { if c > 1 { return pub1; } return pub2; }
+fn q3_2(c) { if c > 2 { return pub1; } return pub2; }
+fn main() {
+  let v0 = 0; let x0 = q0_0(v0); print(x0());
+  let v1 = 1; let x1 = q0_0(v1); print(x1());
+  let v2 = 2; let x2 = q0_0(v2); print(x2());
+  let v3 = 3; let x3 = q0_0(v3); print(x3());
+  let v4 = 4; let x4 = q0_0(v4); print(x4());
+  let v5 = 5; let x5 = q0_0(v5); print(x5());
+  let v6 = 6; let x6 = q0_0(v6); print(x6());
+  let v7 = 7; let x7 = q0_0(v7); print(x7());
+  let v8 = 8; let x8 = q0_0(v8); print(x8());
+  let v9 = 9; let x9 = q0_0(v9); print(x9());
+  let v10 = 10; let x10 = q0_0(v10); print(x10());
+  let v11 = 11; let x11 = q0_0(v11); print(x11());
+  let v12 = 12; let x12 = q0_0(v12); print(x12());
+  let v13 = 13; let x13 = q0_0(v13); print(x13());
+  let v14 = 14; let x14 = q0_0(v14); print(x14());
+  let v15 = 15; let x15 = q0_0(v15); print(x15());
+  let v16 = 16; let x16 = q0_0(v16); print(x16());
+  let v17 = 17; let x17 = q0_0(v17); print(x17());
+  let v18 = 18; let x18 = q0_0(v18); print(x18());
+  let v19 = 19; let x19 = q0_0(v19); print(x19());
+  let v20 = 20; let x20 = q0_0(v20); print(x20());
+  let v21 = 21; let x21 = q0_0(v21); print(x21());
+  let v22 = 22; let x22 = q0_0(v22); print(x22());
+  let v23 = 23; let x23 = q0_0(v23); print(x23());
+  let v24 = 24; let x24 = q0_0(v24); print(x24());
+  let v25 = 25; let x25 = q0_0(v25); print(x25());
+  let v26 = 26; let x26 = q0_0(v26); print(x26());
+  let v27 = 27; let x27 = q0_0(v27); print(x27());
+  let v28 = 28; let x28 = q0_0(v28); print(x28());
+  let v29 = 29; let x29 = q0_0(v29); print(x29());
+  let v30 = 30; let x30 = q0_0(v30); print(x30());
+  let v31 = 31; let x31 = q0_0(v31); print(x31());
+  let v32 = 32; let x32 = q0_0(v32); print(x32());
+  let v33 = 33; let x33 = q0_0(v33); print(x33());
+  let v34 = 34; let x34 = q0_0(v34); print(x34());
+  let v35 = 35; let x35 = q0_0(v35); print(x35());
+  let v36 = 36; let x36 = q0_0(v36); print(x36());
+  let v37 = 37; let x37 = q0_0(v37); print(x37());
+  let v38 = 38; let x38 = q0_0(v38); print(x38());
+  let v39 = 39; let x39 = q0_0(v39); print(x39());
+  let v40 = 40; let x40 = q0_0(v40); print(x40());
+  let v41 = 41; let x41 = q0_0(v41); print(x41());
+  let v42 = 42; let x42 = q0_0(v42); print(x42());
+  let v43 = 43; let x43 = q0_0(v43); print(x43());
+  let v44 = 44; let x44 = q0_0(v44); print(x44());
+  let v45 = 45; let x45 = q0_0(v45); print(x45());
+  let v46 = 46; let x46 = q0_0(v46); print(x46());
+  let v47 = 47; let x47 = q0_0(v47); print(x47());
+  let v48 = 48; let x48 = q0_0(v48); print(x48());
+  let v49 = 49; let x49 = q0_0(v49); print(x49());
+  let v50 = 50; let x50 = q0_0(v50); print(x50());
+  let v51 = 51; let x51 = q0_0(v51); print(x51());
+  let v52 = 52; let x52 = q0_0(v52); print(x52());
+  let v53 = 53; let x53 = q0_0(v53); print(x53());
+  let v54 = 54; let x54 = q0_0(v54); print(x54());
+  let v55 = 55; let x55 = q0_0(v55); print(x55());
+  let v56 = 56; let x56 = q0_0(v56); print(x56());
+  let v57 = 57; let x57 = q0_0(v57); print(x57());
+  let v58 = 58; let x58 = q0_0(v58); print(x58());
+  let v59 = 59; let x59 = q0_0(v59); print(x59());
+  let h = pk(1); print(h(-1)); print(map([1], f));
+}

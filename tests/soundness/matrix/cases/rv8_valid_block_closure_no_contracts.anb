@@ -1,0 +1,1 @@
+fn main() { let g = |y| { let h = |x| x + 1; h(y) }; print(g(1)); }

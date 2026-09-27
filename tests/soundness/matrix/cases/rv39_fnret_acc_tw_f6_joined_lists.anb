@@ -1,0 +1,17 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+struct T { n: i64 }
+struct U { n: i64 }
+impl T { fn pick(self) { return other; } fn run(self, s) { return 0; } fn with(self, m) { return T { n: m }; } }
+impl U { fn pick(self) { return show; } fn run(self, s) { println(s); return 0; } fn with(self, m) { return U { n: m }; } }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let n = p.pub_n * 2;
+    let a = [T { n: 1 }];
+    let b = [T { n: 2 }, T { n: 3 }];
+    let xs = if n > 5 { a } else { b };
+    xs[0].run(p);
+    let ys = if n > 5 { [T { n: 1 }] } else { [n] };
+    ys[0].run(p);
+}

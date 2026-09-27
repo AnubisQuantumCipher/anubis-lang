@@ -1,0 +1,20 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { name: str }
+struct W { n: i64 }
+impl S {
+    fn show(self, other) -> i64 {
+        println(other);
+        return 0;
+    }
+}
+impl T {
+    fn show(self, other) -> i64 {
+        return 1;
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let w = W { n: S { k: 0, pub_n: 0 } };
+    let d = declassify(w.n, "public-carrier", "carrier holds no real secret");
+    d.show(p);
+}

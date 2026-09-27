@@ -1,0 +1,2 @@
+fn app(g, x) { g(x); return 0; }
+fn main() uses(io.read, shell) { app(shell, input()); }

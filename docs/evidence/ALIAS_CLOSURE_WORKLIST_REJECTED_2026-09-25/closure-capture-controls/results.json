@@ -1,0 +1,205 @@
+{
+  "pins": {
+    "baseline": "90a21f28c49bd044202698ba889f72bb4d9757b721671b194bf4c7a3b786c855",
+    "alias": "9e8720dd805bbbd55b29b5d4904fd7b981166094277d8e5e70e7f252d7531ee1",
+    "prototype": "bb62868e0f1495a12f26499e6499aaa2c6ef6ffe08f1212ab59f470bd1bf6c88"
+  },
+  "checks": [
+    {
+      "case": "g4_selfref_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/g4_selfref_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.11582402201020159,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "d6bc2cccc91e2919df5e16ed111bdfd948acda5b94c5d3a09fccd174bb682aff",
+      "log_sha256": "5589434e42d91d83a171a84d2367308d4b1cfa4fa3b4c23f61a11bf58518959f"
+    },
+    {
+      "case": "g4_selfref_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/g4_selfref_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.06488094298401847,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "d6bc2cccc91e2919df5e16ed111bdfd948acda5b94c5d3a09fccd174bb682aff",
+      "log_sha256": "08b70b49c64cbe2515516a92b2e7c88fa4ccbf6168a84ddf2199798208c7acd7"
+    },
+    {
+      "case": "g4_selfref_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/g4_selfref_old_prints_stmt.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.0034690910251811147,
+      "diagnostics": [],
+      "source_sha256": "d6bc2cccc91e2919df5e16ed111bdfd948acda5b94c5d3a09fccd174bb682aff",
+      "log_sha256": "88a3fdbf252d65932d99c977bbc3d11db5b96fc354b9efefddfedef62a91bbc9"
+    },
+    {
+      "case": "scalar_g4_selfref_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/scalar_g4_selfref_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.0651680699957069,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "e458ba8eee2be21f0e535d2bdae8f3b8bb36eca4461601d3ecf2e208b39129fb",
+      "log_sha256": "3132cebaad7a69b59fc1d230fb9113254b1df7126ba35533e700da0834eed27a"
+    },
+    {
+      "case": "scalar_g4_selfref_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/scalar_g4_selfref_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.06562973800464533,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "e458ba8eee2be21f0e535d2bdae8f3b8bb36eca4461601d3ecf2e208b39129fb",
+      "log_sha256": "67873b97292491be8e5a95563d120257a3c6dcfa9842c84500140e9f6af19247"
+    },
+    {
+      "case": "scalar_g4_selfref_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/scalar_g4_selfref_old_prints_stmt.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.0036975510010961443,
+      "diagnostics": [],
+      "source_sha256": "e458ba8eee2be21f0e535d2bdae8f3b8bb36eca4461601d3ecf2e208b39129fb",
+      "log_sha256": "ee7cafe1367f8da1490ade8391e7695a5f179fb7f977258aab98e8d1eecdc944"
+    },
+    {
+      "case": "g5_mutual_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/g5_mutual_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.06470544400508516,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "f3848b1e2cc5b15f2721c6df6b6bc8c9e4d1d3c09544d22b5c54a2a55d3b1a0a",
+      "log_sha256": "dfe8db86032e6e7ca0f8bf5447448c6f914932c2beac2a17c2c46c379588fd74"
+    },
+    {
+      "case": "g5_mutual_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/g5_mutual_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.06501886097248644,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "f3848b1e2cc5b15f2721c6df6b6bc8c9e4d1d3c09544d22b5c54a2a55d3b1a0a",
+      "log_sha256": "8c07ed4e6bcf4503c6a2c9bb323f8a272e0a32005c6e563115739cc08ad2f53f"
+    },
+    {
+      "case": "g5_mutual_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/g5_mutual_old_prints_stmt.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.0038866749964654446,
+      "diagnostics": [],
+      "source_sha256": "f3848b1e2cc5b15f2721c6df6b6bc8c9e4d1d3c09544d22b5c54a2a55d3b1a0a",
+      "log_sha256": "c5ffe464ae015899545d5908555363e880a787254a8a006599779bafd2319818"
+    },
+    {
+      "case": "scalar_g5_mutual_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/scalar_g5_mutual_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.06516773701878265,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "8703ba3e0fcf98c50eb5f9f7ac61ff42fece4307df296e211893803607e15155",
+      "log_sha256": "0f1249a1a8cca82b54e8469cdc35d30b6ecbdd03e2247fab2a1fbe3525d32e10"
+    },
+    {
+      "case": "scalar_g5_mutual_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/scalar_g5_mutual_old_prints_stmt.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.06461294399923645,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "8703ba3e0fcf98c50eb5f9f7ac61ff42fece4307df296e211893803607e15155",
+      "log_sha256": "13cb9fc2ec3284922e2ff18cdbe8ac0965abf9a5530ff19de1b4caa09593bd0f"
+    },
+    {
+      "case": "scalar_g5_mutual_old_prints_stmt.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-capture-controls/scalar_g5_mutual_old_prints_stmt.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.0035575919901020825,
+      "diagnostics": [],
+      "source_sha256": "8703ba3e0fcf98c50eb5f9f7ac61ff42fece4307df296e211893803607e15155",
+      "log_sha256": "8b41fe3355dab481681f17eb700467a5f72d5d172540f5de73f89d2e2072e4c4"
+    }
+  ]
+}

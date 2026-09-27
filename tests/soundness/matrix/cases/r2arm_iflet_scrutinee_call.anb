@@ -1,0 +1,2 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() { if let Some(x) = Some(f(-1)) { } else { } }

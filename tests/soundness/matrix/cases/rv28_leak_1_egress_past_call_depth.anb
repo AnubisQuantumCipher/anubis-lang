@@ -1,0 +1,15 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn f1(xs) { f2(xs); }
+fn f2(xs) { f3(xs); }
+fn f3(xs) { f4(xs); }
+fn f4(xs) { f5(xs); }
+fn f5(xs) { f6(xs); }
+fn f6(xs) { f7(xs); }
+fn f7(xs) { f8(xs); }
+fn f8(xs) { f9(xs); }
+fn f9(xs) { print(xs); }
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }];
+    f1(accts);
+}

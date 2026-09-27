@@ -1,0 +1,20 @@
+struct A { v: i64 }
+struct B { v: i64 }
+impl A {
+    fn m(self, x: i64) -> i64 { x }
+}
+impl B {
+    fn m(self) -> i64 { 0 }
+}
+fn noisy() -> i64 {
+    println("evaluated");
+    1
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let opts = [A { v: 1 }, B { v: 2 }];
+    let i = if k > 100 { 0 } else { 1 };
+    let s = opts[i];
+    let r = s.m(noisy());
+    println("end");
+}

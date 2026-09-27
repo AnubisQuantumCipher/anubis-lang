@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn run(p) {
+    let call = |f, x| { print(p); 0 };
+    apply(call, [zero, p]);
+    return 0;
+}
+fn main() { run(S { k: 42, pub_n: 3 }); }

@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h1(x) { print(x); return 0; }
+fn h2(x) { return 0; }
+fn run(q) {
+    let c = |x| { print(x); return 0; };
+    let g = apply(apply, [identity, [c]]);
+    g(q);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p);
+}

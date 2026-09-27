@@ -168,7 +168,10 @@ mod tests {
     fn admits_const_mul_shift_structural() {
         let smt = "(declare-const x (_ BitVec 64))\
                    (assert (bvult (bvmul x (_ bv4 64)) (bvshl x (_ bv3 64))))\
-                   (assert (bvule ((_ extract 31 0) x) ((_ zero_extend 0) x)))(check-sat)";
+                   (assert (bvule ((_ zero_extend 32) ((_ extract 31 0) x)) ((_ zero_extend 0) x)))\
+                   (check-sat)";
+        // (Before P-SORT-1 this compared a 32-bit extract with a 64-bit term; z3 rejects that as
+        // ill-sorted and the parser now declines it, so the operands are widened to 64 bits.)
         assert!(
             gate(smt),
             "const-mul, const-shift, extract, zero_extend must be authoritative"
@@ -288,7 +291,8 @@ mod tests {
              (assert (bvult (bvmul (_ bv2 64) (bvashr x y)) x))(check-sat)",
             // danger inside an Extract inner term
             "(declare-const x (_ BitVec 64))\
-             (assert (bvult ((_ extract 31 0) (bvsdiv x (_ bv2 64))) x))(check-sat)",
+             (assert (bvult ((_ extract 31 0) (bvsdiv x (_ bv2 64))) ((_ extract 31 0) x)))\
+             (check-sat)",
             // danger inside a Concat inner term
             "(declare-const x (_ BitVec 32))(declare-const y (_ BitVec 32))\
              (assert (bvult (concat (bvashr x y) y) (_ bv0 64)))(check-sat)",

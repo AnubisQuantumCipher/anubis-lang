@@ -1,0 +1,9 @@
+import lib;
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+impl T { fn show(self, x) { return 0; } }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let t = lib::mk();
+    t.show(p.k);
+}

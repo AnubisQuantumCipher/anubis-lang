@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { n: i64 }
+impl S { fn show(self, x) { print(x); return 0; } }
+impl W { fn show(self, x) { return 0; } }
+fn g(q, x) { return q.show(x); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let q = if p.pub_n > 100 { W { n: 1 } } else { p };
+    let z = g(q, p);
+}

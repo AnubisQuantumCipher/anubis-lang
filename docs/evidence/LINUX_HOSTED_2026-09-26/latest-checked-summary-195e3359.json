@@ -1,0 +1,60 @@
+{
+  "aarch64": {
+    "command_count": 22,
+    "command_exit_or_timeout_failures": [],
+    "command_log_errors": [],
+    "command_logs_hashed": 44,
+    "expected_sha": "195e33592202337e32be6ca538c45b83a75dd636",
+    "external": [
+      "full-workspace-and-crash-tests",
+      "full-soundness-matrix",
+      "fuzz-and-stress",
+      "tart-vz-seal",
+      "require-metal",
+      "omarchy-installation",
+      "release-seal"
+    ],
+    "job_sha": "195e33592202337e32be6ca538c45b83a75dd636",
+    "job_status": "success",
+    "launcher_exit_code": 0,
+    "launcher_validation_exit_code": 0,
+    "memory_events_unchanged": true,
+    "memory_peak_bytes": 4630630400,
+    "receipt_sha256": "07d97b9abf2953056aaae8bfeb868dd5cbccc2b2b079ea011534509c6b2d4178",
+    "schema": "anubis.linux-native-ordinary.v2",
+    "source_commit": "195e33592202337e32be6ca538c45b83a75dd636",
+    "source_same_before_after": true,
+    "teardown_errors": [],
+    "unit_removed": true,
+    "verdict": "LINUX_NATIVE_ORDINARY_PASS"
+  },
+  "x86_64": {
+    "command_count": 22,
+    "command_exit_or_timeout_failures": [],
+    "command_log_errors": [],
+    "command_logs_hashed": 44,
+    "expected_sha": "195e33592202337e32be6ca538c45b83a75dd636",
+    "external": [
+      "full-workspace-and-crash-tests",
+      "full-soundness-matrix",
+      "fuzz-and-stress",
+      "tart-vz-seal",
+      "require-metal",
+      "omarchy-installation",
+      "release-seal"
+    ],
+    "job_sha": "195e33592202337e32be6ca538c45b83a75dd636",
+    "job_status": "success",
+    "launcher_exit_code": 0,
+    "launcher_validation_exit_code": 0,
+    "memory_events_unchanged": true,
+    "memory_peak_bytes": 4893544448,
+    "receipt_sha256": "c9bfd1489e4df34a8d17dd62af1714ca2ddb7393dd64b0af2dbd78a0cdf26982",
+    "schema": "anubis.linux-native-ordinary.v2",
+    "source_commit": "195e33592202337e32be6ca538c45b83a75dd636",
+    "source_same_before_after": true,
+    "teardown_errors": [],
+    "unit_removed": true,
+    "verdict": "LINUX_NATIVE_ORDINARY_PASS"
+  }
+}

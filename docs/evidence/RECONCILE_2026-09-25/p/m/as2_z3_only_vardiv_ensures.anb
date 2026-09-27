@@ -1,0 +1,2 @@
+fn q(a: i64, b: i64) -> i64 requires(a >= 0) requires(a <= 100) requires(b >= 1) requires(b <= 10) ensures(result <= a) { return a / b; }
+fn main() { print(q(10, 3)); }

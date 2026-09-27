@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let xs = [s, 1];
+    if xs {
+        print("nonempty");
+    }
+}

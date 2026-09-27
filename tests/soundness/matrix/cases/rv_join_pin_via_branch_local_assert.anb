@@ -1,0 +1,13 @@
+fn main() {
+    let c = len(args()) >= 0;
+    let z = 7;
+    let mut b = 0;
+    if c {
+        let z = 5;
+        b = z;
+    } else {
+        b = 5;
+    }
+    assert(b == 5);
+    println(b);
+}

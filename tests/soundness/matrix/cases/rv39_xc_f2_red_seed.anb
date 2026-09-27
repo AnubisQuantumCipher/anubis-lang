@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pick(c, p) { if c > 0 { return |acc, x| 0; } return p; }
+fn mkw() { return [|acc, x| acc]; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let w = mkw();
+    let z = reduce([1], pick(0, p), w[0]);
+    println(z);
+}

@@ -1,0 +1,11 @@
+fn f(n: i64) requires(n > 0) {
+    println(n);
+}
+fn g(x: i64) {
+    let y = x + 1;
+    println(y);
+    f(5);
+}
+fn main() {
+    g(3);
+}

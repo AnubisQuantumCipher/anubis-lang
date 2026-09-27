@@ -1,0 +1,4 @@
+struct Row { k: secret<i64>, n: i64 }
+fn show(p) { println(p.n); }
+fn relay(p) { show(p); }
+fn main() { let s: secret<i64> = 42; let row = Row { k: s, n: 7 }; relay(row); }

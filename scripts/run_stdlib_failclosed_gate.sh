@@ -125,7 +125,7 @@ for f in "${fixtures[@]}"; do
   set +e
   # Bound compile+run so a hang cannot freeze the gate (fleet: instrument must terminate).
   if command -v timeout >/dev/null 2>&1; then
-    timeout 120 $ANUBIS_BIN run "$f" >"$outd/run.log" 2>&1
+    timeout "${ANUBIS_GATE_CHECK_BUDGET_SECS:-300}" $ANUBIS_BIN run "$f" >"$outd/run.log" 2>&1
     rc=$?
   else
     $ANUBIS_BIN run "$f" >"$outd/run.log" 2>&1

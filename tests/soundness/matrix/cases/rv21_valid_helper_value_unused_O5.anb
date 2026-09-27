@@ -1,0 +1,5 @@
+fn getsec() -> secret<i64> { let s: secret<i64> = 42; return s; }
+fn pub1() -> i64 { return 1; }
+fn getsec_v(v) { return getsec; }
+fn pick(c) { let t = [pub1]; t = [pub1]; let n = len(map([1], getsec_v)); print(n); if c > 5 { return pub1; } return t[0]; }
+fn main() { let h = pick(1); print(h()); }

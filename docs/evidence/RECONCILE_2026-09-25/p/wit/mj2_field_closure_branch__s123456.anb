@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Box { f: u64 }
+fn main() {
+    let p = S { k: 123456, pub_n: 3 };
+    let b = Box { f: |x| 0 };
+    if p.pub_n > 1 { b.f = |x| print(x); }
+    b.f(p.k);
+}

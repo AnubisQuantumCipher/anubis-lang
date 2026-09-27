@@ -1,0 +1,13 @@
+fn depth(x) {
+    if type(x) != "list" {
+        return 0;
+    }
+    1 + depth(x[1])
+}
+fn main() {
+    let v = 0;
+    for i in 0..3 {
+        v = [i, v];
+    }
+    print(depth(v));
+}

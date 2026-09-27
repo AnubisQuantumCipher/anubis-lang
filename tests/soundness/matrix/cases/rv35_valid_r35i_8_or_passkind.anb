@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h(xs) {
+    let g = |x| x;
+    let r = map(xs, g);
+    let s = r + [0];
+    return len(s);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(h([p]));
+}

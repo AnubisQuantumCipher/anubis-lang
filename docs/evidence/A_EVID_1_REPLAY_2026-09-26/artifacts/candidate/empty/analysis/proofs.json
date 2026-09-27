@@ -1,0 +1,11 @@
+{
+  "note": "Re-checkable proof objects. DIMACS CNF + DRAT refutation per proven obligation; verify with drat-trim or any DRAT checker. No Anubis binary required.",
+  "obligations": [
+    {
+      "obligation": "solver:no-obligations",
+      "proof": "counterexample_no_refutation",
+      "smt": "analysis/proofs/obligation_0000.smt2",
+      "status": "PASS"
+    }
+  ]
+}

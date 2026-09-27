@@ -596,6 +596,11 @@ fn main() {
     for v in committed_values {
         chain = chain_append(chain, v, seq);
         push(positions, "seq${seq}=${v}→${chain}");
+        // `seq_advances` is proved for slots in [0, 1000000); the ledger states that bound instead of
+        // assuming the history is short.
+        if seq < 0 || seq >= 1000000 {
+            break;
+        }
         seq = seq_advances(seq);          // the proved monotone advance, used for real
     }
     for p in positions { print("    ${p}"); }

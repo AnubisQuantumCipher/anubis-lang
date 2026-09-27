@@ -1,0 +1,10 @@
+enum E { V { a: i64, b: i64 } }
+fn main() {
+    let s: secret<i64> = 42;
+    let v = E::V { b: |x| print(x), a: |x| 0 };
+    if false {
+        v = E::V { a: |x| 0, b: |x| 0 };
+    }
+    let f = v.b;
+    f(s);
+}

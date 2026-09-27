@@ -1,0 +1,14 @@
+fn audit(log, ok) {
+    if ok {
+        push(log, "granted");
+    } else {
+        push(log, "denied");
+    }
+    log
+}
+fn main() {
+    let k: secret<i64> = 123456;
+    let mut log = [];
+    log = audit(log, k > 100);
+    println("entries: " + str(len(log)));
+}

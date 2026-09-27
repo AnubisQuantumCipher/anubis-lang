@@ -1,0 +1,6 @@
+fn main() {
+    let secret_value: secret<i64> = 123456;
+    let g = |s| { print(s); 0 };
+    g = |s| g(s);
+    g(secret_value);
+}

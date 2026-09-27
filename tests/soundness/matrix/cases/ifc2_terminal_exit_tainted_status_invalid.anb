@@ -1,0 +1,4 @@
+fn main() {
+    let status: tainted<i64> = 3;
+    exit(status);
+}

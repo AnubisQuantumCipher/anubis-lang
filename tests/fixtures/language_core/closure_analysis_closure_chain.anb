@@ -1,0 +1,18 @@
+// EXPECT: PASS
+// Regression: 12 closures each calling the previous one are checked (the analysis limits count
+// stack, not closures; contract checking refuses from 13 on, a separate limit).
+fn main() {
+    let f0 = |s| s;
+    let f1 = |s| f0(s);
+    let f2 = |s| f1(s);
+    let f3 = |s| f2(s);
+    let f4 = |s| f3(s);
+    let f5 = |s| f4(s);
+    let f6 = |s| f5(s);
+    let f7 = |s| f6(s);
+    let f8 = |s| f7(s);
+    let f9 = |s| f8(s);
+    let f10 = |s| f9(s);
+    let f11 = |s| f10(s);
+    print(f11(0));
+}

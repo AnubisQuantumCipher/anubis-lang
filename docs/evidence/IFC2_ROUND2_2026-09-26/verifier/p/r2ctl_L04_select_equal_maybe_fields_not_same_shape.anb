@@ -1,0 +1,21 @@
+struct P {
+    a: list<i64>,
+    b: list<i64>,
+}
+
+fn main() {
+    let s: secret<i64> = 42;
+    let k = len(args()) < 100;
+    let mut p1 = P { a: [] };
+    let mut p2 = P { a: [] };
+    if k {
+        p1.b = [];
+    } else {
+        p2.b = [];
+    }
+    let c = match s > 100 {
+        true => p1,
+        _ => p2,
+    };
+    println(len(c));
+}

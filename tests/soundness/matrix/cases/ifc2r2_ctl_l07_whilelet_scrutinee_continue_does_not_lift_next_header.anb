@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let mut n = 0;
+    while let Some(x) = if true { println("poll"); n = n + 1; if s > 100 && n < 3 { continue } ; None } else { None } {
+    }
+    println("done");
+}

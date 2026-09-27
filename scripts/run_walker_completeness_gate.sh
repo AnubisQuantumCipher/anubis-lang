@@ -91,9 +91,9 @@ if [[ "${1:-}" == "--self-test" ]]; then
   # backup and the restore has its work overwritten with no error and no diff. This repo has
   # already lost in-progress work to exactly that shape once — docs/COMMIT_5259227_CORRECTION.md —
   # and a gate's own self-test is the last place that should be able to cause it a second time.
-  SCRATCH="$(mktemp -t anubis_walker_mid).rs"
-  BASELINE="$(mktemp -t anubis_walker_baseline).txt"
-  PLANTED="$(mktemp -t anubis_walker_planted).txt"
+  SCRATCH="$(mktemp "${TMPDIR:-/tmp}/anubis_walker_mid.XXXXXX")"
+  BASELINE="$(mktemp "${TMPDIR:-/tmp}/anubis_walker_baseline.XXXXXX")"
+  PLANTED="$(mktemp "${TMPDIR:-/tmp}/anubis_walker_planted.XXXXXX")"
   trap 'rm -f "$SCRATCH" "$BASELINE" "$PLANTED"' EXIT
 
   # A poison is calibrated only against a green baseline. Require this exact finding to be absent

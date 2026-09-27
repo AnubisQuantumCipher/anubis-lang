@@ -1,0 +1,70 @@
+fn f0(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f1(drop(xs, 1), d - 1, |v| f(v) + 0);
+    let b = f3(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn f1(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f2(drop(xs, 1), d - 1, |v| f(v) + 1);
+    let b = f4(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn f2(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f3(drop(xs, 1), d - 1, |v| f(v) + 2);
+    let b = f5(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn f3(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f4(drop(xs, 1), d - 1, |v| f(v) + 3);
+    let b = f6(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn f4(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f5(drop(xs, 1), d - 1, |v| f(v) + 4);
+    let b = f7(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn f5(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f6(drop(xs, 1), d - 1, |v| f(v) + 5);
+    let b = f0(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn f6(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f7(drop(xs, 1), d - 1, |v| f(v) + 6);
+    let b = f1(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn f7(xs, d, f) {
+    if d <= 0 || len(xs) == 0 {
+        return [f(len(xs))];
+    }
+    let a = f0(drop(xs, 1), d - 1, |v| f(v) + 7);
+    let b = f2(xs + [d], d - 2, f);
+    return a + b + [xs[0]];
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let r = f0([1, 2, 3], 6, |v| v * 2);
+    println(len(r));
+    println(r);
+}

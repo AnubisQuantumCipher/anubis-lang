@@ -1,0 +1,19 @@
+enum Tier {
+    Basic(i64),
+    Gold(i64),
+}
+
+fn discount(level: secret<i64>) -> Option<secret<i64>> {
+    if level > 100 {
+        return Some(20);
+    }
+    Some(5)
+}
+
+fn main() {
+    let level: secret<i64> = 42;
+    match discount(level) {
+        Some(_) => println("discount applied"),
+        None => println("no discount"),
+    }
+}

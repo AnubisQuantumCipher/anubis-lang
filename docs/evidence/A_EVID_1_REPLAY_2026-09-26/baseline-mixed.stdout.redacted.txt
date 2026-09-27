@@ -1,0 +1,8 @@
+anubis check <OUT>/mixed.anb (evidence=true, verified=false)
+evidence bundle: <OUT>/baseline-mixed/evidence-20260926-094911-safe
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  assert:(= anb_x (_ bv2 64))
+  counterexample:
+    x = 0x0000000000000001  (1)
+certificates: 1/1 obligations discharged by a machine-checked refutation (refutations retained in the evidence bundle)

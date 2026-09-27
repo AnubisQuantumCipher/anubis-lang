@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { inner: S, n: i64 }
+fn f(a: S) -> i64 { let mm = { "a": 1 }; mm["x"] = a; mm["x"] = 0; return mm["x"]; }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let xs = [p, S { k: 7, pub_n: 1 }];
+  let m = { "a": p };
+  print(f(p));
+}

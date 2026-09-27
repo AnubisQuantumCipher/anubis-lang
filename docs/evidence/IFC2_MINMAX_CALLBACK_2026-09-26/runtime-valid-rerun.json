@@ -1,0 +1,42 @@
+{
+  "rows": [
+    {
+      "command": [
+        "anubis-6b85cf22-aarch64",
+        "run",
+        "tests/soundness/matrix/cases/ifc2r2_minmax_min_by_padded_fixed_key_valid.anb",
+        "--out",
+        "<local-output>"
+      ],
+      "compiler_sha256": "06ab383684f3e953c613748938719fade05f573176457cb8133071a4e580df51",
+      "exit_code": 0,
+      "id": "ifc2r2_minmax_min_by_padded_fixed_key_valid",
+      "log_sha256": "f3695d3069fd868aac0b7eccb0b40c1337a347836435d92f49c816c8fb2023f0",
+      "native_artifact_sha256": "0ed379782c248c4849a9a8e0e69290fe0e1c4efebae9aca6ba44740a8f311cb1",
+      "source_repo_path": "tests/soundness/matrix/cases/ifc2r2_minmax_min_by_padded_fixed_key_valid.anb",
+      "source_sha256": "396f73af4f7749a1f29f7f0a211fc9a8443d07a21d23b80e61e3b53b3fa7eacf",
+      "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n",
+      "stdout": "1\n2\n1\n3\n"
+    },
+    {
+      "command": [
+        "anubis-6b85cf22-aarch64",
+        "run",
+        "tests/soundness/matrix/cases/ifc2r2_minmax_max_by_padded_fixed_key_valid.anb",
+        "--out",
+        "<local-output>"
+      ],
+      "compiler_sha256": "06ab383684f3e953c613748938719fade05f573176457cb8133071a4e580df51",
+      "exit_code": 0,
+      "id": "ifc2r2_minmax_max_by_padded_fixed_key_valid",
+      "log_sha256": "2bf3501e2c9507ba85f36929c2585c8b994d4b88e7489dbef009dec8616a1e7a",
+      "native_artifact_sha256": "d236b393208b5e6fba2facd3d770d56557c069202f6c37e0d4d74a24daa5e13f",
+      "source_repo_path": "tests/soundness/matrix/cases/ifc2r2_minmax_max_by_padded_fixed_key_valid.anb",
+      "source_sha256": "bc1cd1cd2afaa259426a26349defe789a894958be3affb1903adc3fa7d5752a7",
+      "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n",
+      "stdout": "1\n2\n2\n3\n"
+    }
+  ],
+  "schema": "anubis-local-minmax-valid-rerun/1",
+  "source_commit": "6b85cf2207e5b3126a18e2df1190a4efa49a2ecc"
+}

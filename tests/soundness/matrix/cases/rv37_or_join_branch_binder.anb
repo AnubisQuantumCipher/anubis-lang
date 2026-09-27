@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+impl T { fn show(self, o) -> str { return "t ${self.v}"; } }
+impl U { fn show(self, o) -> str { return "u ${o}"; } }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let o = Some(T { v: 5 });
+  let x = match o { Some(t) => t, None => T { v: 0 } };
+  println(x.show(p));
+}

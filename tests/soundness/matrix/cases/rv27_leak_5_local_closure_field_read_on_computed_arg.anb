@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+
+fn main() { let p = S { k: 42, pub_n: 3 }; let getn = |s| s.pub_n; let ys = [p, S { k: 7000, pub_n: 1 }]; print(getn(sort_by(ys, |s| len(str(s)))[0])); }

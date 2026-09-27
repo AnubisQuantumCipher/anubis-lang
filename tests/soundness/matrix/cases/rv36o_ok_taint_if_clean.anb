@@ -1,0 +1,3 @@
+struct T { t: tainted<string>, n: i64 }
+fn f(q: T) { let x = "ls"; if true { x = "pwd"; } return x; }
+fn main() uses(proc.exec) { let p = T { t: "rm", n: 3 }; shell(f(p)); }

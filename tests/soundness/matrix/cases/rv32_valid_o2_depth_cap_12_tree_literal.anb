@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Node { v: i64, kids: list<Node>, cred: S }
+fn total(n) {
+    let mut t = n.v;
+    for c in n.kids {
+        t = t + total(c);
+    }
+    return t;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let t = Node { v: 5, kids: [Node { v: 4, kids: [Node { v: 3, kids: [Node { v: 2, kids: [Node { v: 1, kids: [Node { v: 0, kids: [Node { v: 1, kids: [], cred: p }], cred: p }], cred: p }], cred: p }], cred: p }], cred: p }], cred: p };
+    println(str(total(t)));
+}

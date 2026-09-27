@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(v) {
+    let xs = [0];
+    push(xs, v)
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p.k));
+}

@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Node { name: string, val: S, kids: list<Node> }
+fn chain(p, depth) {
+    let n = Node { name: "leaf", val: p, kids: [] };
+    let i = 0;
+    while i < depth {
+        n = Node { name: "n" + str(i), val: S { k: 1, pub_n: i }, kids: [n] };
+        i = i + 1;
+    }
+    return n;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let root = chain(p, 0);
+    print(root.val);
+}

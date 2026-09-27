@@ -200,7 +200,14 @@ fn load_vault(path) uses(fs.read) {
         }
         i = i + 1;
     }
-    return [salt_hex, verifier, rows];
+    // The package is file input (tainted). Its rows are AEAD ciphertext, opened only under the
+    // password-derived key, and the verifier is compared against a fresh Argon2id hash: a tampered
+    // file fails those checks, so the parsed fields are released here, once, at the parse boundary.
+    return declassify(
+        [salt_hex, verifier, rows],
+        "vault.contacts.load",
+        "parsed vault package: rows are AEAD-authenticated on open, the verifier gates unlock"
+    );
 }
 
 fn cmd_create(path, master, n) uses(fs.write) {

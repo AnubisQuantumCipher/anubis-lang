@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: assertion
+// ERROR_CONTAINS: assert:
 fn main() {
     let x: u32 = symbolic("x");
     assume(x < 10);

@@ -1,0 +1,5 @@
+import lib;
+fn main() {
+    let v = lib::mk();
+    print(v.k);
+}

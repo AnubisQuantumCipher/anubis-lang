@@ -17,6 +17,11 @@ use crate::stdlib;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+// Staged captured-byte comparison path. It has no production caller or
+// admission authority until the checker and lowerer consume its graph.
+#[allow(dead_code)]
+mod captured;
+
 /// Mounted package dependency roots: first path segment → package `src_root`.
 #[derive(Debug, Clone, Default)]
 pub struct DepMounts {
@@ -379,28 +384,71 @@ struct RewriteCtx {
     error: Option<String>,
 }
 
+/// The combine pass depends on parsed items and import spellings, not file locators.
+/// This narrow view lets the captured-byte path reuse the production rewrite.
+trait CombineModule {
+    fn module_path(&self) -> &str;
+    fn ast(&self) -> &AST;
+    fn import_paths(&self) -> Vec<&str>;
+}
+
+impl CombineModule for LoadedModule {
+    fn module_path(&self) -> &str {
+        &self.module_path
+    }
+
+    fn ast(&self) -> &AST {
+        &self.ast
+    }
+
+    fn import_paths(&self) -> Vec<&str> {
+        self.imports.iter().map(|(path, _)| path.as_str()).collect()
+    }
+}
+
+impl CombineModule for captured::CapturedModule<'_> {
+    fn module_path(&self) -> &str {
+        &self.namespace
+    }
+
+    fn ast(&self) -> &AST {
+        &self.ast
+    }
+
+    fn import_paths(&self) -> Vec<&str> {
+        self.imports
+            .iter()
+            .map(|edge| edge.requested.as_str())
+            .collect()
+    }
+}
+
 /// Combine a loaded module graph into a single flat item list, fail-closed on ambiguity.
 pub fn combine_graph(graph: &ModuleGraph) -> Result<Vec<Item>, String> {
+    combine_modules(&graph.modules)
+}
+
+fn combine_modules<M: CombineModule>(modules: &[M]) -> Result<Vec<Item>, String> {
     // Pre-pass: the exported (`pub`) function names of every module, keyed by its dotted path (which
     // equals the dotted `import` path an importer uses to reach it).
     let mut module_exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for m in &graph.modules {
+    for m in modules {
         let mut pubs = BTreeSet::new();
-        collect_pub_fn_names(&m.ast.items, &mut pubs);
-        module_exports.insert(m.module_path.clone(), pubs);
+        collect_pub_fn_names(&m.ast().items, &mut pubs);
+        module_exports.insert(m.module_path().to_owned(), pubs);
     }
 
     let mut out: Vec<Item> = Vec::new();
-    for m in &graph.modules {
-        let prefix = module_prefix(&m.module_path); // "" for the root module
+    for m in modules {
+        let prefix = module_prefix(m.module_path()); // "" for the root module
         let mut local_fns = BTreeSet::new();
-        collect_fn_names(&m.ast.items, &mut local_fns);
+        collect_fn_names(&m.ast().items, &mut local_fns);
         let mut local_enums: BTreeSet<String> =
             ["Option", "Result"].iter().map(|s| s.to_string()).collect();
-        collect_enum_names(&m.ast.items, &mut local_enums);
+        collect_enum_names(&m.ast().items, &mut local_enums);
         let mut alias_to_prefix = BTreeMap::new();
         let mut alias_to_exports = BTreeMap::new();
-        for (dotted, _span) in &m.imports {
+        for dotted in m.import_paths() {
             let alias = import_alias(dotted).to_string();
             alias_to_prefix.insert(alias.clone(), module_prefix(dotted));
             alias_to_exports.insert(
@@ -417,7 +465,7 @@ pub fn combine_graph(graph: &ModuleGraph) -> Result<Vec<Item>, String> {
             error: None,
         };
 
-        let mut items = m.ast.items.clone();
+        let mut items = m.ast().items.clone();
         for it in &mut items {
             rewrite_item(it, &mut ctx);
         }
@@ -433,7 +481,37 @@ pub fn combine_graph(graph: &ModuleGraph) -> Result<Vec<Item>, String> {
     Ok(out)
 }
 
-/// Discover the project for `entry`, load its import graph, and combine it into one item list.
+/// Private captured-byte comparison path. The returned AST is the same
+/// postorder, namespaced program the legacy combiner produces, with original
+/// per-module trait sidecars retained. Import occurrences and source identity
+/// remain on graph. This adapter neither reopens paths nor grants admission.
+#[allow(dead_code)]
+pub(crate) fn combine_captured_project(
+    graph: &captured::CapturedProjectGraph<'_>,
+) -> Result<AST, captured::CapturedResolveError> {
+    let mut trait_env = crate::frontend::TraitEnv::default();
+    let mut trait_origins = BTreeMap::<String, captured::ModuleKey>::new();
+    for module in &graph.modules {
+        for (name, declaration) in &module.ast.trait_env.traits {
+            if let Some(first) = trait_origins.insert(name.clone(), module.key.clone()) {
+                return Err(captured::CapturedResolveError::TraitNameCollision {
+                    name: name.clone(),
+                    first,
+                    second: module.key.clone(),
+                });
+            }
+            trait_env.traits.insert(name.clone(), declaration.clone());
+        }
+        trait_env
+            .impls
+            .extend(module.ast.trait_env.impls.iter().cloned());
+    }
+    let items = combine_modules(&graph.modules)
+        .map_err(|message| captured::CapturedResolveError::Combine { message })?;
+    Ok(AST { items, trait_env })
+}
+
+/// Discover the project for entry, load its import graph, and combine it into one item list.
 pub fn combine_from_entry(entry: &Path) -> Result<Vec<Item>, String> {
     combine_from_entry_opts(entry, &ResolveOptions::default())
 }

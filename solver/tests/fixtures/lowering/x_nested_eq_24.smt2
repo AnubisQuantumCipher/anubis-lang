@@ -1,0 +1,6 @@
+(set-logic QF_FP)
+(declare-const x (_ FloatingPoint 11 53))
+(declare-const y (_ FloatingPoint 11 53))
+(declare-const z (_ FloatingPoint 11 53))
+(assert (not (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= x y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= (ite (= x y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z) y) x z))))
+(check-sat)

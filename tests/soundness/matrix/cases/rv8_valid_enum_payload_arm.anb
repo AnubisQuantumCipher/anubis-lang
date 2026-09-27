@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+enum E { A(i64), B }
+fn main() { let e = E::A(3); match e { E::A(v) => print(f(v + 10 - 10)), E::B => print(0), } }

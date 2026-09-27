@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+struct Row { total: i64 }
+struct Acc { xs: any }
+impl Acc { fn total(self) { return len(self.xs); } }
+fn main() { let r = Row { total: 3 }; let m = { "total": r.total }; print(m); let accs = [Acc { xs: [1] }]; for a in accs { print(a.total()); } print(map([1], f)); }

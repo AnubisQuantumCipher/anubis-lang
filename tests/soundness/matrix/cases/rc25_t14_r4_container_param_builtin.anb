@@ -1,0 +1,2 @@
+fn app(fs) { fs[0]("/home/sicarii/.cache/anubis-item21/reconcile/tmp/t14_r4_container_param_builtin.txt", "x"); return 0; }
+fn main() { app([write_file]); }

@@ -1,0 +1,112 @@
+{
+  "cases": [
+    {
+      "archived_source": "docs/evidence/RECONCILE_2026-09-25/p/m/mi1_expr_iflet_then_violation.anb",
+      "diagnostics": [
+        {
+          "code": "ANUBIS_ASSERTION_UNDECIDED",
+          "defect_locus": "capability",
+          "status": "undecided"
+        }
+      ],
+      "exit_code": 1,
+      "id": "rc25_mi1_expr_iflet_then_violation",
+      "registered_source": "tests/soundness/matrix/cases/rc25_mi1_expr_iflet_then_violation.anb",
+      "source_sha256": "4eaace7a1abbed8ed1283de1e2cce76a668319059a2b651af575a03a4cc081d5",
+      "stderr": "mi1.stderr",
+      "stderr_sha256": "39c458a0e1f8a481d3a15eea9b2f8408aa830b3b303444132e93b59068ed3b16",
+      "stdout": "mi1.stdout",
+      "stdout_sha256": "108dbdcc65dba5c80e59347ad0dcf5da6adac826f958936eabf9edf6857aeb81",
+      "summary_counts": {
+        "disproved": 0,
+        "refused": 0,
+        "replay_mismatch": 0,
+        "total": 1,
+        "undecided": 1
+      },
+      "summary_verdict": "fail"
+    },
+    {
+      "archived_source": "docs/evidence/RECONCILE_2026-09-25/p/m/mi2_expr_iflet_binder_violation.anb",
+      "diagnostics": [
+        {
+          "code": "ANUBIS_ASSERTION_UNDECIDED",
+          "defect_locus": "capability",
+          "status": "undecided"
+        }
+      ],
+      "exit_code": 1,
+      "id": "rc25_mi2_expr_iflet_binder_violation",
+      "registered_source": "tests/soundness/matrix/cases/rc25_mi2_expr_iflet_binder_violation.anb",
+      "source_sha256": "f9b0a9ed43a242aecc0a973c0b631765e98555b3a03ea36c272db4ad46be7c8d",
+      "stderr": "mi2.stderr",
+      "stderr_sha256": "8c63645503e338aab535183d63e80c6e6e99462df36b5841f49337a6f11215d1",
+      "stdout": "mi2.stdout",
+      "stdout_sha256": "9c91d7bb7ee93dfcbba04ba70443e008c4fb620f719500e9630a284881890f6b",
+      "summary_counts": {
+        "disproved": 0,
+        "refused": 0,
+        "replay_mismatch": 0,
+        "total": 1,
+        "undecided": 1
+      },
+      "summary_verdict": "fail"
+    },
+    {
+      "archived_source": "docs/evidence/RECONCILE_2026-09-25/p/m/mi6_expr_iflet_in_arg_violation.anb",
+      "diagnostics": [
+        {
+          "code": "ANUBIS_ASSERTION_UNDECIDED",
+          "defect_locus": "capability",
+          "status": "undecided"
+        }
+      ],
+      "exit_code": 1,
+      "id": "rc25_mi6_expr_iflet_in_arg_violation",
+      "registered_source": "tests/soundness/matrix/cases/rc25_mi6_expr_iflet_in_arg_violation.anb",
+      "source_sha256": "87ce2f796c1f86d2a144dde96e050439e04e599b566a88df2701300aae84516a",
+      "stderr": "mi6.stderr",
+      "stderr_sha256": "39c458a0e1f8a481d3a15eea9b2f8408aa830b3b303444132e93b59068ed3b16",
+      "stdout": "mi6.stdout",
+      "stdout_sha256": "1bbe522addf2cb83d7cac4916e03f9d759513c8321cad5ec2b1f2dbf01460a92",
+      "summary_counts": {
+        "disproved": 0,
+        "refused": 0,
+        "replay_mismatch": 0,
+        "total": 1,
+        "undecided": 1
+      },
+      "summary_verdict": "fail"
+    },
+    {
+      "archived_source": "docs/evidence/RECONCILE_2026-09-25/p/m/mi7_expr_iflet_valid_twin.anb",
+      "diagnostics": [],
+      "exit_code": 0,
+      "id": "rc25_mi7_expr_iflet_valid_twin",
+      "registered_source": "tests/soundness/matrix/cases/rc25_mi7_expr_iflet_valid_twin.anb",
+      "source_sha256": "3540d0e85893bbcfc65ca4ea4f092d8c807cf5731604ec7f15f0067e137a646e",
+      "stderr": "mi7.stderr",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "mi7.stdout",
+      "stdout_sha256": "8f7beb5e90f60bbbfdc71057a06ee09e9634c7be677fab6cc644bbc290f9150c",
+      "summary_counts": {
+        "disproved": 0,
+        "refused": 0,
+        "replay_mismatch": 0,
+        "total": 0,
+        "undecided": 0
+      },
+      "summary_verdict": "pass"
+    }
+  ],
+  "checked_source_head": "bac73e26419c121807c7dbb553c94779884a27d4",
+  "checker_binary_sha256": "d5b452c21c2a92d39199a8e93b2a5e9d1fc642fbbda493f45ef88a871448bcfd",
+  "checker_code_commit": "2683669c2ae87ceea66d19ebb0e6995578c289eb",
+  "invocation": {
+    "argv_shape": "systemd-run --user --scope --quiet -p MemoryMax=8G -p TasksMax=256 timeout 60 <checker> check <source> --message-format=json",
+    "per_process_user_bus": "XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS pointed at the existing user bus"
+  },
+  "purpose": "M-IFLET-EXPR matrix registration and current selected Safe outcomes; no defect closure",
+  "registered_source_commit": "f344987dfe9c05ead6d1a4584a165b64e9519f10",
+  "schema": "anubis-selected-checks/1"
+}

@@ -1,0 +1,16 @@
+fn f(n) requires(n >= 3) {
+    println(n);
+}
+fn go(c: bool, y) {
+    let x = y;
+    if c {
+        let x = 3;
+        println(x);
+    }
+    if x > 2 {
+        f(x);
+    }
+}
+fn main() {
+    go(false, 2.5);
+}

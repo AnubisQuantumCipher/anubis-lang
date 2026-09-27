@@ -1,0 +1,8 @@
+fn f(x: i64) -> i64 requires(x > 0) { print("f entered with ${x}"); return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn pickf(c) { if c > 0 { return f; } return safe; }
+struct H { h: any }
+struct O { n: i64 }
+impl O { fn h(self, x) { return x; } }
+fn mk(c, g) { let t = [H { h: g }]; if c > 0 { return t[0]; } return O { n: 1 }; }
+fn main() { let m = mk(1, f); print(m.h(-1)); }

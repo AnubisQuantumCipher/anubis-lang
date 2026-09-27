@@ -1,0 +1,10 @@
+{
+  "exit_code": 1,
+  "launch_exit_code": "1",
+  "unit": "anubis-linux-native-36220630178-1-X64.service",
+  "load_state_after": "not-found",
+  "query_exit_code": 0,
+  "cleanup_required": false,
+  "stop_exit_code": "not-needed",
+  "unit_removed": true
+}

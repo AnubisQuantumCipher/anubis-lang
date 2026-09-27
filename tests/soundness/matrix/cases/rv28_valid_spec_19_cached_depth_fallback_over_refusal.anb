@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn g(s) { return g2(s); }
+fn g2(s) { return s.pub_n; }
+fn d1(s) { return d2(s); }
+fn d2(s) { return d3(s); }
+fn d3(s) { return d4(s); }
+fn d4(s) { return d5(s); }
+fn d5(s) { return d6(s); }
+fn d6(s) { return d7(s); }
+fn d7(s) { return g(s); }
+fn main() { let p = S { k: 42, pub_n: 3 }; let v = { "a": d1(p), "b": g(p) }; print(v["b"]); }

@@ -1,0 +1,10 @@
+fn emit(s: secret<i64>) {
+    let out = 1;
+    if s > 0 {
+        let out: secret<i64> = s;
+        out = 2;
+    }
+    println(out);
+}
+
+fn main() { emit(42); }

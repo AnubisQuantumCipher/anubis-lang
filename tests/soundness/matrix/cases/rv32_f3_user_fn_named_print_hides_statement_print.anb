@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn print(x: i64) -> i64 {
+    return 0;
+}
+fn h(q: list<i64>) -> i64 {
+    for z in q {
+        print(z);
+    }
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let r = h([p]);
+}

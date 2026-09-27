@@ -1,0 +1,15 @@
+fn g(x) {
+    let mut i = 0;
+    let mut acc = 0;
+    while i < 3 {
+        acc = x;
+        i = i + 1;
+    }
+    acc
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let a = g(s);
+    let b = g(5);
+    println(b);
+}

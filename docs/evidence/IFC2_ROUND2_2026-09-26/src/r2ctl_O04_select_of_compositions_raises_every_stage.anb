@@ -1,0 +1,22 @@
+fn audit(x: i64) -> i64 {
+    println("audit step");
+    x
+}
+
+fn cheap(x: i64) -> i64 {
+    x + 1
+}
+
+fn costly(x: i64) -> i64 {
+    x * 2
+}
+
+fn main() {
+    let tier: secret<i64> = 42;
+    let pipeline = match tier > 100 {
+        true => compose(audit, costly),
+        _ => compose(audit, cheap),
+    };
+    let r = pipeline(10);
+    println("pipeline done");
+}

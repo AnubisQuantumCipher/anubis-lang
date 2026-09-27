@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let c = p.pub_n > 1;
+    let o = if c { Some(abs) } else { Some(zero) };
+    if let Some(g) = o {
+        print(g(p.k));
+    }
+}

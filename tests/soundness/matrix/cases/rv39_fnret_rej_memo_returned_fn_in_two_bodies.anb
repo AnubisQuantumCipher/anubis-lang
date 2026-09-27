@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+fn mk() { return show; }
+fn a1() { let h = mk(); return 0; }
+fn a2() { let h = mk(); return 0; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    a1();
+    a2();
+    let g = mk();
+    g(p);
+}

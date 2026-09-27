@@ -1,0 +1,17 @@
+{
+  "claim_guards_checked": 42480,
+  "failures": [],
+  "measured": {
+    "builtins": 213,
+    "doc_ok": 23,
+    "language": 271,
+    "lean_mod": 16,
+    "lean_th": 199,
+    "modules": 13,
+    "native": 968,
+    "security": 356,
+    "stdlib": 104
+  },
+  "scan_failures": 0,
+  "stamps_checked": 38
+}

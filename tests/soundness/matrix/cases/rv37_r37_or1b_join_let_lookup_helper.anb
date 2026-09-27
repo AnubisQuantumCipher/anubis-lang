@@ -1,0 +1,30 @@
+struct Account { k: secret<i64>, owner: str }
+struct Invoice { id: i64, total: i64, account: Account }
+struct Tag { label: str }
+impl Invoice {
+    fn summary(self) -> str {
+        return "invoice ${self.id}: ${self.total}";
+    }
+}
+impl Tag {
+    fn summary(self) -> str {
+        return "tag ${self}";
+    }
+}
+fn lookup(xs: list<Invoice>, id: i64) -> Invoice {
+    for x in xs {
+        if x.id == id {
+            return x;
+        }
+    }
+    return xs[0];
+}
+fn main() {
+    let acct = Account { k: 42, owner: "ann" };
+    let invs = [Invoice { id: 1, total: 10, account: acct }, Invoice { id: 2, total: 20, account: acct }];
+    let t = Tag { label: "urgent" };
+    println(t.summary());
+    let want = 2;
+    let inv = if want == 0 { Invoice { id: 0, total: 0, account: acct } } else { lookup(invs, want) };
+    println(inv.summary());
+}

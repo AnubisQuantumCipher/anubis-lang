@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { n: i64 }
+impl S { fn show(self, x) { print(x); return 0; } }
+impl W { fn show(self, x) { return 0; } }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let z = sort(xs)[0].show(p);
+}

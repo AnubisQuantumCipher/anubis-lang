@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(p) {
+    let h = |q| { 0 };
+    let m = { "b": 1 };
+    let o = Some(0);
+    let r = identity(match o {
+        Some(g) => get(m, if true { g = h; "a" } else { "a" }, g),
+        _ => 0,
+    });
+    r(p);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p);
+}

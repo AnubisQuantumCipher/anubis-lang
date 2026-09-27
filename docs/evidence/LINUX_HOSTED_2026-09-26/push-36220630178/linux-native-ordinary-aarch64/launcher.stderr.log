@@ -1,0 +1,7 @@
+Running as unit: anubis-linux-native-36220630178-1-ARM64.service
+Finished with result: exit-code
+Main processes terminated with: code=exited/status=1
+Service runtime: 1h 1.220s
+CPU time consumed: 1h 59min 20.122s
+Memory peak: 5.5G
+Memory swap peak: 0B

@@ -1,0 +1,2 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p }; let mut t = [p, p.pub_n]; let r = insert(t, 0, 5); print(t[1]); }

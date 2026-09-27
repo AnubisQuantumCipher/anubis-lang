@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q) {
+    let g = || 0;
+    let i = 0;
+    while i < 10 {
+        let prev = g;
+        g = || [prev(), q];
+        i = i + 1;
+    }
+    let r = g();
+    return r[0][0][0][0][0][0][0][0][1];
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

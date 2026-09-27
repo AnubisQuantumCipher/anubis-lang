@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn pr(x) { print(x); return 0; }
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let m = { "a": p };
+    let g = apply(|x| |y| x, [p]);
+    print(g(0));
+}

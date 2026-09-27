@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { inner: S, n: i64 }
+struct U { xs: list<S>, m: map<string, S>, ll: list<list<S>> }
+enum E { A { s: S, n: i64 }, B(S, i64), C(i64) }
+
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let xs = [p, S { k: 7, pub_n: 1 }];
+  let m = { "a": p };
+  print(chunk([1, p], 1)[0][0]);
+}

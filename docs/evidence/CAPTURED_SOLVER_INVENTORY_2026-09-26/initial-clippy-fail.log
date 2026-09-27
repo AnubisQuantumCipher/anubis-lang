@@ -1,0 +1,36 @@
+    Checking anubis-compiler v0.1.0 (<HOME>/.cache/anubis-wt/codex-register-round2/compiler)
+error: unnecessary use of `clone` to create a slice from a reference
+    --> compiler/src/resolve/captured.rs:1390:17
+     |
+1390 |                 &[obligation.clone()],
+     |                 ^^^^^^^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&obligation)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#cloned_ref_to_slice_refs
+     = note: `-D clippy::cloned-ref-to-slice-refs` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::cloned_ref_to_slice_refs)]`
+
+error: unnecessary use of `clone` to create a slice from a reference
+    --> compiler/src/resolve/captured.rs:1420:17
+     |
+1420 |                 &[obligation.clone()],
+     |                 ^^^^^^^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&obligation)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#cloned_ref_to_slice_refs
+
+error: unnecessary use of `clone` to create a slice from a reference
+    --> compiler/src/resolve/captured.rs:1435:21
+     |
+1435 |                     &[obligation.clone()],
+     |                     ^^^^^^^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&obligation)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#cloned_ref_to_slice_refs
+
+error: unnecessary use of `clone` to create a slice from a reference
+    --> compiler/src/resolve/captured.rs:1453:17
+     |
+1453 |                 &[obligation.clone()],
+     |                 ^^^^^^^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&obligation)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#cloned_ref_to_slice_refs
+
+error: could not compile `anubis-compiler` (lib test) due to 4 previous errors

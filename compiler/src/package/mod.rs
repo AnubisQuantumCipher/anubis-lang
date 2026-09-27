@@ -12,6 +12,8 @@ pub mod proof;
 pub mod registry;
 pub mod resolve_deps;
 pub mod semver;
+pub mod source_graph;
+pub mod source_graph_reader;
 pub mod summary;
 pub mod trust;
 

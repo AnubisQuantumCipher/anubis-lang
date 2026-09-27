@@ -1,0 +1,18 @@
+{
+  "binary_sha256": "16705b9df6e971b31c0b1cf2a3a69a057a66d790d392951341cb53e718dddf35",
+  "diagnostic_codes": [
+    "ANUBIS_EXECUTION_UNVERIFIED",
+    "ANUBIS_ASSERTION_DISPROVED"
+  ],
+  "limits": [
+    "Normal Safe run refused before native execution.",
+    "Counterexample is the encoded obligation; no production lowering correspondence is claimed."
+  ],
+  "local_manifest_sha256": "491f8edf453c8131025d7662e25d8454cdd790470812c3a434262a951cc9d683",
+  "observed_exit_code": 1,
+  "schema": "anubis-public-safe-run-control/1",
+  "source_commit": "88a2903c6534843d1c831ac47b11d27e87b1f114",
+  "source_sha256": "3aa08f5ed5f8eeaf5870aeb30ee58acd4a356b7c7b5794223d5e031d9d085db1",
+  "stderr_sha256": "f22b0ad510bc05b8a6d9b7b2372eb4e08da6bc3e2ce488a4f07c628f1d85282c",
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

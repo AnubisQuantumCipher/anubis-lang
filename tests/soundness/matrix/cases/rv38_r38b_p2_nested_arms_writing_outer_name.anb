@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pick(p: S, n: i64) -> i64 {
+    let acc = [];
+    let v = identity(match n { 9 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 8 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 7 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 6 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 5 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 4 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 3 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 2 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 1 => None, _ => identity(if true { acc = [acc, p]; identity(match n { 0 => None, _ => identity(if true { acc = [acc, p]; Some(p) } else { None }) }) } else { None }) }) } else { None }) }) } else { None }) }) } else { None }) }) } else { None }) }) } else { None }) }) } else { None }) }) } else { None }) }) } else { None }) });
+    return n + 1;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    println(pick(p, 50));
+}

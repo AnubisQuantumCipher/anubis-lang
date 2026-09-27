@@ -1,0 +1,6 @@
+struct P { x: i64 }
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() {
+    let v = if true { P { x: 5 }.x } else { 1 };
+    print(f(v));
+}

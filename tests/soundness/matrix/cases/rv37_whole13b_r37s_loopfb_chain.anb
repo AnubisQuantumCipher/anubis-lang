@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn marker(z) { return 0; }
+fn f(q) {
+  let x1 = marker; let x2 = marker; let x3 = marker; let x4 = marker; let x5 = marker; let x6 = marker; let x7 = marker; let x8 = marker; let x9 = marker; let x10 = marker; let x11 = marker; let x12 = marker; let x13 = marker; let x14 = marker; let x15 = marker; let x16 = marker; let x17 = marker; let x18 = marker; let x19 = marker; let x20 = marker; let x21 = marker; let x22 = marker; let x23 = marker; let x24 = marker; let x25 = marker; let x26 = marker;
+  let i = 0;
+  while i < 29 {
+    print(x1);
+    x1 = x2; x2 = x3; x3 = x4; x4 = x5; x5 = x6; x6 = x7; x7 = x8; x8 = x9; x9 = x10; x10 = x11; x11 = x12; x12 = x13; x13 = x14; x14 = x15; x15 = x16; x16 = x17; x17 = x18; x18 = x19; x19 = x20; x20 = x21; x21 = x22; x22 = x23; x23 = x24; x24 = x25; x25 = x26; x26 = q;
+    i = i + 1;
+  }
+  return 0;
+}
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  f(p);
+}

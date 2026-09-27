@@ -1,0 +1,1 @@
+fn main() { let k: secret<i64> = 42; let x = 7; let i = 0; while let Some(v) = Some(x) { if i == 1 { println(v); break; } x = 9; i = i + 1; } println(0); }

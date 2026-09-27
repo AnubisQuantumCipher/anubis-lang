@@ -1,0 +1,39 @@
+{
+  "source_manifest_sha256": "f4043e446337cbdd603c29f0633178f2cf93755f4b798829672e684c038a52d5",
+  "copied_files": [
+    "cli-pin.json",
+    "cli-build.txt",
+    "cli-build.rc",
+    "cli-checks.txt",
+    "cli-checks.rc",
+    "check_cli.py",
+    "cli-checks/results.json",
+    "cli-checks/history.tsv"
+  ],
+  "history_rows_appended": 7,
+  "history_label": "proof-bool-focused-b835b94b",
+  "validation": "PASS",
+  "scope": "Static validation only; no compiler or harness execution in this follow-up.",
+  "source_manifest_unchanged": true,
+  "current_recorded_build_inputs_match": true,
+  "copied_receipt_sha256": {
+    "cli-pin.json": "cc69f09280fc0ff0e078e6a56a6843679f47546000e1d84f469040a82dabc986",
+    "cli-build.txt": "3530572d33c0fb17ce8702a4c8ea7b873ac6e011b86cc1eaf0cdb8a0032758e4",
+    "cli-build.rc": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "cli-checks.txt": "2db6a8f85798c2693f65ffc934cf14eba44609142905936dcbb372706cf97e26",
+    "cli-checks.rc": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "check_cli.py": "1b55fc6206faed5c6fda7137b5ab8a8acb18b2ade06a598183ab75815477763f",
+    "cli-checks/results.json": "20abbb206c6a64ffa869b1e8061020e80241033ebd3ea5cffd8eef67fd8226fe",
+    "cli-checks/history.tsv": "fa2ad6593c3a03a99982c5b501bc5fab0e5d6d0164b6b436a90b831d4bf19375"
+  },
+  "current_cli_pin_matches": true,
+  "current_cli_pin_not_writable": true,
+  "source_hashes_and_registry_intents_match": true,
+  "retained_verdicts_reclassified_from_exit_and_output": true,
+  "retained_check_summary": {
+    "PASS": 14
+  },
+  "focused_history_rows_present_once": 7,
+  "focused_history_exact_copy": true,
+  "harness_python_syntax": "PASS"
+}

@@ -1,0 +1,13 @@
+enum Vault {
+    Entry { pin: secret<i64> },
+}
+fn main() {
+    let pv = 42;
+    let e = Vault::Entry { pin: pv };
+    let p = e.pin;
+    let a = {"k": p};
+    let c = len(args()) > 100;
+    let b = if c { {"k": 1} } else { {"z": 1} };
+    let r = a;
+    println(r["k"]);
+}

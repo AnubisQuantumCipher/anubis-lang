@@ -57,7 +57,13 @@ fn factorial(n: i64) -> i64 {
 
 fn decide(expedition: Expedition, completed: i64) -> Dispatch {
     let manifest = "${expedition.commander}: ${completed}/${expedition.planned_stages} stages";
-    if completed == expedition.planned_stages && expedition.supplies >= 12 {
+    // `proven_double` requires a nonnegative count below 2^62; `completed` comes from the caller, so the
+    // bound is stated here rather than assumed.
+    if completed == expedition.planned_stages
+        && expedition.supplies >= 12
+        && completed >= 0
+        && completed < 4611686018427387904
+    {
         return Dispatch::Launch {
             manifest: manifest,
             readiness: proven_double(completed),

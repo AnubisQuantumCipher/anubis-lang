@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+struct U { n: i64 }
+impl T { fn show(self, y) { return 0; } }
+impl U { fn show(self, y) { print(y); return 0; } }
+fn step(a, b) { a = b; a }
+fn main() { let p = S { k: 42, pub_n: 3 }; let x = T { n: 1 }; let i = 0; while i < 2 { x = step(x, U { n: 2 }); i = i + 1; } let z = x.show(p); }

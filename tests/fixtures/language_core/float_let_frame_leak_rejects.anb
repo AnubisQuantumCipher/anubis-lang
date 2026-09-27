@@ -1,5 +1,10 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_FLOAT_CONTRACT_UNMODELED
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// (2026-09-24: this needle read ANUBIS_FLOAT_CONTRACT_UNMODELED, and passed only because the fixture
+// runner matched the fixture's own header in its AST dump. Every pin since the float `let` lane
+// (06eb6c16) instead DISPROVES the postcondition, which is correct: f(30.0, false) returns 0.0
+// (runtime witness). Its printed counterexample, x = NaN, does not satisfy `requires(x > 20.0)`;
+// recorded as FLOAT-CEX-OUTSIDE-REQUIRES.)
 // Phase-3 QF_FP float `let` SOUNDNESS GUARD (the false-accept this slice must NOT open). `y` is 0.0 on
 // entry and only becomes `x * x` when `c` is true, so when `c` is false `y` stays 0.0 and the
 // postcondition `result > 100.0` is FALSE. A naive `let`-chaining that kept the `y = 0.0` fact would

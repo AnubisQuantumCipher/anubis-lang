@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn tag(p) {
+    let s = slice("id:xyz", 0, 3);
+    return join(flatten(s + p), "");
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(tag(p));
+}

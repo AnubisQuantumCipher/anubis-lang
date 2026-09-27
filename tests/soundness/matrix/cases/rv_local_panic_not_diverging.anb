@@ -1,0 +1,13 @@
+fn f(n: i64) requires(n > 0) {
+    println(n);
+}
+fn go(k: i64) {
+    if k <= 0 {
+        let panic = |m| 0;
+        panic(1);
+    }
+    f(k);
+}
+fn main() {
+    go(-1);
+}

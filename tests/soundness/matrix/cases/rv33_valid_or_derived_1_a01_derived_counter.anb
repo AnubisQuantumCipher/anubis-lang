@@ -1,0 +1,23 @@
+struct Account { k: secret<i64>, id: i64, balance: i64 }
+struct Report { title: string, count: i64 }
+struct Console { prefix: string }
+impl Report {
+    fn render(self, accts) {
+        for a in accts { print("${self.title} #${a.id} bal=${a.balance}"); }
+        print("${self.title}: ${self.count} accounts");
+    }
+}
+impl Console {
+    fn render(self, lines) {
+        for l in lines { print("${self.prefix}${l}"); }
+    }
+}
+fn main() {
+    let accts = [Account { k: 42, id: 1, balance: 10 }, Account { k: 7, id: 2, balance: 20 }];
+    let n = 0;
+    for a in accts { n = n + 1; }
+    let rep = Report { title: "accts", count: n };
+    rep.render(accts);
+    let con = Console { prefix: "> " };
+    con.render(["done"]);
+}

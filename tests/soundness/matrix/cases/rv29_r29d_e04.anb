@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(s) { let mut acc = { "z": 0 }; for i in range(0, 4) { acc = { "pub_n": acc, "q": s }; } return acc; }
+fn main() { let p = S { k: 42, pub_n: 3 }; let v = f(p); print(v.pub_n); }

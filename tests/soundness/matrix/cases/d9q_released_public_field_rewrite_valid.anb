@@ -1,0 +1,7 @@
+struct Row { k: secret<i64>, n: i64 }
+fn main() {
+    let s: secret<i64> = 42;
+    let row: Row = declassify(Row { k: s, n: 7 }, "policy", "reason");
+    row.n = 43;
+    println(row.n);
+}

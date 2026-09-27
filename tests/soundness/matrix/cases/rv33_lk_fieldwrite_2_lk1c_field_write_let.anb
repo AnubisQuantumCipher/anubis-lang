@@ -1,0 +1,17 @@
+struct Account { k: secret<i64>, id: i64, balance: i64 }
+struct Printer { width: i64 }
+struct Console { prefix: string }
+struct Report { title: string, printer: Printer }
+impl Printer {
+    fn line(self, a) { print("${repeat("-", self.width)} ${a.id}"); }
+}
+impl Console {
+    fn line(self, a) { print("${self.prefix}${a}"); }
+}
+fn main() {
+    let accts = [Account { k: 42, id: 1, balance: 10 }, Account { k: 7, id: 2, balance: 20 }];
+    let rep = Report { title: "t", printer: Printer { width: 2 } };
+    if len(accts) > 1 { rep.printer = Console { prefix: "> " }; }
+    let pr = rep.printer;
+    pr.line(accts[0]);
+}

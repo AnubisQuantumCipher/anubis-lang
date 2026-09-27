@@ -1,0 +1,58 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Account { id: i64, owner: string, balance: i64, key: S }
+fn col(rows, f) {
+    let mut out = [];
+    for r in rows {
+        push(out, f(r));
+    }
+    return out;
+}
+fn total(xs) {
+    let mut t = 0;
+    for x in xs {
+        t = t + x;
+    }
+    return t;
+}
+fn report(accts) {
+    println("c0=" + str(total(col(accts, |a| a.balance + 0))));
+    println("c1=" + str(total(col(accts, |a| a.balance + 1))));
+    println("c2=" + str(total(col(accts, |a| a.balance + 2))));
+    println("c3=" + str(total(col(accts, |a| a.balance + 3))));
+    println("c4=" + str(total(col(accts, |a| a.balance + 4))));
+    println("c5=" + str(total(col(accts, |a| a.balance + 5))));
+    println("c6=" + str(total(col(accts, |a| a.balance + 6))));
+    println("c7=" + str(total(col(accts, |a| a.balance + 7))));
+    println("c8=" + str(total(col(accts, |a| a.balance + 8))));
+    println("c9=" + str(total(col(accts, |a| a.balance + 9))));
+    println("c10=" + str(total(col(accts, |a| a.balance + 10))));
+    println("c11=" + str(total(col(accts, |a| a.balance + 11))));
+    println("c12=" + str(total(col(accts, |a| a.balance + 12))));
+    println("c13=" + str(total(col(accts, |a| a.balance + 13))));
+    println("c14=" + str(total(col(accts, |a| a.balance + 14))));
+    println("c15=" + str(total(col(accts, |a| a.balance + 15))));
+    println("c16=" + str(total(col(accts, |a| a.balance + 16))));
+    println("c17=" + str(total(col(accts, |a| a.balance + 17))));
+    println("c18=" + str(total(col(accts, |a| a.balance + 18))));
+    println("c19=" + str(total(col(accts, |a| a.balance + 19))));
+    println("c20=" + str(total(col(accts, |a| a.balance + 20))));
+    println("c21=" + str(total(col(accts, |a| a.balance + 21))));
+    println("c22=" + str(total(col(accts, |a| a.balance + 22))));
+    println("c23=" + str(total(col(accts, |a| a.balance + 23))));
+    println("c24=" + str(total(col(accts, |a| a.balance + 24))));
+    println("c25=" + str(total(col(accts, |a| a.balance + 25))));
+    println("c26=" + str(total(col(accts, |a| a.balance + 26))));
+    println("c27=" + str(total(col(accts, |a| a.balance + 27))));
+    println("c28=" + str(total(col(accts, |a| a.balance + 28))));
+    println("c29=" + str(total(col(accts, |a| a.balance + 29))));
+    println("c30=" + str(total(col(accts, |a| a.balance + 30))));
+    let keys = col(accts, |a| a.key);
+    println("keys=" + str(len(keys)));
+    println("last=" + str(total(col(accts, |a| a.id * 1000))));
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let accts = [Account { id: 1, owner: "ann", balance: 100, key: p }, Account { id: 2, owner: "bob", balance: 50, key: S { k: 7, pub_n: 1 } }];
+    report(accts);
+}

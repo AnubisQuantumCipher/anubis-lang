@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(s) { let mut t = [0]; match 1 { 1 => { t[0] = s; } _ => { t[0] = 0; } } return t; }
+fn main() { let p = S { k: 42, pub_n: 3 }; print(f(p)); }

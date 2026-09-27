@@ -1,0 +1,18 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(g, p) { return g(p) }
+fn l2(h, p) {
+    let g = |s| h(s)
+    return run(g, p)
+}
+fn l3(k, p) {
+    let h = |s| k(s)
+    return l2(h, p)
+}
+fn l4(m, p) {
+    let k = |s| m(s)
+    return l3(k, p)
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 }
+    print([l4(|s| 0, p), l4(|s| s, p)])
+}

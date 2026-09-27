@@ -1,0 +1,15 @@
+   Compiling anubis-compiler v0.1.0 ($CHECKOUT/compiler)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.33s
+     Running unittests src/lib.rs ($LEAD_TARGET/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 8 tests
+test middle::replay_inventory::tests::unsupported_or_unscoped_declarations_fail_before_any_match ... ok
+test middle::replay_inventory::tests::ground_model_and_command_boundary_ignore_quoted_text_and_comments ... ok
+test middle::replay_inventory::tests::semantic_symbol_collisions_refuse_without_discarding_spelling ... ok
+test middle::replay_inventory::tests::direct_safe_fp_and_string_models_each_require_their_own_sort_and_value ... ok
+test middle::replay_inventory::tests::mixed_safe_declarations_do_not_let_one_binding_stand_for_another ... ok
+test middle::replay_inventory::tests::direct_safe_bv_model_has_one_exact_value_and_pairwise_refusals ... ok
+test middle::replay_inventory::tests::direct_safe_array_const_store_and_as_array_inventory_are_bounded ... ok
+test middle::replay_inventory::tests::auxiliary_must_be_used_once_and_acyclic ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 0.00s

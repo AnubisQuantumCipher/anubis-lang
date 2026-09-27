@@ -1,0 +1,66 @@
+[
+  {
+    "directory": "g4_selfref_old_prints_stmt-123456",
+    "binary_sha256": "f5c0cb17bf940e20f1aa3e9a6a343da5d09e5e1047186817f1735f7f59a44bb7",
+    "rc": 0,
+    "stdout": "123456\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  },
+  {
+    "directory": "g4_selfref_old_prints_stmt-42",
+    "binary_sha256": "68e65645751b1c3437818c920cfe9b22ac0f3d02f2297c6b6922f8b8cc082772",
+    "rc": 0,
+    "stdout": "42\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  },
+  {
+    "directory": "g5_mutual_old_prints_stmt-123456",
+    "binary_sha256": "64af70bb5e28b346209a86dcba40855dc27f481f31f1c35bb590977d0b3db8d2",
+    "rc": 0,
+    "stdout": "123456\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  },
+  {
+    "directory": "g5_mutual_old_prints_stmt-42",
+    "binary_sha256": "1337c0348ea2f0235caa4a13f3017c4c6df751c34c16bf71036aa29121ebca7f",
+    "rc": 0,
+    "stdout": "42\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  },
+  {
+    "directory": "scalar_g4_selfref_old_prints_stmt-123456",
+    "binary_sha256": "73fa7e55a0ade1e921a45ffd567a44e1dae015e5b6a13ac6d9c6b484927e9fb5",
+    "rc": 0,
+    "stdout": "123456\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  },
+  {
+    "directory": "scalar_g4_selfref_old_prints_stmt-42",
+    "binary_sha256": "4bfcecb7976145e4abe0c5535aa713b6b6524c7778b03f82f1a71eb138fd4633",
+    "rc": 0,
+    "stdout": "42\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  },
+  {
+    "directory": "scalar_g5_mutual_old_prints_stmt-123456",
+    "binary_sha256": "b43e2d8aa25ca1b480aa32e28ea1e389b3fa0d543a8600242e4c19f3be6297e3",
+    "rc": 0,
+    "stdout": "123456\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  },
+  {
+    "directory": "scalar_g5_mutual_old_prints_stmt-42",
+    "binary_sha256": "6d88ed841878a516ca189797e277c4f404794f3419edfc1204525e2793dae6ff",
+    "rc": 0,
+    "stdout": "42\n",
+    "stderr": "",
+    "matches_original_run_output_hash": true
+  }
+]

@@ -1,0 +1,5 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let ys = map([0, 0, 0, 0, 0, 0, k], |x| x);
+    print(apply(|p1, p2, p3, p4, p5, p6, p7| p7, ys));
+}

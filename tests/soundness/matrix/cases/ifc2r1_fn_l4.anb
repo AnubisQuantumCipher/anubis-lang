@@ -1,0 +1,12 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let opts = [0, |acc, x| x];
+    let i = if k > 100 { 1 } else { 0 };
+    let a = opts[i];
+    let b = |acc, x| {
+        println("b called");
+        acc
+    };
+    let r = reduce([1, 2], a, b);
+    println("end");
+}

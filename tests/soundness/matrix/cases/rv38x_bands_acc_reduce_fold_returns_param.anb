@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(xs) {
+    let best = reduce(xs, |a, b| if a.pub_n > b.pub_n { a } else { b }, xs[0]);
+    let picked = call(|x| x, best);
+    print(picked.pub_n);
+    print(len(xs));
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let q = S { k: 7, pub_n: 9 };
+    run([p, q]);
+}

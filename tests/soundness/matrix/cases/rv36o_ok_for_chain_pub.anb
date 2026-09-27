@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn getp() -> S { return S { k: 42, pub_n: 3 }; }
+fn f(n) { let x = 0; let w = 0; let z = 0; for i in [1, 2, 3] { x = w; w = z; z = getp().pub_n; } return x; }
+fn main() { print(f(1)); }

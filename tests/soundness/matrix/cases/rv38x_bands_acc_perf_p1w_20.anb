@@ -1,0 +1,30 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pick(p: S, n: i64) -> i64 {
+    let c0 = 0;
+    let c1 = 0;
+    let c2 = 0;
+    let c3 = 0;
+    let c4 = 0;
+    let c5 = 0;
+    let c6 = 0;
+    let c7 = 0;
+    let c8 = 0;
+    let c9 = 0;
+    let c10 = 0;
+    let c11 = 0;
+    let c12 = 0;
+    let c13 = 0;
+    let c14 = 0;
+    let c15 = 0;
+    let c16 = 0;
+    let c17 = 0;
+    let c18 = 0;
+    let c19 = 0;
+    let c20 = 0;
+    let v = Some(if n > 20 { c20 = p; Some(if n > 19 { c19 = p; Some(if n > 18 { c18 = p; Some(if n > 17 { c17 = p; Some(if n > 16 { c16 = p; Some(if n > 15 { c15 = p; Some(if n > 14 { c14 = p; Some(if n > 13 { c13 = p; Some(if n > 12 { c12 = p; Some(if n > 11 { c11 = p; Some(if n > 10 { c10 = p; Some(if n > 9 { c9 = p; Some(if n > 8 { c8 = p; Some(if n > 7 { c7 = p; Some(if n > 6 { c6 = p; Some(if n > 5 { c5 = p; Some(if n > 4 { c4 = p; Some(if n > 3 { c3 = p; Some(if n > 2 { c2 = p; Some(if n > 1 { c1 = p; Some(if n > 0 { c0 = p; Some(p) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None });
+    return n + 1;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    println(pick(p, 5));
+}

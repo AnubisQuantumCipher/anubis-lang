@@ -1,0 +1,9 @@
+fn wrapped(v: i64) -> u8 {
+    return v;
+}
+fn g(a: i64) requires(wrapped(a) > 255) {
+    println(wrapped(a));
+}
+fn main() {
+    g(300);
+}

@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    print(reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, reduce(xs, xs[0], |a0, x| a0), |a1, x| a1), |a2, x| a2), |a3, x| a3), |a4, x| a4), |a5, x| a5), |a6, x| a6), |a7, x| a7), |a8, x| a8), |a9, x| a9), |a10, x| a10), |a11, x| a11), |a12, x| a12), |a13, x| a13), |a14, x| a14), |a15, x| a15), |a16, x| a16), |a17, x| a17), |a18, x| a18), |a19, x| a19), |a20, x| a20), |a21, x| a21));
+}

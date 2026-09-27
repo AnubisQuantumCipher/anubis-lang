@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn leak(x) { print(x); return 0; }
+fn f(q, n) {
+    let g = zero;
+    let t = if n > 0 { g = leak; 0 } else { 0 };
+    g(q);
+    return t;
+}
+fn main() {
+    let p = S { k: 123456, pub_n: 3 };
+    f(p.k, 1);
+}

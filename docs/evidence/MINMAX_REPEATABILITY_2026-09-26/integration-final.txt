@@ -1,0 +1,24 @@
+   Compiling anubis-compiler v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/compiler)
+    Finished `release` profile [optimized] target(s) in 39.12s
+     Running tests/ifc2_minmax.rs (/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/ifc2_minmax-619fd00f4d5ac42b)
+
+running 16 tests
+test minmax_repeatable_keys_preserve_secret_callable_control ... ok
+test minmax_feedback_covers_aliases_compound_keys_and_nested_arguments ... ok
+test minmax_secret_length_still_controls_callback_schedule ... ok
+test minmax_short_lists_do_not_feed_a_selected_winner_back ... ok
+test minmax_repeatable_keys_do_not_authorize_direct_key_egress ... ok
+test minmax_rechecks_secret_selected_callback_arguments ... ok
+test minmax_repeatability_is_per_fixed_capture_snapshot ... ok
+test minmax_preserves_fixed_callback_schedule ... ok
+test minmax_observation_captured_before_callback_is_fixed ... ok
+test minmax_unknown_length_rechecks_lifted_callback_continuation ... ok
+test minmax_repeatable_keys_preserve_selected_value_labels ... ok
+test minmax_repeatable_explicit_returns_preserve_public_argument_transcript ... ok
+test minmax_equal_captured_keys_preserve_public_argument_transcript ... ok
+test minmax_unmodeled_calls_do_not_prove_secret_keys_repeatable ... ok
+test minmax_repeatable_keys_follow_aliases_rebinding_and_shadowing ... ok
+test minmax_mutation_and_early_return_cannot_retain_a_stale_repeatability_proof ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

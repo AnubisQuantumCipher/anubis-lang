@@ -1,0 +1,1 @@
+fn main() uses(io.read, fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/ms11.txt", input()); }

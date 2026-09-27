@@ -1,0 +1,7 @@
+struct Account { pin: secret<i64>, id: i64, balance: i64 }
+fn main() {
+    let a = Account { pin: 42, id: 1, balance: 100 };
+    print("account ${a.id}");
+    let tags = map(["gold", "vip"], |a| upper(a));
+    print(tags);
+}

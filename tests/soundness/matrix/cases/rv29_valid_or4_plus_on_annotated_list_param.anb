@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn append_one(acc: list<S>, x: S) -> list<S> {
+    return acc + [x];
+}
+struct Ledger { name: string, items: list<S> }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let l = Ledger { name: "main", items: [] };
+    let ys = append_one(l.items, p);
+    print(len(ys));
+}

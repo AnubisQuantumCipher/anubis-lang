@@ -1,0 +1,11 @@
+{
+  "new_fixture_sha256": {
+    "d9q_literal_false_loop_under_secret_pc_egress_valid": "3aa16c607df7bd061438c92424b0d6492d7d23bff269185731025b3f379383ec",
+    "d9q_loop_carried_public_guard_egress_valid": "0604d7738a848d0b69725454fb73df234dfed9946e28fb9aafcf4283c6a0a91f",
+    "d9q_loop_carried_secret_guard_egress_invalid": "e9b7fe1ac325692ab0c178e3ba938d33e157641cd0dfa9e46d3c554adf0b0afc",
+    "d9q_secret_field_write_public_projection_valid": "f450c8a02d976e4cacc1966c38a145575497a4c030c2efb708ce552b06cdae57"
+  },
+  "registry_sha256": "b56321497a6ef58339b0ce6911824399d8b0ebf7625d6bdd170e79aca320b03d",
+  "source_inventory_exact": true,
+  "unique_registry_rows": 2487
+}

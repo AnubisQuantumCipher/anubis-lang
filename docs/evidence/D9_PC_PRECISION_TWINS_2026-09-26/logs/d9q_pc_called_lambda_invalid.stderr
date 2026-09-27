@@ -1,0 +1,2 @@
+program-evidence.v3 skipped: no native artifact
+Error: check failed: ANUBIS_IMPLICIT_FLOW: `out` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `out` as secret<T>.; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`

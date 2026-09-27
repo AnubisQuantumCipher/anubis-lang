@@ -1,0 +1,35 @@
+struct Supplier { k: secret<i64>, name: str, rating: i64 }
+struct Item { sku: str, qty: i64, price: i64, supplier: Supplier }
+struct Inventory { items: list<Item>, count: i64 }
+struct Report { title: str, lines: list<str> }
+impl Inventory {
+    fn add(self, it: Item) -> Inventory {
+        let mut c = self;
+        c.count = c.count + 1;
+        c.items = c.items + [it];
+        return c;
+    }
+    fn show(self) -> str {
+        return "inventory of ${self.count} items";
+    }
+}
+impl Report {
+    fn add(self, line: str) -> Report {
+        let mut r = self;
+        r.lines = r.lines + [line];
+        return r;
+    }
+    fn show(self) -> str {
+        return self.title + ": " + join(self.lines, "; ");
+    }
+}
+fn main() {
+    let acme = Supplier { k: 42, name: "acme", rating: 4 };
+    let mut inv = Inventory { items: [], count: 0 };
+    inv = inv.add(Item { sku: "a1", qty: 3, price: 10, supplier: acme });
+    inv = inv.add(Item { sku: "b2", qty: 1, price: 20, supplier: acme });
+    let mut rep = Report { title: "stock", lines: [] };
+    rep = rep.add(inv.show());
+    println(rep.show());
+    println(inv.show());
+}

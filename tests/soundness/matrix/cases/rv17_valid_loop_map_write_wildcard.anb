@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+struct User { id: i64 }
+impl User { fn total(self) { return self.id; } }
+fn main() { let totals = {}; let ks = ["a"]; for k in ks { let t = 5; totals[k] = t; } let us = [User { id: 1 }]; for u in us { print(u.total()); } print(map([1], f)); }

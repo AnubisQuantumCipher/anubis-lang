@@ -1,0 +1,18 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn app(g, y) {
+    let a = y;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let a = a + a;
+    let h = [g, a + a][0];
+    h(-1);
+}
+fn main() { app(f, 0); }

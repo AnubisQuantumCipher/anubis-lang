@@ -1,0 +1,2 @@
+fn f(q) { let r = 0; loop { r = q; if true { break; } r = 0; } return r; }
+fn main() { let k: secret<i64> = 42; println(f(k)); }

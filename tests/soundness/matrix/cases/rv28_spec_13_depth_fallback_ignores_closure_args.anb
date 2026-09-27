@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h1(f) { return h2(f); }
+fn h2(f) { return h3(f); }
+fn h3(f) { return h4(f); }
+fn h4(f) { return h5(f); }
+fn h5(f) { return h6(f); }
+fn h6(f) { return h7(f); }
+fn h7(f) { return h8(f); }
+fn h8(f) { return h9(f); }
+fn h9(f) { return f(0); }
+fn main() { let p = S { k: 42, pub_n: 3 }; let r = h1(|z| p); print(r); }

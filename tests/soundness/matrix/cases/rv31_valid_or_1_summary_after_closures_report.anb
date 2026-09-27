@@ -1,0 +1,37 @@
+struct Emp { k: secret<i64>, name: string, dept: string, salary: i64, age: i64, years: i64 }
+
+fn fold_by(rows, f, init) {
+    let acc = init;
+    for r in rows { acc = f(acc, r); }
+    return acc;
+}
+fn sum_by(rows, g) { return fold_by(rows, |a, r| a + g(r), 0); }
+fn count_if(rows, pred) { return fold_by(rows, |a, r| if pred(r) { a + 1 } else { a }, 0); }
+fn max_by(rows, g) { return fold_by(rows, |a, r| if g(r) > a { g(r) } else { a }, 0); }
+
+fn report(rows) {
+    let lines = [];
+    lines = lines + ["headcount " + count_if(rows, |r| true)];
+    lines = lines + ["eng " + count_if(rows, |r| r.dept == "eng")];
+    lines = lines + ["ops " + count_if(rows, |r| r.dept == "ops")];
+    lines = lines + ["seniors " + count_if(rows, |r| r.years > 5)];
+    lines = lines + ["payroll " + sum_by(rows, |r| r.salary)];
+    lines = lines + ["eng payroll " + sum_by(rows, |r| if r.dept == "eng" { r.salary } else { 0 })];
+    lines = lines + ["total age " + sum_by(rows, |r| r.age)];
+    lines = lines + ["total years " + sum_by(rows, |r| r.years)];
+    lines = lines + ["top salary " + max_by(rows, |r| r.salary)];
+    lines = lines + ["oldest " + max_by(rows, |r| r.age)];
+    lines = lines + ["young " + count_if(rows, |r| r.age < 30)];
+    lines = lines + ["mid " + count_if(rows, |r| r.age >= 30 && r.age < 40)];
+    lines = lines + ["old " + count_if(rows, |r| r.age >= 40)];
+    lines = lines + ["ops payroll " + sum_by(rows, |r| if r.dept == "ops" { r.salary } else { 0 })];
+    lines = lines + ["longest " + max_by(rows, |r| r.years)];
+    lines = lines + ["name chars " + sum_by(rows, |r| len(r.name))];
+    lines = lines + ["raises " + sum_by(rows, |r| r.salary / 10)];
+    return lines;
+}
+
+fn main() {
+    let rows = [Emp { k: 42, name: "ann", dept: "eng", salary: 100, age: 31, years: 6 }, Emp { k: 7, name: "bo", dept: "ops", salary: 80, age: 45, years: 2 }, Emp { k: 9, name: "cy", dept: "eng", salary: 120, age: 28, years: 1 }];
+    for l in report(rows) { println(l); }
+}

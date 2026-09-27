@@ -1,0 +1,1 @@
+fn main() { let k: secret<i64> = 42; let x = 0; let v = if true { x = k; 0 } else { 0 }; println(x); }

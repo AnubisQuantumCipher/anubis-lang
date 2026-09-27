@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn zero2(x) { return 2; }
+fn id1(x) { return x; }
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let g = zero;
+    let f = |x| 0;
+    if p.pub_n > 1 { print(1); }
+    while p.pub_n > 5 { print(2); }
+    print(g(p));
+    print(f(p));
+}

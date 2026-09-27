@@ -1,0 +1,15 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn id1(x) { return x; }
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let g = zero;
+    let i = 0;
+    loop {
+        let z = match i { 0 => { g = println; break; } _ => 0 };
+        g = zero;
+        i = i + 1;
+    }
+    print(map([p], g));
+}

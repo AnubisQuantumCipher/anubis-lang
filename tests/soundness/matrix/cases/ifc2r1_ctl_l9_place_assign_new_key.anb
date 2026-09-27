@@ -1,0 +1,12 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let mut m = {"a": 1};
+    loop {
+        if s > 100 {
+            break;
+        }
+        m["b"] = 2;
+        break;
+    }
+    println(len(m));
+}

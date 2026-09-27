@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn app(g, y) { while y > 0 { g(y); break; } }
+fn main() { app(f, 3); }

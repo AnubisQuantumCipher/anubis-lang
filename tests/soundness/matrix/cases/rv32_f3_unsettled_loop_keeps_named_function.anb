@@ -1,0 +1,74 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn noop(x) { return 0; }
+fn leak(x) { print(x); return 0; }
+fn g(p) {
+    let f1 = noop;
+    let f2 = noop;
+    let f3 = noop;
+    let f4 = noop;
+    let f5 = noop;
+    let f6 = noop;
+    let f7 = noop;
+    let f8 = noop;
+    let f9 = noop;
+    let f10 = noop;
+    let f11 = noop;
+    let f12 = noop;
+    let f13 = noop;
+    let f14 = noop;
+    let f15 = noop;
+    let f16 = noop;
+    let f17 = noop;
+    let f18 = noop;
+    let f19 = noop;
+    let f20 = noop;
+    let f21 = noop;
+    let f22 = noop;
+    let f23 = noop;
+    let f24 = noop;
+    let f25 = noop;
+    let f26 = noop;
+    let f27 = noop;
+    let f28 = noop;
+    let f29 = noop;
+    let f30 = noop;
+    let i = 0;
+    while i < 30 {
+        f30 = f29;
+        f29 = f28;
+        f28 = f27;
+        f27 = f26;
+        f26 = f25;
+        f25 = f24;
+        f24 = f23;
+        f23 = f22;
+        f22 = f21;
+        f21 = f20;
+        f20 = f19;
+        f19 = f18;
+        f18 = f17;
+        f17 = f16;
+        f16 = f15;
+        f15 = f14;
+        f14 = f13;
+        f13 = f12;
+        f12 = f11;
+        f11 = f10;
+        f10 = f9;
+        f9 = f8;
+        f8 = f7;
+        f7 = f6;
+        f6 = f5;
+        f5 = f4;
+        f4 = f3;
+        f3 = f2;
+        f2 = f1;
+        f1 = leak;
+        i = i + 1;
+    }
+    return f30(p);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let z = g(p);
+}

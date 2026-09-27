@@ -1,0 +1,10 @@
+fn f(n: i64) requires(n < 3) {
+    println(n);
+}
+fn main() {
+    let mut n = 3;
+    for i in 0..n {
+        n = 100;
+        f(i);
+    }
+}

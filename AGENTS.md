@@ -148,8 +148,8 @@ Phases 0 through 7 — is landed, sealed, and released. Dated per-phase evidence
   Phase-8 completion claim. See also
   `docs/evidence/COMPLETION_PHASES_5_8_STATUS_2026-08-15.md`.
 
-Sealed-tree figures: security **337/337**, language **259/259**, stdlib fail-closed **104/104**,
-cargo-test **1179/0**, native-authoritative **937 files / 0 mismatches**, formal at the release
+Sealed-tree figures (historical seal snapshot): security **337/337**, language **259/259**, stdlib fail-closed **104/104**,
+cargo-test **1179/0**, native-authoritative **937 files / 0 mismatches** (historical), formal at the release
 seal **162 theorems / 15 modules**, docs-drift **53 stamps / 0 drift**. That seal is `v0.1.2-preview`
 / `b5c24125` (2026-08-15); the sealed-tree figures are the release-seal snapshot. Post-seal live
 formal figures on this worktree are **199 theorems / 16 modules** — Phase-8 Slice-1 added the

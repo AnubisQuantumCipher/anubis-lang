@@ -1,0 +1,21 @@
+// An index-based running maximum, used on private bids and then on public ticket counts.
+fn running_max(xs) {
+    let mut best = xs[0];
+    let mut i = 1;
+    while i < len(xs) {
+        if xs[i] > best {
+            best = xs[i];
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+fn main() {
+    let bid: secret<i64> = 42;
+    let bids = [bid, bid + 5, bid - 3];
+    let top_bid = running_max(bids);
+    assert(top_bid == top_bid);
+    let tickets = [3, 9, 4, 7, 1];
+    print("busiest day had " + str(running_max(tickets)) + " tickets");
+}

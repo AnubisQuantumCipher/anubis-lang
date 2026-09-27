@@ -1,0 +1,57 @@
+{
+  "binary_sha256": "98e8090a07716e4876c65422c368e373d92717456edc235f296d8b687f17aac0",
+  "cases": [
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_released_public_field_rewrite_valid",
+      "source_sha256": "8fce3f0f66ac85a8ca904c48a0819b8e5b3e43c35209b3aab8af30c57c698050",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `declared field `k` of type `secret<i64>`` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_released_secret_field_rewrite_invalid",
+      "source_sha256": "0a4bbe679f4b0d2a6efe21d31f82a3e18a332f8abe6089e4403504100e9f54fc",
+      "stderr_sha256": "315942140fc2edb8a8a92491a61e20af909d1fa39e718864ef8f2960d4182af0",
+      "stdout_sha256": "cf7e4e4e2571d8c66648eea2f42c31be7707acd364850200ca02298c61ffede7",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    }
+  ],
+  "source_commit": "fc72526b5477f6475d33adf3d86ad02a467b1046"
+}

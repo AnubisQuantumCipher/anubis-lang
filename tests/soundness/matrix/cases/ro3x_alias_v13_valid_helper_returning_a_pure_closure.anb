@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mk0() {
+    return |x| 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let z = each([p.k], mk0());
+}

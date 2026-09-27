@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Item-21 Family-1: the callee's u32 parameter masks the argument; the carried requires is checked on the masked value
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn app(g, y: u32) { g(y); }
+fn main() { app(f, 4294967296); }

@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn id(x) { return x; }
+fn app(g, y) { let h = id(g); h(-1); }
+fn main() { app(f, 0); }

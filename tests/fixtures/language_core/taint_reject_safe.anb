@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: tainted|taint|declassify|sink
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
 fn main() {
     let secret = taint_source("password");
     sink(secret);

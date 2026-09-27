@@ -1,0 +1,19 @@
+fn walk(a, inner, n) {
+    if n > 0 {
+        return walk(a, inner, n - 1);
+    }
+    let c = len(args()) > 100;
+    let v = if c { a[0][0][0][0][0] } else { Some(inner) };
+    match v {
+        Some(None) => println("none"),
+        _ => println("other"),
+    }
+    0
+}
+fn main() {
+    let k: secret<i64> = 123456;
+    let a = [[[[[[1]]]]]];
+    walk(a, Some(2), 1);
+    let inner = if k > 100 { Some(1) } else { None };
+    walk(a, inner, 0);
+}

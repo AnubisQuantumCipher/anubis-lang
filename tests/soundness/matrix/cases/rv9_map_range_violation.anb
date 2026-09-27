@@ -1,0 +1,2 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() { print(map(range(0, 5), f)); }

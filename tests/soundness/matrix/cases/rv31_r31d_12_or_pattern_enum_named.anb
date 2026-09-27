@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+enum E { V { a: S, b: i64 }, W { a: i64, b: S } }
+fn g(e) {
+    return match e {
+        E::V { a: x, b: _ } | E::W { a: _, b: x } => str(x),
+    };
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(g(E::V { a: p, b: 0 }));
+}

@@ -1,0 +1,4 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp8_return_then_param.txt", x); return 0; }
+fn mk() { return [leak]; }
+fn app(xs) { xs[0]("a"); return 0; }
+fn main() { app(mk()); }

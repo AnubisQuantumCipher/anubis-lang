@@ -22,6 +22,33 @@ Anything not listed here is experimental / research unless later promoted by MIN
 | `anubis doctor` / `fmt` / LSP / `repl` / `doc` | DX gate surfaces |
 | `anubis prove --backend risc0` | ZK path (receipt verify API); performance not frozen |
 
+## 1a. Post-freeze additions and their status (added 2026-09-21)
+
+The freeze above is dated 2026-07-22. Work since then is recorded here with its
+status, so "what is frozen" never has to be inferred from a commit log.
+
+| Addition | SemVer class | Frozen? |
+|---|---|---|
+| `anubis check --message-format=json` | MINOR — a new optional flag | The **flag** is covered by the 1.x optional-flag guarantee. The **schema** is not. |
+| `anubis-diagnostics/1` stream schema | new contract | **NO — provisional.** |
+| Certificate coverage on the `check` verdict | MINOR — additional output | No. Informational stdout, not a declared interface. |
+| `[package] edition` | additive manifest field | The field is additive; an unrecognised edition is refused rather than compiled. |
+| `evidence-verify` refutation replay | fail-closed tightening | Shrinks the accept set of a verification command, by design. |
+
+**Why the diagnostics schema is deliberately not frozen.** No consumer has
+exercised it yet. Freezing a wire format on the day it ships freezes in whatever
+is wrong with it, and the whole point of the format is to be the thing an agent
+acts on — the population most likely to find its sharp edges is the one that has
+not used it. It carries its own versioning discipline in
+[`DIAGNOSTICS_JSON.md`](DIAGNOSTICS_JSON.md): within `/1` fields and enum members
+may be added and none is removed or repurposed, and anything that would break
+that emits `/2`. That is a real promise about compatibility. It is not the same
+as membership in the 1.0 frozen surface, and the two should not be conflated.
+
+**What would earn it a freeze:** a consumer outside this repository parsing it,
+and the agent-repair corpus in `docs/ROADMAP_AI_ERA.md` criterion 9 actually
+converging on it. Neither has happened.
+
 ## 2. Language surface (stable)
 
 - Program structure: `fn`, `let`/`let mut`, `struct`, `enum`, `match`, `if`/`while`/`for`/`loop`, closures, traits/impl, generics (runtime-checked), `Option`/`Result`/`?`

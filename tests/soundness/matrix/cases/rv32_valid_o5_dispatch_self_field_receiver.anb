@@ -1,0 +1,32 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Event { id: i64, kind: string, auth: S }
+struct Console { prefix: string, lines: i64 }
+impl Console {
+    fn put(self, line) {
+        println(self.prefix + line);
+        return Console { prefix: self.prefix, lines: self.lines + 1 };
+    }
+}
+struct Store { events: list<Event>, count: i64 }
+impl Store {
+    fn put(self, ev) {
+        let mut es = self.events;
+        push(es, ev);
+        return Store { events: es, count: self.count + 1 };
+    }
+}
+
+struct App { store: Store, out: Console }
+impl App {
+    fn ingest(self, ev) {
+        let st = self.store.put(ev);
+        return App { store: st, out: self.out };
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let app = App { store: Store { events: [], count: 0 }, out: Console { prefix: "[app] ", lines: 0 } };
+    let ev = Event { id: 1, kind: "login", auth: p };
+    let a2 = app.ingest(ev);
+    println("count=" + str(a2.store.count));
+}

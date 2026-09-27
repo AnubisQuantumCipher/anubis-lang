@@ -1,0 +1,10 @@
+{
+  "binary_sha256": "1ebe7c3c29223b77c665e56a0956bd4166c3dec3cb84ee2c9b1fbbf4809e3baa",
+  "cargo_lock_sha256": "0064eaf059d9f4072af0b0b744d2a1833d88c552b6f137d3e91b7d41f93530fe",
+  "command": "systemd-run --user --scope --quiet -p MemoryMax=8G -p TasksMax=256 env CARGO_TARGET_DIR=<isolated> CARGO_BUILD_JOBS=2 cargo build --locked -p anubis",
+  "compiler_middle_sha256": "6abfc5e3359adb535a42a64a84de78b746d5df93ffea81ca4a9aa9ed0f4a981c",
+  "exit": 0,
+  "log_sha256": "b8916efb174c760cca36db0c5d8a8b2d46601e12417e56a3cc9b2065cc793133",
+  "scope_bus": "explicit observed user bus in process environment",
+  "source_head": "fa52fbff8d345d4234ccc72e90e21fa2919bd85a"
+}

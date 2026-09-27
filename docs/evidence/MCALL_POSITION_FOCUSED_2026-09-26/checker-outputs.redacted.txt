@@ -1,0 +1,649 @@
+# Exact focused checker stdout, with only the local repository prefix replaced by <REPO>/.
+# Raw output hashes are in final-results.tsv; this redacted archive has its own hash in manifest.json.
+
+===== r2arm_sibling_binder_drops_requires.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_sibling_binder_drops_requires.anb (evidence=false, verified=false)
+check passed
+
+===== r2arm_sibling_binder_drops_requires.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_sibling_binder_drops_requires.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091900-safe
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_unrelated_assumption_drops_requires.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_unrelated_assumption_drops_requires.anb (evidence=false, verified=false)
+check passed
+
+===== r2arm_unrelated_assumption_drops_requires.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_unrelated_assumption_drops_requires.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_renamed_binder_preserves_requires.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_renamed_binder_preserves_requires.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-2
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_satisfied_requires_remains_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_satisfied_requires_remains_valid.anb (evidence=false, verified=false)
+check passed
+
+===== r2arm_contract_call_scrutinee.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_scrutinee.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-3
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_contract_call_scrutinee.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_scrutinee.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-4
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_contract_call_guard.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_guard.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-5
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_contract_call_guard.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_guard.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-6
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_iflet_scrutinee_call.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_iflet_scrutinee_call.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-7
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_iflet_scrutinee_call.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_iflet_scrutinee_call.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-8
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_same_binder_invalid_match.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_same_binder_invalid_match.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091901-safe-9
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+
+===== r2arm_same_binder_invalid_iflet.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_same_binder_invalid_iflet.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+
+===== r2arm_same_binder_valid_match.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_same_binder_valid_match.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe-2
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+
+===== r2arm_same_binder_valid_iflet.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_same_binder_valid_iflet.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe-3
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+
+===== r2arm_dead_binder_after_return.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_dead_binder_after_return.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe-4
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+
+===== r2arm_guard_false_binder_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_false_binder_valid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe-5
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+
+===== r2arm_guard_establishes_binder_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_establishes_binder_valid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe-6
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+Error: check failed: ANUBIS_ASSERTION_UNDECIDED: 1 assertion(s) undecided (not a proof, not a counterexample):
+  requires-unresolved@f:x > 0 in main
+    (not encoded — no solver ran; neither proved nor disproved)
+    requires-unresolved@f:x > 0 in main
+    precondition `x > 0` of `f`, called from `main`, could not be encoded because it is not modelable
+    detail: undecided without a solver: this precondition could not be encoded (an argument or clause is not modelable, or the function value escapes where the checker cannot follow it), so it was neither proved nor disproved; failing closed rather than assuming it holds. Make the argument modelable, guard the call, or state the precondition on the enclosing function
+
+===== r2arm_quoted_string_symbol_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_quoted_string_symbol_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_contract_call_scrutinee_satisfied.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_scrutinee_satisfied.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_contract_call_guard_satisfied.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_guard_satisfied.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_iflet_scrutinee_call_satisfied.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_iflet_scrutinee_call_satisfied.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_contract_call_guard_short_circuit.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_guard_short_circuit.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_contract_call_guard_after_wildcard.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_call_guard_after_wildcard.anb (evidence=false, verified=false)
+check passed
+
+===== r2arm_outer_fact_after_match_scrutinee_call.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_outer_fact_after_match_scrutinee_call.anb (evidence=false, verified=false)
+check passed
+certificates: 2/2 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_outer_fact_after_match_guard_call.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_outer_fact_after_match_guard_call.anb (evidence=false, verified=false)
+check passed
+certificates: 2/2 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_outer_fact_after_iflet_scrutinee_call.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_outer_fact_after_iflet_scrutinee_call.anb (evidence=false, verified=false)
+check passed
+certificates: 2/2 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_contract_guard_after_literal_match.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_contract_guard_after_literal_match.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_later_guard_after_untaken_body_write.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_later_guard_after_untaken_body_write.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_guard_assign_rhs_invalid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_assign_rhs_invalid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe-7
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_guard_assign_rhs_invalid.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_assign_rhs_invalid.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091902-safe-8
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_guard_assign_rhs_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_assign_rhs_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_guard_assign_rhs_dead_branch.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_assign_rhs_dead_branch.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_guard_assign_rhs_guarded.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_assign_rhs_guarded.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_guard_return_before_call_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_return_before_call_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_untaken_literal_guard_alias_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_untaken_literal_guard_alias_valid.anb (evidence=false, verified=false)
+check passed
+
+===== r2arm_guard_unmodelable_if_invalid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_unmodelable_if_invalid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091903-safe
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_guard_unmodelable_if_invalid.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_unmodelable_if_invalid.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091903-safe-2
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_guard_unmodelable_if_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_unmodelable_if_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_guard_unmodelable_if_dead.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_guard_unmodelable_if_dead.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_partial_guard_pred_false_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_partial_guard_pred_false_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_partial_guard_live_invalid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_partial_guard_live_invalid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091903-safe-3
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    x = 0x0000000000000001  (1)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    x = 0x0000000000000001  (1)
+
+===== r2arm_partial_guard_live_invalid.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_partial_guard_live_invalid.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091903-safe-4
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_partial_guard_live_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_partial_guard_live_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_partial_guard_dead_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_partial_guard_dead_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_duplicate_direct_before_invalid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_duplicate_direct_before_invalid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091903-safe-5
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+certificates: 1/1 obligations discharged by a machine-checked refutation (refutations retained in the evidence bundle)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_duplicate_direct_before_invalid.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_duplicate_direct_before_invalid.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091903-safe-6
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_duplicate_direct_after_invalid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_duplicate_direct_after_invalid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091903-safe-7
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+certificates: 1/1 obligations discharged by a machine-checked refutation (refutations retained in the evidence bundle)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_duplicate_direct_after_invalid.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_duplicate_direct_after_invalid.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091904-safe
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_duplicate_both_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_duplicate_both_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 2/2 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)
+
+===== r2arm_expr_match_untaken_guard_alias_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_expr_match_untaken_guard_alias_valid.anb (evidence=false, verified=false)
+check passed
+
+===== r2arm_expr_match_live_guard_alias_invalid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_expr_match_live_guard_alias_invalid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091904-safe-2
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    z = 0x0000000000000000  (0)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    z = 0x0000000000000000  (0)
+
+===== r2arm_expr_match_live_guard_alias_invalid.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_expr_match_live_guard_alias_invalid.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091904-safe-3
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    (no free variables — ground counterexample)
+
+===== r2arm_arm_tail_write_fact_invalid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_arm_tail_write_fact_invalid.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091904-safe-4
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    x = 0x0000000000000001  (1)
+    y = 0x0000000000000000  (0)
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt (bvneg (_ bv1 64)) (_ bv0 64))
+  counterexample:
+    x = 0x0000000000000001  (1)
+    y = 0x0000000000000000  (0)
+
+===== r2arm_arm_tail_write_fact_invalid.direct =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_arm_tail_write_fact_invalid.direct.anb (evidence=false, verified=false)
+program-evidence.v3 skipped: no native artifact
+automatic rejection evidence: enabled
+evidence bundle: out/evidence-20260926-091904-safe-5
+verdict: FAIL
+check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  requires@f:(bvsgt anb_x (_ bv0 64))
+  counterexample:
+    x = 0xffffffffffffffff  (-1)
+  possible fix (from counterexample; edit + paste onto the fn signature):
+    requires(x >= 0)  // excludes counterexample x=-1
+
+===== r2arm_arm_tail_guarded_valid.carrier =====
+anubis check <REPO>/tests/soundness/matrix/cases/r2arm_arm_tail_guarded_valid.anb (evidence=false, verified=false)
+check passed
+certificates: 1/1 obligations discharged by a machine-checked refutation (checked in this run and not retained; --evidence writes them)

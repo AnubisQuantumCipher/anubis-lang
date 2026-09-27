@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mkc(q) { return || q; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let g = if true { let t = mkc(p); t } else { 0 };
+    print(g());
+}

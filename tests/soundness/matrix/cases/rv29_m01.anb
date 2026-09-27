@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { k: secret<i64>, pub_n: i64 }
+impl S {
+    fn m(self) { return self.pub_n }
+}
+impl T {
+    fn m(self) { return self }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let t = T { k: 42, pub_n: 5 };
+    let xs = [p, t];
+    for x in xs {
+        print(x.m());
+    }
+}

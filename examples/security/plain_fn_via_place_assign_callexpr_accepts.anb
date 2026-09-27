@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Over-rejection guard for the Family-2 slice: a NON-lane fn placed via the identical
+// place-assignment carrier and called as `b.f()` must still ACCEPT. The fix only ADDS a detection
+// for a lane-dangerous identity; a plain function is absent from `lane_fns` and is not rejected.
+struct Box { f: u64 }
+fn plainfn() -> i64 { return 7; }
+fn main() { let b = Box { f: 0 }; b.f = plainfn; print(b.f()); }

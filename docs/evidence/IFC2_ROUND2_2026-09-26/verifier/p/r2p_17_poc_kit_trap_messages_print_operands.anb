@@ -1,0 +1,6 @@
+fn main() {
+    let s: secret<i64> = 42;
+    println("start");
+    let pat = cyclic(0 - s);
+    println("done");
+}

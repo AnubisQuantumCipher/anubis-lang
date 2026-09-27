@@ -1,0 +1,27 @@
+struct P { x: i64 }
+struct T { v: i64 }
+struct U { v: i64 }
+impl T {
+    fn foo(self) {
+        0
+    }
+}
+impl U {
+    fn foo(self, a) {
+        0
+    }
+}
+fn pick(c) {
+    let v = if c { 7 } else { 3 };
+    v
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let n = len(args());
+    let p = P { x: 0 };
+    if n == 5 {
+        p.a = T { v: 1 };
+    }
+    let y = p["a"].foo(println(pick(s > 100)));
+    println("end");
+}

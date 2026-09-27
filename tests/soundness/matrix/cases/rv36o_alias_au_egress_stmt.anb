@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h2(x) { print(x); return 0; }
+fn h1(x) { return 7; }
+fn getp() -> S { return S { k: 42, pub_n: 3 }; }
+fn main() {
+    let p = getp();
+    let f = h1;
+    if p.pub_n > 1 { f = h2; }
+    f(p.k);
+}

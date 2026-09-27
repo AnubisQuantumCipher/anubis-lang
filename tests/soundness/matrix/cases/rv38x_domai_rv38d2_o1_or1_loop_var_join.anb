@@ -1,0 +1,27 @@
+struct Account { k: secret<i64>, owner: str }
+struct Invoice { id: i64, total: i64, account: Account }
+struct Tag { label: str }
+impl Invoice {
+    fn summary(self) -> str {
+        return "invoice ${self.id}: ${self.total}";
+    }
+}
+impl Tag {
+    fn summary(self) -> str {
+        return "tag ${self}";
+    }
+}
+fn main() {
+    let acct = Account { k: 42, owner: "ann" };
+    let invs = [Invoice { id: 1, total: 10, account: acct }, Invoice { id: 2, total: 20, account: acct }];
+    let t = Tag { label: "urgent" };
+    println(t.summary());
+    let mut sum = 0;
+    for inv in invs {
+        sum = sum + inv.total;
+    }
+    println("sum ${sum}");
+    let inv = Invoice { id: 3, total: 30, account: acct };
+    let pick = if sum > 100 { inv } else { Invoice { id: 0, total: 0, account: acct } };
+    println(pick.summary());
+}

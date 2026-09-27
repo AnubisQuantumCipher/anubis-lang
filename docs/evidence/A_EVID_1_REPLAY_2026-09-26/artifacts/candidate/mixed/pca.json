@@ -1,0 +1,18 @@
+{
+  "pca_version": 2,
+  "source_sha256": "fa7f82cca826343b1ebad4145061e5e39de3194c47bdda14d663912f42593d3c",
+  "mode": "safe",
+  "tier": "rejected",
+  "rejection": "ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:\n  assert:(= anb_x (_ bv2 64))\n  counterexample:\n    x = 0x0000000000000001  (1)",
+  "parse_ok": true,
+  "typecheck_ok": true,
+  "solver_obligations": 2,
+  "solver_all_discharged": false,
+  "solver_backend": "z3",
+  "zk_present": false,
+  "zk_image_id": null,
+  "zk_receipt_sha256": null,
+  "zk_journal_sha256": null,
+  "verdict": "FAIL",
+  "tool": "anubis 0.1.0"
+}

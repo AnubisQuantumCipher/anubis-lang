@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 123456;
+    let mut xs = [1, 2, 3];
+    println("start");
+    let y = remove(xs, s);
+    println("done");
+}

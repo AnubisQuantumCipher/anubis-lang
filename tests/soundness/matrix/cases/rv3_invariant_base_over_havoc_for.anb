@@ -1,0 +1,14 @@
+fn go() {
+    let mut i = 0;
+    while i < 10 {
+        i = i + 2;
+    }
+    let mut s = 0;
+    for k in 0..3 invariant(i != 12) {
+        s = s + 1;
+    }
+    println(i);
+}
+fn main() {
+    go();
+}

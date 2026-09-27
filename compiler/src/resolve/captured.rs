@@ -1,0 +1,2119 @@
+//! Private project-only resolver over a previously captured source tree.
+//!
+//! This comparison path does no filesystem I/O. It deliberately does not
+//! admit packages or change the production checker, CLI, or native lowerer.
+//! It can derive a compilation-only source-graph identity from parsed imports.
+//! `CapturedTree` already owns the project bytes; embedded stdlib bytes come
+//! from the compiler's static registry.
+//! Dependency mounts and published-package surface enumeration are separate
+//! work and must not be inferred from a successful compilation graph here.
+
+use super::{collect_enum_names, collect_fn_names, collect_imports, import_alias, module_prefix};
+use crate::frontend::{parse_source_with_pre_desugar_summary, Item, Mode, Span, AST};
+use crate::package::source_graph::{
+    GraphCoverage, GraphError, GraphLimits, ImportEdge, PortablePath, SourceGraphSnapshot,
+    SourceKey, SourceNode, SourceOrigin,
+};
+use crate::package::source_graph_reader::CapturedTree;
+use crate::stdlib;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use thiserror::Error;
+
+const MAX_MODULES: usize = 16_384;
+const MAX_IMPORTS: usize = 16_384;
+const MAX_DEPTH: usize = 128;
+const MAX_PARSED_BYTES: usize = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResolveLimits {
+    pub modules: usize,
+    pub imports: usize,
+    pub depth: usize,
+    pub parsed_bytes: usize,
+}
+
+impl Default for ResolveLimits {
+    fn default() -> Self {
+        Self {
+            modules: MAX_MODULES,
+            imports: MAX_IMPORTS,
+            depth: MAX_DEPTH,
+            parsed_bytes: MAX_PARSED_BYTES,
+        }
+    }
+}
+
+impl ResolveLimits {
+    fn validate(self) -> Result<Self, CapturedResolveError> {
+        if self.modules == 0
+            || self.imports == 0
+            || self.depth == 0
+            || self.parsed_bytes == 0
+            || self.modules > MAX_MODULES
+            || self.imports > MAX_IMPORTS
+            || self.depth > MAX_DEPTH
+            || self.parsed_bytes > MAX_PARSED_BYTES
+        {
+            return Err(CapturedResolveError::InvalidLimits);
+        }
+        Ok(self)
+    }
+}
+
+/// `Project` keys are relative to the captured source root. The embedded
+/// variant names a static registry entry and can never resolve to `src/std`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ModuleKey {
+    Project(PortablePath),
+    EmbeddedStdlib(String),
+}
+
+/// Every parsed `import` occurrence survives independently, even when two
+/// occurrences select the same module. `span` is a byte range in `importer`.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedImport {
+    pub importer: ModuleKey,
+    pub requested: String,
+    pub span: Span,
+    pub target: ModuleKey,
+}
+
+/// `ast.trait_env` is the parser's original-item sidecar, retained per module
+/// rather than reconstructed from an already desugared flat item list.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedModule<'a> {
+    pub key: ModuleKey,
+    pub namespace: String,
+    pub bytes: &'a [u8],
+    pub ast: AST,
+    pub intrinsic_mode: CapturedIntrinsicMode,
+    pub imports: Vec<CapturedImport>,
+}
+
+/// One source-bound summary over parsed items before `resolve_traits` erases
+/// trait declarations or replaces overridden defaults. No source is reopened.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CapturedIntrinsicMode {
+    pub source_mode: Option<Mode>,
+    pub unresolved_mode_elevator: bool,
+}
+
+/// Modules appear after their imports. This is a compilation closure only;
+/// unimported package modules are not enumerated or certified by this type.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedProjectGraph<'a> {
+    pub entry: ModuleKey,
+    pub modules: Vec<CapturedModule<'a>>,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum CapturedResolveError {
+    #[error("invalid captured resolver limits")]
+    InvalidLimits,
+    #[error("captured resolver {kind} limit exceeded")]
+    Limit { kind: &'static str },
+    #[error("entry is not present in the captured tree: {path:?}")]
+    MissingEntry { path: PortablePath },
+    #[error("source bytes are not UTF-8 for {module:?}")]
+    InvalidUtf8 { module: ModuleKey },
+    #[error("source parse failed in {module:?}: {message}")]
+    Parse { module: ModuleKey, message: String },
+    #[error("nested import `{requested}` in {importer:?} at {span:?} is unsupported")]
+    NestedImport {
+        importer: ModuleKey,
+        requested: String,
+        span: Span,
+    },
+    #[error("invalid import spelling `{requested}` in {importer:?} at {span:?}")]
+    InvalidSpelling {
+        importer: ModuleKey,
+        requested: String,
+        span: Span,
+    },
+    #[error("import span is invalid in {importer:?} at {span:?}")]
+    InvalidSpan { importer: ModuleKey, span: Span },
+    #[error("unknown embedded stdlib import `{requested}` in {importer:?} at {span:?}")]
+    UnknownStdlib {
+        importer: ModuleKey,
+        requested: String,
+        span: Span,
+    },
+    #[error("unresolved project import `{requested}` in {importer:?} at {span:?}")]
+    Unresolved {
+        importer: ModuleKey,
+        requested: String,
+        span: Span,
+    },
+    #[error("embedded stdlib {importer:?} imports non-stdlib `{requested}` at {span:?}")]
+    StdlibBoundary {
+        importer: ModuleKey,
+        requested: String,
+        span: Span,
+    },
+    #[error("captured import cycle through {module:?}")]
+    Cycle { module: ModuleKey },
+    #[error("one source {module:?} was selected as both `{first}` and `{second}`")]
+    ConflictingNamespace {
+        module: ModuleKey,
+        first: String,
+        second: String,
+    },
+    #[error("module prefix `{prefix}` collides between {first:?} and {second:?}")]
+    PrefixCollision {
+        prefix: String,
+        first: ModuleKey,
+        second: ModuleKey,
+    },
+    #[error("portable source paths collide by case between {first:?} and {second:?}")]
+    CaseCollision { first: ModuleKey, second: ModuleKey },
+    #[error("lowered function `{name}` collides between {first:?} and {second:?}")]
+    FunctionCollision {
+        name: String,
+        first: ModuleKey,
+        second: ModuleKey,
+    },
+    #[error("import alias `{alias}` in {importer:?} selects both {first:?} and {second:?}")]
+    AliasCollision {
+        importer: ModuleKey,
+        alias: String,
+        first: ModuleKey,
+        second: ModuleKey,
+    },
+    #[error("import alias `{alias}` collides with an enum in {importer:?}")]
+    EnumAliasCollision { importer: ModuleKey, alias: String },
+    #[error("captured import path cannot be represented portably: `{requested}`")]
+    InvalidPortablePath { requested: String },
+    #[error("trait {name} collides between {first:?} and {second:?}")]
+    TraitNameCollision {
+        name: String,
+        first: ModuleKey,
+        second: ModuleKey,
+    },
+    #[error("captured module combine failed: {message}")]
+    Combine { message: String },
+    #[error("captured compilation graph invalid: {source}")]
+    SourceGraph {
+        #[source]
+        source: GraphError,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Color {
+    Gray,
+    Black,
+}
+
+struct State<'a> {
+    tree: &'a CapturedTree,
+    limits: ResolveLimits,
+    module_count: usize,
+    import_count: usize,
+    parsed_bytes: usize,
+    colors: BTreeMap<ModuleKey, Color>,
+    namespaces: BTreeMap<ModuleKey, String>,
+    prefixes: BTreeMap<String, ModuleKey>,
+    casefold_paths: BTreeMap<String, ModuleKey>,
+    lowered_functions: BTreeMap<String, ModuleKey>,
+    modules: Vec<CapturedModule<'a>>,
+}
+
+/// Build a private compilation graph from `entry`, which is relative to the
+/// captured project source root. No pathname is reopened. Callers must first
+/// establish that dependency mounts are absent; this API does not resolve
+/// dependencies or bind the result to checker input or native output.
+pub(crate) fn load_captured_project<'a>(
+    tree: &'a CapturedTree,
+    entry: PortablePath,
+    limits: ResolveLimits,
+) -> Result<CapturedProjectGraph<'a>, CapturedResolveError> {
+    let limits = limits.validate()?;
+    if tree.get(&entry).is_none() {
+        return Err(CapturedResolveError::MissingEntry { path: entry });
+    }
+    let entry = ModuleKey::Project(entry);
+    let mut state = State {
+        tree,
+        limits,
+        module_count: 0,
+        import_count: 0,
+        parsed_bytes: 0,
+        colors: BTreeMap::new(),
+        namespaces: BTreeMap::new(),
+        prefixes: BTreeMap::new(),
+        casefold_paths: BTreeMap::new(),
+        lowered_functions: BTreeMap::new(),
+        modules: Vec::new(),
+    };
+    state.visit(entry.clone(), String::new(), 1)?;
+    Ok(CapturedProjectGraph {
+        entry,
+        modules: state.modules,
+    })
+}
+
+/// One compilation input derived from a single capture. The AST is exactly the
+/// combined program parsed from the graph's saved bytes. Its graph is a
+/// compilation identity, not a package-publish or independently verified claim.
+#[derive(Debug)]
+pub(crate) struct PreparedCapturedProject {
+    ast: AST,
+    source_graph: SourceGraphSnapshot,
+    intrinsic_modes: Vec<(ModuleKey, CapturedIntrinsicMode)>,
+}
+
+/// The source is produced only after this captured AST passed Safe-default
+/// typechecking and the solver refusal gate. This is not a verified seal.
+#[derive(Debug)]
+pub(crate) struct CheckedSafeRust {
+    rust_source: String,
+}
+
+impl CheckedSafeRust {
+    pub(crate) fn into_rust_source(self) -> String {
+        self.rust_source
+    }
+}
+
+/// Preserve the failing stage and its structured result for the eventual
+/// native consumer. Display text is presentation, never a status classifier.
+#[derive(Debug)]
+pub(crate) enum CapturedSafeCheckFailure {
+    NonSafeMode {
+        mode: crate::frontend::Mode,
+    },
+    ModeElevator,
+    Typecheck(crate::middle::TypecheckFailure),
+    SolverRefused {
+        checks: Vec<crate::middle::SolverCheck>,
+        refusals: Vec<crate::middle::SolverCheck>,
+    },
+    SolverStreamInvalid {
+        checks: Vec<crate::middle::SolverCheck>,
+        issue: crate::middle::SolverStreamIntegrityError,
+    },
+    ToolFailure {
+        checks: Vec<crate::middle::SolverCheck>,
+        failures: Vec<(usize, crate::middle::SolverToolFailure)>,
+    },
+    Lowering {
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for CapturedSafeCheckFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonSafeMode { mode } => {
+                write!(
+                    f,
+                    "captured comparison only supports Safe programs (found {mode:?})"
+                )
+            }
+            Self::ModeElevator => write!(
+                f,
+                "captured Safe program contains an unresolved Research/Exploit mode elevator"
+            ),
+            Self::Typecheck(failure) => write!(f, "{}", failure.message),
+            Self::SolverRefused { refusals, .. } => {
+                write!(
+                    f,
+                    "{}",
+                    crate::middle::format_build_check_failures(refusals)
+                )
+            }
+            Self::SolverStreamInvalid { issue, .. } => {
+                write!(f, "captured Safe compiler solver stream invalid: {issue}")
+            }
+            Self::ToolFailure { failures, .. } => {
+                write!(f, "captured Safe solver tool failed: {failures:?}")
+            }
+            Self::Lowering { detail } => write!(f, "captured Safe lowering failed: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for CapturedSafeCheckFailure {}
+
+fn check_captured_solver_stream(
+    checks: Vec<crate::middle::SolverCheck>,
+) -> Result<(), CapturedSafeCheckFailure> {
+    // A synthetic stream-integrity row currently uses wire `FAIL` for legacy
+    // consumers. Keep it out of the captured check's obligation refusal path:
+    // neither it nor an invalid wire status denotes a disproved contract.
+    crate::middle::validate_solver_stream(&checks).map_err(|issue| {
+        CapturedSafeCheckFailure::SolverStreamInvalid {
+            checks: checks.clone(),
+            issue,
+        }
+    })?;
+    let refusals = checks
+        .iter()
+        .filter(|check| crate::middle::solver_check_requires_refusal(check))
+        .cloned()
+        .collect::<Vec<_>>();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(CapturedSafeCheckFailure::SolverRefused { checks, refusals })
+    }
+}
+
+fn check_captured_solver_inventory(
+    obligations: &[crate::middle::SolverObligation],
+    issued: Vec<crate::middle::IssuedSolverCheck>,
+) -> Result<(), CapturedSafeCheckFailure> {
+    use crate::middle::{
+        is_no_obligations_sentinel, validate_solver_stream, SolverStreamIntegrityError,
+    };
+
+    let mut origins = Vec::with_capacity(issued.len());
+    let mut outcomes = Vec::with_capacity(issued.len());
+    let mut checks = Vec::with_capacity(issued.len());
+    for result in issued {
+        origins.push(result.source_ordinal);
+        outcomes.push(result.outcome);
+        checks.push(result.check);
+    }
+    let invalid = |issue| CapturedSafeCheckFailure::SolverStreamInvalid {
+        checks: checks.clone(),
+        issue,
+    };
+    validate_solver_stream(&checks).map_err(&invalid)?;
+
+    if obligations.is_empty() {
+        if !is_no_obligations_sentinel(&checks) {
+            return Err(invalid(
+                SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 0,
+                    actual: checks.len(),
+                },
+            ));
+        }
+        if origins[0].is_some() {
+            return Err(invalid(
+                SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 0,
+                    actual: origins[0],
+                },
+            ));
+        }
+        if outcomes[0] != crate::middle::IssuedSolverOutcome::NoObligations {
+            return Err(invalid(SolverStreamIntegrityError::OutcomeStatusMismatch {
+                index: 0,
+            }));
+        }
+    } else {
+        if is_no_obligations_sentinel(&checks) {
+            return Err(invalid(SolverStreamIntegrityError::UnexpectedNoObligations));
+        }
+        if checks.len() != obligations.len() {
+            return Err(invalid(
+                SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: obligations.len(),
+                    actual: checks.len(),
+                },
+            ));
+        }
+        for (index, ((origin, check), obligation)) in origins
+            .iter()
+            .zip(checks.iter())
+            .zip(obligations.iter())
+            .enumerate()
+        {
+            if *origin != Some(index) {
+                return Err(invalid(
+                    SolverStreamIntegrityError::InventoryOriginMismatch {
+                        index,
+                        actual: *origin,
+                    },
+                ));
+            }
+            if check.name != obligation.name {
+                return Err(invalid(SolverStreamIntegrityError::InventoryNameMismatch {
+                    index,
+                }));
+            }
+            if outcomes[index] == crate::middle::IssuedSolverOutcome::NoObligations {
+                return Err(invalid(SolverStreamIntegrityError::OutcomeStatusMismatch {
+                    index,
+                }));
+            }
+        }
+    }
+    for (index, (outcome, check)) in outcomes.iter().zip(&checks).enumerate() {
+        let status_matches = match outcome {
+            crate::middle::IssuedSolverOutcome::NoObligations
+            | crate::middle::IssuedSolverOutcome::Proved => check.status == "PASS",
+            crate::middle::IssuedSolverOutcome::Disproved
+            | crate::middle::IssuedSolverOutcome::ContradictoryPremises
+            | crate::middle::IssuedSolverOutcome::Unencoded => check.status == "FAIL",
+            crate::middle::IssuedSolverOutcome::Undecided
+            | crate::middle::IssuedSolverOutcome::ToolFailure(_) => {
+                matches!(check.status.as_str(), "FAIL" | "UNKNOWN")
+            }
+        };
+        if !status_matches {
+            return Err(invalid(SolverStreamIntegrityError::OutcomeStatusMismatch {
+                index,
+            }));
+        }
+    }
+    let failures = outcomes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, outcome)| match outcome {
+            crate::middle::IssuedSolverOutcome::ToolFailure(failure) => Some((index, *failure)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        return Err(CapturedSafeCheckFailure::ToolFailure { checks, failures });
+    }
+    // Shape and source inventory are valid. A genuine FAIL or UNKNOWN still
+    // belongs to the obligation-refusal path, not an inventory error.
+    check_captured_solver_stream(checks)
+}
+
+impl PreparedCapturedProject {
+    /// Borrow the compilation identity without allowing a caller to replace the
+    /// captured graph or the AST that is checked and lowered with it.
+    pub fn source_graph(&self) -> &SourceGraphSnapshot {
+        &self.source_graph
+    }
+
+    pub fn entry_bytes(&self) -> &[u8] {
+        &self.source_graph.nodes()[self.source_graph.entry()].bytes
+    }
+
+    /// Classify captured source intent without invoking typecheck or lowering.
+    /// The checker calls this first; Research/Exploit controls can exercise it
+    /// directly without asking the host to analyze or generate their programs.
+    fn classify_safe_mode(&self) -> Result<(), CapturedSafeCheckFailure> {
+        use crate::frontend::program_mode;
+        // Check each original module before trait desugaring could discard a
+        // default method, including an unused or overridden trait default.
+        if let Some(mode) =
+            self.intrinsic_modes
+                .iter()
+                .find_map(|(_, summary)| match summary.source_mode {
+                    Some(mode @ (Mode::Research | Mode::Exploit)) => Some(mode),
+                    None | Some(Mode::Safe) => None,
+                })
+        {
+            return Err(CapturedSafeCheckFailure::NonSafeMode { mode });
+        }
+        if let Some(mode @ (Mode::Research | Mode::Exploit)) = program_mode(&self.ast.items) {
+            return Err(CapturedSafeCheckFailure::NonSafeMode { mode });
+        }
+        if self
+            .intrinsic_modes
+            .iter()
+            .any(|(_, summary)| summary.unresolved_mode_elevator)
+            || crate::evidence::items_have_unresolved_mode_elevator(&self.ast.items)
+        {
+            return Err(CapturedSafeCheckFailure::ModeElevator);
+        }
+        Ok(())
+    }
+
+    /// Check and lower this prepared Safe program as one captured input. This
+    /// returns Rust source for comparison; it neither builds a native artifact
+    /// nor grants package or evidence admission.
+    pub fn check_and_lower_safe_rust(&self) -> Result<CheckedSafeRust, CapturedSafeCheckFailure> {
+        use crate::middle::{typecheck_ex_detailed, SymbolicEngine, TaintPass};
+
+        self.classify_safe_mode()?;
+        // Safe-default parity with `typecheck`; `verified=true` is a distinct
+        // effect/capability profile and is not conferred by this bridge.
+        let typed = typecheck_ex_detailed(self.ast.clone(), Mode::Safe, false)
+            .map_err(CapturedSafeCheckFailure::Typecheck)?;
+        let tainted = TaintPass::apply(typed);
+        let issued = SymbolicEngine::check_obligations_with_origins(&tainted);
+        check_captured_solver_inventory(&tainted.solver_obligations, issued)?;
+        let rust_source = crate::backends::run::lower_program_to_rust_with_mono(
+            &self.ast.items,
+            false,
+            &tainted.mono_specializations,
+            &tainted.mono_call_sites,
+        )
+        .map_err(|error| CapturedSafeCheckFailure::Lowering {
+            detail: error.to_string(),
+        })?;
+        Ok(CheckedSafeRust { rust_source })
+    }
+}
+
+pub(crate) fn prepare_captured_project(
+    tree: &CapturedTree,
+    entry: PortablePath,
+) -> Result<PreparedCapturedProject, CapturedResolveError> {
+    prepare_captured_project_with_limits(tree, entry, ResolveLimits::default())
+}
+
+fn prepare_captured_project_with_limits(
+    tree: &CapturedTree,
+    entry: PortablePath,
+    limits: ResolveLimits,
+) -> Result<PreparedCapturedProject, CapturedResolveError> {
+    let graph = load_captured_project(tree, entry, limits)?;
+    let intrinsic_modes = graph
+        .modules
+        .iter()
+        .map(|module| (module.key.clone(), module.intrinsic_mode))
+        .collect();
+    let ast = super::combine_captured_project(&graph)?;
+    let source_graph = compilation_identity(&graph)?;
+    Ok(PreparedCapturedProject {
+        ast,
+        source_graph,
+        intrinsic_modes,
+    })
+}
+
+fn compilation_identity(
+    graph: &CapturedProjectGraph<'_>,
+) -> Result<SourceGraphSnapshot, CapturedResolveError> {
+    // The embedded registry manifest is canonical for this compiler build.
+    // This digest names those bytes; it does not establish external trust.
+    let registry_hash = Sha256::digest(stdlib::manifest_text().as_bytes());
+    let mut registry_digest = [0_u8; 32];
+    registry_digest.copy_from_slice(&registry_hash);
+    let key_for = |key: &ModuleKey| -> Result<SourceKey, CapturedResolveError> {
+        match key {
+            ModuleKey::Project(path) => Ok(SourceKey::new(SourceOrigin::Project, path.clone())),
+            ModuleKey::EmbeddedStdlib(name) => {
+                let path = PortablePath::parse(&format!("{}.anb", name.replace('.', "/")))
+                    .map_err(|source| CapturedResolveError::SourceGraph { source })?;
+                Ok(SourceKey::new(
+                    SourceOrigin::EmbeddedStdlib { registry_digest },
+                    path,
+                ))
+            }
+        }
+    };
+
+    // Construct every node and occurrence from the same parser-resolved graph;
+    // no caller may supply an unrelated edge list or replacement source bytes.
+    let mut nodes = Vec::with_capacity(graph.modules.len());
+    let mut edges = Vec::new();
+    for module in &graph.modules {
+        let key = key_for(&module.key)?;
+        nodes.push(SourceNode {
+            path: key.path.clone(),
+            namespace: module.namespace.clone(),
+            origin: key.origin.clone(),
+            bytes: module.bytes.to_vec(),
+        });
+        for import in &module.imports {
+            edges.push(ImportEdge {
+                source: key_for(&import.importer)?,
+                target: key_for(&import.target)?,
+                requested: import.requested.clone(),
+                target_namespace: import.requested.clone(),
+                span_start: import.span.start,
+                span_end: import.span.end,
+            });
+        }
+    }
+    SourceGraphSnapshot::new(
+        key_for(&graph.entry)?,
+        GraphCoverage::Compilation,
+        nodes,
+        edges,
+        GraphLimits::default(),
+    )
+    .map_err(|source| CapturedResolveError::SourceGraph { source })
+}
+
+impl<'a> State<'a> {
+    fn bytes_for(&self, key: &ModuleKey) -> Result<&'a [u8], CapturedResolveError> {
+        match key {
+            ModuleKey::Project(path) => self
+                .tree
+                .get(path)
+                .ok_or_else(|| CapturedResolveError::MissingEntry { path: path.clone() }),
+            ModuleKey::EmbeddedStdlib(name) => {
+                stdlib::source(name).map(str::as_bytes).ok_or_else(|| {
+                    CapturedResolveError::UnknownStdlib {
+                        importer: key.clone(),
+                        requested: name.clone(),
+                        span: Span::default(),
+                    }
+                })
+            }
+        }
+    }
+
+    fn visit(
+        &mut self,
+        key: ModuleKey,
+        namespace: String,
+        depth: usize,
+    ) -> Result<(), CapturedResolveError> {
+        if self.colors.get(&key) == Some(&Color::Gray) {
+            return Err(CapturedResolveError::Cycle { module: key });
+        }
+        if let Some(first) = self.namespaces.get(&key) {
+            if first != &namespace {
+                return Err(CapturedResolveError::ConflictingNamespace {
+                    module: key,
+                    first: first.clone(),
+                    second: namespace,
+                });
+            }
+        }
+        if self.colors.get(&key) == Some(&Color::Black) {
+            return Ok(());
+        }
+        if depth > self.limits.depth {
+            return Err(CapturedResolveError::Limit { kind: "depth" });
+        }
+        self.module_count = self
+            .module_count
+            .checked_add(1)
+            .ok_or(CapturedResolveError::Limit { kind: "module" })?;
+        if self.module_count > self.limits.modules {
+            return Err(CapturedResolveError::Limit { kind: "module" });
+        }
+
+        if let ModuleKey::Project(path) = &key {
+            let folded = path.as_str().to_ascii_lowercase();
+            if let Some(first) = self.casefold_paths.get(&folded) {
+                if first != &key {
+                    return Err(CapturedResolveError::CaseCollision {
+                        first: first.clone(),
+                        second: key,
+                    });
+                }
+            } else {
+                self.casefold_paths.insert(folded, key.clone());
+            }
+        }
+
+        let prefix = module_prefix(&namespace);
+        if let Some(first) = self.prefixes.get(&prefix) {
+            if first != &key {
+                return Err(CapturedResolveError::PrefixCollision {
+                    prefix,
+                    first: first.clone(),
+                    second: key,
+                });
+            }
+        } else {
+            self.prefixes.insert(prefix.clone(), key.clone());
+        }
+        self.namespaces.insert(key.clone(), namespace.clone());
+        self.colors.insert(key.clone(), Color::Gray);
+
+        let bytes = self.bytes_for(&key)?;
+        self.parsed_bytes =
+            self.parsed_bytes
+                .checked_add(bytes.len())
+                .ok_or(CapturedResolveError::Limit {
+                    kind: "parsed byte",
+                })?;
+        if self.parsed_bytes > self.limits.parsed_bytes {
+            return Err(CapturedResolveError::Limit {
+                kind: "parsed byte",
+            });
+        }
+        let source = std::str::from_utf8(bytes).map_err(|_| CapturedResolveError::InvalidUtf8 {
+            module: key.clone(),
+        })?;
+        let (ast, intrinsic_mode) =
+            parse_source_with_pre_desugar_summary(source, |items| CapturedIntrinsicMode {
+                source_mode: crate::frontend::program_mode(items),
+                unresolved_mode_elevator: crate::evidence::items_have_unresolved_mode_elevator(
+                    items,
+                ),
+            })
+            .map_err(|message| CapturedResolveError::Parse {
+                module: key.clone(),
+                message,
+            })?;
+        reject_nested_imports(&ast, &key)?;
+        self.check_function_names(&key, &prefix, &ast)?;
+        let raw_imports = collect_imports(&ast);
+        self.import_count = self
+            .import_count
+            .checked_add(raw_imports.len())
+            .ok_or(CapturedResolveError::Limit { kind: "import" })?;
+        if self.import_count > self.limits.imports {
+            return Err(CapturedResolveError::Limit { kind: "import" });
+        }
+        let mut local_enums = BTreeSet::from(["Option".to_owned(), "Result".to_owned()]);
+        collect_enum_names(&ast.items, &mut local_enums);
+        let mut aliases = BTreeMap::<String, ModuleKey>::new();
+        let mut imports = Vec::with_capacity(raw_imports.len());
+        let mut previous_end = 0;
+        for (requested, span) in raw_imports {
+            if span.start < previous_end
+                || span.start >= span.end
+                || span.end > source.len()
+                || !source.is_char_boundary(span.start)
+                || !source.is_char_boundary(span.end)
+            {
+                return Err(CapturedResolveError::InvalidSpan {
+                    importer: key.clone(),
+                    span,
+                });
+            }
+            previous_end = span.end;
+            if matches!(key, ModuleKey::EmbeddedStdlib(_)) && !stdlib::is_stdlib_module(&requested)
+            {
+                return Err(CapturedResolveError::StdlibBoundary {
+                    importer: key.clone(),
+                    requested,
+                    span,
+                });
+            }
+            let target = self.resolve_target(&key, &requested, span)?;
+            let alias = import_alias(&requested).to_owned();
+            if local_enums.contains(&alias) {
+                return Err(CapturedResolveError::EnumAliasCollision {
+                    importer: key.clone(),
+                    alias,
+                });
+            }
+            if let Some(first) = aliases.get(&alias) {
+                if first != &target {
+                    return Err(CapturedResolveError::AliasCollision {
+                        importer: key.clone(),
+                        alias,
+                        first: first.clone(),
+                        second: target,
+                    });
+                }
+            } else {
+                aliases.insert(alias, target.clone());
+            }
+            imports.push(CapturedImport {
+                importer: key.clone(),
+                requested: requested.clone(),
+                span,
+                target: target.clone(),
+            });
+            self.visit(target, requested, depth + 1)?;
+        }
+        self.colors.insert(key.clone(), Color::Black);
+        self.modules.push(CapturedModule {
+            key,
+            namespace,
+            bytes,
+            ast,
+            intrinsic_mode,
+            imports,
+        });
+        Ok(())
+    }
+
+    fn check_function_names(
+        &mut self,
+        key: &ModuleKey,
+        prefix: &str,
+        ast: &AST,
+    ) -> Result<(), CapturedResolveError> {
+        let mut names = BTreeSet::new();
+        collect_fn_names(&ast.items, &mut names);
+        for name in names {
+            let lowered = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}__{name}")
+            };
+            if let Some(first) = self.lowered_functions.get(&lowered) {
+                if first != key {
+                    return Err(CapturedResolveError::FunctionCollision {
+                        name: lowered,
+                        first: first.clone(),
+                        second: key.clone(),
+                    });
+                }
+            } else {
+                self.lowered_functions.insert(lowered, key.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_target(
+        &self,
+        importer: &ModuleKey,
+        requested: &str,
+        span: Span,
+    ) -> Result<ModuleKey, CapturedResolveError> {
+        if !valid_dotted(requested) {
+            return Err(CapturedResolveError::InvalidSpelling {
+                importer: importer.clone(),
+                requested: requested.into(),
+                span,
+            });
+        }
+        if stdlib::is_stdlib_module(requested) {
+            return Ok(ModuleKey::EmbeddedStdlib(requested.into()));
+        }
+        if requested == "std" || requested.starts_with("std.") {
+            return Err(CapturedResolveError::UnknownStdlib {
+                importer: importer.clone(),
+                requested: requested.into(),
+                span,
+            });
+        }
+
+        let rel = requested.replace('.', "/");
+        for extension in super::MODULE_EXTENSIONS {
+            let candidate = project_path(&format!("{rel}.{extension}"), requested)?;
+            if self.tree.get(&candidate).is_some() {
+                return Ok(ModuleKey::Project(candidate));
+            }
+        }
+        for extension in super::MODULE_EXTENSIONS {
+            let candidate = project_path(&format!("{rel}/mod.{extension}"), requested)?;
+            if self.tree.get(&candidate).is_some() {
+                return Ok(ModuleKey::Project(candidate));
+            }
+        }
+        Err(CapturedResolveError::Unresolved {
+            importer: importer.clone(),
+            requested: requested.into(),
+            span,
+        })
+    }
+}
+
+/// The legacy import collector sees top-level items only. Until nested import
+/// semantics are defined for this captured graph, refuse every import under
+/// another item instead of silently omitting it from the closure.
+fn reject_nested_imports(ast: &AST, importer: &ModuleKey) -> Result<(), CapturedResolveError> {
+    let mut stack = vec![ast.items.iter()];
+    while let Some(items) = stack.last_mut() {
+        let Some(item) = items.next() else {
+            stack.pop();
+            continue;
+        };
+        match item {
+            Item::Import { path, span } if stack.len() > 1 => {
+                return Err(CapturedResolveError::NestedImport {
+                    importer: importer.clone(),
+                    requested: path.clone(),
+                    span: *span,
+                });
+            }
+            Item::Module { items, .. } => stack.push(items.iter()),
+            Item::Impl { methods, .. } | Item::Trait { methods, .. } => {
+                stack.push(methods.iter());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn valid_dotted(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+}
+
+fn project_path(value: &str, requested: &str) -> Result<PortablePath, CapturedResolveError> {
+    PortablePath::parse(value).map_err(|_| CapturedResolveError::InvalidPortablePath {
+        requested: requested.into(),
+    })
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+mod tests {
+    use super::*;
+    use crate::frontend::{Expr, Stmt};
+    use crate::package::source_graph_reader::CaptureLimits;
+    use std::fs;
+
+    fn capture(files: &[(&str, &[u8])]) -> (tempfile::TempDir, CapturedTree) {
+        let temp = tempfile::tempdir().unwrap();
+        for &(name, bytes) in files {
+            let file = temp.path().join(name);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, bytes).unwrap();
+        }
+        let tree = CapturedTree::capture(temp.path(), CaptureLimits::default()).unwrap();
+        (temp, tree)
+    }
+
+    fn entry() -> PortablePath {
+        PortablePath::parse("main.anb").unwrap()
+    }
+
+    #[test]
+    fn prepared_project_checks_and_lowers_the_saved_import_after_disk_mutation() {
+        let entry_source = b"import util;\nfn main() { print(util::value()); }";
+        let captured_import = b"pub fn value() { return \"captured-before\"; }";
+        let changed_import = b"pub fn value() { return \"disk-after\"; }";
+        let (temp, tree) = capture(&[("main.anb", entry_source), ("util.anb", captured_import)]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        fs::write(temp.path().join("util.anb"), changed_import).unwrap();
+
+        assert_eq!(prepared.entry_bytes(), entry_source);
+        assert_eq!(prepared.source_graph().edges().len(), 1);
+        assert!(prepared.source_graph().nodes().values().any(|module| {
+            module.namespace == "util" && module.bytes.as_slice() == captured_import
+        }));
+        let lowered = prepared
+            .check_and_lower_safe_rust()
+            .unwrap()
+            .into_rust_source();
+        assert!(lowered.contains("util__value"));
+        assert!(lowered.contains("anubis_mk_str(\"captured-before\".to_string())"));
+        assert!(!lowered.contains("anubis_mk_str(\"disk-after\".to_string())"));
+    }
+
+    #[test]
+    fn prepared_project_keeps_imported_trait_authority_through_check_and_lower() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import api;\nfn main() { return api::value(); }",
+            ),
+            (
+                "api.anb",
+                b"struct Circle { r: u32 }\ntrait Shape { fn area(self); }\nimpl Shape for Circle { fn area(self) { return 1; } }\npub fn value() { return 1; }",
+            ),
+        ]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.ast.trait_env.traits.contains_key("Shape"));
+        assert!(prepared
+            .ast
+            .trait_env
+            .impls
+            .iter()
+            .any(|imp| imp.trait_name == "Shape" && imp.type_name == "Circle"));
+        let lowered = prepared
+            .check_and_lower_safe_rust()
+            .unwrap()
+            .into_rust_source();
+        assert!(lowered.contains("api__value"));
+    }
+
+    #[test]
+    fn prepared_project_refuses_non_safe_mode_before_check_or_lower() {
+        // This test only parses and classifies sources. It never executes a
+        // Research or Exploit program, compiles one, or grants consent.
+        let sources: &[(&[u8], crate::frontend::Mode)] = &[
+            (
+                b"fn main() {}\n@research(authorization: \"unit-test\") fn probe() {}",
+                crate::frontend::Mode::Research,
+            ),
+            (
+                b"fn main() {}\nfn probe() { exploit {} }",
+                crate::frontend::Mode::Exploit,
+            ),
+        ];
+        for &(source, expected_mode) in sources {
+            let (_temp, tree) = capture(&[("main.anb", source)]);
+            let prepared = prepare_captured_project(&tree, entry()).unwrap();
+            let error = prepared.classify_safe_mode().unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    CapturedSafeCheckFailure::NonSafeMode { mode } if *mode == expected_mode
+                ),
+                "unexpected non-Safe classification: {error}"
+            );
+        }
+    }
+
+    fn assert_mode_elevator_refused(files: &[(&str, &[u8])]) {
+        let (_temp, tree) = capture(files);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&prepared.ast.items),
+            Some(crate::frontend::Mode::Safe)
+        );
+        assert!(crate::evidence::items_have_unresolved_mode_elevator(
+            &prepared.ast.items
+        ));
+        assert!(matches!(
+            prepared.classify_safe_mode(),
+            Err(CapturedSafeCheckFailure::ModeElevator)
+        ));
+    }
+
+    #[test]
+    fn prepared_project_refuses_every_overwritten_research_attribute_before_typecheck() {
+        // Parsing and classification only: no Research/Exploit source is
+        // typechecked, lowered, compiled, or executed by this control.
+        // `@exploit(...) @safe` is not currently parsable by the frontend:
+        // the lexer drops `@`, and `exploit` is not a bare attribute before
+        // another attribute. A syntax error is not a mode-refusal witness.
+        // The parsed Exploit block is covered by the separate non-Safe test.
+        for attribute in ["research", "poc", "fuzz", "proof", "defensive", "audit"] {
+            let source = format!(
+                "fn main() {{}}\n@{attribute}(authorization: \"unit-test\") @safe fn probe() {{}}"
+            );
+            assert_mode_elevator_refused(&[("main.anb", source.as_bytes())]);
+        }
+
+        // This is the currently parsable Exploit item-attribute form. Its
+        // function mode is stored as Safe, so the intrinsic elevator must
+        // still refuse it before typechecking or lowering.
+        assert_mode_elevator_refused(&[("main.anb", b"fn main() {}\n@exploit fn probe() {}")]);
+    }
+
+    #[test]
+    fn prepared_project_refuses_nested_and_imported_mode_elevators() {
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"fn main() { let x = if true { @research { let y = 1; } 1 } else { 0 }; }",
+        )]);
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"module inner { @fuzz(authorization: \"unit-test\") @safe fn probe() {} }\nfn main() {}",
+        )]);
+        assert_mode_elevator_refused(&[
+            ("main.anb", b"import api;\nfn main() {}"),
+            (
+                "api.anb",
+                b"@poc(authorization: \"unit-test\") @safe pub fn probe() {}",
+            ),
+        ]);
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"struct S {}\nimpl S { @proof(authorization: \"unit-test\") @safe fn probe(self) {} }\nfn main() {}",
+        )]);
+        assert_mode_elevator_refused(&[(
+            "main.anb",
+            b"struct S {}\ntrait T { @audit(authorization: \"unit-test\") @safe fn probe(self) { return 1; } }\nimpl T for S {}\nfn main() {}",
+        )]);
+    }
+
+    #[test]
+    fn prepared_project_refuses_contract_expression_mode_elevators() {
+        // A contract expression is outside the function body, but it is still
+        // parsed source intent. Classification stops before typecheck/lowering.
+        for clause in ["requires", "ensures"] {
+            let source = format!(
+                "fn main() {clause}(if true {{ @research {{ let y = 1; }} true }} else {{ true }}) {{}}"
+            );
+            let (_temp, tree) = capture(&[("main.anb", source.as_bytes())]);
+            let prepared = prepare_captured_project(&tree, entry()).unwrap();
+            assert_eq!(
+                crate::frontend::program_mode(&prepared.ast.items),
+                Some(Mode::Safe)
+            );
+            assert!(matches!(
+                prepared.classify_safe_mode(),
+                Err(CapturedSafeCheckFailure::ModeElevator)
+            ));
+        }
+    }
+
+    #[test]
+    fn prepared_project_refuses_pre_desugar_trait_elevators_without_an_impl() {
+        // The ordinary AST no longer contains this declaration. Classify only;
+        // none of these Research sources reaches typecheck or lowering.
+        for source in [
+            "trait T { @poc(authorization: \"unit-test\") @safe fn probe(self) { return 1; } }\nfn main() {}",
+            "trait T { fn probe(self) { let x = if true { @research { let y = 1; } 1 } else { 0 }; } }\nfn main() {}",
+        ] {
+            let (_temp, tree) = capture(&[("main.anb", source.as_bytes())]);
+            let prepared = prepare_captured_project(&tree, entry()).unwrap();
+            assert_eq!(
+                crate::frontend::program_mode(&prepared.ast.items),
+                Some(Mode::Safe)
+            );
+            assert!(!crate::evidence::items_have_unresolved_mode_elevator(
+                &prepared.ast.items
+            ));
+            assert!(prepared
+                .intrinsic_modes
+                .iter()
+                .any(|(_, summary)| summary.unresolved_mode_elevator));
+            assert!(matches!(
+                prepared.classify_safe_mode(),
+                Err(CapturedSafeCheckFailure::ModeElevator)
+            ));
+        }
+    }
+
+    #[test]
+    fn prepared_project_refuses_overridden_trait_default_in_import() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import api;\nfn main() {}"),
+            (
+                "api.anb",
+                b"struct S {}\ntrait T { @audit(authorization: \"unit-test\") @safe fn probe(self) { return 1; } }\nimpl T for S { fn probe(self) { return 0; } }",
+            ),
+        ]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&prepared.ast.items),
+            Some(Mode::Safe)
+        );
+        assert!(!crate::evidence::items_have_unresolved_mode_elevator(
+            &prepared.ast.items
+        ));
+        assert!(prepared.intrinsic_modes.iter().any(|(module, summary)| {
+            *module == ModuleKey::Project(PortablePath::parse("api.anb").unwrap())
+                && summary.unresolved_mode_elevator
+        }));
+        assert!(matches!(
+            prepared.classify_safe_mode(),
+            Err(CapturedSafeCheckFailure::ModeElevator)
+        ));
+    }
+
+    #[test]
+    fn prepared_project_refuses_pre_desugar_non_safe_trait_mode() {
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"trait T { @research(authorization: \"unit-test\") fn probe(self) { return 1; } }\nfn main() {}",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert_eq!(
+            crate::frontend::program_mode(&prepared.ast.items),
+            Some(Mode::Safe)
+        );
+        assert!(matches!(
+            prepared.classify_safe_mode(),
+            Err(CapturedSafeCheckFailure::NonSafeMode {
+                mode: Mode::Research
+            })
+        ));
+    }
+
+    #[test]
+    fn prepared_project_keeps_safe_acceptance_and_typed_typecheck_failure() {
+        let (_temp, tree) = capture(&[("main.anb", b"@safe fn main() {}")]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.check_and_lower_safe_rust().is_ok());
+
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"trait T { @safe fn probe(self) { return 1; } }\nfn main() {}",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.check_and_lower_safe_rust().is_ok());
+
+        let (_temp, tree) = capture(&[("main.anb", b"fn main() { missing(); }")]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(matches!(
+            prepared.check_and_lower_safe_rust(),
+            Err(CapturedSafeCheckFailure::Typecheck(failure))
+                if !failure.message.is_empty() && failure.limit.is_none()
+        ));
+    }
+
+    #[test]
+    fn captured_solver_stream_preserves_typed_refusals() {
+        let check = |status: &str| crate::middle::SolverCheck {
+            name: "contract:probe".into(),
+            status: status.into(),
+            detail: "synthetic classifier control".into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        assert!(check_captured_solver_stream(vec![check("PASS")]).is_ok());
+        for (status, expected) in [
+            ("FAIL", crate::middle::SolverOutcome::Fail),
+            ("UNKNOWN", crate::middle::SolverOutcome::Unknown),
+        ] {
+            let error = check_captured_solver_stream(vec![check(status)]).unwrap_err();
+            match error {
+                CapturedSafeCheckFailure::SolverRefused { checks, refusals } => {
+                    assert_eq!(checks[0].status, status);
+                    assert_eq!(refusals[0].status, status);
+                    assert_eq!(crate::middle::solver_outcome(&refusals[0]), expected);
+                }
+                other => panic!("wrong typed stage: {other}"),
+            }
+        }
+        let mixed = check_captured_solver_stream(vec![check("FAIL"), check("UNKNOWN")]);
+        assert!(matches!(
+            mixed,
+            Err(CapturedSafeCheckFailure::SolverRefused { refusals, .. })
+                if refusals.len() == 2
+                    && crate::middle::solver_outcome(&refusals[0])
+                        == crate::middle::SolverOutcome::Fail
+                    && crate::middle::solver_outcome(&refusals[1])
+                        == crate::middle::SolverOutcome::Unknown
+        ));
+        assert!(matches!(
+            check_captured_solver_stream(vec![check("unexpected")]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: crate::middle::SolverStreamIntegrityError::InvalidStatus { index: 0 },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_stream(vec![]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                checks,
+                issue: crate::middle::SolverStreamIntegrityError::Empty,
+            }) if checks.is_empty()
+        ));
+        assert!(matches!(
+            check_captured_solver_stream(vec![crate::middle::SolverCheck {
+                name: "solver:stream-integrity".into(),
+                status: "FAIL".into(),
+                detail: crate::middle::SOLVER_STREAM_INVALID_DETAIL.into(),
+                model: None,
+                smt: String::new(),
+            }]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: crate::middle::SolverStreamIntegrityError::SyntheticIntegrityRow {
+                    index: 0
+                },
+                ..
+            })
+        ));
+        let renamed_integrity = crate::middle::SolverCheck {
+            name: "assert:x".into(),
+            status: "FAIL".into(),
+            detail: crate::middle::SOLVER_STREAM_INVALID_DETAIL.into(),
+            model: None,
+            smt: String::new(),
+        };
+        assert!(matches!(
+            check_captured_solver_stream(vec![renamed_integrity]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: crate::middle::SolverStreamIntegrityError::SyntheticIntegrityRow {
+                    index: 0
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn captured_solver_inventory_rejects_missing_or_replaced_rows_with_duplicate_names() {
+        use crate::middle::{
+            IssuedSolverCheck, SolverCheck, SolverObligation, SolverStreamIntegrityError,
+        };
+
+        let obligation = |name: &str| SolverObligation {
+            name: name.into(),
+            assumptions: Vec::new(),
+            assertion: "true".into(),
+            vars: Vec::new(),
+            strings: false,
+            guard_assumptions: Vec::new(),
+            over_approx_reasons: std::collections::BTreeSet::new(),
+        };
+        let check = |name: &str, status: &str| SolverCheck {
+            name: name.into(),
+            status: status.into(),
+            detail: "synthetic inventory control".into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        let issued = |origin, check: SolverCheck| IssuedSolverCheck {
+            source_ordinal: origin,
+            outcome: if check.status == "PASS" {
+                crate::middle::IssuedSolverOutcome::Proved
+            } else {
+                crate::middle::IssuedSolverOutcome::Undecided
+            },
+            check,
+        };
+        let expected = [obligation("assert:same"), obligation("assert:same")];
+
+        assert!(check_captured_solver_inventory(
+            &expected,
+            vec![
+                issued(Some(0), check("assert:same", "PASS")),
+                issued(Some(1), check("assert:same", "PASS")),
+            ],
+        )
+        .is_ok());
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![issued(Some(0), check("assert:same", "PASS"))],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 2,
+                    actual: 1,
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![
+                    issued(Some(0), check("assert:same", "PASS")),
+                    issued(Some(1), check("assert:same", "PASS")),
+                    issued(Some(2), check("assert:same", "PASS")),
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 2,
+                    actual: 3,
+                },
+                ..
+            })
+        ));
+        // A count-plus-display-name check would accept this dropped-and-copied row.
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![
+                    issued(Some(0), check("assert:same", "PASS")),
+                    issued(Some(0), check("assert:same", "PASS")),
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 1,
+                    actual: Some(0),
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &expected,
+                vec![
+                    issued(Some(1), check("assert:same", "PASS")),
+                    issued(Some(0), check("assert:same", "PASS")),
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 0,
+                    actual: Some(1),
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &[obligation("assert:expected")],
+                vec![issued(Some(0), check("assert:other", "PASS"))],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryNameMismatch { index: 0 },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn captured_solver_inventory_requires_contextual_sentinel_and_preserves_refusals() {
+        use crate::middle::{
+            IssuedSolverCheck, SolverCheck, SolverObligation, SolverStreamIntegrityError,
+        };
+
+        let obligation = SolverObligation {
+            name: "assert:probe".into(),
+            assumptions: Vec::new(),
+            assertion: "true".into(),
+            vars: Vec::new(),
+            strings: false,
+            guard_assumptions: Vec::new(),
+            over_approx_reasons: std::collections::BTreeSet::new(),
+        };
+        let check = |status: &str, detail: &str| SolverCheck {
+            name: obligation.name.clone(),
+            status: status.into(),
+            detail: detail.into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+        let issued = |origin, check: SolverCheck| IssuedSolverCheck {
+            source_ordinal: origin,
+            outcome: if check.name == "solver:no-obligations" {
+                crate::middle::IssuedSolverOutcome::NoObligations
+            } else if check.status == "PASS" {
+                crate::middle::IssuedSolverOutcome::Proved
+            } else {
+                crate::middle::IssuedSolverOutcome::Undecided
+            },
+            check,
+        };
+        let sentinel = SolverCheck {
+            name: "solver:no-obligations".into(),
+            status: "PASS".into(),
+            detail: crate::middle::NO_OBLIGATIONS_DETAIL.into(),
+            model: None,
+            smt: "(check-sat)".into(),
+        };
+
+        assert!(check_captured_solver_inventory(&[], vec![issued(None, sentinel.clone())]).is_ok());
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![issued(None, sentinel.clone())]
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::UnexpectedNoObligations,
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(&[], vec![issued(Some(0), sentinel.clone())]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryOriginMismatch {
+                    index: 0,
+                    actual: Some(0),
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(&[], vec![issued(Some(0), check("PASS", "proved"))]),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::InventoryCountMismatch {
+                    expected: 0,
+                    actual: 1,
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: check("UNKNOWN", "unresolved"),
+                    outcome: crate::middle::IssuedSolverOutcome::Disproved,
+                }],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::OutcomeStatusMismatch { index: 0 },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![
+                    issued(None, sentinel),
+                    issued(Some(0), check("PASS", "proved"))
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::MalformedNoObligations,
+                ..
+            })
+        ));
+
+        for status in ["FAIL", "UNKNOWN"] {
+            assert!(matches!(
+                check_captured_solver_inventory(
+                    std::slice::from_ref(&obligation),
+                    vec![issued(Some(0), check(status, "synthetic refusal"))],
+                ),
+                Err(CapturedSafeCheckFailure::SolverRefused { refusals, .. })
+                    if refusals[0].status == status
+            ));
+        }
+        let environment = check("FAIL", "z3 unavailable: synthetic control");
+        assert_eq!(
+            crate::middle::refusal_locus(&environment),
+            crate::middle::RefusalLocus::Environment
+        );
+        assert_eq!(
+            crate::middle::classify_assertion_fail(&environment),
+            crate::middle::AssertionFailKind::Other
+        );
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: environment,
+                    outcome: crate::middle::IssuedSolverOutcome::ToolFailure(
+                        crate::middle::SolverToolFailure::Spawn,
+                    ),
+                }],
+            ),
+            Err(CapturedSafeCheckFailure::ToolFailure { failures, .. })
+                if failures == vec![(0, crate::middle::SolverToolFailure::Spawn)]
+        ));
+        // The wire detail is only presentation. The producer outcome, rather
+        // than a phrase such as "z3 unavailable", selects the failure lane.
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: check("FAIL", "z3 unavailable: forged display text"),
+                    outcome: crate::middle::IssuedSolverOutcome::Disproved,
+                }],
+            ),
+            Err(CapturedSafeCheckFailure::SolverRefused { .. })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&obligation),
+                vec![IssuedSolverCheck {
+                    source_ordinal: Some(0),
+                    check: check("PASS", "proved"),
+                    outcome: crate::middle::IssuedSolverOutcome::ToolFailure(
+                        crate::middle::SolverToolFailure::Wait,
+                    ),
+                }],
+            ),
+            Err(CapturedSafeCheckFailure::SolverStreamInvalid {
+                issue: SolverStreamIntegrityError::OutcomeStatusMismatch { index: 0 },
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_captured_solver_inventory(
+                &[obligation.clone(), obligation.clone()],
+                vec![
+                    IssuedSolverCheck {
+                        source_ordinal: Some(0),
+                        check: check("FAIL", "checked counterexample"),
+                        outcome: crate::middle::IssuedSolverOutcome::Disproved,
+                    },
+                    IssuedSolverCheck {
+                        source_ordinal: Some(1),
+                        check: check("FAIL", "tool failed to write"),
+                        outcome: crate::middle::IssuedSolverOutcome::ToolFailure(
+                            crate::middle::SolverToolFailure::Write,
+                        ),
+                    },
+                ],
+            ),
+            Err(CapturedSafeCheckFailure::ToolFailure { checks, failures })
+                if checks.len() == 2
+                    && checks[0].detail == "checked counterexample"
+                    && checks[1].detail == "tool failed to write"
+                    && failures == vec![(1, crate::middle::SolverToolFailure::Write)]
+        ));
+        let unencoded = SolverObligation {
+            name: "requires-unresolved@probe".into(),
+            ..obligation.clone()
+        };
+        assert!(matches!(
+            check_captured_solver_inventory(
+                std::slice::from_ref(&unencoded),
+                vec![issued(
+                    Some(0),
+                    SolverCheck {
+                        name: unencoded.name.clone(),
+                        status: "FAIL".into(),
+                        detail: crate::middle::UNRESOLVED_PRECONDITION_DETAIL.into(),
+                        model: None,
+                        smt: "; not encoded\n".into(),
+                    },
+                )],
+            ),
+            Err(CapturedSafeCheckFailure::SolverRefused { .. })
+        ));
+    }
+
+    #[test]
+    fn captured_solver_inventory_keeps_a_valid_safe_contract_call() {
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"fn g(x: u32) requires(x > 0) {} fn main() { g(5); }",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        assert!(prepared.check_and_lower_safe_rust().is_ok());
+
+        let (_temp, tree) = capture(&[(
+            "main.anb",
+            b"fn g(x: u32) requires(x > 0) {} fn main() { g(0); }",
+        )]);
+        let prepared = prepare_captured_project(&tree, entry()).unwrap();
+        match prepared.check_and_lower_safe_rust() {
+            Err(CapturedSafeCheckFailure::SolverRefused { checks, refusals }) => {
+                assert!(!checks.is_empty());
+                assert!(refusals.iter().any(|check| {
+                    check.name.starts_with("requires@")
+                        && crate::middle::solver_outcome(check)
+                            == crate::middle::SolverOutcome::Fail
+                        && crate::middle::classify_assertion_fail(check)
+                            == crate::middle::AssertionFailKind::Disproved
+                        && crate::middle::counterexample_was_replayed(check)
+                }));
+            }
+            other => {
+                panic!("violated Safe call must reach a checked obligation refusal: {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn captured_project_reports_malformed_entry_and_import_by_module() {
+        for (files, expected) in [
+            (vec![("main.anb", &b"fn main( {"[..])], "main.anb"),
+            (
+                vec![
+                    ("main.anb", &b"import api;\nfn main() {}"[..]),
+                    ("api.anb", &b"fn broken( {"[..]),
+                ],
+                "api.anb",
+            ),
+        ] {
+            let (_temp, tree) = capture(&files);
+            assert!(matches!(
+                prepare_captured_project(&tree, entry()),
+                Err(CapturedResolveError::Parse { module: ModuleKey::Project(path), .. })
+                    if path == PortablePath::parse(expected).unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    fn prepared_project_retains_collision_and_source_limit_refusals() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import api;\ntrait Shape { fn area(self); }\nfn main() { return 0; }",
+            ),
+            ("api.anb", b"trait Shape { fn area(self); }"),
+        ]);
+        assert!(matches!(
+            prepare_captured_project(&tree, entry()),
+            Err(CapturedResolveError::TraitNameCollision { name, .. }) if name == "Shape"
+        ));
+        let error = prepare_captured_project_with_limits(
+            &tree,
+            entry(),
+            ResolveLimits {
+                parsed_bytes: 1,
+                ..ResolveLimits::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CapturedResolveError::Limit {
+                kind: "parsed byte"
+            }
+        ));
+    }
+
+    #[test]
+    fn captured_combine_uses_saved_module_bytes_and_existing_call_rewrite() {
+        let (temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import util;\nimport util;\nfn main() { print(util::value()); }",
+            ),
+            ("util.anb", b"pub fn value() { return 1; }"),
+        ]);
+        let legacy = super::super::combine_from_entry(&temp.path().join("main.anb")).unwrap();
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        fs::write(
+            temp.path().join("util.anb"),
+            b"pub fn replacement() { return 2; }",
+        )
+        .unwrap();
+
+        let combined = super::super::combine_captured_project(&graph).unwrap();
+        assert_eq!(format!("{:?}", combined.items), format!("{legacy:?}"));
+        assert!(combined
+            .items
+            .iter()
+            .any(|item| { matches!(item, Item::Fn { name, .. } if name == "util__value") }));
+        assert!(!combined
+            .items
+            .iter()
+            .any(|item| { matches!(item, Item::Fn { name, .. } if name == "util__replacement") }));
+        let main_rewritten = combined.items.iter().any(|item| match item {
+            Item::Fn { name, body, .. } if name == "main" => matches!(
+                body.first(),
+                Some(Stmt::ExprStmt(Expr::Call { callee, args }))
+                    if callee == "print"
+                        && matches!(
+                            args.first(),
+                            Some(Expr::Call { callee, .. }) if callee == "util__value"
+                        )
+            ),
+            _ => false,
+        });
+        assert!(main_rewritten);
+        let mut imports = graph.modules.last().unwrap().imports.iter();
+        assert_eq!(imports.next().unwrap().requested, "util");
+        assert_eq!(imports.next().unwrap().requested, "util");
+        assert!(imports.next().is_none());
+    }
+
+    #[test]
+    fn captured_combine_keeps_imported_trait_sidecar() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import api;\nfn main() { return 0; }"),
+            (
+                "api.anb",
+                b"struct Circle { r: u32 }\ntrait Shape { fn area(self); }\nimpl Shape for Circle { fn area(self) { return 1; } }\npub fn value() { return 1; }",
+            ),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let combined = super::super::combine_captured_project(&graph).unwrap();
+        assert!(combined.trait_env.traits.contains_key("Shape"));
+        assert!(combined
+            .trait_env
+            .impls
+            .iter()
+            .any(|imp| { imp.trait_name == "Shape" && imp.type_name == "Circle" }));
+    }
+
+    #[test]
+    fn captured_combine_refuses_ambiguous_trait_sidecars() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import api;\ntrait Shape { fn area(self); }\nfn main() { return 0; }",
+            ),
+            ("api.anb", b"trait Shape { fn area(self); }"),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let error = super::super::combine_captured_project(&graph).unwrap_err();
+        assert!(matches!(
+            error,
+            CapturedResolveError::TraitNameCollision {
+                name,
+                first: ModuleKey::Project(_),
+                second: ModuleKey::Project(_),
+            } if name == "Shape"
+        ));
+    }
+
+    #[test]
+    fn chooses_existing_project_candidates_in_legacy_order_and_preserves_import_occurrences() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import util;\nimport util;\nfn main() { return 0; }",
+            ),
+            ("util.anb", b"pub fn chosen() { return 1; }"),
+            ("util.anub", b"pub fn wrong() { return 2; }"),
+            ("util/mod.anb", b"pub fn also_wrong() { return 3; }"),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let main = graph.modules.last().unwrap();
+        assert_eq!(main.imports.len(), 2);
+        assert!(main.imports.iter().all(|edge| {
+            edge.importer == graph.entry
+                && edge.requested == "util"
+                && edge.target == ModuleKey::Project(PortablePath::parse("util.anb").unwrap())
+                && std::str::from_utf8(main.bytes)
+                    .unwrap()
+                    .get(edge.span.start..edge.span.end)
+                    .unwrap()
+                    .starts_with("import util;")
+        }));
+        assert_eq!(graph.modules.len(), 2);
+        assert_eq!(graph.modules[0].namespace, "util");
+    }
+
+    #[test]
+    fn falls_back_to_mod_and_never_reopens_mutated_source() {
+        let (temp, tree) = capture(&[
+            ("main.anb", b"import util;\nfn main() { return 0; }"),
+            ("util/mod.anb", b"pub fn before() { return 1; }"),
+        ]);
+        fs::write(
+            temp.path().join("util/mod.anb"),
+            b"pub fn after() { return 2; }",
+        )
+        .unwrap();
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        assert_eq!(
+            graph.modules[0].key,
+            ModuleKey::Project(PortablePath::parse("util/mod.anb").unwrap())
+        );
+        let mut names = BTreeSet::new();
+        collect_fn_names(&graph.modules[0].ast.items, &mut names);
+        assert!(names.contains("before"));
+        assert!(!names.contains("after"));
+    }
+
+    #[test]
+    fn later_extensions_and_output_named_directories_are_resolved_from_capture() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import util;\nimport out.tools;\nfn main() { return 0; }",
+            ),
+            ("util.anub", b"pub fn selected() { return 1; }"),
+            ("util.anubis", b"pub fn other() { return 2; }"),
+            ("util/mod.anb", b"pub fn lower_priority() { return 3; }"),
+            ("out/tools.anb", b"pub fn tool() { return 4; }"),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let main = graph.modules.last().unwrap();
+        assert_eq!(
+            main.imports[0].target,
+            ModuleKey::Project(PortablePath::parse("util.anub").unwrap())
+        );
+        assert_eq!(
+            main.imports[1].target,
+            ModuleKey::Project(PortablePath::parse("out/tools.anb").unwrap())
+        );
+    }
+
+    #[test]
+    fn embedded_stdlib_ignores_project_shadow_file() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import std.math;\nfn main() { return 0; }"),
+            ("std/math.anb", b"this is not Anubis source"),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        assert!(
+            matches!(graph.modules[0].key, ModuleKey::EmbeddedStdlib(ref name) if name == "std.math")
+        );
+        assert_eq!(
+            graph.modules[0].bytes,
+            stdlib::source("std.math").unwrap().as_bytes()
+        );
+    }
+
+    #[test]
+    fn retains_imported_trait_sidecar() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import api;\nfn main() { return 0; }"),
+            (
+                "api.anb",
+                b"trait Shape { fn area(self); }\npub fn value() { return 1; }",
+            ),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let api = &graph.modules[0];
+        assert!(api.ast.trait_env.traits.contains_key("Shape"));
+        assert_eq!(api.namespace, "api");
+    }
+
+    #[test]
+    fn same_byte_span_in_different_modules_has_distinct_source_identity() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import a;\nfn main() { return 0; }"),
+            ("a.anb", b"import b;\npub fn a() { return 0; }"),
+            ("b.anb", b"pub fn b() { return 0; }"),
+        ]);
+        let graph = load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap();
+        let a = &graph.modules[1];
+        let main = &graph.modules[2];
+        assert_eq!(
+            a.imports[0].importer,
+            ModuleKey::Project(PortablePath::parse("a.anb").unwrap())
+        );
+        assert_eq!(main.imports[0].importer, graph.entry);
+        assert_eq!(a.imports[0].span.start, main.imports[0].span.start);
+        assert_eq!(a.imports[0].requested, "b");
+        assert_eq!(main.imports[0].requested, "a");
+    }
+
+    #[test]
+    fn refuses_nested_imports_with_source_qualified_spans() {
+        let sources: &[(&str, &[u8], &str)] = &[
+            (
+                "main.anb",
+                b"module inner { import util; }\nfn main() { return 0; }",
+                "main.anb",
+            ),
+            (
+                "api.anb",
+                b"module outer { module inner { import util; } }",
+                "api.anb",
+            ),
+        ];
+        for &(nested_file, nested_source, expected_importer) in sources {
+            let files: Vec<(&str, &[u8])> = if nested_file == "main.anb" {
+                vec![
+                    ("main.anb", nested_source),
+                    ("util.anb", b"pub fn f() { return 0; }"),
+                ]
+            } else {
+                vec![
+                    ("main.anb", b"import api;\nfn main() { return 0; }"),
+                    (nested_file, nested_source),
+                    ("util.anb", b"pub fn f() { return 0; }"),
+                ]
+            };
+            let (_temp, tree) = capture(&files);
+            let error =
+                load_captured_project(&tree, entry(), ResolveLimits::default()).unwrap_err();
+            match error {
+                CapturedResolveError::NestedImport {
+                    importer,
+                    requested,
+                    span,
+                } => {
+                    assert_eq!(
+                        importer,
+                        ModuleKey::Project(PortablePath::parse(expected_importer).unwrap())
+                    );
+                    assert_eq!(requested, "util");
+                    assert_eq!(
+                        std::str::from_utf8(nested_source)
+                            .unwrap()
+                            .get(span.start..span.end),
+                        Some("import util;")
+                    );
+                }
+                other => panic!("expected source-qualified nested import error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn refuses_cycle_missing_module_and_invalid_utf8() {
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import a;\nfn main() { return 0; }"),
+            ("a.anb", b"import b;\nfn a() { return 0; }"),
+            ("b.anb", b"import a;\nfn b() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::Cycle { .. })
+        ));
+        let (_temp, tree) = capture(&[("main.anb", b"import missing;\nfn main() { return 0; }")]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::Unresolved { .. })
+        ));
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import bad;\nfn main() { return 0; }"),
+            ("bad.anb", b"\xff"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::InvalidUtf8 { .. })
+        ));
+    }
+
+    #[test]
+    fn refuses_alias_prefix_namespace_and_flat_function_collisions() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import a.foo;\nimport b.foo;\nfn main() { return 0; }",
+            ),
+            ("a/foo.anb", b"pub fn a() { return 0; }"),
+            ("b/foo.anb", b"pub fn b() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::AliasCollision { .. })
+        ));
+
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import a.b;\nimport a_b;\nfn main() { return 0; }",
+            ),
+            ("a/b.anb", b"pub fn a() { return 0; }"),
+            ("a_b.anb", b"pub fn b() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::PrefixCollision { .. })
+        ));
+
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import a;\nimport a.mod;\nfn main() { return 0; }",
+            ),
+            ("a/mod.anb", b"pub fn a() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::ConflictingNamespace { .. })
+        ));
+
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import util;\nfn util__f() { return 0; }"),
+            ("util.anb", b"pub fn f() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::FunctionCollision { .. })
+        ));
+
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import a;\nimport A;\nfn main() { return 0; }"),
+            ("a.anb", b"pub fn small() { return 0; }"),
+            ("A.anb", b"pub fn large() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::CaseCollision { .. })
+        ));
+    }
+
+    #[test]
+    fn refuses_local_enum_alias_unknown_std_and_small_limits() {
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import util;\nenum util { X }\nfn main() { return 0; }",
+            ),
+            ("util.anb", b"pub fn f() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::EnumAliasCollision { .. })
+        ));
+
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import std.unknown;\nfn main() { return 0; }"),
+            ("std/unknown.anb", b"pub fn f() { return 0; }"),
+        ]);
+        assert!(matches!(
+            load_captured_project(&tree, entry(), ResolveLimits::default()),
+            Err(CapturedResolveError::UnknownStdlib { .. })
+        ));
+
+        let (_temp, tree) = capture(&[
+            ("main.anb", b"import util;\nfn main() { return 0; }"),
+            ("util.anb", b"pub fn f() { return 0; }"),
+        ]);
+        let limits = ResolveLimits {
+            modules: 1,
+            ..ResolveLimits::default()
+        };
+        assert!(matches!(
+            load_captured_project(&tree, entry(), limits),
+            Err(CapturedResolveError::Limit { kind: "module" })
+        ));
+        let limits = ResolveLimits {
+            depth: 1,
+            ..ResolveLimits::default()
+        };
+        assert!(matches!(
+            load_captured_project(&tree, entry(), limits),
+            Err(CapturedResolveError::Limit { kind: "depth" })
+        ));
+        let limits = ResolveLimits {
+            parsed_bytes: 1,
+            ..ResolveLimits::default()
+        };
+        assert!(matches!(
+            load_captured_project(&tree, entry(), limits),
+            Err(CapturedResolveError::Limit {
+                kind: "parsed byte"
+            })
+        ));
+
+        let (_temp, tree) = capture(&[
+            (
+                "main.anb",
+                b"import util;\nimport util;\nfn main() { return 0; }",
+            ),
+            ("util.anb", b"pub fn f() { return 0; }"),
+        ]);
+        let limits = ResolveLimits {
+            imports: 1,
+            ..ResolveLimits::default()
+        };
+        assert!(matches!(
+            load_captured_project(&tree, entry(), limits),
+            Err(CapturedResolveError::Limit { kind: "import" })
+        ));
+    }
+}

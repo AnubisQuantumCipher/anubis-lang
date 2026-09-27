@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(p, n) {
+    let f = |q| q + 1;
+    f = identity(if n > 29 { let f = identity(f); let g29 = f; identity(if n > 28 { let f = identity(f); let g28 = f; identity(if n > 27 { let f = identity(f); let g27 = f; identity(if n > 26 { let f = identity(f); let g26 = f; identity(if n > 25 { let f = identity(f); let g25 = f; identity(if n > 24 { let f = identity(f); let g24 = f; identity(if n > 23 { let f = identity(f); let g23 = f; identity(if n > 22 { let f = identity(f); let g22 = f; identity(if n > 21 { let f = identity(f); let g21 = f; identity(if n > 20 { let f = identity(f); let g20 = f; identity(if n > 19 { let f = identity(f); let g19 = f; identity(if n > 18 { let f = identity(f); let g18 = f; identity(if n > 17 { let f = identity(f); let g17 = f; identity(if n > 16 { let f = identity(f); let g16 = f; identity(if n > 15 { let f = identity(f); let g15 = f; identity(if n > 14 { let f = identity(f); let g14 = f; identity(if n > 13 { let f = identity(f); let g13 = f; identity(if n > 12 { let f = identity(f); let g12 = f; identity(if n > 11 { let f = identity(f); let g11 = f; identity(if n > 10 { let f = identity(f); let g10 = f; identity(if n > 9 { let f = identity(f); let g9 = f; identity(if n > 8 { let f = identity(f); let g8 = f; identity(if n > 7 { let f = identity(f); let g7 = f; identity(if n > 6 { let f = identity(f); let g6 = f; identity(if n > 5 { let f = identity(f); let g5 = f; identity(if n > 4 { let f = identity(f); let g4 = f; identity(if n > 3 { let f = identity(f); let g3 = f; identity(if n > 2 { let f = identity(f); let g2 = f; identity(if n > 1 { let f = identity(f); let g1 = f; identity(if n > 0 { let f = identity(f); let g0 = f; f } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f }) } else { f });
+    println(f(p.pub_n));
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p, 5);
+}

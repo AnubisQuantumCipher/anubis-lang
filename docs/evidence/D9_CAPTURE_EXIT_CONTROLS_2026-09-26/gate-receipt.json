@@ -1,0 +1,115 @@
+{
+  "baseline": {
+    "cargo_lock_sha256": "0064eaf059d9f4072af0b0b744d2a1833d88c552b6f137d3e91b7d41f93530fe",
+    "command": "<sha256-identified-anubis> check <source> --message-format=json",
+    "compiler_binary_sha256": "e66747889003038301a0b97b9f6f2ef59693f440ee8870e6ec223a0b02ba1296",
+    "compiler_code_commit": "700b81f4cc42e8efaab7a7f39aae4bf509188263",
+    "compiler_code_tree": "dea1bef099b0423929c4c5e09b0c741c08833aae",
+    "report": "baseline.json",
+    "scope": "Safe check only in lead-owned capped user scope; no program execution",
+    "sha256": "bcb172670554ba97fda1a83458949329f58e108abaf8eed050fbf4e5bc1685ee"
+  },
+  "build_log": {
+    "normalization": "private home-directory prefix replaced with <HOME>/; terminal blank lines trimmed",
+    "raw_sha256": "3ace8978eb6c391b3f6d7c8a7a6818853e125fec1f0cabc7555ab83f1a8307ca",
+    "retained": "cli-build.log",
+    "retained_sha256": "67dcfd9557816d06cc05ab40f05da3b4e5c29e3622c010ebbd98d74e2991b0c2"
+  },
+  "case_source_sha256": {
+    "d9q_capture_early_g_invalid": "b0009c68a4f38cfdb0ceb2e0e0ce49b3eb2ccf2859d49d244cb009a2c85a4fec",
+    "d9q_capture_early_g_valid": "3fc999a97db7e4344642381e663b1c48e4d8a41b16eccf0b566a7d6fbfa0f970",
+    "d9q_secret_early_return_invalid": "c55d4366f8ad16ad3e16094263e9feb4bd1c8290fc3d6b65ff6c6b0e0af3c485",
+    "d9q_secret_guard_assert_continue_valid": "50f487c593ed497c3ad1eab86b75be15983c5129bfcda85d321cbb4dbeff7979"
+  },
+  "fixture_commit": "49baf0bdfeb054bee41be3dd4492be0fbb13eb8d",
+  "fixture_tree": "90458c4bddfcd98c506ddadb22471056e3165e21",
+  "gates": [
+    {
+      "case_results": [
+        {
+          "diagnostic_codes": [
+            "ANUBIS_IMPLICIT_FLOW"
+          ],
+          "exit_code": 1,
+          "id": "d9q_capture_early_g_invalid",
+          "intent": "REJECT",
+          "verdict": "fail"
+        },
+        {
+          "diagnostic_codes": [],
+          "exit_code": 0,
+          "id": "d9q_capture_early_g_valid",
+          "intent": "ACCEPT",
+          "verdict": "pass"
+        },
+        {
+          "diagnostic_codes": [
+            "ANUBIS_IMPLICIT_FLOW"
+          ],
+          "exit_code": 1,
+          "id": "d9q_secret_early_return_invalid",
+          "intent": "REJECT",
+          "verdict": "fail"
+        },
+        {
+          "diagnostic_codes": [],
+          "exit_code": 0,
+          "id": "d9q_secret_guard_assert_continue_valid",
+          "intent": "ACCEPT",
+          "verdict": "pass"
+        }
+      ],
+      "command": "<sha256-identified-anubis> check <source> --message-format=json",
+      "status": "SCOPED_PASS"
+    },
+    {
+      "command": "python3 -m unittest tests.soundness.matrix.test_run",
+      "exit_code": 0,
+      "log": "matrix-harness.log",
+      "log_sha256": "eb0e36a120846ba223be059d9565e83d9d706ea039ee33e74f949d453d6354b6",
+      "observed_result": "Ran 48 tests; OK",
+      "status": "PASS"
+    },
+    {
+      "command": "bash scripts/run_docs_drift_gate.sh --out <isolated-output>",
+      "exit_code": 0,
+      "observed_result": "Overall: PASS (36 stamps checked, 0 drift)",
+      "report": "docs-drift-report.json",
+      "report_sha256": "48faf0fe8100910b82cec9acd0e1384a1811ee45ab0b647767a1c05738085f72",
+      "status": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "status": "PASS"
+    }
+  ],
+  "independent_review": {
+    "report": "INDEPENDENT_REVIEW.md",
+    "sha256": "48f26ae7f2b8a8e6ff0bc31ab12820bf4c1bee341dcc02c60a425afe94aa36fc",
+    "status": "GO fixture registration; HOLD direct D9 producer claim"
+  },
+  "limits": "The invalid selected sources refuse through existing IFC2. This does not establish the planned direct D9 transfer. Valid twin acceptance must be preserved.",
+  "not_run": [
+    "full soundness matrix",
+    "native runtime differential witness",
+    "direct D9 PC/effect producer check",
+    "whole workspace suite",
+    "hosted source-matched CI",
+    "disposable-guest seal"
+  ],
+  "preliminary_docs_drift_attempt": {
+    "exit_code": 1,
+    "derivation_stderr": "preliminary-drift-failure.err",
+    "derivation_stderr_sha256": "2deddb4badc63a7cc4dd5216be42b22d9dfac60410ace93d19153d3af380e082",
+    "failure": "source trust universe changed while building the manifest",
+    "context": "The lead edited this receipt's README during the three-pass derivation; the gate failed closed. A stable-candidate rerun is recorded in gates."
+  },
+  "record_kind": "anubis.d9-capture-exit-registration/1",
+  "registry_sha256": "2a4360f39b9680720c9785eb34b099e10ca1badc582b5f8d64993520ca1b4dd7",
+  "superseded_probe": {
+    "record": "superseded-probe/probe.json",
+    "sha256": "8a88f546f19bd248c0044d38d9b7cbefdfe42af985718d4bee25d4c4f15783b4",
+    "status": "unregistered earlier probe with an additional public-return leak; original source and logs retained"
+  }
+}

@@ -1,0 +1,415 @@
+{
+  "pins": {
+    "baseline": "90a21f28c49bd044202698ba889f72bb4d9757b721671b194bf4c7a3b786c855",
+    "alias": "9e8720dd805bbbd55b29b5d4904fd7b981166094277d8e5e70e7f252d7531ee1",
+    "prototype": "bb62868e0f1495a12f26499e6499aaa2c6ef6ffe08f1212ab59f470bd1bf6c88"
+  },
+  "checks": [
+    {
+      "case": "rv30_valid_n02.anb",
+      "intent": "ACCEPT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/rv30_valid_n02.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.0040426310151815414,
+      "diagnostics": [],
+      "source_sha256": "3e03d9dddd2ddf87ae5558da36855e3c60b3b66dcf65e70f3bc62a79f7c06298",
+      "log_sha256": "06f58cebd22d853a14ec350db86055d323c22f51f2c9462cb084845fbccb299d"
+    },
+    {
+      "case": "rv30_valid_n02.anb",
+      "intent": "ACCEPT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/rv30_valid_n02.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.36613274199771695,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "3e03d9dddd2ddf87ae5558da36855e3c60b3b66dcf65e70f3bc62a79f7c06298",
+      "log_sha256": "0fb88fa0d92ff84b22dfb929413500be4cffaa600bae592eab874c43055ab6f5"
+    },
+    {
+      "case": "rv30_valid_n02.anb",
+      "intent": "ACCEPT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/rv30_valid_n02.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.007870469999033958,
+      "diagnostics": [],
+      "source_sha256": "3e03d9dddd2ddf87ae5558da36855e3c60b3b66dcf65e70f3bc62a79f7c06298",
+      "log_sha256": "06f58cebd22d853a14ec350db86055d323c22f51f2c9462cb084845fbccb299d"
+    },
+    {
+      "case": "valid_straight_wrap.anb",
+      "intent": "ACCEPT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/valid_straight_wrap.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.06454155300161801,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "03d62907d32fc9a5229f3aa77ce54c7b843a12ad96ffbcd7c9077162b2fd701d",
+      "log_sha256": "a37abe3dae9c7bbdabccf359cc3c510f402ca65dbf7072f16f8887a6745d9047"
+    },
+    {
+      "case": "valid_straight_wrap.anb",
+      "intent": "ACCEPT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/valid_straight_wrap.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.0645392189908307,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "03d62907d32fc9a5229f3aa77ce54c7b843a12ad96ffbcd7c9077162b2fd701d",
+      "log_sha256": "2301d0268dd37b95c1f52c6f2b15d81de73d30680fcf3aa1edb4be81ab67b66b"
+    },
+    {
+      "case": "valid_straight_wrap.anb",
+      "intent": "ACCEPT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/valid_straight_wrap.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.003825505991699174,
+      "diagnostics": [],
+      "source_sha256": "03d62907d32fc9a5229f3aa77ce54c7b843a12ad96ffbcd7c9077162b2fd701d",
+      "log_sha256": "fca4c27742f60f1bf4611aa01bad816d464e1d47e0b2dee224a176bb1669a287"
+    },
+    {
+      "case": "valid_public_capture.anb",
+      "intent": "ACCEPT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/valid_public_capture.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.003541131009114906,
+      "diagnostics": [],
+      "source_sha256": "030b851f6c229d2f705eaada6b8d9071ca1a7f37d00fdadc1a00559d63199d5e",
+      "log_sha256": "c6d0b81ad247b86dfd42b73772ecf8df5e439959a632fa2c52e4c0d09dbaaae7"
+    },
+    {
+      "case": "valid_public_capture.anb",
+      "intent": "ACCEPT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/valid_public_capture.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.4165118600067217,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT"
+      ],
+      "source_sha256": "030b851f6c229d2f705eaada6b8d9071ca1a7f37d00fdadc1a00559d63199d5e",
+      "log_sha256": "9508602fa06389fa7a41f01d763116075a5e6575bf2b2e2fef4c8fdc7c52f7b5"
+    },
+    {
+      "case": "valid_public_capture.anb",
+      "intent": "ACCEPT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/valid_public_capture.anb"
+      ],
+      "rc": 0,
+      "elapsed_seconds": 0.003928796999389306,
+      "diagnostics": [],
+      "source_sha256": "030b851f6c229d2f705eaada6b8d9071ca1a7f37d00fdadc1a00559d63199d5e",
+      "log_sha256": "c6d0b81ad247b86dfd42b73772ecf8df5e439959a632fa2c52e4c0d09dbaaae7"
+    },
+    {
+      "case": "reject_prior_egress.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_prior_egress.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.032447756006149575,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "158bd9552768ddafec92d72cde11530a5224bb7acef31952eeee0eac09922ec4",
+      "log_sha256": "4ca3900df87248451e0be1b5f9921ca70f4a389a2eda7bd3110d91f23368cf94"
+    },
+    {
+      "case": "reject_prior_egress.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_prior_egress.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.4178259030159097,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT",
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "158bd9552768ddafec92d72cde11530a5224bb7acef31952eeee0eac09922ec4",
+      "log_sha256": "f030d4bcc79acc87c28375bb9d877aac931dd5d65220d31025713a4240bf6fe7"
+    },
+    {
+      "case": "reject_prior_egress.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_prior_egress.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03292146499734372,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "158bd9552768ddafec92d72cde11530a5224bb7acef31952eeee0eac09922ec4",
+      "log_sha256": "9c124323dfb4e0c490b97fa3d504d451a72090efcf1151816c7a9a68872b356c"
+    },
+    {
+      "case": "reject_argument_changes.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_argument_changes.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03222371399169788,
+      "diagnostics": [
+        "ANUBIS_INTERPROC_EXFILTRATION"
+      ],
+      "source_sha256": "4ecae6ceee61acdc891995fb8480f5c622dd46883a64ce6b72a5a0e9c36d055a",
+      "log_sha256": "c9f3deb1c847b803b56e5f287dcd5e511a5f7d12f5d2db299e227b9f75e981e7"
+    },
+    {
+      "case": "reject_argument_changes.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_argument_changes.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.7727172189916018,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT",
+        "ANUBIS_INTERPROC_EXFILTRATION",
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "4ecae6ceee61acdc891995fb8480f5c622dd46883a64ce6b72a5a0e9c36d055a",
+      "log_sha256": "e9c17a78af5467402648f3f390c3ac24977bc272ad06fdd46ecc8a35cc4938d8"
+    },
+    {
+      "case": "reject_argument_changes.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_argument_changes.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.033487257023807615,
+      "diagnostics": [
+        "ANUBIS_INTERPROC_EXFILTRATION",
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "4ecae6ceee61acdc891995fb8480f5c622dd46883a64ce6b72a5a0e9c36d055a",
+      "log_sha256": "7ab07f130510053ef57f3eb8f0acb8a82bb2bcb91f74d2ace6801ed703a05d4f"
+    },
+    {
+      "case": "reject_prior_capture.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_prior_capture.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03272663100506179,
+      "diagnostics": [
+        "ANUBIS_INTERPROC_EXFILTRATION",
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "741e187b92758f92f98b014266f54d8a902a1db65382da48db2426f850d3f293",
+      "log_sha256": "ad96abd96629f69e986d567c32b66e9b6bd48b89a60776bfe932466c7afddd09"
+    },
+    {
+      "case": "reject_prior_capture.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_prior_capture.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.7719260969897732,
+      "diagnostics": [
+        "ANUBIS_ANALYSIS_LIMIT",
+        "ANUBIS_INTERPROC_EXFILTRATION",
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "741e187b92758f92f98b014266f54d8a902a1db65382da48db2426f850d3f293",
+      "log_sha256": "160aeacf2da09cdfa07e33aeb161ba08b1b7f68574e84b921bf5658fd598d18f"
+    },
+    {
+      "case": "reject_prior_capture.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_prior_capture.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03327742399415001,
+      "diagnostics": [
+        "ANUBIS_INTERPROC_EXFILTRATION",
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "741e187b92758f92f98b014266f54d8a902a1db65382da48db2426f850d3f293",
+      "log_sha256": "41fd81aa425fa6a61be0292105daf823c353adf17e5e6d737a3022d1a40aec80"
+    },
+    {
+      "case": "reject_clean_then_secret.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_clean_then_secret.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03264134001801722,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "aad53de40d5c31f0dc72bb909d70ea4863f2b067903a822cb723d89b640688a7",
+      "log_sha256": "629b27be0356b08531f50afd5f09e630f2a9fd1f09768c3ef0927db8250fd5de"
+    },
+    {
+      "case": "reject_clean_then_secret.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_clean_then_secret.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03257496497826651,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "aad53de40d5c31f0dc72bb909d70ea4863f2b067903a822cb723d89b640688a7",
+      "log_sha256": "bb562a1bf5089ac616edbea470921f751f732fde198d3466fa0f4ad0262f31bf"
+    },
+    {
+      "case": "reject_clean_then_secret.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_clean_then_secret.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.032544674002565444,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "aad53de40d5c31f0dc72bb909d70ea4863f2b067903a822cb723d89b640688a7",
+      "log_sha256": "76a19a191213a7e9e036a4125ff1b36ebfc159d343018260d0fcb9b74ca1abd5"
+    },
+    {
+      "case": "reject_distinct_captures.anb",
+      "intent": "REJECT",
+      "pin": "baseline",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3b",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_distinct_captures.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03302209000685252,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "29b30c991c49c024950cfe1041de958d382e60445c4780e069c705e237b3e70a",
+      "log_sha256": "76a61ab9cd3520bb406a6391e5e6e73102b692ea3350ca7485233ebfef457075"
+    },
+    {
+      "case": "reject_distinct_captures.anb",
+      "intent": "REJECT",
+      "pin": "alias",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-ord3x1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_distinct_captures.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.03264925701660104,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "29b30c991c49c024950cfe1041de958d382e60445c4780e069c705e237b3e70a",
+      "log_sha256": "318fa1e6b843909424d5b7be136bdf844ffa1f7514d3800ccebd1e467824c7a0"
+    },
+    {
+      "case": "reject_distinct_captures.anb",
+      "intent": "REJECT",
+      "pin": "prototype",
+      "command": [
+        "/home/sicarii/.cache/anubis-item21/pins/anubis-codex-closure-cycle1",
+        "check",
+        "/home/sicarii/.cache/anubis-item21/codex-continuation/closure-cycle-controls/reject_distinct_captures.anb"
+      ],
+      "rc": 1,
+      "elapsed_seconds": 0.032855589990504086,
+      "diagnostics": [
+        "ANUBIS_SECRET_EXFILTRATION"
+      ],
+      "source_sha256": "29b30c991c49c024950cfe1041de958d382e60445c4780e069c705e237b3e70a",
+      "log_sha256": "72691f25619a6a7a15e45f543ba8a546f297ffdbb8559902bc9b3af321514860"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+fn getsec() -> secret<i64> { let s: secret<i64> = 42; return s; }
+fn pub1() -> i64 { return 1; }
+fn getsec_v(v) { return getsec; }
+fn r(c, g, h) { if c > 5 { return g; } let n = len(map([1], getsec_v)); print(n); let q = r(c + 1, h, g); return q; }
+fn main() { let q = r(1, pub1, pub1); print(q()); }

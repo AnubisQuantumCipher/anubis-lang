@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+struct P { x: i64, y: i64 }
+struct Shape { id: i64 }
+impl Shape { fn x(self) { return self.id; } }
+fn main() { let p = P { x: 1, y: 2 }; let q = P { x: p.y, y: p.x }; print(q.x); let ss = [Shape { id: 1 }]; for s in ss { print(s.x()); } print(map([1], f)); }

@@ -1,0 +1,6 @@
+fn main() {
+    let k: secret<i64> = 42
+    if k > 100 {
+        print("big")
+    }
+}

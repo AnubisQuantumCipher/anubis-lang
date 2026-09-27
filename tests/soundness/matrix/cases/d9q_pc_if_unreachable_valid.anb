@@ -1,0 +1,11 @@
+struct Row { k: secret<i64>, n: i64 }
+
+fn emit(s: secret<i64>) {
+    let row = Row { k: s, n: 0 };
+    if s > 0 {
+        if false { row.n = 1; }
+    }
+    println(1);
+}
+
+fn main() { emit(42); }

@@ -1,0 +1,15 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let xs = map([1, 2, 3, 4, 5, 6, 7], |x| x);
+    let ys = xs + [k];
+    let f = |a, b, c, d, e, g, h, j| {
+        if j > 100 {
+            println("big");
+        } else {
+            println("small");
+        }
+        0
+    };
+    let r = apply(f, ys);
+    println("end");
+}

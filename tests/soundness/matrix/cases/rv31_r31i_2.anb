@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn push(a: list<i64>, b: S) -> S {
+    return b;
+}
+fn g(p: S) {
+    let t = [0];
+    push(t, p);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(len(str(g(p))));
+}

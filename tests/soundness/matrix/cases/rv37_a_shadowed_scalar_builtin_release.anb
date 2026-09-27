@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+impl S { fn emit(self, x) -> str { return "s ${x}"; } }
+impl T { fn emit(self, x) -> str { return "t"; } }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let q = S { k: 5, pub_n: 1 };
+  let int = |x| x;
+  let r = declassify(int(q), "ok", "released");
+  println(r.emit(p));
+}

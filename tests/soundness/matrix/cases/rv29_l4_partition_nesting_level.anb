@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let pairs = map(xs, |x| [x.pub_n, x]);
+    let parts = partition(pairs, |pr| pr[0] > 2);
+    print(parts[0][0]);
+}

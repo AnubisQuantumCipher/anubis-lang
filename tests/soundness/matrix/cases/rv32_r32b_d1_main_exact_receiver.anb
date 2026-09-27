@@ -1,0 +1,17 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { owner: i64 }
+impl S {
+    fn describe(self) -> string {
+        return str(self);
+    }
+}
+impl T {
+    fn describe(self) -> string {
+        return "t";
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let q = if p.pub_n < 1 { T { owner: 0 } } else { p };
+    print(q.describe());
+}

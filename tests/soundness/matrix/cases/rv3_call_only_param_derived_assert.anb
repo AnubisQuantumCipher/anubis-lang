@@ -1,0 +1,13 @@
+fn h(x: i64) requires(x > 0) {
+    println(x);
+}
+fn g(a: i64) {
+    if a == 5 {
+        let y = a;
+        assert(y == 6);
+    }
+    h(1);
+}
+fn main() {
+    g(5);
+}

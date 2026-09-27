@@ -1,0 +1,1 @@
+fn main() { let s: secret<i64> = 42; let m = min_by([1, 2, 3], |x| s); println(m); }

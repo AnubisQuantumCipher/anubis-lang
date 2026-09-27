@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Cluster A2, generalization evidence. `Stmt::Loop` was NOT one of the reported findings and has no
+// dedicated arm in `tail_values` — it is closed purely because the catch-all now consults
+// `collect_returns_in_stmt`, which is already total over every statement kind.
+// This fixture is the proof that the fix is a mechanism and not two shape patches: if someone later
+// replaces the `collect_returns_in_stmt` call with `Stmt::While`/`Stmt::For` arms, the other two
+// fixtures keep passing and only this one fails.
+fn fwd_bare_loop(f) {
+    loop {
+        return f;
+    }
+}
+fn main() {
+    let k = secret_source("k");
+    let leaked = fwd_bare_loop(|x| print(k));
+    leaked(0);
+}

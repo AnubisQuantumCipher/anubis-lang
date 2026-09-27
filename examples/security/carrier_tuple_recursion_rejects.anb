@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Item-21 Family-1: a carried precondition must survive a recursion that permutes which formal holds it
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn app(g, h, k, n) { h(-1); if n > 0 { app(g, k, g, n - 1); } }
+fn main() { app(f, safe, safe, 5); }

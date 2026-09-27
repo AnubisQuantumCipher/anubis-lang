@@ -1,0 +1,16 @@
+fn h(x: i64) requires(x != 13) {
+    println(x);
+}
+fn go() {
+    let mut i = 0;
+    while i < 10 {
+        i = i + 2;
+    }
+    if i == 12 {
+        h(13);
+    }
+    println(i);
+}
+fn main() {
+    go();
+}

@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { a: i64, b: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 }
+    let xs = [p, S { k: 7, pub_n: 1 }]
+    let r = reduce(xs, |acc, s| W { a: acc.b, b: s }, W { a: 0, b: 0 })
+    print(r.a)
+}

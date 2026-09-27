@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let v = |x| 0;
+    let i = 0;
+    while i < 1 {
+        v = p;
+        i = i + 1;
+    }
+    print(v);
+}

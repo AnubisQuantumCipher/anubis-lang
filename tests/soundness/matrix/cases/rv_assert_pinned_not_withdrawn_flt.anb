@@ -1,0 +1,13 @@
+fn h(n: i64) requires(n > 0) {
+    println(n);
+}
+fn g(x: f64, k: i64) {
+    if x > 1.5 {
+        println("big");
+    }
+    assert(k == 4);
+    h(1);
+}
+fn main() {
+    g(0.5, 3);
+}

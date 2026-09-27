@@ -1,0 +1,4 @@
+fn leak(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/cp3_struct_param_field_apply.txt", x); return 0; }
+struct Box { g: u64 }
+fn app(b) { b.g("a"); return 0; }
+fn main() { app(Box { g: leak }); }

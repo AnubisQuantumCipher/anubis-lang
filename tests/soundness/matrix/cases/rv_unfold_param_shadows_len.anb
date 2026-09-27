@@ -1,0 +1,9 @@
+fn ap(len, x) {
+    return len(x);
+}
+fn g(h, v) requires(ap(h, v) > 0) {
+    println(ap(h, v));
+}
+fn main() {
+    g(|s| 0, "abc");
+}

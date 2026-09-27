@@ -1,0 +1,2 @@
+id	form	intent	source_sha256	rc	observed	result
+r2arm_contract_guard_after_literal_match	carrier	ACCEPT	fd5f3934fdf3fba9c9a5fcd306dc7241851120ca6517019b371404aa6cb22311	0	ACCEPT	PASS

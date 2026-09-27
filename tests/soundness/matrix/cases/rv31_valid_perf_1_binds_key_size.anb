@@ -1,0 +1,95 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h0(x) { return len(x); }
+fn h1(x) { return len(x); }
+fn h2(x) { return len(x); }
+fn h3(x) { return len(x); }
+fn h4(x) { return len(x); }
+fn h5(x) { return len(x); }
+fn h6(x) { return len(x); }
+fn h7(x) { return len(x); }
+fn h8(x) { return len(x); }
+fn h9(x) { return len(x); }
+fn h10(x) { return len(x); }
+fn h11(x) { return len(x); }
+fn h12(x) { return len(x); }
+fn h13(x) { return len(x); }
+fn h14(x) { return len(x); }
+fn h15(x) { return len(x); }
+fn h16(x) { return len(x); }
+fn h17(x) { return len(x); }
+fn h18(x) { return len(x); }
+fn h19(x) { return len(x); }
+fn h20(x) { return len(x); }
+fn h21(x) { return len(x); }
+fn h22(x) { return len(x); }
+fn h23(x) { return len(x); }
+fn h24(x) { return len(x); }
+fn h25(x) { return len(x); }
+fn h26(x) { return len(x); }
+fn h27(x) { return len(x); }
+fn h28(x) { return len(x); }
+fn h29(x) { return len(x); }
+fn h30(x) { return len(x); }
+fn h31(x) { return len(x); }
+fn h32(x) { return len(x); }
+fn h33(x) { return len(x); }
+fn h34(x) { return len(x); }
+fn h35(x) { return len(x); }
+fn h36(x) { return len(x); }
+fn h37(x) { return len(x); }
+fn h38(x) { return len(x); }
+fn h39(x) { return len(x); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let l0 = p;
+    let l1 = [l0, l0, l0, 1];
+    let l2 = [l1, l1, l1, 2];
+    let l3 = [l2, l2, l2, 3];
+    let l4 = [l3, l3, l3, 4];
+    let l5 = [l4, l4, l4, 5];
+    let l6 = [l5, l5, l5, 6];
+    let l7 = [l6, l6, l6, 7];
+    let l8 = [l7, l7, l7, 8];
+    let l9 = [l8, l8, l8, 9];
+    let l10 = [l9, l9, l9, 10];
+    println(h0(l10));
+    println(h1(l10));
+    println(h2(l10));
+    println(h3(l10));
+    println(h4(l10));
+    println(h5(l10));
+    println(h6(l10));
+    println(h7(l10));
+    println(h8(l10));
+    println(h9(l10));
+    println(h10(l10));
+    println(h11(l10));
+    println(h12(l10));
+    println(h13(l10));
+    println(h14(l10));
+    println(h15(l10));
+    println(h16(l10));
+    println(h17(l10));
+    println(h18(l10));
+    println(h19(l10));
+    println(h20(l10));
+    println(h21(l10));
+    println(h22(l10));
+    println(h23(l10));
+    println(h24(l10));
+    println(h25(l10));
+    println(h26(l10));
+    println(h27(l10));
+    println(h28(l10));
+    println(h29(l10));
+    println(h30(l10));
+    println(h31(l10));
+    println(h32(l10));
+    println(h33(l10));
+    println(h34(l10));
+    println(h35(l10));
+    println(h36(l10));
+    println(h37(l10));
+    println(h38(l10));
+    println(h39(l10));
+}

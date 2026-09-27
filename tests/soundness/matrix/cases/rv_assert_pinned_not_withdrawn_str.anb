@@ -1,0 +1,14 @@
+fn h(n: i64) requires(n > 0) {
+    println(n);
+}
+fn g(s: string) {
+    let k = 3;
+    if len(s) > k {
+        println("long");
+    }
+    assert(k == 4);
+    h(1);
+}
+fn main() {
+    g("ab");
+}

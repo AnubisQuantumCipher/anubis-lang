@@ -1,0 +1,1 @@
+fn main() { let m = { "w": write_file }; let vs = values(m); vs[0]("/home/sicarii/.cache/anubis-item21/reconcile/tmp/t14_r8b_map_values_builtin.txt", "x"); }

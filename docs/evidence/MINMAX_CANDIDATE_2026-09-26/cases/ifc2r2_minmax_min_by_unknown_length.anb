@@ -1,0 +1,4 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let m = min_by(range(1, 4), |x| { println(x); if x == 2 { s } else { 100 } });
+}

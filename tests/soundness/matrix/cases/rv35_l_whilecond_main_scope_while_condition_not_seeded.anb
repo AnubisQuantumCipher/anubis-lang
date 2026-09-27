@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn check(a, i) { print(a); return i < 2; }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let xs = [p, S { k: 7, pub_n: 1 }];
+  let m = { "a": p };
+  let mut a = 0;
+  let mut i = 0;
+  while check(a, i) {
+    a = p;
+    i = i + 1;
+  }
+}

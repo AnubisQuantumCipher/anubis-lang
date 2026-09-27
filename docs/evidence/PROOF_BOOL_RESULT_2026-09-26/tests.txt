@@ -1,0 +1,16 @@
+   Compiling anubis-solver v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-proof-bool/solver)
+   Compiling anubis-compiler v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-proof-bool/compiler)
+    Finished `release` profile [optimized] target(s) in 38.06s
+     Running tests/ifc2_proof_commit_bool.rs (/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/ifc2_proof_commit_bool-b3146eba94f2e89b)
+
+running 7 tests
+test bool_commit_preserves_journal_rejection_for_secret_truth ... ok
+test bool_commit_result_kind_survives_helper_returns ... ok
+test ordinary_struct_method_still_drops_unused_arguments ... ok
+test scalar_receiver_and_direct_print_validate_the_rejection_controls ... ok
+test bool_commit_accepts_public_inputs_of_supported_kinds ... ok
+test bool_commit_preserves_public_and_declassified_fallback_arguments ... ok
+test bool_commit_result_evaluates_method_fallback_arguments ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

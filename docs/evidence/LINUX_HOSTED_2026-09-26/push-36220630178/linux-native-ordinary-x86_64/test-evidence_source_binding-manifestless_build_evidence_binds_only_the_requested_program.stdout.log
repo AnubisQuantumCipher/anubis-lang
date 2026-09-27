@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "manifestless_build_evidence_binds_only_the_requested_program" }
+{ "type": "test", "name": "manifestless_build_evidence_binds_only_the_requested_program", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 0, "exec_time": 0.780410202 }

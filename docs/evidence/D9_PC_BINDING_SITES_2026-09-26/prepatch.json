@@ -1,0 +1,1293 @@
+{
+  "binary_sha256": "1ebe7c3c29223b77c665e56a0956bd4166c3dec3cb84ee2c9b1fbbf4809e3baa",
+  "cargo_lock_sha256": "0064eaf059d9f4072af0b0b744d2a1833d88c552b6f137d3e91b7d41f93530fe",
+  "command": "systemd-run --user --scope --quiet -p MemoryMax=8G -p TasksMax=256 timeout 60 <binary> check <source> --message-format=json",
+  "compiler_middle_sha256": "6abfc5e3359adb535a42a64a84de78b746d5df93ffea81ca4a9aa9ed0f4a981c",
+  "registry_sha256": "2cf73517a073728a2e20bb91eff65b98fc128bfd2c3b2f938cdb90e6f821b040",
+  "rows": [
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "message": "ANUBIS_SECRET_TO_PUBLIC: secret value passed as argument 0 of `show` into public formal type `Row` \u2014 confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason).",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_public_field_projection_unannotated_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "24899bbe10a1d3cbc4302d14167447407a4de12b17dbb6ffb7175c5f4496bc67",
+      "stderr_sha256": "993c921c3cdea3f990c01b5fa3ced8141db7ece0b87df2442727c31949045281",
+      "stdout_sha256": "1ce74d1d1a2268d747a2d6888ec323fd8e0baad300d85c2dd67b24d5729e294f",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "message": "ANUBIS_SECRET_TO_PUBLIC: secret value passed as argument 0 of `show` into public formal type `Row` \u2014 confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason).",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_public_field_projection_annotated_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "900f982de19d9be42128fae2eb59be32ce69613c1176c1ece90845b5b85049b5",
+      "stderr_sha256": "993c921c3cdea3f990c01b5fa3ced8141db7ece0b87df2442727c31949045281",
+      "stdout_sha256": "1ce74d1d1a2268d747a2d6888ec323fd8e0baad300d85c2dd67b24d5729e294f",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `declared field `k` of type `secret<i64>`` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "message": "ANUBIS_SECRET_TO_PUBLIC: secret value passed as argument 0 of `show` into public formal type `Row` \u2014 confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason).",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `show`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_secret_field_projection_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "c4a89e73ab82aff144cf65dfc3777b8e2e75ec5b194c4d16987a0341892d1138",
+      "stderr_sha256": "a6a2320f67c2e24e97b2cf6b8f83cee7a92b754ee046120bdefca51a57367974",
+      "stdout_sha256": "14486fdaf73e4c9d944882ad8b0757eda230d9547211fe77fd47a43aa7bea356",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 4,
+          "replay_mismatch": 0,
+          "total": 4,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `a whole struct value holding declared field `k` of type `secret<i64>` (type `Row`)` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `a whole struct value holding declared field `k` of type `secret<i64>` (type `Row`)` reaches an egress inside `show` without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "message": "ANUBIS_SECRET_TO_PUBLIC: secret value passed as argument 0 of `show` into public formal type `Row` \u2014 confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason).",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `show`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_whole_struct_egress_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "c9344a4626bfa3e3dadba85d2508b1446961844ce97cb2ff5f34d51100ed8bd4",
+      "stderr_sha256": "de2e194bb04994810c28ef3d918fd59deade67ea7484dd49e0aafe9ecb309077",
+      "stdout_sha256": "68ab9629619c6e829b40d16d4a3c33b9377a2f8586914af54ca397d4a4424139",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 5,
+          "replay_mismatch": 0,
+          "total": 5,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `show`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_secret_wrapper_public_projection_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "5f22c4bdc679600fea454264732df6058f963b36ca89096227b38028b6c98830",
+      "stderr_sha256": "ffaa4dae906eaee2ae7ba42c0db0773edc26dba76ffb34ae498d872adfc6ccd8",
+      "stdout_sha256": "fb1e2f1710a20918e1adae83bc50cead3e81664e326ce3b6c37a302082416a70",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_clean_struct_public_projection_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "8f58204e0c67471d2d4ace120994116f653310d45120a62f0d5c20f343710775",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_direct_public_field_projection_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "4cc9c8882c7c8fc503780bedd4e4f8a6e4a910e61eece682928f1d7e6c154b7e",
+      "stderr_sha256": "ad555194ee96e24914bdee8d1277efd68ebabd09eb5c8b5fafd05b35b014db3e",
+      "stdout_sha256": "9537d15c64bbe4ef55578371083abd6913ede9bf48a65f228463ddc629f201cb",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "message": "ANUBIS_SECRET_TO_PUBLIC: secret value passed as argument 0 of `show` into public formal type `Row` \u2014 confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason).",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `q` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_alias_public_field_projection_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "79f9b1e96e6ac074a356214e4c4d4237ab394c35703889762d138307221d0a74",
+      "stderr_sha256": "46fd34a222283f782a99c4991c85090bc4ecc69d8ed69926c40c7dfa130581df",
+      "stdout_sha256": "632a16fb5c4608ffca2d436ca95a955c96b6c38ccd47702dc3a603b2529e77ba",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "message": "ANUBIS_SECRET_TO_PUBLIC: secret value passed as argument 0 of `relay` into public formal type `Row` \u2014 confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason).",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `relay`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_forward_public_field_projection_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "2f13bfecc017d2d5a0241d218790046224857e98348e7d59e45a33799f17a49b",
+      "stderr_sha256": "9116d46dc7d4986bb5a0b99a31c3b1288fc8910e20b180ae10e8daee2b6f6fd6",
+      "stdout_sha256": "1a7630895d04195938f04df4ac18ae7f08a99c1c67625a944f5623c2167d1918",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_TO_PUBLIC",
+          "message": "ANUBIS_SECRET_TO_PUBLIC: secret value passed as argument 0 of `show` into public formal type `Row` \u2014 confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason).",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `show`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_public_field_secret_init_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "2ee00043d7ae41e40ce499a1f475be1d2d924825d71d816269460bebdb8822c5",
+      "stderr_sha256": "64d74a750d8b11fe41d92a10506c173f69d657e26261eae6255c93d74994eaff",
+      "stdout_sha256": "4b2610a80905a1648f87fb0860b44abdaac963d5f6b2fcdee9feabb09706606d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 3,
+          "replay_mismatch": 0,
+          "total": 3,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_INTERPROC_EXFILTRATION",
+          "message": "ANUBIS_INTERPROC_EXFILTRATION: safe mode confidentiality violation: secret `row` flows into parameter 0 of `show`, which reaches an egress without declassify \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `show`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_public_field_secret_write_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "522f262667c3426ee414875ead48cd2e4b209b8857722d6800b56dee06acffcf",
+      "stderr_sha256": "ffaa4dae906eaee2ae7ba42c0db0773edc26dba76ffb34ae498d872adfc6ccd8",
+      "stdout_sha256": "fb1e2f1710a20918e1adae83bc50cead3e81664e326ce3b6c37a302082416a70",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_computed_whole_struct_comparison_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "3dc29b857423b7648e883945463ce31a6e86529b27f3de6a4519536f0dd5e93d",
+      "stderr_sha256": "af48381f9a349c36955dc3f4f2eb46d1cd636fc99868c83cf04601f7cad16bfd",
+      "stdout_sha256": "558a6dcc76f0c8c546959a3935daae77530920c62fbd99227c63a2b7bd1551c4",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_v3_factory_public_field_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "be9238d40aa6c2cc25f351523fdb2dd2c1f02975c1f4fe1a49b8ee6b29e43d47",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `declared field `k` of type `secret<i64>`` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_v3_factory_secret_field_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "d73f31b529ea64508ec4a49c145434f5c3f0a17429086467b6e85e0fdc564421",
+      "stderr_sha256": "315942140fc2edb8a8a92491a61e20af909d1fa39e718864ef8f2960d4182af0",
+      "stdout_sha256": "cf7e4e4e2571d8c66648eea2f42c31be7707acd364850200ca02298c61ffede7",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_v3_nested_clean_public_write_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "ae8ca07b8685e96cd3b2fd4b4188db16da92c042656bee2afe7eb674b3e236d8",
+      "stderr_sha256": "ad555194ee96e24914bdee8d1277efd68ebabd09eb5c8b5fafd05b35b014db3e",
+      "stdout_sha256": "9537d15c64bbe4ef55578371083abd6913ede9bf48a65f228463ddc629f201cb",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_v3_nested_secret_public_write_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "16bc78b03d56ac509015f66a6ea0d3bbf6c1f44a48cdd333af333ac62e9dbca2",
+      "stderr_sha256": "af48381f9a349c36955dc3f4f2eb46d1cd636fc99868c83cf04601f7cad16bfd",
+      "stdout_sha256": "558a6dcc76f0c8c546959a3935daae77530920c62fbd99227c63a2b7bd1551c4",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_released_public_field_rewrite_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "8fce3f0f66ac85a8ca904c48a0819b8e5b3e43c35209b3aab8af30c57c698050",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `declared field `k` of type `secret<i64>`` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_released_secret_field_rewrite_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "0a4bbe679f4b0d2a6efe21d31f82a3e18a332f8abe6089e4403504100e9f54fc",
+      "stderr_sha256": "315942140fc2edb8a8a92491a61e20af909d1fa39e718864ef8f2960d4182af0",
+      "stdout_sha256": "cf7e4e4e2571d8c66648eea2f42c31be7707acd364850200ca02298c61ffede7",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_public_pc_public_sibling_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "e6feedb919460a12097679dfe907f25f957f24575834bf066ec43c00c7da213e",
+      "stderr_sha256": "ad555194ee96e24914bdee8d1277efd68ebabd09eb5c8b5fafd05b35b014db3e",
+      "stdout_sha256": "9537d15c64bbe4ef55578371083abd6913ede9bf48a65f228463ddc629f201cb",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_secret_pc_public_sibling_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "1be6593f7b04f6819c75aeafeaac7904d9f18ada543f299e79ffcbf3c1375e94",
+      "stderr_sha256": "775cf529398d69b5f03c8411b6616c89eaabaad2bd2d668c43462c3b185a6e41",
+      "stdout_sha256": "ce31a6ae7e93b2eb06f47190556326da549bbe4389e8d1521886ff88650c8f46",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `i` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `i` as secret<T>.",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_for_inner_guard_local_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "2afe67a9c6ada339530bd7b0b017a2a294affd1e67610bb4e8e0dda3001a2d4a",
+      "stderr_sha256": "dd04fe21d7890b568380bba492b4d6edbddd263704439ed38b955d619c580948",
+      "stdout_sha256": "3d85615f00e88093d63a53fbe9752c2a5a7eb2de64bb7b7dd5c558a01a0f2ed6",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `out` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `out` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_for_inner_guard_outer_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "fec9faec33d9a2d0a8b3000c53e61fa5602e77cc9ba93a868f5b909daa9d38bc",
+      "stderr_sha256": "19e60853d68fbbc65763d993e7b738f5c112a9b5711912c6e89cdbd60fa05d2e",
+      "stdout_sha256": "a5ea457bff6e767145f11cc02b664ae815b5f39a59bfdbfc1a1f03f6f2397296",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `item` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `item` as secret<T>.",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_whilelet_binder_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "2c7ec1e9b2872d4171b3dd62678c08c6694fdb341944a4f74833b7d34a645976",
+      "stderr_sha256": "ff45db4b073e6536d3a275933274cd9d812f7f29a101401709b6de5acdaae3dc",
+      "stdout_sha256": "5044d2c84a7867840909f5415138a0d84a2ca396f62941dd2b8bb581b8f8e187",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `out` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `out` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_whilelet_outer_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "aa5f55ca2386bb13da0483ca324d1433af705b7927101005c9522084d540e5b6",
+      "stderr_sha256": "19e60853d68fbbc65763d993e7b738f5c112a9b5711912c6e89cdbd60fa05d2e",
+      "stdout_sha256": "a5ea457bff6e767145f11cc02b664ae815b5f39a59bfdbfc1a1f03f6f2397296",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `out` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `out` as secret<T>.",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_shadow_protected_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "10999612395704655905e0a0e95fcf84ca6c2e66a24b8858fc56f9807375f0d3",
+      "stderr_sha256": "fa51306b0e6e08363efdcf0c846b6cec7df4f420277a9dd5f1cc4cbbb8a93d56",
+      "stdout_sha256": "b89754b30729c89f856681d9bef1de47da26d1b1b840ecb8adcee29cb2b4dc09",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `out` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `out` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_shadow_outer_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "0123ec8b7228afc3dd566869bfc570be947168b732c5d926c359914e2e12bda6",
+      "stderr_sha256": "19e60853d68fbbc65763d993e7b738f5c112a9b5711912c6e89cdbd60fa05d2e",
+      "stdout_sha256": "a5ea457bff6e767145f11cc02b664ae815b5f39a59bfdbfc1a1f03f6f2397296",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_pc_uncalled_lambda_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "42ffa9b0f8b3f0a681f465cab73d49d60d7192565501baf46de634df5eec78c4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `out` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `out` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_called_lambda_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "204afb40409e85c24ac532ec7dff432d42946a131088dcacf7a36c0410ef76a1",
+      "stderr_sha256": "19e60853d68fbbc65763d993e7b738f5c112a9b5711912c6e89cdbd60fa05d2e",
+      "stdout_sha256": "a5ea457bff6e767145f11cc02b664ae815b5f39a59bfdbfc1a1f03f6f2397296",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_pc_for_secret_bound_local_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "5133e8bc5219f3d2b32ed941ec84a5623b07f7e22df15fbe3cd21c600ca0e4b9",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `out` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `out` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_for_secret_bound_outer_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "f26b54fd7ad2ba5d4c9499c33efd0e3fc63656567f18c6614e9221c0cd90f5b7",
+      "stderr_sha256": "19e60853d68fbbc65763d993e7b738f5c112a9b5711912c6e89cdbd60fa05d2e",
+      "stdout_sha256": "a5ea457bff6e767145f11cc02b664ae815b5f39a59bfdbfc1a1f03f6f2397296",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_pc_match_unreachable_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "edc0da98f8c3f1d5b7155aca05f11241939ee05ddca26ec6593d55a24e65d1f4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_match_reachable_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "62a27c20f15c5d2f74d777b3203408f2a30e5649b952aaa1cbf62596f664c41f",
+      "stderr_sha256": "775cf529398d69b5f03c8411b6616c89eaabaad2bd2d668c43462c3b185a6e41",
+      "stdout_sha256": "ce31a6ae7e93b2eb06f47190556326da549bbe4389e8d1521886ff88650c8f46",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_pc_if_unreachable_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "40fd1e00ff92d196c81866778d15c0693b22d6e967099b18733ba24d8f63ff54",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `row` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_if_reachable_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "2f676f649a0d8cc2f3c50b4838df91164d550a44ab80ef0be177868e87b718ae",
+      "stderr_sha256": "775cf529398d69b5f03c8411b6616c89eaabaad2bd2d668c43462c3b185a6e41",
+      "stdout_sha256": "ce31a6ae7e93b2eb06f47190556326da549bbe4389e8d1521886ff88650c8f46",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: [ifc2] in `<closure>`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_capture_early_g_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "b0009c68a4f38cfdb0ceb2e0e0ce49b3eb2ccf2859d49d244cb009a2c85a4fec",
+      "stderr_sha256": "7feadbbba24d8e8424d66367199aba6f263bdf88a6ad38d0e668c55111ef3ef4",
+      "stdout_sha256": "542de868874b5966ebddd3877f9286adda8da4a4a846b024fed2857dc3e1ecbb",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_capture_early_g_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "3fc999a97db7e4344642381e663b1c48e4d8a41b16eccf0b566a7d6fbfa0f970",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "f58f5bb8441d4df188db28c33d15ab78a5ec964f693025a216d827e3df56c07d",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: [ifc2] in `emit`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_secret_early_return_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "c55d4366f8ad16ad3e16094263e9feb4bd1c8290fc3d6b65ff6c6b0e0af3c485",
+      "stderr_sha256": "96e06e3a0562751f24fed99fb59697c04cd08f94a07486c0c4a17c0b41c17475",
+      "stdout_sha256": "1000f961409d1033dfb84ff7925467acd926510923b61c96101c73b8f2ab3c76",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [],
+      "exit": 0,
+      "id": "d9q_secret_guard_assert_continue_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "50f487c593ed497c3ad1eab86b75be15983c5129bfcda85d321cbb4dbeff7979",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "8f7beb5e90f60bbbfdc71057a06ee09e9634c7be677fab6cc644bbc290f9150c",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 0,
+          "replay_mismatch": 0,
+          "total": 0,
+          "undecided": 0
+        },
+        "coverage": {
+          "certified": 1,
+          "discharged": 1,
+          "not_discharged": 0,
+          "trusted_to_solver": 0,
+          "uncertified": [],
+          "witnesses_retained": false
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "pass"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `public_value` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `public_value` as secret<T>.",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_protected_shadow_renamed_valid",
+      "intent": "ACCEPT",
+      "json_parse_error": null,
+      "source_sha256": "f194af1d1f0826f9e59e24a9ed1120adc554ffcd9754ee1aef15c5f272778b44",
+      "stderr_sha256": "6e5fa1582a9aea4716d006708ea7753e6369b456e57cc8209f1ff635f9e2994f",
+      "stdout_sha256": "cad584eb89d695620cde3a91edd3e26fb60a36f419bf3fc855ab37fa3bd3053f",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 1,
+          "replay_mismatch": 0,
+          "total": 1,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `public_value` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `public_value` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_public_inner_egress_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "08876a7a29bf147a0b9b0e0cc9ebcb229361e09f6cf8e9ae5c35f160f511e77c",
+      "stderr_sha256": "5d4333fad8f1080e82ae013b55807f2d3a34183814bfba57ca880db563c850d2",
+      "stdout_sha256": "e12849972f9417fd6f291636d0a8e03ca7f9fe8887c183cfe77b2125865072ae",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `public_value` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `public_value` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_write_before_protected_shadow_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "1c3251b22759979954edb59a2017f90b84f520fe9aa16f547c629cf1f347d29c",
+      "stderr_sha256": "5d4333fad8f1080e82ae013b55807f2d3a34183814bfba57ca880db563c850d2",
+      "stdout_sha256": "e12849972f9417fd6f291636d0a8e03ca7f9fe8887c183cfe77b2125865072ae",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    },
+    {
+      "diagnostics": [
+        {
+          "code": "ANUBIS_IMPLICIT_FLOW",
+          "message": "ANUBIS_IMPLICIT_FLOW: `public_value` is assigned inside a branch guarded by a secret condition \u2014 secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `public_value` as secret<T>.",
+          "status": "refused"
+        },
+        {
+          "code": "ANUBIS_SECRET_EXFILTRATION",
+          "message": "ANUBIS_SECRET_EXFILTRATION: [ifc2] in `emit`: secret data reaches `println`",
+          "status": "refused"
+        }
+      ],
+      "exit": 1,
+      "id": "d9q_pc_expr_write_before_shadow_invalid",
+      "intent": "REJECT",
+      "json_parse_error": null,
+      "source_sha256": "45b4a90b484d513a2a8f2572eac8ff50538c65584a79d1804f700ff1f4ab0985",
+      "stderr_sha256": "5d4333fad8f1080e82ae013b55807f2d3a34183814bfba57ca880db563c850d2",
+      "stdout_sha256": "e12849972f9417fd6f291636d0a8e03ca7f9fe8887c183cfe77b2125865072ae",
+      "summary": {
+        "$type": "anubis.summary",
+        "counts": {
+          "disproved": 0,
+          "refused": 2,
+          "replay_mismatch": 0,
+          "total": 2,
+          "undecided": 0
+        },
+        "schema": "anubis-diagnostics/1",
+        "verdict": "fail"
+      }
+    }
+  ],
+  "schema": "anubis-d9q-differential/1",
+  "scope": "Safe check only; no Anubis program execution",
+  "source_head": "253dd4e3979d1846b584062acc2e3d28a059ad45",
+  "source_tree": "5a063161018741948c0182552e4d13dca9e23c36"
+}

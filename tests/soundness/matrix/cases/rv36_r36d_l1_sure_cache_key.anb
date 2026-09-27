@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { a: i64 }
+impl S { fn show(self, o) { print(o); return 0; } }
+impl T { fn show(self, o) { return 0; } }
+fn f(x, y) { return x.show(y); }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let t = T { a: 1 };
+  let z1 = f(t, p);
+  let d: T = declassify(S { k: 5, pub_n: 1 }, "demo-policy", "public sample");
+  let z2 = f(d, p);
+}

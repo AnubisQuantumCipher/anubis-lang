@@ -1,0 +1,15 @@
+fn main() {
+    let pin: secret<i64> = 1234;
+    let mut unlocked: secret<bool> = false;
+    let rates = [0.5, 1.5, 2.5];
+    for rate in rates {
+        match rate {
+            0.5 if pin == 1234 => {
+                unlocked = true;
+            }
+            1.5 => println("standard tier"),
+            2.5 => println("premium tier"),
+            _ => 0,
+        }
+    }
+}

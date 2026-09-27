@@ -1,0 +1,20 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct V { k2: secret<i64>, tag: string }
+impl S {
+    fn label(self) -> string {
+        return "S" + str(self.pub_n);
+    }
+}
+impl V {
+    fn label(self) -> string {
+        return str(self);
+    }
+}
+fn main() {
+    let p = S { k: 1, pub_n: 3 };
+    let v = V { k2: 42, tag: "v" };
+    let ys = [p, v];
+    for y in ys {
+        print(y.label());
+    }
+}

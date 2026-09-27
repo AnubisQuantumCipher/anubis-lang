@@ -1,0 +1,13 @@
+enum Tag {
+    Plain,
+}
+struct P {
+    a: list<i64>,
+    b: Tag,
+}
+fn main() {
+    let s: secret<i64> = 500;
+    let ps = map([1], |v| if s > 100 { P { a: [], b: Tag::Plain } } else { P { b: Tag::Plain, a: [] } });
+    let p = ps[0];
+    println(p[0]);
+}

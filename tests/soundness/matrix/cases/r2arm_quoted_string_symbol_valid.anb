@@ -1,0 +1,2 @@
+fn f(s: string) -> string requires(s == "anb_x") { return s; }
+fn main() { match 1 { x => { f("anb_x"); } } }

@@ -1,0 +1,10 @@
+fn ok(v: i64) -> bool {
+    return v < z;
+}
+fn g(a: i64) requires(ok(a)) {
+    println(a);
+}
+fn main() {
+    let z = 1000;
+    g(500);
+}

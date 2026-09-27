@@ -1,0 +1,33 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h(v) {
+    let g0 = |x| v;
+    let g1 = |x| g0(x);
+    let g2 = |x| g1(x);
+    let g3 = |x| g2(x);
+    let g4 = |x| g3(x);
+    let g5 = |x| g4(x);
+    let g6 = |x| g5(x);
+    let g7 = |x| g6(x);
+    let g8 = |x| g7(x);
+    let g9 = |x| g8(x);
+    let g10 = |x| g9(x);
+    let g11 = |x| g10(x);
+    let g12 = |x| g11(x);
+    let g13 = |x| g12(x);
+    let g14 = |x| g13(x);
+    let g15 = |x| g14(x);
+    let g16 = |x| g15(x);
+    let g17 = |x| g16(x);
+    let g18 = |x| g17(x);
+    let g19 = |x| g18(x);
+    let g20 = |x| g19(x);
+    let g21 = |x| g20(x);
+    let g22 = |x| g21(x);
+    let g23 = |x| g22(x);
+    let g24 = |x| g23(x);
+    return g24(0)
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(h(p));
+}

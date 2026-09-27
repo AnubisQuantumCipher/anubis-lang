@@ -1,0 +1,2 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() { let p = S { k: 123456, pub_n: 3 }; panic(str(p)); }

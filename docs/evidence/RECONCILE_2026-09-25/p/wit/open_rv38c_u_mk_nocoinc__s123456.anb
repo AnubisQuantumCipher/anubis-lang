@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(q) { print(q); return 0; }
+fn mk(f) { return [f, f]; }
+fn run(p, n) {
+    let w = mk(show);
+    let r = identity(if n > 0 { let g = w[0]; g } else { 0 });
+    r(p);
+    return 0;
+}
+fn main() {
+    let p = S { k: 123456, pub_n: 3 };
+    run(p, 5);
+}

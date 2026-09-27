@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+struct U { inner: S }
+struct W { t: T }
+impl T { fn show(self) -> str { return "t ${self.v}"; } }
+impl U { fn show(self) -> str { return "u ${self.inner}"; } }
+fn mk(q) -> W { return W { t: q }; }
+fn main() {
+  let p = S { k: 123456, pub_n: 3 };
+  let u = U { inner: p };
+  let w = mk(u);
+  println(w.t.show());
+}

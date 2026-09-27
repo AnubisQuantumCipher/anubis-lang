@@ -1,0 +1,2 @@
+fn app(g, x) { g("/home/sicarii/.cache/anubis-item21/reconcile/tmp/i21_2_bare_write_file_param_tainted.txt", x); return 0; }
+fn main() uses(io.read, fs.write) { app(write_file, input()); }

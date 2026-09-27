@@ -1,0 +1,23 @@
+struct Employee { k: secret<i64>, name: str, role: str }
+struct Team { name: str, members: list<Employee> }
+impl Employee {
+    fn card(self) -> str {
+        return "${self}";
+    }
+}
+impl Team {
+    fn card(self) -> str {
+        let mut names = [];
+        for m in self.members {
+            push(names, m.name);
+        }
+        return "team ${self.name}: ${join(names, ", ")}";
+    }
+}
+fn main() {
+    let e1 = Employee { k: 42, name: "ann", role: "dev" };
+    let e2 = Employee { k: 7, name: "bob", role: "ops" };
+    let team = Team { name: "core", members: [e1, e2] };
+    println(team.card());
+    let visitor = declassify(Employee { k: 0, name: "guest", role: "visitor" }, "public-badge", "guest badges carry no salary");
+}

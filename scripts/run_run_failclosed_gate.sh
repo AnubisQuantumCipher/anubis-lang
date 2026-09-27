@@ -44,7 +44,11 @@ source "$ROOT/scripts/lib/gate_common.sh"
 
 STAMP="$(date +%Y%m%dT%H%M%S)_$$"
 OUT_DIR="out/run_failclosed_gate/${STAMP}"
-DEFAULT_TIMEOUT=120
+# Harness budget. Must stay ABOVE the compiler's per-query hang guard (`Z3_ARGS`'
+# `-T`, currently 120s): `anubis run`/`build` run the same solver pass, so a harness
+# that kills first turns a clean UNDECIDED into rc 124 with no diagnostic. See the
+# ordering note on `Z3_ARGS` in compiler/src/middle/mod.rs.
+DEFAULT_TIMEOUT=${ANUBIS_GATE_CHECK_BUDGET_SECS:-300}
 SELF_TEST=0
 INVENTORY="tests/fixtures/runtime/failclosed_inventory.json"
 

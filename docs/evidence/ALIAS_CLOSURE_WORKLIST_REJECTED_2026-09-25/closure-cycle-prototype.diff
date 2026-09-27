@@ -1,0 +1,135 @@
+--- compiler/src/middle/mod.rs.before
++++ compiler/src/middle/mod.rs
+@@ -4588,6 +4588,9 @@
+ 
+ #[derive(Debug, Default)]
+ struct SemanticContext {
++    /// Present only while one root closure-effect application drains its reachable states.
++    /// Semantic input tables are frozen during that traversal; effects and diagnostics are outputs.
++    closure_effect_work: Option<ClosureEffectWork>,
+     hir: Hir,
+     mir: Vec<MirBlock>,
+     symbols: Vec<BindingInfo>,
+@@ -16523,7 +16526,58 @@
+ /// a value block, the nested may-scope) is a copy of it, so it carries the key.
+ const RETURN_SUMMARY_SCOPE: &str = "\u{0}return summary";
+ 
+-/// `analyze_expr_effect` on a closure body, bounded by `analysis_limit`.
++/// One immutable input to closure-effect traversal. The scope includes the bound arguments and
++/// every capture/callable alternative; neither a lambda's name nor its body alone identifies it.
++#[derive(Debug)]
++struct ClosureEffectJob {
++    body: Expr,
++    mode: Mode,
++    scope: BTreeMap<String, ScopeBinding>,
++    depth: usize,
++}
++
++#[derive(Debug, Default)]
++struct ClosureEffectWork {
++    seen: BTreeSet<String>,
++    pending: Vec<ClosureEffectJob>,
++    current_depth: usize,
++}
++
++/// Exact structural text for this traversal only, not a digest or a persistent cache key.
++///
++/// All types reachable from `Mode`, `Expr` and `ScopeBinding` use derived Debug (including
++/// `whole::Captures`, its immutable Rc values, and closure ids). Their leaves are escaped strings,
++/// integers and booleans; numeric literals are strings, not floating values. BTree collections
++/// have deterministic order. Thus equal full text retains every semantic field. A custom Debug
++/// implementation or an interior-mutable/opaque field in that graph requires revisiting this key.
++/// Keep the ordinary analysis guard active during recursive formatting, not just before it.
++fn closure_effect_state_key(
++    body: &Expr,
++    mode: Mode,
++    scope: &BTreeMap<String, ScopeBinding>,
++) -> Option<String> {
++    struct GuardedKey(String);
++    impl std::fmt::Write for GuardedKey {
++        fn write_str(&mut self, s: &str) -> std::fmt::Result {
++            if analysis_limit::cut() {
++                note_return_values_trip();
++                return Err(std::fmt::Error);
++            }
++            self.0.push_str(s);
++            Ok(())
++        }
++    }
++    let mut key = GuardedKey(String::new());
++    std::fmt::Write::write_fmt(&mut key, format_args!("{:?}", (mode, body, scope))).ok()?;
++    Some(key.0)
++}
++
++/// Traverse the complete reachable closure-effect state graph, bounded by `analysis_limit`.
++/// A repeated state contributes the same outputs, but a changed argument, capture, callable,
++/// label or mode remains separate work. Nested applications enqueue; the root drains them before
++/// returning. No completed state survives this root, so later assignments or summary changes can
++/// never reuse an earlier result. This schedules effects only: source analysis and obligations
++/// retain their own traversals and refusal paths.
+ fn analyze_closure_body_effect(
+     body: &Expr,
+     mode: Mode,
+@@ -16531,9 +16585,60 @@
+     effects: &mut Vec<String>,
+     ctx: &mut SemanticContext,
+ ) {
+-    if let Some(_frame) = closure_frame() {
+-        analyze_expr_effect(body, mode, scope, effects, ctx);
++    let Some(key) = closure_effect_state_key(body, mode, scope) else {
++        return;
++    };
++    if let Some(work) = &mut ctx.closure_effect_work {
++        if work.seen.insert(key) {
++            work.pending.push(ClosureEffectJob {
++                body: body.clone(),
++                mode,
++                scope: scope.clone(),
++                depth: work.current_depth + 1,
++            });
++        }
++        return;
++    }
++
++    ctx.closure_effect_work = Some(ClosureEffectWork {
++        seen: BTreeSet::from([key]),
++        pending: vec![ClosureEffectJob {
++            body: body.clone(),
++            mode,
++            scope: scope.clone(),
++            depth: 1,
++        }],
++        current_depth: 0,
++    });
++    // Retain the existing logical-depth budget without retaining recursive native stack frames.
++    // Distinct states along a path still consume closure frames; an already covered state does
++    // not add another descent. Any frames active before this root remain owned by their caller.
++    let mut frames = Vec::new();
++    'drain: loop {
++        if analysis_limit::cut() {
++            note_return_values_trip();
++            break;
++        }
++        let work = ctx.closure_effect_work.as_mut().unwrap();
++        let Some(job) = work.pending.pop() else {
++            break;
++        };
++        while frames.len() > job.depth {
++            frames.pop();
++        }
++        while frames.len() < job.depth {
++            let Some(frame) = closure_frame() else {
++                break 'drain;
++            };
++            frames.push(frame);
++        }
++        work.current_depth = job.depth;
++        analyze_expr_effect(&job.body, job.mode, &job.scope, effects, ctx);
+     }
++    // Clear only our worklist. A partial drain leaves the request's sticky analysis limit set,
++    // so no partial fixed point can be mistaken for successful analysis. There are no early exits
++    // between installing the root worklist and this cleanup; nested enqueue failures leave it live.
++    ctx.closure_effect_work = None;
+ }
+ 
+ /// How a diagnostic names what a call calls (`None`: `expr` is not a call). Kept out of

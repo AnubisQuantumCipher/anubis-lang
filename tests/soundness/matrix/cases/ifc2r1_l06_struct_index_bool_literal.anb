@@ -1,0 +1,5 @@
+struct S { pub_n: i64, k: secret<i64> }
+fn main() {
+    let p = S { pub_n: 1, k: 42 };
+    print(p[true]);
+}

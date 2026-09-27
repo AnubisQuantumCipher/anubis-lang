@@ -1,0 +1,2 @@
+fn f(v: i64) -> i64 requires(v > 0) { return v; }
+fn main() { f(0); }

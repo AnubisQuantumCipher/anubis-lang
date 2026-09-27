@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 123456, pub_n: 3 };
+    let v = if true {
+        let a = 0;
+        for i in range(0, 2) { print(a); a = p.k; }
+        0
+    } else { 0 };
+    print(v);
+}

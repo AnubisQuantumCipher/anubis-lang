@@ -1,0 +1,1335 @@
+[
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/review-ifc2-r2-raw.json",
+    "recovered": "original/review-ifc2-r2-raw.json",
+    "sha256": "8c25720b2eaaab8e6b27fda9683cf668728e0639b796514df43f143ed3367fd7",
+    "bytes": 171456
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/review-ifc2-r2-raw.txt",
+    "recovered": "original/review-ifc2-r2-raw.txt",
+    "sha256": "ca8af2c9c6c6524be6f19cea59e69bc5598fc11a9424e0d78d570a3599a6d99d",
+    "bytes": 207129
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/handoff/workflows/review-ifc2-r2.js",
+    "recovered": "original/review-ifc2-r2.js",
+    "sha256": "6f567ea0d1d5e1271d87d1d33d337c329a43f43de000adb7dfd84749da57d7c9",
+    "bytes": 16735
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/found.json",
+    "recovered": "original/partial-found.json",
+    "sha256": "cea8f8ffccf0dcdab8d1d0956d4198c6305395703bec20a01c759b8a2236f4b3",
+    "bytes": 6245
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L01_int_literal_patterns_collide_in_f64.anb",
+    "recovered": "original/partial-src/r2ctl_L01_int_literal_patterns_collide_in_f64.anb",
+    "sha256": "f72961894489b5629b8d01187c40d7532a981611d097cbe68ac912b5a27b6fee",
+    "bytes": 313
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L02_select_ignores_struct_field_order.anb",
+    "recovered": "original/partial-src/r2ctl_L02_select_ignores_struct_field_order.anb",
+    "sha256": "89b3c25185c58bb2d116d1a2c84e7881c2f2fc4b5c276e09374271b5bbeff974",
+    "bytes": 252
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L03_select_ignores_map_key_order.anb",
+    "recovered": "original/partial-src/r2ctl_L03_select_ignores_map_key_order.anb",
+    "sha256": "58a8a1c8c0b862dc5c21de20ae6ceea846f0d0f381d5e0ea056303910906ee0a",
+    "bytes": 219
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L04_select_equal_maybe_fields_not_same_shape.anb",
+    "recovered": "original/partial-src/r2ctl_L04_select_equal_maybe_fields_not_same_shape.anb",
+    "sha256": "68c58697af66757a429c25b4b6c5cd37d24150fef17ce2cdcfd70be2d361ff01",
+    "bytes": 345
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L05_select_equal_maybe_keys_map.anb",
+    "recovered": "original/partial-src/r2ctl_L05_select_equal_maybe_keys_map.anb",
+    "sha256": "3f82a1836babf1656a4686f7cdcfea758435b17cb521a82e62f3f28e222c668d",
+    "bytes": 307
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L06_method_narrowing_drops_maybe_fields.anb",
+    "recovered": "original/partial-src/r2ctl_L06_method_narrowing_drops_maybe_fields.anb",
+    "sha256": "d973e5e3b5d809ee958185bd435dadc2592a3ea1e17eb92c8528914a6a992de3",
+    "bytes": 390
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header.anb",
+    "recovered": "original/partial-src/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header.anb",
+    "sha256": "3d5768be0efbb10708747b6873364e67af1e87a3b85df9fd2f84f7be7f4fec02",
+    "bytes": 209
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L08_panic_under_secret_pc_not_egress.anb",
+    "recovered": "original/partial-src/r2ctl_L08_panic_under_secret_pc_not_egress.anb",
+    "sha256": "e2c0855b6fef5016aeb0df11760bda716d49456e565a861669d18a63786973db",
+    "bytes": 99
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_L09_exit_status_under_secret_pc_not_egress.anb",
+    "recovered": "original/partial-src/r2ctl_L09_exit_status_under_secret_pc_not_egress.anb",
+    "sha256": "bdc87a556e297fe922d288da0b1db5d3d0582568ee61b50b04274ca905a45dae",
+    "bytes": 83
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_O01_same_shape_assignment_under_secret_raises_tag.anb",
+    "recovered": "original/partial-src/r2ctl_O01_same_shape_assignment_under_secret_raises_tag.anb",
+    "sha256": "212e8f10f17349919d91b6418c02ffb981a23a7af5f8ec019657cb9a615bfc5b",
+    "bytes": 489
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_O02_distinct_float_literal_patterns_not_disjoint.anb",
+    "recovered": "original/partial-src/r2ctl_O02_distinct_float_literal_patterns_not_disjoint.anb",
+    "sha256": "dbd21e6664283ade496651fd57de659386506e0eea78b0e27f87ad201d8e3f24",
+    "bytes": 375
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_O03_early_return_same_shape_raises_tag.anb",
+    "recovered": "original/partial-src/r2ctl_O03_early_return_same_shape_raises_tag.anb",
+    "sha256": "68a71f856b43329fdbdc77ca345af2ef68c8441d39ea04532b23312bb329d72b",
+    "bytes": 339
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_O04_select_of_compositions_raises_every_stage.anb",
+    "recovered": "original/partial-src/r2ctl_O04_select_of_compositions_raises_every_stage.anb",
+    "sha256": "ff4ec74c101ecb25316adbc7378cae7019032726cdf9612774423961205b52ab",
+    "bytes": 364
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2ctl_R01_shift_register_hits_loop_limit.anb",
+    "recovered": "original/partial-src/r2ctl_R01_shift_register_hits_loop_limit.anb",
+    "sha256": "6a7a3848434910fcb8473992a36b0cd5ef6eb76819f4798c8057a04ca1d63cf1",
+    "bytes": 622
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_01_select_ignores_runtime_order.anb",
+    "recovered": "original/partial-src/r2p_01_select_ignores_runtime_order.anb",
+    "sha256": "38b46c532c59687a2713cb336ca5b274f920d7b82c69a8c963da5ad5b09e4aea",
+    "bytes": 178
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_02_select_equal_maybe_sets_same_shape.anb",
+    "recovered": "original/partial-src/r2p_02_select_equal_maybe_sets_same_shape.anb",
+    "sha256": "113a9f106b2ca9aa00ce4ae3840b9cd560b4ce2c1de4b705c10166621c8edbcd",
+    "bytes": 339
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_03_set_path_nested_write_marks_missing_key_present.anb",
+    "recovered": "original/partial-src/r2p_03_set_path_nested_write_marks_missing_key_present.anb",
+    "sha256": "faf389eef55a162f39c5b629ab0c3acba7f5a3e83b2cfcc4c9b1e22e72f95b18",
+    "bytes": 191
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_04_merge_drops_first_map_value_for_maybe_key.anb",
+    "recovered": "original/partial-src/r2p_04_merge_drops_first_map_value_for_maybe_key.anb",
+    "sha256": "9084eb143a5a24f88c57029d8a207c231581cfb318cfe47df278ddae1b438638",
+    "bytes": 256
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_05_remove_by_computed_key_keeps_keys_present.anb",
+    "recovered": "original/partial-src/r2p_05_remove_by_computed_key_keeps_keys_present.anb",
+    "sha256": "2dec6a56e54e73cf8dc1480ae2294412bd7120113f4f80526eb4c8189e2f5a85",
+    "bytes": 252
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_06_min_by_max_by_callback_args_decided_by_results.anb",
+    "recovered": "original/partial-src/r2p_06_min_by_max_by_callback_args_decided_by_results.anb",
+    "sha256": "ef4714cf8ef591f645c36c5b16ebde482502b3fd302841419001c7aeae8045a0",
+    "bytes": 161
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_07_stdin_cursor_is_an_unmodelled_store.anb",
+    "recovered": "original/partial-src/r2p_07_stdin_cursor_is_an_unmodelled_store.anb",
+    "sha256": "e458b5e3624f749fb2e7a805bfd3e7b54d0e1bf0cb65c672ea0c2cf8066ef37f",
+    "bytes": 179
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_08_write_file_to_device_path_is_egress.anb",
+    "recovered": "original/partial-src/r2p_08_write_file_to_device_path_is_egress.anb",
+    "sha256": "238e9f3c9bc0d67eb6b7679b69326fdeb236fc94f906938dbd68426eacff5ecd",
+    "bytes": 105
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_09_panic_exit_under_secret_pc_not_refused.anb",
+    "recovered": "original/partial-src/r2p_09_panic_exit_under_secret_pc_not_refused.anb",
+    "sha256": "1ca5065a29159f22d18101c7a37ccf45f6e11c179890745ba56fe32b2df61c5f",
+    "bytes": 99
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_10_try_on_empty_payload_gives_bottom.anb",
+    "recovered": "original/partial-src/r2p_10_try_on_empty_payload_gives_bottom.anb",
+    "sha256": "866e06200c25d268234864b46d56ca5238410f22ca8196f8e530b658e86981a9",
+    "bytes": 305
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_11_join_enum_drops_runtime_default_for_short_payload.anb",
+    "recovered": "original/partial-src/r2p_11_join_enum_drops_runtime_default_for_short_payload.anb",
+    "sha256": "f29d26e6a65895f5e721861b422961ade782e099cc8df9a7693d51e2e974eadc",
+    "bytes": 417
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_12_struct_string_index_ignores_maybe_field.anb",
+    "recovered": "original/partial-src/r2p_12_struct_string_index_ignores_maybe_field.anb",
+    "sha256": "8abdbb94185b22272365c7883ac42ff84b53ad1cc0262ea5189bcdd734ae143a",
+    "bytes": 419
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_13_proof_commit_bool_result_modelled_as_argument.anb",
+    "recovered": "original/partial-src/r2p_13_proof_commit_bool_result_modelled_as_argument.anb",
+    "sha256": "290a88b6c40c67cb687b566a45d6087463099373b9e7dd5c4327e33f83fe52f3",
+    "bytes": 342
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_14_remove_trap_message_prints_index_length_key.anb",
+    "recovered": "original/partial-src/r2p_14_remove_trap_message_prints_index_length_key.anb",
+    "sha256": "037a4c82354daca3315ae1ee28376fde6818320c49b0708b9342475a8f592571",
+    "bytes": 141
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_15_crypto_trap_messages_print_operands.anb",
+    "recovered": "original/partial-src/r2p_15_crypto_trap_messages_print_operands.anb",
+    "sha256": "9bd100af8cd22a576b89328274cc9b3881bb19094cac2289d663f610820f14f6",
+    "bytes": 109
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_16_builtin_value_arity_trap_prints_argument_count.anb",
+    "recovered": "original/partial-src/r2p_16_builtin_value_arity_trap_prints_argument_count.anb",
+    "sha256": "96da2fc55dbec7036f3ca43139354462a0bb5e64becd5d21ba1b5954ce19ac3d",
+    "bytes": 148
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_17_poc_kit_trap_messages_print_operands.anb",
+    "recovered": "original/partial-src/r2p_17_poc_kit_trap_messages_print_operands.anb",
+    "sha256": "d290c2e01a2345867ba5cea4025156b099ab098bab4e974a5461d3a7aeca6dd6",
+    "bytes": 115
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_18_bool_int_of_collection_use_content.anb",
+    "recovered": "original/partial-src/r2p_18_bool_int_of_collection_use_content.anb",
+    "sha256": "937720dbb7473b3db96541cc11c5b70d67cfd8b40ddcd22459fa1c2418902d24",
+    "bytes": 253
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2p_19_files_store_is_global_and_flow_insensitive.anb",
+    "recovered": "original/partial-src/r2p_19_files_store_is_global_and_flow_insensitive.anb",
+    "sha256": "ce747ea2882fad4f25d804f78f49534cc5d0caa03c912ee14339b05ee2f81df6",
+    "bytes": 221
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_01_select_map_insertion_order.anb",
+    "recovered": "original/partial-src/r2v_01_select_map_insertion_order.anb",
+    "sha256": "07882b95a3889a341b51a7bc8dc6f7b7ce938e0fac0ef813764a106753098f36",
+    "bytes": 192
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_02_select_struct_field_order.anb",
+    "recovered": "original/partial-src/r2v_02_select_struct_field_order.anb",
+    "sha256": "9c477131e66d0bbeb662f5fcd76f117e14a552a378042ec06892384f05b0e07b",
+    "bytes": 211
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_03_select_maybe_keys_map.anb",
+    "recovered": "original/partial-src/r2v_03_select_maybe_keys_map.anb",
+    "sha256": "d5e2390386048446a77f7ef10c746d1f25041dceb7ee042dc3660116c30038ab",
+    "bytes": 299
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_04_select_maybe_fields_struct.anb",
+    "recovered": "original/partial-src/r2v_04_select_maybe_fields_struct.anb",
+    "sha256": "93a834064e3aabc75eea5910adaf2160bfbf8461613aed43d707c768830cc774",
+    "bytes": 343
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_05_nested_write_into_missing_key_makes_it_present.anb",
+    "recovered": "original/partial-src/r2v_05_nested_write_into_missing_key_makes_it_present.anb",
+    "sha256": "f82776af362b730bd6a35fb48d9bce8327396155002a45c6856e04fd4f04bdf2",
+    "bytes": 202
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_06_nested_write_into_missing_field_makes_it_present.anb",
+    "recovered": "original/partial-src/r2v_06_nested_write_into_missing_field_makes_it_present.anb",
+    "sha256": "6c6a135020b6a82e0d3a04b06ecd14bd72d034f45ebc1a21c957980c6ea4cbad",
+    "bytes": 250
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_07_remove_computed_key_keeps_known_keys_present.anb",
+    "recovered": "original/partial-src/r2v_07_remove_computed_key_keeps_known_keys_present.anb",
+    "sha256": "36c9d0ae94e217ca973f49f66fbdb2aeb6dd0c511e4cc548e21d57fffaad49fb",
+    "bytes": 244
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_08_merge_drops_first_map_value_when_second_key_maybe.anb",
+    "recovered": "original/partial-src/r2v_08_merge_drops_first_map_value_when_second_key_maybe.anb",
+    "sha256": "d720b7c0e76f727a295d33acd606e66ea4cdf2aa8950fc9ae03600bf0e18e670",
+    "bytes": 283
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_09_pattern_decision_top_skips_concrete_parts.anb",
+    "recovered": "original/partial-src/r2v_09_pattern_decision_top_skips_concrete_parts.anb",
+    "sha256": "592d8db9bf7c811a220992658d4e14695f75ead87beedaf4523337beb6fa6485",
+    "bytes": 443
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_10_join_enum_different_field_sets_drops_names.anb",
+    "recovered": "original/partial-src/r2v_10_join_enum_different_field_sets_drops_names.anb",
+    "sha256": "920072f4237381d8ad2082c2b0b39f7d9c5444a4983bf7cb129fffe246f9bc07",
+    "bytes": 185
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_11_remove_trap_message_prints_key_and_index.anb",
+    "recovered": "original/partial-src/r2v_11_remove_trap_message_prints_key_and_index.anb",
+    "sha256": "b00723f245d53026eabeab29443e81b4c571074f5e52333f906488cf5913bf63",
+    "bytes": 138
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_12_state_merge_push_on_both_branches.anb",
+    "recovered": "original/partial-src/r2v_12_state_merge_push_on_both_branches.anb",
+    "sha256": "04cf8350961b60d3202739f608049a0d088717a94f3a14db6f42fbc2f451b8f7",
+    "bytes": 258
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_13_state_merge_same_key_added_on_both_branches.anb",
+    "recovered": "original/partial-src/r2v_13_state_merge_same_key_added_on_both_branches.anb",
+    "sha256": "3a5599b94a6784680ef2a070cd1dd3c6a3385751d2c7ad955dc10149406b9262",
+    "bytes": 248
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_14_state_merge_reassign_same_length.anb",
+    "recovered": "original/partial-src/r2v_14_state_merge_reassign_same_length.anb",
+    "sha256": "3efb194ce161cc900c6126b5d30e2b0daf537197c148fd1016583a61730e3d94",
+    "bytes": 239
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_15_early_return_same_shape_raised.anb",
+    "recovered": "original/partial-src/r2v_15_early_return_same_shape_raised.anb",
+    "sha256": "690e3f3a9bedc4676472a448d80912cf7ff97c045a431d93ef44803d9dfde879",
+    "bytes": 215
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_16_enum_variant_literal_order_join_over_refusal.anb",
+    "recovered": "original/partial-src/r2v_16_enum_variant_literal_order_join_over_refusal.anb",
+    "sha256": "6be16ea3076d2ee80eb3616b1b47a19a66fbea10f2154eabcb91115ef8d7daea",
+    "bytes": 348
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_17_computed_key_rewrite_of_existing_keys.anb",
+    "recovered": "original/partial-src/r2v_17_computed_key_rewrite_of_existing_keys.anb",
+    "sha256": "f6e8bd42a4e120a94e5085c6d337cea54da65443a5e0a0676f2bf9de60502ff2",
+    "bytes": 225
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-item21/ifc2/review2/src/r2v_18_shared_list_dag_exponential_memory.anb",
+    "recovered": "original/partial-src/r2v_18_shared_list_dag_exponential_memory.anb",
+    "sha256": "f8eaf052bbfac434e695b40688e70200bada77199e2910316e2fd1521c6f9b5d",
+    "bytes": 713
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/findings_a.json",
+    "recovered": "verifier/findings_a.json",
+    "sha256": "8eb07efd188ef3ea8e29016a531766d5050cfff197e630fc5bec1058ca33d2aa",
+    "bytes": 14346
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/findings_b.json",
+    "recovered": "verifier/findings_b.json",
+    "sha256": "4a6e562b2781d60156614fd9fe1a6dc7cb7a2a9549820b9811e536f3b065f479",
+    "bytes": 9433
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/findings_c.json",
+    "recovered": "verifier/findings_c.json",
+    "sha256": "d54f17ac050d9670cc45ab5d921411b8e2002fbcdd77b5ce811e593c036e2c62",
+    "bytes": 7675
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/findings_d.json",
+    "recovered": "verifier/findings_d.json",
+    "sha256": "9ea2c00603724b5e74ac14db190dc09dd3f44a63e5a5d386b6b0afc1617aaeb2",
+    "bytes": 13362
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/findings_e.json",
+    "recovered": "verifier/findings_e.json",
+    "sha256": "54a0331a3ae039e5a5fe07876d43471bd10ff47843331ee077647f2a39743ca7",
+    "bytes": 4068
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/findings_f.json",
+    "recovered": "verifier/findings_f.json",
+    "sha256": "ae33564b77da39de0f3479f911cd83aa3acba7a0bc0ca24bff66a48fbb2720f1",
+    "bytes": 3011
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/findings_twin.json",
+    "recovered": "verifier/findings_twin.json",
+    "sha256": "1d5b082da86226d96817f9ea1f934cfa6a8e376ebb37a6bd9b47b0c32e20706c",
+    "bytes": 7195
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/results.json",
+    "recovered": "verifier/results.json",
+    "sha256": "474a8920d375464eb21bdde7ed21e1c8a64392d651c33bace17a0184b224e121",
+    "bytes": 96675
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/verify.log",
+    "recovered": "verifier/verify.log",
+    "sha256": "86fbd15333a471f9214b1e0ba0b77aa9c07532a60f592c8995174402189032fe",
+    "bytes": 7528
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/verify.py",
+    "recovered": "verifier/verify.py",
+    "sha256": "bc87e3f292c6bfb935c2a1f41c3e1bb9a26dfb8b4a7a6475e0adef5827a91072",
+    "bytes": 4139
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-1-file-store-single-label.anb",
+    "recovered": "verifier/p/OR-1-file-store-single-label.anb",
+    "sha256": "1e499be178559f2a84a6cb888b18d593110779cdd98ac96e1c144cb0e62c0a90",
+    "bytes": 596
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-1-file-store-single-label_b.anb",
+    "recovered": "verifier/p/OR-1-file-store-single-label_b.anb",
+    "sha256": "a4b85bcc1783667e12b42d067423f5e88ded07a69faa7c7f3919b64a16bbef2b",
+    "bytes": 600
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-2-loop-built-tree-fold-mixes-payload.anb",
+    "recovered": "verifier/p/OR-2-loop-built-tree-fold-mixes-payload.anb",
+    "sha256": "d1d3936d4eb3f2d0d1b9260f934ebcdf40d22f08e17068a7d51e2513c97b8a64",
+    "bytes": 852
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-2-loop-built-tree-fold-mixes-payload_b.anb",
+    "recovered": "verifier/p/OR-2-loop-built-tree-fold-mixes-payload_b.anb",
+    "sha256": "7edcacaae1aa6e91519a5b9260e56dd6515af7c8ab51fb88e4b5cfc5631f3b8b",
+    "bytes": 856
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-3-recursion-summary-fold-depth4.anb",
+    "recovered": "verifier/p/OR-3-recursion-summary-fold-depth4.anb",
+    "sha256": "b551707ceadf84a27ff1a6e130a3cecb06d52f7fd908cb4d1fc6384e32bcc2be",
+    "bytes": 1103
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-3-recursion-summary-fold-depth4_b.anb",
+    "recovered": "verifier/p/OR-3-recursion-summary-fold-depth4_b.anb",
+    "sha256": "cb4977919174e7762202a09b8eef5ba84d3a651fd64e9e65bd9fa8648577532e",
+    "bytes": 1107
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-4-kind-label-of-secret-scalar.anb",
+    "recovered": "verifier/p/OR-4-kind-label-of-secret-scalar.anb",
+    "sha256": "953223a84734d1083cec76ee1165869fd4c69bc47c1fba5b23ea296c720ae9af",
+    "bytes": 297
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-4-kind-label-of-secret-scalar_b.anb",
+    "recovered": "verifier/p/OR-4-kind-label-of-secret-scalar_b.anb",
+    "sha256": "4c04fb384c14acfca31377c3c732a6c3488b338535d8a349b505c1edcceb0e8a",
+    "bytes": 301
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads.anb",
+    "recovered": "verifier/p/OR-5-container-shape-label-taints-present-key-reads.anb",
+    "sha256": "77de9578c62622186c56f2b4e0f87b959343ef7b15f693f08a85fa87dfb697a1",
+    "bytes": 443
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads__twin.anb",
+    "recovered": "verifier/p/OR-5-container-shape-label-taints-present-key-reads__twin.anb",
+    "sha256": "f98969e37a3092d8814a614bf66be5891acf52450a32540d5537ccfcd8149e6f",
+    "bytes": 430
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads__twin_b.anb",
+    "recovered": "verifier/p/OR-5-container-shape-label-taints-present-key-reads__twin_b.anb",
+    "sha256": "acf1f818fd23f4e5e2414bdf960a3763f20ec84afa00ceb9a6f8b24d5f8cdf28",
+    "bytes": 434
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-5-container-shape-label-taints-present-key-reads_b.anb",
+    "recovered": "verifier/p/OR-5-container-shape-label-taints-present-key-reads_b.anb",
+    "sha256": "4a89ed25e2252b4fc863fb88f48d8e4457793bd8f22a74b7f8660e9721670d4e",
+    "bytes": 447
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-6-closure-summary-reach-label-merges-pipelines.anb",
+    "recovered": "verifier/p/OR-6-closure-summary-reach-label-merges-pipelines.anb",
+    "sha256": "6c0a7f8ac21c828e22cb6292ca1d978174a98d53d92292832430c19811c6e5ed",
+    "bytes": 750
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-6-closure-summary-reach-label-merges-pipelines_b.anb",
+    "recovered": "verifier/p/OR-6-closure-summary-reach-label-merges-pipelines_b.anb",
+    "sha256": "63e66c39a7c0959b869635fe6811a7b8e706e3472680220426233a798c631f51",
+    "bytes": 754
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-7-summary-context-after-12-merges-all-secret-rows.anb",
+    "recovered": "verifier/p/OR-7-summary-context-after-12-merges-all-secret-rows.anb",
+    "sha256": "cd462e40a7edf5cd16c46b2c95b43d1cd731b0c6c0b1d9f87212b25059c1bf63",
+    "bytes": 1443
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-7-summary-context-after-12-merges-all-secret-rows__twin.anb",
+    "recovered": "verifier/p/OR-7-summary-context-after-12-merges-all-secret-rows__twin.anb",
+    "sha256": "4fb77211a8960b4c8c6a1aa7602ae09d2dc96fea3c623b001897484ad9d2950a",
+    "bytes": 1430
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-7-summary-context-after-12-merges-all-secret-rows__twin_b.anb",
+    "recovered": "verifier/p/OR-7-summary-context-after-12-merges-all-secret-rows__twin_b.anb",
+    "sha256": "326d1779a287259310e694127403872b364687ae2c80fdaea005d1dd51cf3a6a",
+    "bytes": 1434
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-7-summary-context-after-12-merges-all-secret-rows_b.anb",
+    "recovered": "verifier/p/OR-7-summary-context-after-12-merges-all-secret-rows_b.anb",
+    "sha256": "b0469e758d8b58bcf028da2307db814b6abb84ceb67cecb930b3b13e3fb6b19d",
+    "bytes": 1447
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys.anb",
+    "recovered": "verifier/p/OR-8-max-nodes-collapse-merges-map-literal-keys.anb",
+    "sha256": "f657e357a7ed3f3c1b22cbdd9df433bc7458e52dba625f2e3692f76791a61f4c",
+    "bytes": 3257
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys__twin.anb",
+    "recovered": "verifier/p/OR-8-max-nodes-collapse-merges-map-literal-keys__twin.anb",
+    "sha256": "3749e7482bb9beaa1f7b65c19cfc060240ab0ce572864b80cccaa71e2e0b0392",
+    "bytes": 3244
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys__twin_b.anb",
+    "recovered": "verifier/p/OR-8-max-nodes-collapse-merges-map-literal-keys__twin_b.anb",
+    "sha256": "950ca4f7f091b2744d340651b0f226257079acbd0e818b58dd42237e92282876",
+    "bytes": 3248
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-8-max-nodes-collapse-merges-map-literal-keys_b.anb",
+    "recovered": "verifier/p/OR-8-max-nodes-collapse-merges-map-literal-keys_b.anb",
+    "sha256": "afac600550791a30065d7ea3fcbd65a7c8c7ce0557c1d0d72203715d79605331",
+    "bytes": 3261
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields.anb",
+    "recovered": "verifier/p/OR-9-struct-variant-field-order-join-mixes-all-fields.anb",
+    "sha256": "4a464fc4d29c5065f094a5d3f8a2fb2c64de37f8a8e6a4e2fee6d26ab04b8d9f",
+    "bytes": 672
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields__twin.anb",
+    "recovered": "verifier/p/OR-9-struct-variant-field-order-join-mixes-all-fields__twin.anb",
+    "sha256": "122b930d3d4be7398199bb1c43715a598598725f8880fbc5865e1c006adfe260",
+    "bytes": 651
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields__twin_b.anb",
+    "recovered": "verifier/p/OR-9-struct-variant-field-order-join-mixes-all-fields__twin_b.anb",
+    "sha256": "60ae9f7f26b0417858b2c24f295ba8302d298afb37b2fdd61a3ee354b4079d1b",
+    "bytes": 655
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/OR-9-struct-variant-field-order-join-mixes-all-fields_b.anb",
+    "recovered": "verifier/p/OR-9-struct-variant-field-order-join-mixes-all-fields_b.anb",
+    "sha256": "79f4a7e4eb9758b147cfea26b07eb94df2251b4a665461cdb22f87e278f4f924",
+    "bytes": 676
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/ROB-1-nested-summary-fixpoint-precedence-parser.anb",
+    "recovered": "verifier/p/ROB-1-nested-summary-fixpoint-precedence-parser.anb",
+    "sha256": "000ef74e72cdc62d33ecffcd419d377e4f6c2c1f095551c1eaeaed8dc443177c",
+    "bytes": 2323
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/ROB-2-oo-evaluator-method-dispatch-limit.anb",
+    "recovered": "verifier/p/ROB-2-oo-evaluator-method-dispatch-limit.anb",
+    "sha256": "cf1234db6c2d732cf33383004f45ff4882389721db92662fd97e8abf1da91675",
+    "bytes": 2671
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/ROB-2-oo-evaluator-method-dispatch-limit_b.anb",
+    "recovered": "verifier/p/ROB-2-oo-evaluator-method-dispatch-limit_b.anb",
+    "sha256": "1980748af042aa85c7338a14221f152fd7dd82cef08cf95915a8cb5540052aa1",
+    "bytes": 2675
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L1_min_by_max_by_callback_argument.anb",
+    "recovered": "verifier/p/r2_fn_L1_min_by_max_by_callback_argument.anb",
+    "sha256": "8b229d70075d1533636aaeebf5afdb34f3f70a90bafcbe185026edb61ef86a4c",
+    "bytes": 185
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L1_min_by_max_by_callback_argument_b.anb",
+    "recovered": "verifier/p/r2_fn_L1_min_by_max_by_callback_argument_b.anb",
+    "sha256": "a80c557637cded03bbc52492d3b2f5430e8afa696debeb02ed984290373e9726",
+    "bytes": 184
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L2_map_insertion_order_not_modelled_in_select.anb",
+    "recovered": "verifier/p/r2_fn_L2_map_insertion_order_not_modelled_in_select.anb",
+    "sha256": "b372a2f9e022e55e1bcaed3e874af687fe64f5b2cead3da4359a6cd16067250b",
+    "bytes": 170
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L2_map_insertion_order_not_modelled_in_select_b.anb",
+    "recovered": "verifier/p/r2_fn_L2_map_insertion_order_not_modelled_in_select_b.anb",
+    "sha256": "840d4cc5133b20b40ea8e78822f864dcea8d58bbc5248785353dfff7eb3580f2",
+    "bytes": 171
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L3_struct_literal_field_order_not_modelled_in_select.anb",
+    "recovered": "verifier/p/r2_fn_L3_struct_literal_field_order_not_modelled_in_select.anb",
+    "sha256": "77cd77acd19ff6bd747be4aeb088b0fcfd044f4ba67c2de31486ddcd46cb99a5",
+    "bytes": 254
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L3_struct_literal_field_order_not_modelled_in_select_b.anb",
+    "recovered": "verifier/p/r2_fn_L3_struct_literal_field_order_not_modelled_in_select_b.anb",
+    "sha256": "6c94f85f9017c04c0bd576f5a46f3668f1a645275428b528c0546aadb69a3482",
+    "bytes": 255
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L4_panic_and_exit_under_secret_pc_not_refused.anb",
+    "recovered": "verifier/p/r2_fn_L4_panic_and_exit_under_secret_pc_not_refused.anb",
+    "sha256": "58500eddeca7edcff263fb9752072a738c5b1b1342e8264c12e3f1abab702223",
+    "bytes": 222
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_L4_panic_and_exit_under_secret_pc_not_refused_b.anb",
+    "recovered": "verifier/p/r2_fn_L4_panic_and_exit_under_secret_pc_not_refused_b.anb",
+    "sha256": "f05ea640b84683054a9b06a408aea2d72cfe41982c0f8deb59d4ece352329874",
+    "bytes": 221
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O1_recursive_hof_summary_merges_closure_captures.anb",
+    "recovered": "verifier/p/r2_fn_O1_recursive_hof_summary_merges_closure_captures.anb",
+    "sha256": "d57f74eba204fca50f7418f8e2db4bde84c8dcdf129bad88c48c38873f63f632",
+    "bytes": 305
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O1_recursive_hof_summary_merges_closure_captures_b.anb",
+    "recovered": "verifier/p/r2_fn_O1_recursive_hof_summary_merges_closure_captures_b.anb",
+    "sha256": "144459063f73ed353c374476f3d59daa140e514279da5d8f8bf1ca6894b6ebda",
+    "bytes": 309
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O2_context_budget_summary_merges_closure_captures.anb",
+    "recovered": "verifier/p/r2_fn_O2_context_budget_summary_merges_closure_captures.anb",
+    "sha256": "b4f121d05740d03fb88150c0c2c23db3c62e6af6f9774ebee23ed030ad6103bf",
+    "bytes": 715
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O2_context_budget_summary_merges_closure_captures_b.anb",
+    "recovered": "verifier/p/r2_fn_O2_context_budget_summary_merges_closure_captures_b.anb",
+    "sha256": "b144ffba724802438b60091f848351fcc31d5226d7b50abb6a023f60aad83aee",
+    "bytes": 719
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines.anb",
+    "recovered": "verifier/p/r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines.anb",
+    "sha256": "ecbe4d03f1086d5d2ac6ce980942e341b48af0944449a8cba0d2b0285ed27ddd",
+    "bytes": 427
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines_b.anb",
+    "recovered": "verifier/p/r2_fn_O3_closure_summary_reach_label_merges_secret_reaching_pipelines_b.anb",
+    "sha256": "bd3265f7b04321d0fdb88cde6cb9ac09a3c918a8611abeaf7b08634c00a5c4cf",
+    "bytes": 427
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening.anb",
+    "recovered": "verifier/p/r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening.anb",
+    "sha256": "35af9e50ea81979a0cb60ebd013afaea7d2e1eb0389aba468c7026c37f488fac",
+    "bytes": 295
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening_b.anb",
+    "recovered": "verifier/p/r2_fn_O4_nested_compose_becomes_unordered_chain_at_call_widening_b.anb",
+    "sha256": "1c1785b3b0c6255f9fe1406472e25c88f03e68d7068a4c570597f5ca6c8dde57",
+    "bytes": 299
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O5_chain_joins_component_labels_into_every_stage_pc.anb",
+    "recovered": "verifier/p/r2_fn_O5_chain_joins_component_labels_into_every_stage_pc.anb",
+    "sha256": "da8230d134eda3c8650e333fcf95c1488ce01d3832950dc84bc487e28dbe99ea",
+    "bytes": 343
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O5_chain_joins_component_labels_into_every_stage_pc_b.anb",
+    "recovered": "verifier/p/r2_fn_O5_chain_joins_component_labels_into_every_stage_pc_b.anb",
+    "sha256": "11c65a459ea179aa38260c1fdcbf6b1bf3127a0dd9d85c1da57f367b9a829641",
+    "bytes": 347
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content.anb",
+    "recovered": "verifier/p/r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content.anb",
+    "sha256": "d42d3b7b47a71dcf300cf0e7767c9fedecdeb92a4457747e7940b9aca04cfa5d",
+    "bytes": 245
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content_b.anb",
+    "recovered": "verifier/p/r2_fn_O6_apply_non_list_argument_runs_callback_under_scalar_content_b.anb",
+    "sha256": "2332eec696e6326609ddc3635239d65eb692697057faa5513d81f00e792d799b",
+    "bytes": 247
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4.anb",
+    "recovered": "verifier/p/r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4.anb",
+    "sha256": "6f5b5f2f778460b72cff8677386a32609f6b05950e5d14e2387771456dcf05b9",
+    "bytes": 485
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4_b.anb",
+    "recovered": "verifier/p/r2_fn_O7_recursive_walk_folds_records_at_summary_depth_4_b.anb",
+    "sha256": "0fa30bd489881c27a875923b650ac1a670ecae462cb2ae69c00bb7a950794c3f",
+    "bytes": 486
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget.anb",
+    "recovered": "verifier/p/r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget.anb",
+    "sha256": "0f1c02d67d9357fe2fac723d258d6be13c293be7800a55ae8712124d11c02a03",
+    "bytes": 1433
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget_b.anb",
+    "recovered": "verifier/p/r2_fn_R1_parser_combinators_on_secret_input_hit_step_budget_b.anb",
+    "sha256": "b98d2d7e56946a663a7c3d73618f501698cfdcb6827f210019e3455111612b4b",
+    "bytes": 1437
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget.anb",
+    "recovered": "verifier/p/r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget.anb",
+    "sha256": "19bc394410e8454ab72e06b056e38c230bdb031dd1980a1771ca6264b697b0e3",
+    "bytes": 1729
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget_b.anb",
+    "recovered": "verifier/p/r2_fn_R2_mutual_recursion_with_closure_args_42s_then_work_budget_b.anb",
+    "sha256": "9b220a52bacc5bc2440a446b16c389de40c90efcab7e48d4e97d1df483d87686",
+    "bytes": 1733
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L01_int_literal_patterns_collide_in_f64.anb",
+    "recovered": "verifier/p/r2ctl_L01_int_literal_patterns_collide_in_f64.anb",
+    "sha256": "f72961894489b5629b8d01187c40d7532a981611d097cbe68ac912b5a27b6fee",
+    "bytes": 313
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L01_int_literal_patterns_collide_in_f64_b.anb",
+    "recovered": "verifier/p/r2ctl_L01_int_literal_patterns_collide_in_f64_b.anb",
+    "sha256": "768296776b2da6fb37b15820530ebfe3e56c45f9b5c7716b61119ff78e25e1ff",
+    "bytes": 317
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L02_select_ignores_struct_field_order.anb",
+    "recovered": "verifier/p/r2ctl_L02_select_ignores_struct_field_order.anb",
+    "sha256": "89b3c25185c58bb2d116d1a2c84e7881c2f2fc4b5c276e09374271b5bbeff974",
+    "bytes": 252
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L02_select_ignores_struct_field_order_b.anb",
+    "recovered": "verifier/p/r2ctl_L02_select_ignores_struct_field_order_b.anb",
+    "sha256": "c08a69bde569cae3e984519f6e99ee14070fa896bcffcb9c8d8b7c39ea144b70",
+    "bytes": 256
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L03_select_ignores_map_key_order.anb",
+    "recovered": "verifier/p/r2ctl_L03_select_ignores_map_key_order.anb",
+    "sha256": "58a8a1c8c0b862dc5c21de20ae6ceea846f0d0f381d5e0ea056303910906ee0a",
+    "bytes": 219
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L03_select_ignores_map_key_order_b.anb",
+    "recovered": "verifier/p/r2ctl_L03_select_ignores_map_key_order_b.anb",
+    "sha256": "ec9d72c36c6f06aee4e3fbc90f8de1033fde70e30b4251f897076fe42f1af59c",
+    "bytes": 223
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L04_select_equal_maybe_fields_not_same_shape.anb",
+    "recovered": "verifier/p/r2ctl_L04_select_equal_maybe_fields_not_same_shape.anb",
+    "sha256": "68c58697af66757a429c25b4b6c5cd37d24150fef17ce2cdcfd70be2d361ff01",
+    "bytes": 345
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L04_select_equal_maybe_fields_not_same_shape_b.anb",
+    "recovered": "verifier/p/r2ctl_L04_select_equal_maybe_fields_not_same_shape_b.anb",
+    "sha256": "acf9c054174567a8c4b6358960b180505b4a09c256cc861fc1d0de9ffa1488ac",
+    "bytes": 349
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L05_select_equal_maybe_keys_map.anb",
+    "recovered": "verifier/p/r2ctl_L05_select_equal_maybe_keys_map.anb",
+    "sha256": "3f82a1836babf1656a4686f7cdcfea758435b17cb521a82e62f3f28e222c668d",
+    "bytes": 307
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L05_select_equal_maybe_keys_map_b.anb",
+    "recovered": "verifier/p/r2ctl_L05_select_equal_maybe_keys_map_b.anb",
+    "sha256": "df01981d24a26adebb9a018227cad3ee46ddc57b00a7aec75edfa9bbd0257b50",
+    "bytes": 311
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L06_method_narrowing_drops_maybe_fields.anb",
+    "recovered": "verifier/p/r2ctl_L06_method_narrowing_drops_maybe_fields.anb",
+    "sha256": "d973e5e3b5d809ee958185bd435dadc2592a3ea1e17eb92c8528914a6a992de3",
+    "bytes": 390
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L06_method_narrowing_drops_maybe_fields_b.anb",
+    "recovered": "verifier/p/r2ctl_L06_method_narrowing_drops_maybe_fields_b.anb",
+    "sha256": "9be4a8c141d87a903eddea67e441df6a5fee6eb67004cd79a7dec23ed97ea10a",
+    "bytes": 394
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header.anb",
+    "recovered": "verifier/p/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header.anb",
+    "sha256": "3d5768be0efbb10708747b6873364e67af1e87a3b85df9fd2f84f7be7f4fec02",
+    "bytes": 209
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header_b.anb",
+    "recovered": "verifier/p/r2ctl_L07_whilelet_scrutinee_continue_does_not_lift_next_header_b.anb",
+    "sha256": "69327c79013f153f35eca743b025687874c759c5a44d090d25d5c02d7ad1d10f",
+    "bytes": 213
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L08_panic_under_secret_pc_not_egress.anb",
+    "recovered": "verifier/p/r2ctl_L08_panic_under_secret_pc_not_egress.anb",
+    "sha256": "e2c0855b6fef5016aeb0df11760bda716d49456e565a861669d18a63786973db",
+    "bytes": 99
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L08_panic_under_secret_pc_not_egress_b.anb",
+    "recovered": "verifier/p/r2ctl_L08_panic_under_secret_pc_not_egress_b.anb",
+    "sha256": "b12de098de2db4ebe27b667fb024d80688dc2a350da60401613de7e32604ec51",
+    "bytes": 103
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L09_exit_status_under_secret_pc_not_egress.anb",
+    "recovered": "verifier/p/r2ctl_L09_exit_status_under_secret_pc_not_egress.anb",
+    "sha256": "bdc87a556e297fe922d288da0b1db5d3d0582568ee61b50b04274ca905a45dae",
+    "bytes": 83
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_L09_exit_status_under_secret_pc_not_egress_b.anb",
+    "recovered": "verifier/p/r2ctl_L09_exit_status_under_secret_pc_not_egress_b.anb",
+    "sha256": "a6023594c24785eed26b074cdeb11926ef3a4f14fd0eb985096b11ecf78d374c",
+    "bytes": 87
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O01_same_shape_assignment_under_secret_raises_tag.anb",
+    "recovered": "verifier/p/r2ctl_O01_same_shape_assignment_under_secret_raises_tag.anb",
+    "sha256": "212e8f10f17349919d91b6418c02ffb981a23a7af5f8ec019657cb9a615bfc5b",
+    "bytes": 489
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O01_same_shape_assignment_under_secret_raises_tag_b.anb",
+    "recovered": "verifier/p/r2ctl_O01_same_shape_assignment_under_secret_raises_tag_b.anb",
+    "sha256": "914720473e32f367ac12241836bf62329280bc6f5312c24f5dcbdceb740d9e7b",
+    "bytes": 493
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O02_distinct_float_literal_patterns_not_disjoint.anb",
+    "recovered": "verifier/p/r2ctl_O02_distinct_float_literal_patterns_not_disjoint.anb",
+    "sha256": "dbd21e6664283ade496651fd57de659386506e0eea78b0e27f87ad201d8e3f24",
+    "bytes": 375
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O02_distinct_float_literal_patterns_not_disjoint_b.anb",
+    "recovered": "verifier/p/r2ctl_O02_distinct_float_literal_patterns_not_disjoint_b.anb",
+    "sha256": "5c2f44799d41caed486883c951806e8e8ece2db855c07637a6424f4626655aa3",
+    "bytes": 377
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O03_early_return_same_shape_raises_tag.anb",
+    "recovered": "verifier/p/r2ctl_O03_early_return_same_shape_raises_tag.anb",
+    "sha256": "68a71f856b43329fdbdc77ca345af2ef68c8441d39ea04532b23312bb329d72b",
+    "bytes": 339
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O03_early_return_same_shape_raises_tag_b.anb",
+    "recovered": "verifier/p/r2ctl_O03_early_return_same_shape_raises_tag_b.anb",
+    "sha256": "2a90cabe3c67ce7211c9eaacb1b38de6ca7b7d546efabc67813f9745d7525270",
+    "bytes": 343
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O04_select_of_compositions_raises_every_stage.anb",
+    "recovered": "verifier/p/r2ctl_O04_select_of_compositions_raises_every_stage.anb",
+    "sha256": "ff4ec74c101ecb25316adbc7378cae7019032726cdf9612774423961205b52ab",
+    "bytes": 364
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_O04_select_of_compositions_raises_every_stage_b.anb",
+    "recovered": "verifier/p/r2ctl_O04_select_of_compositions_raises_every_stage_b.anb",
+    "sha256": "f32bd242751aaecb2250942b68b85c080bba8fd50de458b745d451f21ff2a51d",
+    "bytes": 368
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_R01_shift_register_hits_loop_limit.anb",
+    "recovered": "verifier/p/r2ctl_R01_shift_register_hits_loop_limit.anb",
+    "sha256": "99f3882baf620981a3d74cc5cc8eed30e869e061defa6722ad2cf7444579ce89",
+    "bytes": 2692
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2ctl_R01_shift_register_hits_loop_limit_b.anb",
+    "recovered": "verifier/p/r2ctl_R01_shift_register_hits_loop_limit_b.anb",
+    "sha256": "10804d3ed9a179f885c75fc393db169aacf81cc10f25df31a0261b568241bbf4",
+    "bytes": 2692
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_01_select_ignores_runtime_order.anb",
+    "recovered": "verifier/p/r2p_01_select_ignores_runtime_order.anb",
+    "sha256": "38b46c532c59687a2713cb336ca5b274f920d7b82c69a8c963da5ad5b09e4aea",
+    "bytes": 178
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_01_select_ignores_runtime_order_b.anb",
+    "recovered": "verifier/p/r2p_01_select_ignores_runtime_order_b.anb",
+    "sha256": "5c2df1845dc0a9e82733960630934e47c6cb24e6dfbbe90897a3361e6d55ede2",
+    "bytes": 182
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_02_select_equal_maybe_sets_same_shape.anb",
+    "recovered": "verifier/p/r2p_02_select_equal_maybe_sets_same_shape.anb",
+    "sha256": "113a9f106b2ca9aa00ce4ae3840b9cd560b4ce2c1de4b705c10166621c8edbcd",
+    "bytes": 339
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_02_select_equal_maybe_sets_same_shape_b.anb",
+    "recovered": "verifier/p/r2p_02_select_equal_maybe_sets_same_shape_b.anb",
+    "sha256": "f22cb6d717243954b156508e5f3450e7b2c590f2d1607625d7e69f18c2b99682",
+    "bytes": 343
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_03_set_path_nested_write_marks_missing_key_present.anb",
+    "recovered": "verifier/p/r2p_03_set_path_nested_write_marks_missing_key_present.anb",
+    "sha256": "faf389eef55a162f39c5b629ab0c3acba7f5a3e83b2cfcc4c9b1e22e72f95b18",
+    "bytes": 191
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_03_set_path_nested_write_marks_missing_key_present_b.anb",
+    "recovered": "verifier/p/r2p_03_set_path_nested_write_marks_missing_key_present_b.anb",
+    "sha256": "86e99ba48c9130fc2543ef9cc449dcfa66bb681bb5434ae9a990309a1e5f759e",
+    "bytes": 195
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_04_merge_drops_first_map_value_for_maybe_key.anb",
+    "recovered": "verifier/p/r2p_04_merge_drops_first_map_value_for_maybe_key.anb",
+    "sha256": "9084eb143a5a24f88c57029d8a207c231581cfb318cfe47df278ddae1b438638",
+    "bytes": 256
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_04_merge_drops_first_map_value_for_maybe_key_b.anb",
+    "recovered": "verifier/p/r2p_04_merge_drops_first_map_value_for_maybe_key_b.anb",
+    "sha256": "9cbad91fb7560f00878f11c37708691e39dcf829879f27393c4e1445d8eccce6",
+    "bytes": 260
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_05_remove_by_computed_key_keeps_keys_present.anb",
+    "recovered": "verifier/p/r2p_05_remove_by_computed_key_keeps_keys_present.anb",
+    "sha256": "2dec6a56e54e73cf8dc1480ae2294412bd7120113f4f80526eb4c8189e2f5a85",
+    "bytes": 252
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_05_remove_by_computed_key_keeps_keys_present_b.anb",
+    "recovered": "verifier/p/r2p_05_remove_by_computed_key_keeps_keys_present_b.anb",
+    "sha256": "4021810ae000b9f06ee39baad6cafcfc56f359185ccd984ee87740627c1167be",
+    "bytes": 256
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_06_min_by_max_by_callback_args_decided_by_results.anb",
+    "recovered": "verifier/p/r2p_06_min_by_max_by_callback_args_decided_by_results.anb",
+    "sha256": "ef4714cf8ef591f645c36c5b16ebde482502b3fd302841419001c7aeae8045a0",
+    "bytes": 161
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_06_min_by_max_by_callback_args_decided_by_results_b.anb",
+    "recovered": "verifier/p/r2p_06_min_by_max_by_callback_args_decided_by_results_b.anb",
+    "sha256": "963748c106fd87a75c241c1d8e8229a2d94efdc424aa76b6d214badc00d72b08",
+    "bytes": 165
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_07_stdin_cursor_is_an_unmodelled_store.anb",
+    "recovered": "verifier/p/r2p_07_stdin_cursor_is_an_unmodelled_store.anb",
+    "sha256": "e458b5e3624f749fb2e7a805bfd3e7b54d0e1bf0cb65c672ea0c2cf8066ef37f",
+    "bytes": 179
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_07_stdin_cursor_is_an_unmodelled_store_b.anb",
+    "recovered": "verifier/p/r2p_07_stdin_cursor_is_an_unmodelled_store_b.anb",
+    "sha256": "df8feecd84d83b00bdc77f782c45c952e07beb4742d4ca80b437ce0580c053c4",
+    "bytes": 183
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_08_write_file_to_device_path_is_egress.anb",
+    "recovered": "verifier/p/r2p_08_write_file_to_device_path_is_egress.anb",
+    "sha256": "238e9f3c9bc0d67eb6b7679b69326fdeb236fc94f906938dbd68426eacff5ecd",
+    "bytes": 105
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_08_write_file_to_device_path_is_egress_b.anb",
+    "recovered": "verifier/p/r2p_08_write_file_to_device_path_is_egress_b.anb",
+    "sha256": "611890cc715ee2b1c8c879ec4839f6aa0d170d611038e1b5c32a947ad7911ea2",
+    "bytes": 109
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_09_panic_exit_under_secret_pc_not_refused.anb",
+    "recovered": "verifier/p/r2p_09_panic_exit_under_secret_pc_not_refused.anb",
+    "sha256": "1ca5065a29159f22d18101c7a37ccf45f6e11c179890745ba56fe32b2df61c5f",
+    "bytes": 99
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_09_panic_exit_under_secret_pc_not_refused_b.anb",
+    "recovered": "verifier/p/r2p_09_panic_exit_under_secret_pc_not_refused_b.anb",
+    "sha256": "6636d5d0180414e320b4c6aa33acbdd397021053bb8868925111596053be0158",
+    "bytes": 103
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_10_try_on_empty_payload_gives_bottom.anb",
+    "recovered": "verifier/p/r2p_10_try_on_empty_payload_gives_bottom.anb",
+    "sha256": "866e06200c25d268234864b46d56ca5238410f22ca8196f8e530b658e86981a9",
+    "bytes": 305
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_10_try_on_empty_payload_gives_bottom_b.anb",
+    "recovered": "verifier/p/r2p_10_try_on_empty_payload_gives_bottom_b.anb",
+    "sha256": "56fe87f8bb66a2686c90b513b4349e56ea3e2a22be448c0f163826d1add4e993",
+    "bytes": 309
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_11_join_enum_drops_runtime_default_for_short_payload.anb",
+    "recovered": "verifier/p/r2p_11_join_enum_drops_runtime_default_for_short_payload.anb",
+    "sha256": "f29d26e6a65895f5e721861b422961ade782e099cc8df9a7693d51e2e974eadc",
+    "bytes": 417
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_11_join_enum_drops_runtime_default_for_short_payload_b.anb",
+    "recovered": "verifier/p/r2p_11_join_enum_drops_runtime_default_for_short_payload_b.anb",
+    "sha256": "9bcac7ac98f501f925933feb940e45a563eab9d1c9b47be7b9df96fb6ab7b603",
+    "bytes": 421
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_12_struct_string_index_ignores_maybe_field.anb",
+    "recovered": "verifier/p/r2p_12_struct_string_index_ignores_maybe_field.anb",
+    "sha256": "8abdbb94185b22272365c7883ac42ff84b53ad1cc0262ea5189bcdd734ae143a",
+    "bytes": 419
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_12_struct_string_index_ignores_maybe_field_b.anb",
+    "recovered": "verifier/p/r2p_12_struct_string_index_ignores_maybe_field_b.anb",
+    "sha256": "aaf27ca4b769156de466a12ba501d71c899558e09297f4c29deacf38fc414dd9",
+    "bytes": 423
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_13_proof_commit_bool_result_modelled_as_argument.anb",
+    "recovered": "verifier/p/r2p_13_proof_commit_bool_result_modelled_as_argument.anb",
+    "sha256": "290a88b6c40c67cb687b566a45d6087463099373b9e7dd5c4327e33f83fe52f3",
+    "bytes": 342
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_13_proof_commit_bool_result_modelled_as_argument_b.anb",
+    "recovered": "verifier/p/r2p_13_proof_commit_bool_result_modelled_as_argument_b.anb",
+    "sha256": "80252c74f1da101f61b108b8861420b897b030660265e3298a3a5e6c6e77c040",
+    "bytes": 346
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_14_remove_trap_message_prints_index_length_key.anb",
+    "recovered": "verifier/p/r2p_14_remove_trap_message_prints_index_length_key.anb",
+    "sha256": "037a4c82354daca3315ae1ee28376fde6818320c49b0708b9342475a8f592571",
+    "bytes": 141
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_14_remove_trap_message_prints_index_length_key_b.anb",
+    "recovered": "verifier/p/r2p_14_remove_trap_message_prints_index_length_key_b.anb",
+    "sha256": "d4534039896f0733b4b472736f3db6466f2b7ca63a37fed25598a8ea1c7bffca",
+    "bytes": 145
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_15_crypto_trap_messages_print_operands.anb",
+    "recovered": "verifier/p/r2p_15_crypto_trap_messages_print_operands.anb",
+    "sha256": "9bd100af8cd22a576b89328274cc9b3881bb19094cac2289d663f610820f14f6",
+    "bytes": 109
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_15_crypto_trap_messages_print_operands_b.anb",
+    "recovered": "verifier/p/r2p_15_crypto_trap_messages_print_operands_b.anb",
+    "sha256": "3b3b77f6dfe2f467cd6c6a42a749f1d253b1b9400fe56d1825b0e80f5dbdcc04",
+    "bytes": 113
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_16_builtin_value_arity_trap_prints_argument_count.anb",
+    "recovered": "verifier/p/r2p_16_builtin_value_arity_trap_prints_argument_count.anb",
+    "sha256": "96da2fc55dbec7036f3ca43139354462a0bb5e64becd5d21ba1b5954ce19ac3d",
+    "bytes": 148
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_16_builtin_value_arity_trap_prints_argument_count_b.anb",
+    "recovered": "verifier/p/r2p_16_builtin_value_arity_trap_prints_argument_count_b.anb",
+    "sha256": "1cadba7350b7ed4b7a6c1b20f910bb18d2cf9bca0b3c4f93e5f23ef80418d326",
+    "bytes": 152
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_17_poc_kit_trap_messages_print_operands.anb",
+    "recovered": "verifier/p/r2p_17_poc_kit_trap_messages_print_operands.anb",
+    "sha256": "d290c2e01a2345867ba5cea4025156b099ab098bab4e974a5461d3a7aeca6dd6",
+    "bytes": 115
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_17_poc_kit_trap_messages_print_operands_b.anb",
+    "recovered": "verifier/p/r2p_17_poc_kit_trap_messages_print_operands_b.anb",
+    "sha256": "eb1a51647a6f20954f6d91025fe605cc4acdbd5e506e8ccfaa46ff334a838719",
+    "bytes": 119
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_18_bool_int_of_collection_use_content.anb",
+    "recovered": "verifier/p/r2p_18_bool_int_of_collection_use_content.anb",
+    "sha256": "937720dbb7473b3db96541cc11c5b70d67cfd8b40ddcd22459fa1c2418902d24",
+    "bytes": 253
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_18_bool_int_of_collection_use_content_b.anb",
+    "recovered": "verifier/p/r2p_18_bool_int_of_collection_use_content_b.anb",
+    "sha256": "c41b6834f40d4a7472924e6f3712998047db94d20fbd44680b1c077c96f1da33",
+    "bytes": 257
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_19_files_store_is_global_and_flow_insensitive.anb",
+    "recovered": "verifier/p/r2p_19_files_store_is_global_and_flow_insensitive.anb",
+    "sha256": "ce747ea2882fad4f25d804f78f49534cc5d0caa03c912ee14339b05ee2f81df6",
+    "bytes": 221
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2p_19_files_store_is_global_and_flow_insensitive_b.anb",
+    "recovered": "verifier/p/r2p_19_files_store_is_global_and_flow_insensitive_b.anb",
+    "sha256": "590132351cf5e9e5a4960a4811866b235d9c7d6a0bbd06f1af6d17c3b7b0e534",
+    "bytes": 225
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_01_select_map_insertion_order.anb",
+    "recovered": "verifier/p/r2v_01_select_map_insertion_order.anb",
+    "sha256": "07882b95a3889a341b51a7bc8dc6f7b7ce938e0fac0ef813764a106753098f36",
+    "bytes": 192
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_01_select_map_insertion_order_b.anb",
+    "recovered": "verifier/p/r2v_01_select_map_insertion_order_b.anb",
+    "sha256": "83bcaa9fee4c837962835d86bde6058c74d55254c3234bda06b015829d7ba83b",
+    "bytes": 196
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_02_select_struct_field_order.anb",
+    "recovered": "verifier/p/r2v_02_select_struct_field_order.anb",
+    "sha256": "9c477131e66d0bbeb662f5fcd76f117e14a552a378042ec06892384f05b0e07b",
+    "bytes": 211
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_02_select_struct_field_order_b.anb",
+    "recovered": "verifier/p/r2v_02_select_struct_field_order_b.anb",
+    "sha256": "ed532b9fcbb1f72c25089dac007fe9746896477292e134af849584f792a06d3d",
+    "bytes": 215
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_03_select_maybe_keys_map.anb",
+    "recovered": "verifier/p/r2v_03_select_maybe_keys_map.anb",
+    "sha256": "d5e2390386048446a77f7ef10c746d1f25041dceb7ee042dc3660116c30038ab",
+    "bytes": 299
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_03_select_maybe_keys_map_b.anb",
+    "recovered": "verifier/p/r2v_03_select_maybe_keys_map_b.anb",
+    "sha256": "91c36ede23bb17581d17488e7ed49ae78e8acff2da379bd968abf7e9dcd43062",
+    "bytes": 303
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_04_select_maybe_fields_struct.anb",
+    "recovered": "verifier/p/r2v_04_select_maybe_fields_struct.anb",
+    "sha256": "93a834064e3aabc75eea5910adaf2160bfbf8461613aed43d707c768830cc774",
+    "bytes": 343
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_04_select_maybe_fields_struct_b.anb",
+    "recovered": "verifier/p/r2v_04_select_maybe_fields_struct_b.anb",
+    "sha256": "5a62f4e004f85781e6d0f220196681fcd484a94babf3292b3b042956d1af7f98",
+    "bytes": 347
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_05_nested_write_into_missing_key_makes_it_present.anb",
+    "recovered": "verifier/p/r2v_05_nested_write_into_missing_key_makes_it_present.anb",
+    "sha256": "f82776af362b730bd6a35fb48d9bce8327396155002a45c6856e04fd4f04bdf2",
+    "bytes": 202
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_05_nested_write_into_missing_key_makes_it_present_b.anb",
+    "recovered": "verifier/p/r2v_05_nested_write_into_missing_key_makes_it_present_b.anb",
+    "sha256": "a41b52a437f88d7f96022de9d57ad3392baaa3577dbf8c1a6f853abf94b69ddb",
+    "bytes": 206
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_06_nested_write_into_missing_field_makes_it_present.anb",
+    "recovered": "verifier/p/r2v_06_nested_write_into_missing_field_makes_it_present.anb",
+    "sha256": "6c6a135020b6a82e0d3a04b06ecd14bd72d034f45ebc1a21c957980c6ea4cbad",
+    "bytes": 250
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_06_nested_write_into_missing_field_makes_it_present_b.anb",
+    "recovered": "verifier/p/r2v_06_nested_write_into_missing_field_makes_it_present_b.anb",
+    "sha256": "1a2c91f318aab966c55a2b9ba199428f93761c1e96411856248cf0f0da90d6ff",
+    "bytes": 254
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_07_remove_computed_key_keeps_known_keys_present.anb",
+    "recovered": "verifier/p/r2v_07_remove_computed_key_keeps_known_keys_present.anb",
+    "sha256": "36c9d0ae94e217ca973f49f66fbdb2aeb6dd0c511e4cc548e21d57fffaad49fb",
+    "bytes": 244
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_07_remove_computed_key_keeps_known_keys_present_b.anb",
+    "recovered": "verifier/p/r2v_07_remove_computed_key_keeps_known_keys_present_b.anb",
+    "sha256": "bfccab4fdd980c06c9e66e01ec92acf781839e5024b51f7633e9e87cf424a170",
+    "bytes": 248
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_08_merge_drops_first_map_value_when_second_key_maybe.anb",
+    "recovered": "verifier/p/r2v_08_merge_drops_first_map_value_when_second_key_maybe.anb",
+    "sha256": "d720b7c0e76f727a295d33acd606e66ea4cdf2aa8950fc9ae03600bf0e18e670",
+    "bytes": 283
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_08_merge_drops_first_map_value_when_second_key_maybe_b.anb",
+    "recovered": "verifier/p/r2v_08_merge_drops_first_map_value_when_second_key_maybe_b.anb",
+    "sha256": "fc36cfe6204144d7d93ca2694aa109cc775dd7f8cc596bb34685802d6112177a",
+    "bytes": 287
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_09_pattern_decision_top_skips_concrete_parts.anb",
+    "recovered": "verifier/p/r2v_09_pattern_decision_top_skips_concrete_parts.anb",
+    "sha256": "592d8db9bf7c811a220992658d4e14695f75ead87beedaf4523337beb6fa6485",
+    "bytes": 443
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_09_pattern_decision_top_skips_concrete_parts_b.anb",
+    "recovered": "verifier/p/r2v_09_pattern_decision_top_skips_concrete_parts_b.anb",
+    "sha256": "2d514b7e2d24dc6f1be958bd3c0a3350bef97f08dda354a024ac85e179682249",
+    "bytes": 447
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_10_join_enum_different_field_sets_drops_names.anb",
+    "recovered": "verifier/p/r2v_10_join_enum_different_field_sets_drops_names.anb",
+    "sha256": "920072f4237381d8ad2082c2b0b39f7d9c5444a4983bf7cb129fffe246f9bc07",
+    "bytes": 185
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_10_join_enum_different_field_sets_drops_names_b.anb",
+    "recovered": "verifier/p/r2v_10_join_enum_different_field_sets_drops_names_b.anb",
+    "sha256": "902852ce7bfc9fd6c6dce758828b6205ba76530b0815825b6c1337cbb7189a1a",
+    "bytes": 189
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_11_remove_trap_message_prints_key_and_index.anb",
+    "recovered": "verifier/p/r2v_11_remove_trap_message_prints_key_and_index.anb",
+    "sha256": "b00723f245d53026eabeab29443e81b4c571074f5e52333f906488cf5913bf63",
+    "bytes": 138
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_11_remove_trap_message_prints_key_and_index_b.anb",
+    "recovered": "verifier/p/r2v_11_remove_trap_message_prints_key_and_index_b.anb",
+    "sha256": "ba8d38698e079affd26fc0476020b830551d1451695aa9822f8ae0a1d2db5a87",
+    "bytes": 142
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_12_state_merge_push_on_both_branches.anb",
+    "recovered": "verifier/p/r2v_12_state_merge_push_on_both_branches.anb",
+    "sha256": "04cf8350961b60d3202739f608049a0d088717a94f3a14db6f42fbc2f451b8f7",
+    "bytes": 258
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_12_state_merge_push_on_both_branches_b.anb",
+    "recovered": "verifier/p/r2v_12_state_merge_push_on_both_branches_b.anb",
+    "sha256": "57a2589a61f850f633e0bf38a97d129cfa70854cb5ca4b455d24e78cabc5fe61",
+    "bytes": 262
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_13_state_merge_same_key_added_on_both_branches.anb",
+    "recovered": "verifier/p/r2v_13_state_merge_same_key_added_on_both_branches.anb",
+    "sha256": "3a5599b94a6784680ef2a070cd1dd3c6a3385751d2c7ad955dc10149406b9262",
+    "bytes": 248
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_13_state_merge_same_key_added_on_both_branches_b.anb",
+    "recovered": "verifier/p/r2v_13_state_merge_same_key_added_on_both_branches_b.anb",
+    "sha256": "611ccfbf5c6287ec34f3987541d019d8491291c4cd396a40b01c6553d7b07a0b",
+    "bytes": 252
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_14_state_merge_reassign_same_length.anb",
+    "recovered": "verifier/p/r2v_14_state_merge_reassign_same_length.anb",
+    "sha256": "3efb194ce161cc900c6126b5d30e2b0daf537197c148fd1016583a61730e3d94",
+    "bytes": 239
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_14_state_merge_reassign_same_length_b.anb",
+    "recovered": "verifier/p/r2v_14_state_merge_reassign_same_length_b.anb",
+    "sha256": "6fca71346f6613c08888cf9369b90f19f99a87f0c0e9ec9840c03c5788943611",
+    "bytes": 243
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_15_early_return_same_shape_raised.anb",
+    "recovered": "verifier/p/r2v_15_early_return_same_shape_raised.anb",
+    "sha256": "690e3f3a9bedc4676472a448d80912cf7ff97c045a431d93ef44803d9dfde879",
+    "bytes": 215
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_15_early_return_same_shape_raised_b.anb",
+    "recovered": "verifier/p/r2v_15_early_return_same_shape_raised_b.anb",
+    "sha256": "e5271727d81cff15026aa95db807a92f504a1573d9828308c3fb558170b2b963",
+    "bytes": 219
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_16_enum_variant_literal_order_join_over_refusal.anb",
+    "recovered": "verifier/p/r2v_16_enum_variant_literal_order_join_over_refusal.anb",
+    "sha256": "6be16ea3076d2ee80eb3616b1b47a19a66fbea10f2154eabcb91115ef8d7daea",
+    "bytes": 348
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_16_enum_variant_literal_order_join_over_refusal_b.anb",
+    "recovered": "verifier/p/r2v_16_enum_variant_literal_order_join_over_refusal_b.anb",
+    "sha256": "67e9f7cb8ecee1eed5cd4d41379fcb116d327ab8cdb2e6a9dc7960c037843639",
+    "bytes": 352
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_17_computed_key_rewrite_of_existing_keys.anb",
+    "recovered": "verifier/p/r2v_17_computed_key_rewrite_of_existing_keys.anb",
+    "sha256": "f6e8bd42a4e120a94e5085c6d337cea54da65443a5e0a0676f2bf9de60502ff2",
+    "bytes": 225
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_17_computed_key_rewrite_of_existing_keys_b.anb",
+    "recovered": "verifier/p/r2v_17_computed_key_rewrite_of_existing_keys_b.anb",
+    "sha256": "d07bf4859c4a41e9294f9bd029428fa055d633842f1162bdda34ae47467cb1f9",
+    "bytes": 229
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2/verify/p/r2v_18_shared_list_dag_exponential_memory.anb",
+    "recovered": "verifier/p/r2v_18_shared_list_dag_exponential_memory.anb",
+    "sha256": "f8eaf052bbfac434e695b40688e70200bada77199e2910316e2fd1521c6f9b5d",
+    "bytes": 713
+  },
+  {
+    "source": "/home/sicarii/.cache/anubis-review-esc/ifc2-r2",
+    "recovered": "original/probe-text-evidence.tar.gz",
+    "sha256": "e79d893f6bae56a4941d66f8492fbaf37ca476ce6d09da3042d2fe32c03a8d23",
+    "bytes": 2767493,
+    "selection": "archive-manifest.json"
+  }
+]

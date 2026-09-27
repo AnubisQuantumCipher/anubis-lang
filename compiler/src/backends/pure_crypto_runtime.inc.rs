@@ -311,11 +311,11 @@ fn anubis_hkdf_sha256(
     // overflow at the call site is caught rather than laundered.
     let n_raw = length.as_i64();
     if n_raw < 1 {
-        panic!("ANUBIS_CRYPTO_HKDF_LENGTH: L must be >= 1 (RFC 5869), got {}", n_raw);
+        panic!("ANUBIS_CRYPTO_HKDF_LENGTH: L must be >= 1 (RFC 5869)");
     }
     let n = n_raw as usize;
     if n > 255 * 32 {
-        panic!("ANUBIS_CRYPTO_HKDF_TOO_LONG: requested {} bytes (max {})", n, 255 * 32);
+        panic!("ANUBIS_CRYPTO_HKDF_TOO_LONG: requested more than {} bytes", 255 * 32);
     }
     let prk = anubis_hmac_sha256_raw(&salt_b, &ikm_b);
     let mut okm = Vec::with_capacity(n);
@@ -359,7 +359,7 @@ fn anubis_random_bytes(n: AnubisValue) -> AnubisValue {
     use std::io::Read;
     let n_raw = n.as_i64();
     if n_raw < 0 {
-        panic!("ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH: byte count must be non-negative, got {}", n_raw);
+        panic!("ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH: byte count must be non-negative");
     }
     let n = n_raw as usize;
     if n > 1 << 20 {

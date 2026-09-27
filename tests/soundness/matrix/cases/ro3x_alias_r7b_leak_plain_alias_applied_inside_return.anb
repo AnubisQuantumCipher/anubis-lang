@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pr(x) {
+    print(x);
+    return 0;
+}
+fn zero(x) {
+    return 0;
+}
+fn appf(fs, x) {
+    let f = fs[0];
+    return f(x);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let z = appf([pr, zero], p.k);
+}

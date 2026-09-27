@@ -1,0 +1,14 @@
+struct Row { k: secret<i64>, n: i64 }
+
+fn emit(s: secret<i64>) {
+    let row = Row { k: s, n: 0 };
+    if s > 0 {
+        let unused = match 0 {
+            1 => { row.n = 1; 0 },
+            _ => 0,
+        };
+    }
+    println(1);
+}
+
+fn main() { emit(42); }

@@ -1,0 +1,51 @@
+{
+  "baseline_compiler_sha256": "16705b9df6e971b31c0b1cf2a3a69a057a66d790d392951341cb53e718dddf35",
+  "baseline_paired_runs": [
+    {
+      "generated_native_sha256": "fcb3b1c9df1c659736128e2aedf3945ecb702a21556ed5859b188241695437e3",
+      "label": "secret-42",
+      "log_sha256": "486f6cf29cf12a507b2e49b1c3b3e8cf9a9320456985822c5bde8287049c65ca",
+      "observed_exit_code": 0,
+      "public_stdout": "1\n2\n1\n3\ndone\n",
+      "source_sha256": "8b229d70075d1533636aaeebf5afdb34f3f70a90bafcbe185026edb61ef86a4c"
+    },
+    {
+      "generated_native_sha256": "5ed712d130234b2b184b28b1ff058aced775188e1670567e72986c222596ae4f",
+      "label": "secret-0",
+      "log_sha256": "c9802da21f2b0400fffd68d6a6483b200d19ed8859ff6ade748a985e47c90486",
+      "observed_exit_code": 0,
+      "public_stdout": "1\n2\n2\n3\ndone\n",
+      "source_sha256": "44641a03ba0277ae6b963325e00452ac13ef1eb40240e5cb8ac8f63941da4f6b"
+    }
+  ],
+  "candidate_compiler_sha256": "06ab383684f3e953c613748938719fade05f573176457cb8133071a4e580df51",
+  "candidate_refusal": {
+    "diagnostic_code": "ANUBIS_SECRET_EXFILTRATION",
+    "log_sha256": "088673cfa4bccbb381c97c71630166e90581039e052126648698da9a2d96fb4a",
+    "native_artifact_emitted": false,
+    "observed_exit_code": 1,
+    "source_sha256": "8b229d70075d1533636aaeebf5afdb34f3f70a90bafcbe185026edb61ef86a4c"
+  },
+  "candidate_valid_runs": [
+    {
+      "generated_native_sha256": "4e53fbc8ddfe82b814668123d5dbbdf28d1486dd9bbcf77b7975124753407c2b",
+      "log_sha256": "58e804cb510d31c8d451c5fe4e85f5654a5de40c7d9a9db6927b32a0b155b212",
+      "observed_exit_code": 0,
+      "operator": "min",
+      "public_stdout": "1\n2\n1\n3\n"
+    },
+    {
+      "generated_native_sha256": "0671d6b52818a4de348c41bd278cd5b05fa0379a1bef889362512788057e2f99",
+      "log_sha256": "94448292028915fe153cb937d2d89ee7520b2d3b94a0ea3617d3b4499282384a",
+      "observed_exit_code": 0,
+      "operator": "max",
+      "public_stdout": "1\n2\n2\n3\n"
+    }
+  ],
+  "limits": [
+    "Finite two-secret witness, not a universal noninterference theorem.",
+    "Normal Safe `anubis run` was used; no --no-verify bypass.",
+    "Generated native artifacts are local Rust-backend images; this is not a lowering proof."
+  ],
+  "schema": "anubis-local-minmax-runtime-witness/1"
+}

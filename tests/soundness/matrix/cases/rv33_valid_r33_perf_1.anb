@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { n: i64 }
+
+fn f1(n, a, b, c, d) { if n == 0 { return d; } let x = f1(n - 1, b, c, d, a); let y = f2(n - 1, c, d, a, b); return [x, y]; }
+fn f2(n, a, b, c, d) { if n == 0 { return d; } let x = f2(n - 1, b, c, d, a); let y = f3(n - 1, c, d, a, b); return [x, y]; }
+fn f3(n, a, b, c, d) { if n == 0 { return d; } let x = f3(n - 1, b, c, d, a); let y = f4(n - 1, c, d, a, b); return [x, y]; }
+fn f4(n, a, b, c, d) { if n == 0 { return d; } let x = f4(n - 1, b, c, d, a); let y = f5(n - 1, c, d, a, b); return [x, y]; }
+fn f5(n, a, b, c, d) { if n == 0 { return d; } let x = f5(n - 1, b, c, d, a); let y = f6(n - 1, c, d, a, b); return [x, y]; }
+fn f6(n, a, b, c, d) { if n == 0 { return d; } let x = f6(n - 1, b, c, d, a); let y = f1(n - 1, c, d, a, b); return [x, y]; }
+fn main() { let p = S { k: 42, pub_n: 3 }; let r = f1(3, p, 0, 1, 2); print(len(r)); }

@@ -1,0 +1,13 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn describe(xs) {
+    let line = str(xs[0]);
+    let summary = "first: " + line;
+    let line = len(xs);
+    return summary + " (" + str(line) + " accounts)";
+}
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }];
+    print(describe(accts));
+}

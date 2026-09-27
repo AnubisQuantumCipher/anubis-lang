@@ -1,0 +1,193 @@
+{
+  "run": 36220630178,
+  "source": "f48a5c9aa63125b9a069c4837bd42693a95a812c",
+  "scope": "Downloaded receipt/log integrity, not successful hosted gate validation",
+  "results": [
+    {
+      "arch": "aarch64",
+      "source": "f48a5c9aa63125b9a069c4837bd42693a95a812c",
+      "verdict": "FAIL",
+      "command_count": 2,
+      "failed_commands": [
+        {
+          "name": "build-cli",
+          "return_code": -9,
+          "signal": 9,
+          "timed_out": true,
+          "elapsed_seconds": 3600.019051544
+        }
+      ],
+      "memory_events_before": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "memory_events_after": null,
+      "launcher": {
+        "exit_code": 1,
+        "launch_exit_code": "1",
+        "unit": "anubis-linux-native-36220630178-1-ARM64.service",
+        "load_state_after": "not-found",
+        "query_exit_code": 0,
+        "cleanup_required": false,
+        "stop_exit_code": "not-needed",
+        "unit_removed": true
+      },
+      "checked_command_logs": [
+        {
+          "path": "push-36220630178/linux-native-ordinary-aarch64/harness-controls.stderr.log",
+          "sha256": "2d553300022677f4de1b9068be409f98ec26e14e4897bb9cd0ac1e9277e8054e"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-aarch64/harness-controls.stdout.log",
+          "sha256": "a3178a2443b413076182fe27aedb1ae630896c6103a446ee0780c1b1f3049dca"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-aarch64/build-cli.stderr.log",
+          "sha256": "13f9111658413823e5864b991fdbcb74981356a845dbd687872a82b5ee3bf504"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-aarch64/build-cli.stdout.log",
+          "sha256": "e6b2a3140791baf4ecdb517efcf895bcc016d2c771a717493518174a7a1ba6cd"
+        }
+      ]
+    },
+    {
+      "arch": "x86_64",
+      "source": "f48a5c9aa63125b9a069c4837bd42693a95a812c",
+      "verdict": "FAIL",
+      "command_count": 15,
+      "failed_commands": [],
+      "memory_events_before": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "memory_events_after": "low 0\nhigh 0\nmax 337\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "launcher": {
+        "exit_code": 1,
+        "launch_exit_code": "1",
+        "unit": "anubis-linux-native-36220630178-1-X64.service",
+        "load_state_after": "not-found",
+        "query_exit_code": 0,
+        "cleanup_required": false,
+        "stop_exit_code": "not-needed",
+        "unit_removed": true
+      },
+      "checked_command_logs": [
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/harness-controls.stderr.log",
+          "sha256": "cca73bb78c8c59be52380446f73fbf20b4bb933606134d668aec82fdb8efba30"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/harness-controls.stdout.log",
+          "sha256": "a3178a2443b413076182fe27aedb1ae630896c6103a446ee0780c1b1f3049dca"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/build-cli.stderr.log",
+          "sha256": "a0dbebf98b2ab1d5c13915a0049d89b90a031dd5c11161794e22d537e93c67ff"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/build-cli.stdout.log",
+          "sha256": "57a4eb95c80993f2153e45eb7ca0aa0b4220a6d31547b4262857889192f31039"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/compile-anubis-compiler.stderr.log",
+          "sha256": "0c76c52f39dab3d1eb7be6444e9d0506d13089bee38c4058e1c445b110c9adcb"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/compile-anubis-compiler.stdout.log",
+          "sha256": "e693033e17b29f84a399bc10a7c9a51ac827def5d3828117a5933cbb90375fe1"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/compile-anubis.stderr.log",
+          "sha256": "d0fe9776a0a9c2d6b75e172937f837d383a8b8ca97e5ff7ad4aff4a4c7b7d0e3"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/compile-anubis.stdout.log",
+          "sha256": "a5b09a5b74cdd006c9992ea878d7824bccf1f4a63295cf8dd2a67d38cbd5370a"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_emits_declared_row_count.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_emits_declared_row_count.stdout.log",
+          "sha256": "e949010592ed2ec2212345d1584c85eb14c637dc17e4b77ac4d1f61ac2dd450e"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_row_shape_is_tsv_with_op_prefix.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_row_shape_is_tsv_with_op_prefix.stdout.log",
+          "sha256": "b272d3a6691b4477838508b7547c5c8444089b200c8ebb3e6e788cdd411867c2"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_keys_are_unique.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_keys_are_unique.stdout.log",
+          "sha256": "7250f97962cf380955ddd6b6f11f8d72873f5e24552e77e935a607baf13e99e0"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_emit_to_env_path.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-security_label_correspondence_observer-public_observer_emit_to_env_path.stdout.log",
+          "sha256": "19184aa826da87be7330deb55a5c6bfcb73fad981695e63afb119c3b48cfd1d5"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-closure_names_function_value-closure_returning_a_user_function_compiles_and_runs.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-closure_names_function_value-closure_returning_a_user_function_compiles_and_runs.stdout.log",
+          "sha256": "e26c35756e64e8e5be536f6c7ac2ab08d050aacd49fdafa94749663f9f3b82e6"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-closure_names_function_value-closure_returning_a_builtin_compiles_and_runs.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-closure_names_function_value-closure_returning_a_builtin_compiles_and_runs.stdout.log",
+          "sha256": "ce1d7b624029b6c6aa0b35271edbf91442bd72546318e5b9fc0ed2852dbce900"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-closure_names_function_value-a_local_shadowing_a_builtin_is_still_captured.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-closure_names_function_value-a_local_shadowing_a_builtin_is_still_captured.stdout.log",
+          "sha256": "a19bdd821690cba468394ee6a0c1a345fc24687cfca34dff7a60e5630568e62d"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-struct_string_index_reads_named_field-string_key_reads_the_named_field_not_the_first.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-struct_string_index_reads_named_field-string_key_reads_the_named_field_not_the_first.stdout.log",
+          "sha256": "df927e8921a3fa308c0c47d128bc80243ede77e6ee9bad8c903f9fed6c7608f4"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-struct_string_index_reads_named_field-public_string_key_does_not_release_a_secret_first_field.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-struct_string_index_reads_named_field-public_string_key_does_not_release_a_secret_first_field.stdout.log",
+          "sha256": "67a3c683d20843abee81313cbf37ac492c57c5a97151b0d2ec0a06d6a3da5c37"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-run_input_json-run_input_json_feeds_proof_inputs_to_native_run.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-run_input_json-run_input_json_feeds_proof_inputs_to_native_run.stdout.log",
+          "sha256": "cbfcd3874e1fdac1b20f4cb8d29c9f345f73926c5136d930661fad9c7aa3a14d"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-evidence_source_binding-manifestless_build_evidence_binds_only_the_requested_program.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "push-36220630178/linux-native-ordinary-x86_64/test-evidence_source_binding-manifestless_build_evidence_binds_only_the_requested_program.stdout.log",
+          "sha256": "b6ff96f73e1c422e2437b3f4b1106f3c91e71280bab64b0c0b7026673974d2a3"
+        }
+      ]
+    }
+  ]
+}

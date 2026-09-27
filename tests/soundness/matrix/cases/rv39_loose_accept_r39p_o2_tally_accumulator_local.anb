@@ -1,0 +1,21 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Tag { label: string }
+impl Tag { fn summary(self) -> string { return "${self}"; } }
+struct Inv { owner: S, count: i64, total: i64 }
+impl Inv {
+    fn add(self, n: i64) -> Inv { self.count = self.count + 1; self.total = self.total + n; return self; }
+    fn summary(self) -> string { return "${self.count} items, ${self.total}"; }
+}
+struct Report { inv: Inv, title: string }
+impl Report { fn summary(self) -> string { return "${self.title}: ${self.inv.count}"; } }
+impl Inv { fn report(self, t: string) -> Report { return Report { inv: self, title: t }; } }
+fn tally(p: S, ns) -> Inv {
+    let mut inv = Inv { owner: p, count: 0, total: 0 };
+    for n in ns { inv = inv.add(n); }
+    return inv;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let inv = tally(p, [4, 5]);
+    println(inv.summary());
+}

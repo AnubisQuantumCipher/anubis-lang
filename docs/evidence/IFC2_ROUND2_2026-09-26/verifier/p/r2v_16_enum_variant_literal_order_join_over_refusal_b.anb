@@ -1,0 +1,18 @@
+enum Msg {
+    Login { user: str, pin: secret<i64> },
+}
+fn make(c, u, p) {
+    if c {
+        Msg::Login { user: u, pin: p }
+    } else {
+        Msg::Login { pin: p, user: u }
+    }
+}
+fn main() {
+    let k = 123456;
+    let c = len(args()) > 100;
+    let m = make(c, "bob", k);
+    match m {
+        Msg::Login { user, pin } => println(user),
+    }
+}

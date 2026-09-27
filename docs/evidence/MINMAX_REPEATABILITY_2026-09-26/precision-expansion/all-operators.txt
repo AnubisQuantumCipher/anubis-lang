@@ -1,0 +1,18 @@
+/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_comparison.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")
+/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_helper.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")
+/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_max_by_stable_negation.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")
+/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_comparison.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")
+/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_helper.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")
+/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/tests/soundness/matrix/cases/ifc2r2_minmax_min_by_stable_negation.anb
+IFC2: [("ANUBIS_SECRET_EXFILTRATION", "in `<closure>`: secret data reaches `println`")]
+SAFE: Err("ANUBIS_SECRET_EXFILTRATION: [ifc2] in `<closure>`: secret data reaches `println`")

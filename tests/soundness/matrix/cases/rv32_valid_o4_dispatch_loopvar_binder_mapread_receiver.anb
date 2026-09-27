@@ -1,0 +1,25 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Console { prefix: string }
+impl Console {
+    fn log(self, msg) {
+        println(self.prefix + str(msg));
+        return 0;
+    }
+}
+struct Ledger { total: i64 }
+impl Ledger {
+    fn log(self, e) {
+        return Ledger { total: self.total + e.pub_n };
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let books = [Ledger { total: 10 }, Ledger { total: 20 }];
+    let mut t = 0;
+    for b in books {
+        let l = b.log(p);
+        t = t + l.total;
+    }
+    let c = Console { prefix: "total=" };
+    c.log(t);
+}

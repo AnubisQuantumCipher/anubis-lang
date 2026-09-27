@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn pa(g, n) { if n > 0 { pb(g, n - 1); } }
+fn pb(g, n) { g(-1); if n > 0 { pa(g, n - 1); } }
+fn main() { pa(f, 3); }

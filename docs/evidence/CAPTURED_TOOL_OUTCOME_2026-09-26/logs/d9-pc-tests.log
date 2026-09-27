@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 4 tests
+test middle::pc_branch_binding_identity_tests::old_root_scan_mismatch_invalidates_whole_certificate ... ok
+test middle::pc_branch_binding_identity_tests::unsupported_egress_embedded_write_or_guard_write_retains_old_refusal ... ok
+test middle::pc_branch_binding_identity_tests::explicit_protected_shadow_has_its_own_consumed_site ... ok
+test middle::pc_branch_binding_identity_tests::public_or_pre_shadow_or_other_arm_write_is_not_filtered ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1061 filtered out; finished in 0.00s

@@ -1,0 +1,20 @@
+fn f(n) requires(n >= 3) {
+    println(n);
+}
+fn go(y) {
+    let mut x = y;
+    let mut i = 0;
+    while i < 2 {
+        i = i + 1;
+        if i > 5 {
+            x = 3;
+            break;
+        }
+        if x > 2 {
+            f(x);
+        }
+    }
+}
+fn main() {
+    go(2.5);
+}

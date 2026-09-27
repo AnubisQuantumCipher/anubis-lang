@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn one(x) { return 1; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    for g in [one, zero] {
+        print(g(p.k));
+    }
+}

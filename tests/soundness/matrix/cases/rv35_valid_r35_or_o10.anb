@@ -1,0 +1,31 @@
+struct Account { k: secret<i64>, name: str, bal: i64 }
+struct Report { title: str, lines: i64 }
+struct Ledger { acct: Account, entries: list<i64> }
+struct Book { ledger: Ledger, pages: i64 }
+impl Report {
+    fn show(self) -> str {
+        return "${self}";
+    }
+}
+impl Ledger {
+    fn show(self) -> str {
+        return "ledger of ${self.acct.name}: ${len(self.entries)} entries";
+    }
+}
+impl Book {
+    fn turn(self) -> Book {
+        return Book { ledger: self.ledger, pages: self.pages + 1 };
+    }
+}
+fn main() {
+    let a = Account { k: 42, name: "alice", bal: 10 };
+    let r = Report { title: "daily", lines: 2 };
+    println(r.show());
+    let mut book = Book { ledger: Ledger { acct: a, entries: [1, 2] }, pages: 0 };
+    for i in 0..3 {
+        book = book.turn();
+    }
+    let l2: Ledger = book.ledger;
+    println(l2.show());
+    println(book.pages);
+}

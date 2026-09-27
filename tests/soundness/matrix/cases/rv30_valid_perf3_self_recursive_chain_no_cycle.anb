@@ -1,0 +1,106 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn g0(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g0(acc, [x], d - 1);
+    let b = g1([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g1(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g1(acc, [x], d - 1);
+    let b = g2([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g2(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g2(acc, [x], d - 1);
+    let b = g3([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g3(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g3(acc, [x], d - 1);
+    let b = g4([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g4(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g4(acc, [x], d - 1);
+    let b = g5([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g5(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g5(acc, [x], d - 1);
+    let b = g6([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g6(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g6(acc, [x], d - 1);
+    let b = g7([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g7(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g7(acc, [x], d - 1);
+    let b = g8([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g8(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g8(acc, [x], d - 1);
+    let b = g9([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g9(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g9(acc, [x], d - 1);
+    let b = g10([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g10(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g10(acc, [x], d - 1);
+    let b = g11([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g11(acc, x, d) {
+    if d <= 0 {
+        return acc;
+    }
+    let a = g11(acc, [x], d - 1);
+    let b = g12([acc, x], x, d - 1);
+    return [a, b];
+}
+fn g12(acc, x, d) {
+    return acc;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let r = g0([], p, 3);
+    print(len(r));
+}

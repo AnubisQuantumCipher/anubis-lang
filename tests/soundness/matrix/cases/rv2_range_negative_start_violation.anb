@@ -1,0 +1,8 @@
+fn f(n: i64) requires(n > -2) {
+    println(n);
+}
+fn main() {
+    for i in -2..1 {
+        f(i);
+    }
+}

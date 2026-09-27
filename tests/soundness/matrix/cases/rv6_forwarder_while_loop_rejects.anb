@@ -1,0 +1,21 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Cluster A2 (#6). NOT merely unmodeled — actively MIS-detected, which is the worse failure mode.
+//
+// `tail_values` had no `Stmt::While` arm, so `body.last()` fell to the catch-all
+// `Some(_) => out.push(zero_literal())`. That produced `tv = [0]` with `tv.len() == 1`, and the
+// forwarder detection's fast path takes `tv[0]` whenever `tv.len() == 1` WITHOUT inspecting what it
+// is. So `fwd_loop` was recorded as returning the constant `0` — and that wrong answer SUPPRESSED the
+// `collect_returns_in_stmt` fallback which would have found the real `return f`. A synthesized value
+// masquerading as the sole real one is a fail-open that looks like a decision.
+fn fwd_loop(cond, f) {
+    while cond {
+        return f;
+    }
+}
+fn main() {
+    let k = secret_source("k");
+    let secret_closure = |x| print(k);
+    let leaked = fwd_loop(true, secret_closure);
+    leaked(0);
+}

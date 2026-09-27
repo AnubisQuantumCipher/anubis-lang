@@ -1,0 +1,37 @@
+{
+  "status": "PASS",
+  "scope": "Recovery integrity only; no compiler or runtime execution",
+  "errors": [],
+  "canonical_source_count": 75,
+  "archive_member_count": 3793,
+  "archive_rust_source_members": [
+    "control/src/builtins.rs",
+    "control/src/eval.rs",
+    "control/src/frontend_mod.rs",
+    "control/src/mod.rs",
+    "control/src/run.rs",
+    "control/src/value.rs",
+    "functions/src-v8e/builtins.rs",
+    "functions/src-v8e/eval.rs",
+    "functions/src-v8e/mod.rs",
+    "functions/src-v8e/run.rs",
+    "functions/src-v8e/value.rs",
+    "parity/src_v8e/audited_crypto_runtime.inc.rs",
+    "parity/src_v8e/builtins.rs",
+    "parity/src_v8e/eval.rs",
+    "parity/src_v8e/mod.rs",
+    "parity/src_v8e/run.rs",
+    "parity/src_v8e/value.rs",
+    "precision/src_v8e/builtins.rs",
+    "precision/src_v8e/eval.rs",
+    "precision/src_v8e/mod.rs",
+    "precision/src_v8e/run.rs",
+    "precision/src_v8e/value.rs"
+  ],
+  "directory_regular_file_bytes": 5981239,
+  "archive_bytes": 2767493,
+  "credential_pattern_scan": {
+    "matched_paths": [],
+    "scope": "PEM private-key headers and common GitHub/OpenAI/AWS access-key token forms; not a proof against arbitrary secret material"
+  }
+}

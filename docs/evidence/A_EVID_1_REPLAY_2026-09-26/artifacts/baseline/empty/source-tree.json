@@ -1,0 +1,57 @@
+[
+  {
+    "path": "source.anubis",
+    "sha256": "4d6ab161876804e1375310d76f5b9d399282716fe26c8eb95dce6e9913aa877b",
+    "bytes": 29
+  },
+  {
+    "path": "build.log",
+    "sha256": "d21e32c59525a827ce7f460ec222322e1c5c285a59f217bbf4d6d2495c2b0da6",
+    "bytes": 104
+  },
+  {
+    "path": "hir.json",
+    "sha256": "c604a4ee9bd0e7f861dd89f8e8d600842de9a74bb9eb84a26f36e5af3c663623",
+    "bytes": 499
+  },
+  {
+    "path": "mir.json",
+    "sha256": "b64f7f607b5a2d1840e9fe47fd7d6932d25526da6c34af6c6b05e67b8b40d679",
+    "bytes": 99
+  },
+  {
+    "path": "taint-traces.json",
+    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "bytes": 2
+  },
+  {
+    "path": "solver.json",
+    "sha256": "2751db112fd94a2ef06c170271ebc5f587fd169e3f3e2b3794c92b011b6d6895",
+    "bytes": 158
+  },
+  {
+    "path": "mono_specializations.json",
+    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "bytes": 2
+  },
+  {
+    "path": "environment.json",
+    "sha256": "237ef3197f5500840ff22de64d232dfd20d09e41deda3eb1ee3cfd7b233d03cc",
+    "bytes": 215
+  },
+  {
+    "path": "checks.sarif",
+    "sha256": "fda06e035897c896813dfd542345adc6ad9d9b1ddd35849b9e9a9efcba9c0b0c",
+    "bytes": 1312
+  },
+  {
+    "path": "bounty-report.md",
+    "sha256": "6d64dbf6dc7b71518f4a088b339ba16f31f71275580a8f3b8376abd0408785e9",
+    "bytes": 512
+  },
+  {
+    "path": "validate.sh",
+    "sha256": "b15811281e7830a36f974ba182b99f274b30e9e8bc4d46e5302d9efa3b35c7cf",
+    "bytes": 3354
+  }
+]

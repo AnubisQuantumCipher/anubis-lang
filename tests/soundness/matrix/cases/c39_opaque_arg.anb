@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn safe(x: i64) -> i64 { return x; }
+fn opaque() -> i64 { return 7; }
+fn app(g, y) { g(y); }
+fn main() { app(f, opaque()); }

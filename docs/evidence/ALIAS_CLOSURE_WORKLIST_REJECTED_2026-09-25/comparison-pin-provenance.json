@@ -1,0 +1,18 @@
+{
+  "status": "inherited source associations, not fresh comparison-pin build attestations",
+  "baseline_history_associations": [
+    [
+      "anubis-ord3b",
+      "e7b56507",
+      "90a21f28c49bd044202698ba889f72bb4d9757b721671b194bf4c7a3b786c855"
+    ]
+  ],
+  "history_path": "tests/soundness/matrix/history.tsv",
+  "history_sha256": "1b8313c3d1a398734acc40b170fa7ae5ccee884308e619a721bd063262c989d9",
+  "historical_summary": "inherited-ord3b-verification-summary.log",
+  "alias_source_manifest": "../ALIAS_CANDIDATE_VERIFY_2026-09-25/source-manifest.json",
+  "non_claims": [
+    "comparison pin builds were not reproduced in this experiment",
+    "not release-grade source-to-binary attestations"
+  ]
+}

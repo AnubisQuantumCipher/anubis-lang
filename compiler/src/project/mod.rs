@@ -19,6 +19,75 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The language edition a package is written against.
+///
+/// SemVer versions the *implementation*; an edition versions the *language*. The
+/// distinction is what lets a language change its mind without breaking code
+/// that already exists: a package keeps declaring the edition it was written
+/// for, the compiler keeps supporting every edition it has ever shipped, and a
+/// later edition is free to reject what an earlier one accepted. Rust's editions
+/// are the model.
+///
+/// Two rules here are chosen deliberately and are the whole point:
+///
+/// 1. **An unrecognised edition is refused, never assumed.** A compiler that
+///    meets `edition = "2031"` does not know what that means, so compiling it
+///    under today's rules would silently give the program semantics its author
+///    never asked for. Refusing is the only safe answer, and it is what makes it
+///    possible to add a future edition without endangering anything built now.
+///
+/// 2. **A missing edition is a warning now and an error at 1.0.** Rust defaulted
+///    editionless manifests to 2015 and carries that default permanently. Anubis
+///    can still avoid that debt because essentially no third-party code exists
+///    yet; after 1.0 ships it becomes impossible, which is why the decision
+///    belongs here rather than later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Edition {
+    /// The first edition. The 1.0 frozen surface.
+    E2026,
+}
+
+impl Edition {
+    /// The edition assumed when a manifest declares none. Removed at 1.0, when
+    /// the key becomes mandatory — see [`Edition`].
+    pub const DEFAULT: Edition = Edition::E2026;
+
+    /// Every edition this compiler understands, oldest first.
+    pub const ALL: &'static [Edition] = &[Edition::E2026];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Edition::E2026 => "2026",
+        }
+    }
+
+    /// Parse a declared edition. Unknown values are refused with the reason and
+    /// the list of editions this compiler actually supports, so the failure tells
+    /// the reader whether to upgrade the compiler or fix the manifest.
+    pub fn parse(text: &str) -> Result<Edition, String> {
+        match text.trim() {
+            "2026" => Ok(Edition::E2026),
+            other => Err(format!(
+                "ANUBIS_EDITION_UNKNOWN: `edition = \"{other}\"` is not an edition this compiler \
+                 understands (supported: {}). A newer edition is refused rather than compiled \
+                 under older rules, because that would give the program semantics its author did \
+                 not ask for. Upgrade the compiler, or declare a supported edition.",
+                Edition::ALL
+                    .iter()
+                    .map(|e| e.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Edition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The parsed `Anubis.toml`. Every section defaults, so both an absent manifest and a
 /// backend-only manifest (today's `Anubis.toml.example`) deserialize cleanly.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -37,6 +106,11 @@ pub struct PackageMeta {
     pub version: String,
     pub description: String,
     pub authors: Vec<String>,
+    /// The declared language edition, verbatim. Validated by
+    /// [`AnubisManifest::edition`]; kept as a string here so an unknown value
+    /// produces a named refusal rather than a serde type error.
+    #[serde(default)]
+    pub edition: Option<String>,
     /// Project-local trusted dependency signers (`[package.trust] signers = [...]`).
     #[serde(default)]
     pub trust: PackageTrust,
@@ -111,7 +185,30 @@ pub const MANIFEST_FILENAME: &str = "Anubis.toml";
 impl AnubisManifest {
     /// Parse manifest text. A malformed manifest is a hard, fail-closed error.
     pub fn parse(text: &str) -> Result<AnubisManifest, String> {
-        toml::from_str(text).map_err(|e| format!("ANUBIS_MANIFEST_PARSE: {e}"))
+        let manifest: AnubisManifest =
+            toml::from_str(text).map_err(|e| format!("ANUBIS_MANIFEST_PARSE: {e}"))?;
+        // Validate eagerly: a manifest naming an edition this compiler does not
+        // understand must fail here, not at some later point where the program
+        // has already been compiled under the wrong rules.
+        manifest.edition()?;
+        Ok(manifest)
+    }
+
+    /// The resolved language edition.
+    ///
+    /// An unrecognised edition is an error. A missing one resolves to
+    /// [`Edition::DEFAULT`] today and becomes an error at 1.0; use
+    /// [`AnubisManifest::edition_is_declared`] to warn about it in the meantime.
+    pub fn edition(&self) -> Result<Edition, String> {
+        match self.package.edition.as_deref() {
+            Some(text) => Edition::parse(text),
+            None => Ok(Edition::DEFAULT),
+        }
+    }
+
+    /// Whether the manifest states its edition rather than inheriting the default.
+    pub fn edition_is_declared(&self) -> bool {
+        self.package.edition.is_some()
     }
 
     /// Load and parse the manifest at `path`.
@@ -285,5 +382,49 @@ reference_path = "/path/to/metal-hybrid-prover"
         assert!(layout.manifest_path.is_none());
         assert_eq!(layout.manifest, AnubisManifest::default());
         assert_eq!(layout.src_root, layout.root);
+    }
+
+    #[test]
+    fn an_edition_is_parsed_from_the_package_table() {
+        let m = AnubisManifest::parse("[package]\nname = \"x\"\nedition = \"2026\"\n").unwrap();
+        assert_eq!(m.edition().unwrap(), Edition::E2026);
+        assert!(m.edition_is_declared());
+    }
+
+    #[test]
+    fn an_unknown_edition_is_refused_not_assumed() {
+        // The load-bearing rule: a compiler that does not know an edition must
+        // refuse it, because compiling it under today's rules would give the
+        // program semantics its author never asked for.
+        let err = AnubisManifest::parse("[package]\nedition = \"2031\"\n").unwrap_err();
+        assert!(err.starts_with("ANUBIS_EDITION_UNKNOWN"), "got: {err}");
+        assert!(
+            err.contains("2026"),
+            "the refusal must name what IS supported: {err}"
+        );
+    }
+
+    #[test]
+    fn a_missing_edition_resolves_to_the_default_for_now() {
+        let m = AnubisManifest::parse("[package]\nname = \"x\"\n").unwrap();
+        assert_eq!(m.edition().unwrap(), Edition::DEFAULT);
+        assert!(!m.edition_is_declared(), "so a caller can warn about it");
+    }
+
+    #[test]
+    fn an_absent_manifest_still_has_an_edition() {
+        assert_eq!(
+            AnubisManifest::default().edition().unwrap(),
+            Edition::DEFAULT
+        );
+    }
+
+    #[test]
+    fn editions_are_ordered_oldest_first() {
+        // ALL is relied on for the "supported editions" message and for any
+        // future migration ordering, so its order is a property, not an accident.
+        let mut sorted = Edition::ALL.to_vec();
+        sorted.sort();
+        assert_eq!(sorted.as_slice(), Edition::ALL);
     }
 }

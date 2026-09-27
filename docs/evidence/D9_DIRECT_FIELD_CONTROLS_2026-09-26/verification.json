@@ -1,0 +1,84 @@
+{
+  "baseline_binary_sha256": "d5b452c21c2a92d39199a8e93b2a5e9d1fc642fbbda493f45ef88a871448bcfd",
+  "baseline_code_commit": "2683669c2ae87ceea66d19ebb0e6995578c289eb",
+  "baseline_harness_sha256": "43559790b27bd7ae5308af5f526004c34da639e57a451346b9abb1b43d23e1f3",
+  "docs_drift_registration": {
+    "derived": {
+      "lean": {
+        "command": "for each formal/**/*.lean: strip /- ... -/ block comments; count lines matching '^\\s*theorem '; modules = files with \u22651 such theorem",
+        "modules": 16,
+        "theorems": 199
+      },
+      "quantities": {
+        "builtins": {
+          "command": "LIVE five-function union in compiler/src/backends/run.rs: emit_builtin_call (match arms + matches!), is_builtin_name, is_proof_input_builtin, is_poc_kit_builtin, is_non_run_builtin (surface names only \u2014 not format! helper ids)",
+          "value": 213
+        },
+        "language_fixtures": {
+          "command": "find tests/fixtures/language_core -name '*.anb' | wc -l",
+          "value": 271
+        },
+        "lean_modules": {
+          "command": "for each formal/**/*.lean: strip /- ... -/ block comments; count lines matching '^\\s*theorem '; modules = files with \u22651 such theorem",
+          "value": 16
+        },
+        "lean_theorems": {
+          "command": "for each formal/**/*.lean: strip /- ... -/ block comments; count lines matching '^\\s*theorem '; modules = files with \u22651 such theorem",
+          "value": 199
+        },
+        "native_corpus": {
+          "command": "python3 scripts/lib/native_corpus_inventory.py --count",
+          "value": 968
+        },
+        "security_fixtures": {
+          "command": "find examples/security -name '*.anb' | wc -l",
+          "value": 356
+        },
+        "stdlib_doc_ok": {
+          "command": "ls tests/fixtures/stdlib/doc_ok/*.anb 2>/dev/null | wc -l",
+          "value": 23
+        },
+        "stdlib_failclosed": {
+          "command": "ls tests/fixtures/stdlib/*should_fail_closed.anb 2>/dev/null | wc -l",
+          "value": 104
+        },
+        "stdlib_modules": {
+          "command": "ls -1 compiler/stdlib/std/ | wc -l",
+          "value": 13
+        }
+      }
+    },
+    "failures": [],
+    "gate": "docs_drift",
+    "overall_verdict": "PASS",
+    "scan": {
+      "claim_guards_checked": 46416,
+      "failures": [],
+      "measured": {
+        "builtins": 213,
+        "doc_ok": 23,
+        "language": 271,
+        "lean_mod": 16,
+        "lean_th": 199,
+        "modules": 13,
+        "native": 968,
+        "security": 356,
+        "stdlib": 104
+      },
+      "scan_failures": 0,
+      "stamps_checked": 36
+    },
+    "scan_failures": 0,
+    "self_test_ok": true,
+    "self_test_requested": false,
+    "stamps_checked": 36
+  },
+  "fixture_commit": "59e4f1f94c4fd60d011b87eb6cb708fbcb84f4fa",
+  "independent_review_sha256": "540309bbdbc0816fee746e2d6396702b4626e0b54de01aabef6d82e8feef0347",
+  "inventory_sha256": "5d6a45903e728496c98d633747e3f46bcc374fa36fd3b8384ec4b2595101a26d",
+  "normalization": "Replace the local binary path with <immutable-pin>/basename and frozen control directory prefix with <frozen-controls>/. Preserve diagnostic text and values otherwise.",
+  "published_baseline_sha256": "ea111fdb35dd0707425c9c9e2659b28f6c65057f188b907d67657aaadb85ff16",
+  "raw_baseline_sha256": "32562aa426756b04cf84f5f7c9d7ac38967a60c997a871cdda47639935f384cd",
+  "schema": "anubis-d9-registration-receipt/1",
+  "scope": "Fixture registration and selected Safe checks only; no compiler implementation or aggregate matrix result."
+}

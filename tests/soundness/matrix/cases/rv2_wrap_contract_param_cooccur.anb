@@ -1,0 +1,10 @@
+fn g(a: i64) requires(a > 0) {
+    let mut i = 0;
+    while i < a {
+        println(a + 1);
+        i = i + 1;
+    }
+}
+fn main() {
+    g(9223372036854775807);
+}

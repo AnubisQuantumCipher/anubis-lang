@@ -1,0 +1,21 @@
+fn transform(xs, f) {
+    return map(xs, f);
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let a1 = transform([1], |x| x + 1);
+    let a2 = transform([1, 2], |x| x + 2);
+    let a3 = transform([1, 2, 3], |x| x + 3);
+    let a4 = transform([4], |x| x * 4);
+    let a5 = transform([5, 5], |x| x * 5);
+    let a6 = transform([6], |x| x - 6);
+    let a7 = transform([7, 7], |x| x - 7);
+    let a8 = transform([8], |x| x / 2);
+    let a9 = transform([9, 9], |x| x / 3);
+    let a10 = transform([10], |x| x * x);
+    let a11 = transform([11, 11], |x| x + x);
+    let a12 = transform([12], |x| 0 - x);
+    let masked = transform([1, 2], |x| x + s);
+    let doubled = transform([3, 4], |x| x * 2);
+    println(doubled);
+}

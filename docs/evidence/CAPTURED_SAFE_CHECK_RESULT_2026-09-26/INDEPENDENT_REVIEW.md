@@ -1,0 +1,9 @@
+# Post-application independent static review
+
+**GO for the corrected compiler-side diff, subject to lead-run final-source gates.** Reviewed the current files in `<reviewed checkout>` read-only. Frontend and middle source hashes still match the frozen v2 candidate; evidence and captured resolver differ from it only in the two test hunks below. I did not run git, tests, builds, or Research source.
+
+The removal of `@exploit(authorization: ...) @safe` from the overwritten-attribute loops is honest. The lexer drops `@` (`compiler/src/frontend/mod.rs:1620-1623`), while `parse_attributes` recognizes `exploit` only when the next token is an item keyword (`:2073-2089`). The old stacked/argument form fails parsing, so it could not witness a security-mode refusal. The new comments and loops are at `compiler/src/evidence/mod.rs:6021-6037` and `compiler/src/resolve/captured.rs:903-916`.
+
+The new parser-valid control `@exploit fn ... {}` is parsed and asserted to have stored Safe mode plus an unresolved Exploit elevator (`compiler/src/evidence/mod.rs:6039-6046`). The captured project control uses `assert_mode_elevator_refused` (`compiler/src/resolve/captured.rs:918-924`), whose body only captures, prepares, and calls `classify_safe_mode` (`:887-900`). That classifier checks intrinsic and surviving AST mode intent before typecheck/lowering (`:350-400`). The existing parsed `exploit {}` NonSafe control remains (`:859-884`). No test in these hunks executes or lowers Research/Exploit source.
+
+No new bypass or acceptance regression is apparent from these test-only changes. The final focused tests and Clippy must be rerun on these exact source bytes; an earlier in-flight result cannot witness the last edit. The prior review's separate public-status limitation remains: malformed solver streams carry a synthetic `FAIL` and need a distinct typed tool-error outcome before any CLI labels them disproved.

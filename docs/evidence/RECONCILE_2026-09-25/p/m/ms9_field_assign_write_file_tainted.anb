@@ -1,0 +1,2 @@
+struct Box { f: u64 }
+fn main() uses(io.read, fs.write) { let b = Box { f: 0 }; b.f = write_file; b.f("/home/sicarii/.cache/anubis-item21/reconcile/tmp/ms9_written.txt", input()); }

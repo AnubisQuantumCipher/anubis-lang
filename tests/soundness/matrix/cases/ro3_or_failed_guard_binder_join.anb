@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let x = 5;
+    match p.k {
+        x if (if true { let t = 0; false } else { false }) => { }
+        _ => { println(x); }
+    }
+}

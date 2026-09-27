@@ -1,0 +1,5 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct P { n: i64 }
+impl P { fn out(self, v) { print(v); } }
+fn show(s) { let o = P { n: 1 }; o.out(s); }
+fn main() { show(S { k: 42, pub_n: 1 }); }

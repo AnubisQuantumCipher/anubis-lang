@@ -1,0 +1,15 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn find_balance(accts, id) {
+    for a in accts {
+        if a.id == id {
+            return a.balance;
+        }
+    }
+    return -1;
+}
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }];
+    print(find_balance(accts, 2));
+}

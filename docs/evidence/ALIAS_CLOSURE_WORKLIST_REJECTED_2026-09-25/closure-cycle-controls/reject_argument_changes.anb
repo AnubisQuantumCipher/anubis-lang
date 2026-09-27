@@ -1,0 +1,16 @@
+// Proposed REJECT control: clean outer call reaches an inner secret argument.
+// A body-only cycle key must not skip the changed input state. Not executed.
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(p) {
+    let mut c = |z| print(z);
+    let mut i = 0;
+    while i < 2 {
+        c = |z| c(p.k);
+        i = i + 1;
+    }
+    c(p.pub_n);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    f(p);
+}

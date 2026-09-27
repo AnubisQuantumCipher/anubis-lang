@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show_pub(s) { return "n=${s.pub_n}"; }
+fn show_short(s) { return "S"; }
+fn show_tag(s) { return "tag"; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut fmt = show_pub;
+    for mode in ["short", "keep", "tag"] {
+        fmt = match mode {
+            "short" => show_short,
+            "tag" => { let t = show_tag; t },
+            _ => fmt,
+        };
+        println(fmt(p));
+    }
+}

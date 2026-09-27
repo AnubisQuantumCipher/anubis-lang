@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn w(q) {
+    let f = |x| q;
+    return map([1], identity(f));
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(w(p));
+}

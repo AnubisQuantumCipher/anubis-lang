@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Book { seed: secret<i64>, pages: list<map<string, S>>, idx: map<string, map<string, S>> }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let q = S { k: 7, pub_n: 1 };
+    let b = Book { seed: 99, pages: [{ "a": p }, { "b": q }], idx: { "x": { "y": p } } };
+    print(len(b.pages[0]));
+    print(b.pages[1]["b"].pub_n);
+    print(b.idx["x"]["y"].pub_n);
+}

@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(q) { print(q.pub_n); return 0; }
+fn zero(q) { return 0; }
+fn fwd(xs) { return apply(call, xs); }
+fn run(p, n) {
+    let z = call(fwd, [show, p]);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p, 5);
+}

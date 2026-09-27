@@ -15,6 +15,382 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
+**Local update 2026-09-27 — scoped IFC2 terminal, alias-lowering, and
+named proof-journal checker repairs; terminal family open.**
+At code commit `3b8d9bfe`, the [local terminal receipt](evidence/IFC2_TERMINAL_EGRESS_LOCAL_2026-09-27.md)
+records typed refusals for the registered secret-controlled builtin `panic`
+and `exit(status)` cases, with the frozen valid controls accepted. The first
+paired grader had an exact diagnostic-code typo; its failed receipt is retained
+and a corrected complete paired check is recorded separately. Independent
+final-diff review gave scoped checker-only GO. The later
+[alias-lowering receipt](evidence/IFC2_EXIT_ALIAS_ZERO_LOCAL_2026-09-27.md)
+records the structural repair for first-class zero-argument `exit`, its
+registered direct/taken-branch control, source-bound local build, unchanged
+checker acceptance, and retained selected terminal refusals. Native parity
+remains unobserved until an authorized disposable-guest witness. The later
+[proof-journal receipt](evidence/IFC2_PROOF_JOURNAL_PC_LOCAL_2026-09-27.md)
+records typed secret-path refusals and valid controls for supported named
+`u32`/`bool` commits. It separately records the tainted-value policy flip,
+the older proof-bool controls, and the missing guest witness. Other
+proof-journal boundaries and device-path file egress remain open. The full
+matrix cannot be counted as a compliant Linux-VM gate here, and no
+terminal-family, product, or trust-chain completion is claimed.
+
+**UPDATE 2026-09-26 — value-position `if let` witnesses registered.**
+The archived `mi1`, `mi2`, `mi6` and valid `mi7` sources are copied unchanged
+into the matrix by `f344987d`, with a [selected-check receipt](evidence/M_IFLET_EXPR_REGISTRATION_2026-09-26/README.md).
+The current negative checks are typed `UNDECIDED` and the valid twin passes.
+These are no longer unregistered witnesses or current silent accepts on that
+pin, but M-IFLET-EXPR remains open for precise arm reachability and binder
+values. No full-matrix or checked-disproof result follows.
+
+The [test-only replay inventory](evidence/REPLAY_MODEL_INVENTORY_2026-09-26/README.md)
+at `da19222a` has focused test, format, strict lint and independent review
+witnesses. It does not change production replay. Complete typed value pinning
+and honest unsupported/mismatch propagation remain required for A-EVID-1.
+
+**UPDATE 2026-09-26 — captured solver process outcomes banked,
+broader proof authority still open.** Code commit `2683669c` has a
+[source-bound local receipt](evidence/CAPTURED_TOOL_OUTCOME_2026-09-26/README.md).
+The captured producer and native cross-check paths now distinguish an absent
+Z3 executable from present spawn/write/wait, query, exit and response failures.
+Only validated response shapes become solver answers. Focused process controls,
+selected Safe CLI comparisons, a clean-HEAD build and independent applied-diff
+review support this scoped unit. SAT model framing does not validate term
+semantics or complete replay. The public captured-build consumer,
+source-to-obligation correspondence and required valid D9 controls remain
+open. No full matrix, hosted or release gate is claimed.
+
+**Earlier update 2026-09-26 — private captured solver stream and row
+inventory banked.** The [solver-stream](evidence/CAPTURED_SOLVER_STREAM_2026-09-26/README.md)
+and [row-inventory](evidence/CAPTURED_SOLVER_INVENTORY_2026-09-26/README.md)
+receipts bind commits `ee4f13bb` and `aa9c33b7`. Malformed private streams
+return typed integrity errors; missing, copied, extra or reordered rows
+relative to the final typed inventory fail the captured bridge. These
+checks cannot detect a source obligation omitted before inventory construction
+or authenticate its SMT formula.
+
+**Earlier update 2026-09-26 — captured Safe mode classification banked, CLI trust
+boundary open.** Code commit `365da05d` and its
+[source-bound receipt](evidence/CAPTURED_SAFE_CHECK_RESULT_2026-09-26/README.md)
+retain each captured module's pre-desugaring mode intent, including unused
+and overridden trait defaults, and classify nested/contract-expression mode
+elevators before Safe-default checking. Focused tests, compiler Clippy, and
+format pass; independent static review approved this private compiler-side
+unit. No public CLI artifact or evidence admission follows. At that code pin,
+malformed solver streams used a synthetic wire `FAIL`; the later private
+solver-stream guard above supersedes this behavior. The stacked
+`@exploit(authorization: ...) @safe` spelling fails to parse and remains a
+language-surface limitation; its syntax error is not a security refusal.
+
+**UPDATE 2026-09-26 — no-default-feature CLI lint gate restored locally.**
+The [scoped code and Safe smoke receipt](evidence/NO_DEFAULT_PROVE_CLI_2026-09-26.md)
+binds commit `5e3f76df`: the no-`prove` Clippy gate now passes, ordinary
+`run --input-json` still executes, and proof/receipt commands return their
+feature-unavailable errors. This follows the failed extra lint attempt in
+the PCA v4 receipt below; it is a separate code unit, not a release gate.
+
+**UPDATE 2026-09-26 — honest FAIL check evidence integrated, scoped.**
+Code commit `fc72526b` and its [source-bound local receipt](evidence/HONEST_FAIL_SOURCE_CHECK_2026-09-26.md)
+introduce PCA v4 source-check scope. A Safe tainted-egress check now emits a
+replayable `FAIL` bundle with a typed security refusal and an honest
+`solver_execution: not_run`; its clean declassified twin emits `PASS`. The
+source-bound release CLI and focused tests passed, and independent static
+review approved the integrated diff. This does not make a FAIL program
+admissible, verify multi-file source closure, identify each deciding solver,
+or close the open full matrix. The additional no-default-features Clippy
+attempt failed on feature-gated warnings. Earlier notes below describe their
+own pins and are superseded on the FAIL-bundle integration state.
+
+**UPDATE 2026-09-26 — struct qualifier precision frozen before repair.**
+Fixture commit `d49f32b1` and its [registration receipt](evidence/D9_QUALIFIER_PRECISION_REGISTRATION_2026-09-26/README.md)
+show that the pinned Safe checker refuses public `Row.n` reads when a distinct
+field `Row.k` is declared secret. The valid direct, annotated/unannotated,
+alias and forwarding controls are over-refused; the clean valid control
+passes. The paired secret-field, whole-value, wrapper, secret-write, and
+computed-comparison egress controls are refused. This crosses the direct
+source walker, interprocedural egress summary and call boundary; a
+call-boundary-only exception is on HOLD. The full matrix was not rerun.
+The additional [factory and nested-write registration](evidence/D9_QUALIFIER_V3_REGISTRATION_2026-09-26/README.md)
+preserves a declared secret-field negative, its passing public sibling, a
+secret nested-write negative, and a still-refused valid clean nested write.
+Independent review held the scratch D9 v2 implementation for possible
+call-returned-field laundering and stale shapes; no such patch is integrated.
+The [released-field rewrite pair](evidence/D9_RELEASED_FIELD_REWRITE_REGISTRATION_2026-09-26/README.md)
+is now source-bound too. After releasing an old `Row`, a clean public-field
+write and read pass, while a later write to declared secret `k` and its egress
+receive both a direct declared-field refusal and an IFC2 refusal. Independent
+review held the revised scratch v3 before application because its direct
+producer could lose the declared-field obligation on that path. A candidate
+must retain the direct obligation, not rely on IFC2's aggregate failure.
+The further [secret-PC/public-field pair](evidence/D9_PC_PUBLIC_FIELD_REGISTRATION_2026-09-26/README.md)
+freezes a variable secret-controlled write to public `Row.n` and its public-
+guard twin. On the source-matched baseline the valid twin is over-refused;
+the invalid program receives a generic direct root refusal and IFC2 refusal,
+but no direct implicit-flow diagnostic. Independent static review held the
+unintegrated v4 scratch patch because its clean-field early return could drop
+that direct producer finding. This is a producer-coverage and precision gate,
+not an observed aggregate Safe false accept.
+The further [control-flow precision registration](evidence/D9_PC_PRECISION_TWINS_2026-09-26/README.md)
+freezes For and WhileLet binders, protected shadowing, deferred closures,
+secret loop bounds, and unreachable-arm twins before repair. On the
+SHA-identified Safe baseline, the loop-local, pattern-binder, and protected
+shadow ACCEPT controls are already over-refused by `ANUBIS_IMPLICIT_FLOW`;
+the uncalled-closure, secret-bound local loop, and literal-dead controls pass.
+Every paired REJECT source receives typed security refusal, but the two
+reachable `Row.n` refusals come from generic whole-Row egress and IFC2, not a
+writer-located PC finding. Independent static review held the v5 scratch
+patch for binder, shadow, deferred-body, and reachability errors. No D9
+implementation patch or broader soundness result follows from registration.
+The subsequent [v6 static HOLD](mission/review/D9_V6_HOLD_2026-09-26.md)
+identifies incomplete callable alternatives, call-time closure capture,
+name-only binder shadowing, early-exit control loss and ordinary valid-program
+refusals in an unintegrated candidate. No v6 binary or checker verdict was
+produced; a typed undecided diagnostic mapping alone does not close the
+producer gap.
+The [capture and early-exit control registration](evidence/D9_CAPTURE_EXIT_CONTROLS_2026-09-26/README.md)
+adds definition-time callable-shadow and definite-return/continuation pairs.
+The source-matched Safe checker accepts both valid twins and refuses both
+invalid twins with typed IFC v2 `ANUBIS_IMPLICIT_FLOW`. This freezes safety
+and precision expectations; it does not demonstrate a direct D9 transfer
+fix, a native runtime witness, or a complete matrix result. Independent
+static reviews held both unintegrated source-bound binding-inventory drafts:
+[v1](mission/review/D9_V7_BINDING_INVENTORY_V1_HOLD_2026-09-26.md) could
+skip expressions in an empty Or pattern and had an unread sidecar;
+[v2](mission/review/D9_V7_BINDING_INVENTORY_V2_HOLD_2026-09-26.md) fixed the
+traversal gap but retained no production observation in release builds.
+Neither was built or graded by the lead. A consumer that uses binding IDs in
+the direct producer still needs design review, lead-run gates, and actual-diff
+review.
+
+**UPDATE 2026-09-26 — narrow direct-PC protected-shadow precision repaired.**
+Fixture commit `253dd4e3` and code commit `e4bfe300` have a
+[source-bound Safe receipt](evidence/D9_PC_BINDING_SITES_2026-09-26/README.md).
+The direct `Stmt::If` producer now distinguishes straight-line assignments
+to explicit protected branch-local `let` bindings from writes to an outer or
+public binding. The two frozen protected-shadow ACCEPT controls changed from
+direct `ANUBIS_IMPLICIT_FLOW` refusal to acceptance; the new public-inner,
+pre-shadow outer-write, and expression-position-write negatives retain that
+direct refusal. All registered D9q REJECT sources still refuse in the scoped
+same-source comparison. A Safe native run of the renamed positive prints its
+unchanged outer public value. Independent applied-diff and raw-evidence review
+corroborated this selected comparison, without release or broad integration
+sign-off. Other D9q valid refusals, field/call qualifier
+loss, loop binders, writer-located field PC obligations, and general
+binding/continuation coverage remain OPEN. This is not full matrix, hosted,
+formal, or release evidence.
+
+**UPDATE 2026-09-26 — scoped guard and min/max repairs, residuals still open.**
+Local code commits `88a2903c` and `6b85cf22` have separate
+[guard-transfer](evidence/GUARD_WRITE_TRANSFER_2026-09-26/README.md) and
+[min/max callback](evidence/IFC2_MINMAX_CALLBACK_2026-09-26/README.md)
+receipts. The reached shadowed-binder `requires` now DISPROVES, the required
+failed-guard valid twin passes, and the registered min/max leak pair now gets
+typed IFC2 security refusals. The finite prior-pin min/max native witness
+printed a different public callback sequence for two protected values; the
+new pin refuses that source before execution and still runs the fixed-key
+positive controls. This is selected-source evidence, not a full Safe-mode
+soundness seal. The latest full provisional matrix run was on the earlier
+guard pin and remained `INCOMPLETE`; it had other silent accepts, valid
+wrong-class outcomes, and four valid performance timeouts whose cause is
+unresolved. Two registered valid unannotated `Row` helper controls still fail
+with `ANUBIS_SECRET_TO_PUBLIC` on both pins because D9 infers a public
+formal. The honest FAIL-bundle verifier v10 draft is unintegrated after
+independent review found a destructive rebase and source-scope overclaim.
+
+**UPDATE 2026-09-26 — reached shadowed-binder call silently accepted.**
+The [source-bound registration receipt](evidence/SHADOWED_MATCH_IFLET_REGISTRATION_2026-09-26.md)
+for local fixture commit `2ca7afff` records a Safe value-match arm whose
+statement-free `if let` calls `f(0)` through a shadowing binder. The pinned
+checker passes the carrier, disproves direct `f(0)`, and normal Safe native
+execution prints `entered f with 0` on a harmless witness variant. A valid
+call-before-binder-write remains required to pass. The guard-write repair
+drafts had not passed independent review at that registration pin; the later
+scoped repair is recorded above.
+
+**UPDATE 2026-09-26 — private captured-project combiner staged.**
+Local code commit `ebe4f3ed` has a
+[scoped local receipt](evidence/CAPTURED_COMBINE_ADAPTER_2026-09-26.md).
+Its private adapter combines parsed captured modules and retains their trait
+sidecars. Focused Safe tests and a source-bound selected multi-file CLI
+comparison passed, but the production checker does not call the adapter.
+Verified transitive package admission and source-closure evidence remain
+open; this is no release or platform witness.
+
+**UPDATE 2026-09-26 — captured Safe compilation comparison staged.**
+Local code commit `339a960a` has a
+[source-bound local receipt](evidence/CAPTURED_SAFE_COMPILATION_BRIDGE_2026-09-26/README.md).
+The private API derives a combined AST and compilation-only graph from one
+captured byte set; a changed-on-disk import body does not alter the Rust source
+lowered from that capture. Focused resolver tests, compiler-library Clippy and
+format checks pass on the identified code commit. The production CLI does not
+call this API, and neither package admission nor source-closure evidence is
+established by it. The existing valid transitive-package refusal remains open.
+
+**UPDATE 2026-09-26 — request-local solver symbols, selected verdicts stable.**
+Local code commit `e7187a31` has a
+[source-bound local receipt](evidence/REQUEST_LOCAL_SOLVER_SYMBOLS_2026-09-26.md).
+Contract and match generated symbols now share a request-local namespace;
+repeated typechecks and cold CLI processes produce byte-stable covered
+obligations. The selected registered `r2arm_*` Safe comparison against the
+preceding code pin has no typed verdict flips. This is not stable identity
+across source edits, a full-matrix result, or permission to reuse old evidence
+sidecars. The honest FAIL-bundle verifier is still unintegrated after review
+found legacy-version, authority-scope and readiness-status blockers.
+
+**UPDATE 2026-09-26 — scoped value-position enum match precision repaired.**
+The [source-bound selected-case receipt](evidence/ARM_ENUM_EXPR_PRECISION_2026-09-26.md)
+for local code commit `1280e21e` shows the two frozen constructed-enum dead
+arms now PASS, while both reachable violated twins remain DISPROVED. The
+same selected `r2arm_*` source set has only those expected typed flips.
+This does not close match analysis or the full matrix. A newly
+[registered failed-guard write pair](evidence/MATCH_GUARD_WRITE_REGISTRATION_2026-09-26.md)
+leaves a required valid fallthrough UNDECIDED; the violated fallthrough is
+also UNDECIDED while its direct twin is DISPROVED. No silent accept was
+reproduced for that guard-write shape. Three
+[additional frozen controls](evidence/MATCH_GUARD_WRITE_ADDITIONAL_CONTROLS_2026-09-26.md)
+cover stale nonmatch facts, binder shadowing, and an executed guard call;
+their pinned baseline is classified without treating UNDECIDED as disproof.
+The full matrix runner remains
+`INCOMPLETE`, and no hosted or release result belongs to this local head.
+
+**UPDATE 2026-09-26 — private captured-project resolver staged.**
+Local commit `03212a4c` has a
+[scoped resolver receipt](evidence/CAPTURED_PROJECT_RESOLVER_2026-09-26.md).
+The final private parser consumes captured project bytes, preserves import
+locations, and refuses nested imports explicitly after review found the
+top-level-only collector would omit them. It has no production caller or
+package/evidence admission authority. Checker, lowering and versioned
+source-closure binding are still required before a verified transitive
+package can be accepted.
+
+**Earlier update 2026-09-26 — private captured-byte reader, no admission claim.**
+Local code commit `4ba7455f1fbb2f696685a0ad202c43ebf51e04dc`
+has a [scoped reader receipt](evidence/SOURCE_GRAPH_READER_2026-09-26.md).
+It captures bounded source bytes from held inodes on this Linux host and
+passes focused Safe tests, but no resolver, checker, package gate or evidence
+consumer uses it yet. A genuine current-process procfs in a trusted mount
+namespace is an external assumption; Apple acquisition remains unsupported
+by this new module. Verified multi-module and transitive admission still
+refuse valid workloads. The honest FAIL-bundle verifier remains under
+independent review; its revised draft is not integrated. No full matrix,
+workspace, guest, hosted or release result is asserted for this head.
+
+**Earlier update 2026-09-26 — constructed-enum dead-arm precision.**
+Local code commit `f15e1b83627379133ce5c94194b156a5d006aeea`
+has a [source-bound selected-case receipt](evidence/ARM_ENUM_PAYLOAD_PRECISION_2026-09-26.md):
+the frozen valid positional and named dead-payload arms now PASS, while
+their reachable violated twins and a constructor-scrutinee violation are
+DISPROVED. The registered `r2arm_*` Safe subset has the typed outcomes
+recorded in that receipt; this is not a full-matrix or general match seal.
+The provisional matrix runner still reports `INCOMPLETE`. Verified transitive
+package admission and honest FAIL-bundle verification remain open, and no
+final workspace, guest, hosted, independent rebuild or release result is
+asserted for this head.
+
+**Earlier update 2026-09-26 — scoped arm-binder repair and source-graph primitive.**
+At local commit `70b200c7197f1cee4eb0ceb6429da7b70ed649c5`, the
+[source-bound local receipt](evidence/ARM_BINDER_SCOPED_FIX_2026-09-26.md)
+records a checked disproof of the formerly silent sibling-binder precondition,
+acceptance of selected satisfied match/if-let and dead-guard controls, and
+preservation of selected reachable violated controls. Its verdict is
+`INCOMPLETE` because a valid constructed-enum payload mismatch in a dead arm
+is still refused as UNDECIDED. The caller-supplied
+[source-graph primitive](mission/VERIFIED_SOURCE_GRAPH_DESIGN_2026-09-26.md)
+binds origin, path, bytes and supplied import edges, but it has no admission or
+evidence authority until a bounded reader and resolver/checker correspondence
+are connected. Verified transitive package admission remains a required valid
+workload that currently refuses. A freshly produced honest FAIL check bundle
+also fails `verify_pca`; candidate verifier patches are under review and are
+not integrated. The full matrix runner remains `INCOMPLETE`, and the stopped
+unfiltered compiler-library attempt is not a gate witness. No final workspace,
+guest, platform, hosted or release result is asserted for this head.
+
+**Earlier update 2026-09-26 — evidence and package source boundaries remain open.**
+The local stack through `8869116a` now records solver replay per obligation,
+refuses undecided solver outcomes as proof, counts PCA v3's real obligations,
+checks sealed evidence and signatures, and re-derives a Merkle root from the
+supplied multi-file leaf bytes. These are implemented code units, not a release
+seal. The leaf root does not prove that package imports or transitive dependencies
+were resolved into the analyzed source. Verified dependency admission therefore
+refuses those valid package shapes; the local compiler-library run reported
+**958 passed, 1 failed**, with the failure
+`phase6_package_tests::phase6_transitive_path_deps_lock_and_mount` at that
+refusal. The provisional matrix runner deliberately returns `INCOMPLETE`; it
+does not establish a current zero-silent-accept claim. The evidence verifier
+still relies on producer-reported build PASS rows, and an intact honest FAIL
+claim can satisfy evidence integrity without authorizing the program. A
+source-bound CLI build, final full workspace suite, hosted head, and required
+guest/platform witnesses remain open. The current state and next dependency
+are indexed in [MISSION.md](MISSION.md); detailed finding IDs are in
+[the Stage-A inventory](mission/DEFECTS.md).
+
+**UPDATE 2026-09-26 — bounded native Linux lane passed; platform completion remains open.** The
+[first hosted native run](evidence/LINUX_HOSTED_2026-09-26/README.md) failed:
+AArch64 timed out during the CLI build; x86_64 completed its commands but exceeded
+the declared unchanged-memory-event condition. Both owned services were collected.
+The follow-up selects native Clang and preserves primary errors and resource
+observations. [Hosted run 36224977907](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36224977907)
+at branch head `a00387d9` passed its bounded ordinary allowlist on x86_64 and AArch64;
+the downloaded receipts and logs were checked against their hashes. The original
+failures and strict limits remain part of the record. This lane does not cover a full
+workspace run, full soundness matrix, mandated guest work, or Omarchy installation.
+
+**Earlier-pin update 2026-09-26 — round-2 findings registered; new match-arm precondition hole.**
+[The registration receipt](evidence/ROUND2_REGISTRATION_2026-09-26.md) maps the
+historical round-2 leak sources into the matrix without changing their intended outcomes.
+At that pin, two min/max cases and two new match-arm cases silently checked clean on the pinned
+full-Safe CLI; direct and renamed-binder controls disprove the violated `requires`,
+while a satisfied call remains accepted. No full current matrix verdict is claimed.
+
+**Earlier-pin update 2026-09-26 — bool result-kind correction; min/max candidate withheld.** The
+[bool-commit slice](evidence/PROOF_BOOL_RESULT_2026-09-26/README.md) corrects the
+runtime result kind in `b835b94b`; focused full-Safe library controls pass and
+the original native leak is reproduced. The source-attributed CLI build completed
+successfully, and its focused full-Safe/IFC2 checks report 14 PASS observations.
+Full workspace, full matrix, guest-journal and final platform gates remain open;
+this technical pin is not a release. The expanded
+[min/max candidate](evidence/MINMAX_REPEATABILITY_2026-09-26/README.md) restores
+the original equal-captured-key control but newly refuses comparisons, negation
+and a deterministic helper over fixed captures. Its required suite reports
+16 passed, 3 failed; it remains unintegrated. Intended valid outcomes stay ACCEPT.
+
+**Earlier update 2026-09-26 — round-2 evidence recovered; first min/max candidate withheld.** The
+[complete round-2 inventory](evidence/IFC2_ROUND2_2026-09-26/REPORT.md) preserves
+its sources and historical verifier outcomes; it is not a current closure receipt.
+A [fresh min/max witness and candidate review](evidence/MINMAX_CANDIDATE_2026-09-26/README.md)
+confirmed callback output depending on secret comparator keys. The candidate repairs
+that flow but newly refuses a valid equal-key callback, so it remains unintegrated
+and the defect stays open. The valid fixture remains required to pass.
+
+**UPDATE 2026-09-26 — IFC v2 runs in every Safe-mode check (`e516b1f3`).** An information-flow
+interpreter that evaluates the program the way the runtime executes it ([design](mission/IFC_V2.md))
+runs beside the other lanes; a program is refused if any lane finds a flow. After its first
+independent review (107 confirmed findings, all fixed and registered), the matrix at
+`e516b1f3` had no silent accept among registered cases (58 before) and the corpus
+verdicts were unchanged. Behaviour change: the core
+runtime's fail-closed trap messages no longer print their operands (index, key, count, path, the
+unmatched value), which could be secret; they still name the operand's type, and some messages in
+the crypto and exploit-kit runtimes still print operands (the next unit). Its second review round
+confirmed 75 more findings (41 leaks the lanes also accept, 28 over-refusals of which 22 are valid
+programs the lanes accept and the union now refuses, 6 robustness); they are the next unit. Green
+still means no KNOWN defects, and these are known.
+
+**UPDATE 2026-09-25 — closure-effects worklist prototype rejected.** It restores a valid
+wrapper but accepts retained-printer controls that disclose an annotated secret. The
+[rejected-design receipt](evidence/ALIAS_CLOSURE_WORKLIST_REJECTED_2026-09-25/README.md)
+preserves the source delta, independent review, differential checks and native output.
+The `ord3_capture_*` matrix controls require semantic rejection. No compiler change is
+integrated, and no new full-matrix total or completed capture fix is claimed.
+
+**UPDATE 2026-09-25 — unshipped alias candidate verification failed.** Workspace release
+testing aborted in `closure_analysis_limit::recursive_closure_source_reports_limit_and_recovers`.
+The [failure receipt](evidence/ALIAS_CANDIDATE_VERIFY_2026-09-25/README.md) preserves the exact
+candidate source delta and complete log. CAND-ALIAS-STACK remains open; the candidate is not
+integrated, its baseline differential is unmeasured, and this local observation is not the
+mandatory disposable-guest crash witness. Publishing the receipt does not close any soundness
+or precision requirement.
+
 ### The disease — proven across eight separate classes
 
 > **A user writes something down, or a producer computes a label, and a consumer ignores it or
@@ -75,13 +451,13 @@ instrument; do not substitute mutable `./target/release/anubis`.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **337/337 PASS**. Live disk inventory **337** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
-| **Language core** | **259/259 PASS** — current live count; the earlier 252/252 and 253/253 receipts remain historical. See the float-lane residual below | pin `ANUBIS_BIN` (§6) |
+| **Security fixtures** | Lead gate **356/356 PASS**. Live disk inventory **356** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Language core** | Current fixture inventory: **271** `.anb` files. This is a disk count, not a current full-suite pass result. See the dated W1 measurements and float-lane residual below. | `find tests/fixtures/language_core -name '*.anb'` |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **199 theorems / 16 modules** (comment-stripped; 2026-08-18, after Phase-8 Slice-1 added `Anubis.SecurityLabel`, 37 theorems including a full-record `join_full_idempotent`) |
-| **Native authoritative** | **PASS over 937 files, 0 mismatches** (current corpus; the earlier 2026-07-29 ratchet raised 906 → 916) | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | Current inventory: **968 files**; no source-current G18 PASS is recorded here. The [Phase 4 receipt](evidence/PHASE_4_COMPLETION_2026-08-15.md) reports a historical 937-file run with zero mismatches and disagreements. | `bash scripts/run_native_authoritative_gate.sh`; [A-GATE-1](mission/DEFECTS.md) notes that G18's default-versus-`=1` mismatch leg compares the same mode. A new independent comparison is still needed. |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -574,7 +950,7 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
     a function-valued formal merely because the receiver expression mentioned a formal, which
     accounted for the three method-shaped flips.
 
-    Verdict-diff measured at this close on the then-current pin: security 311/311; language
+    Historical verdict-diff measured at this close on its named pin: security 311/311; language
     244/244. Zero accept→reject flips.
 
 ### The singleton contract policy — documented residual (2026-07-27)
@@ -619,7 +995,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
     precondition rejects. Getting that backwards is what flipped nine fixtures in the first spine
     attempt.
 
-    Verdict-diff measured at this close on the then-current pin: security 311/311; language
+    Historical verdict-diff measured at this close on its named pin: security 311/311; language
     244/244. Zero accept→reject flips.
 
 12. **The bare-builtin carrier defeats the LETHAL TRIFECTA detector — CLOSED (2026-07-27).**
@@ -870,24 +1246,33 @@ never terminates is a check/run divergence of a different kind, and is being cha
     Poison/accept guards: `research_build_requires_explicit_consent_and_vz_before_lowering`,
     `whole_program_callers_share_the_same_mode_derived_research_boundary`, and
     `research_block_local_field_access_and_ordinary_twin_both_lower`. At the deciding technical
-    epoch, compiler library **771/771**, language **259/259**, security **337/337**, stdlib
+    epoch (historical), compiler library **771/771**, language **253/253**, security **327/327**, stdlib
     fail-closed **104/104**, PCA **19/19**, and the independent direct/carrier/dead-branch
-    falsification matrix **9/9** passed. The current source-matching disposable-guest receipts are
-    recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md`.
+    falsification matrix **9/9** passed. The dated source-matching disposable-guest receipts are
+    recorded in `docs/evidence/PHASE_1_COMPLETION_2026-07-31.md` (supporting-check table,
+    lines 92–96). Correction 2026-09-26: `c87ad1cf` retained the later 259/337 fixture counts
+    in this July technical epoch; they do not describe this receipt.
 
-    The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) is retained as
-    a failed receipt, not promoted: security **337/337**, language **259/259**, stdlib fail-closed
-    **104/104**; the current native-authoritative corpus is **937 files**, while that failed receipt
-    graded 916 files with 0 mismatches; the measured builtin inventory was
-    **213 builtins**, while check/run parity and the documentation-coverage floor were RED. Phase 1
-    repairs those observed blockers and must rerun.
+    The first source-bound host seal attempt (`out/phase1_host_seal_20260730T133327Z`) remains
+    a failed historical record, not promoted. Its run artifact was not recovered for the
+    2026-09-26 correction, so its actual security and language measurements are **unknown** here.
+    The earlier historical `2160f4a4` narrative reported security 327/327, language 253/253, stdlib
+    fail-closed 104/104, and 916 native-authoritative files with 0 mismatches for that attempt;
+    those run-specific observations have not been independently reconfirmed. The same narrative
+    called an inventory of **921 files** then-current and reported a 213-builtin inventory and RED
+    check/run parity and documentation-coverage gates. Phase 1 required repair
+    and a rerun; this failed attempt is not evidence that the repaired gates passed.
 
-    The audited source-bound rerun at `out/phase1_host_seal_audited_20260730T154003Z` mechanically
-    returned `SEAL_PASS` with 18/18 declared gates on pin `anubis-4dc5a51df23b`. It is **not promoted
-    to a whole-tree seal**: native-authoritative enumerated **937 files** from the live disk while the
-    docs gate enumerated **916 tracked files**. Five untracked `.anb` files explain the difference;
-    silently narrowing either side or staging unrelated showcase work is forbidden. The discrepancy
-    was a technical HOLD pending trust-surface sign-off.
+    The surviving `2160f4a4` narrative says the audited source-bound rerun at
+    `out/phase1_host_seal_audited_20260730T154003Z` returned `SEAL_PASS` with 18/18 declared
+    gates on pin `anubis-4dc5a51df23b`. That observation was not reconfirmed because the run
+    artifact was not recovered. It is **not promoted to a whole-tree seal**: the narrative reported
+    **921 files** enumerated by native-authoritative and **916 tracked files** enumerated by the
+    docs gate. The original narrative attributed the gap to five untracked `.anb` files, but the
+    run artifact and those files were not recovered for this correction, so the cause was not
+    independently verified. A later edit substituted 937 for 921; it did not establish a new
+    measurement of this July run. The original discrepancy was a technical HOLD pending
+    trust-surface sign-off. Neither figure is a current corpus claim.
 
     **Superseding technical closure receipt:** immutable compiler pin
     `vm/pins/anubis-51f4a964347a` (SHA-256
@@ -1474,16 +1859,24 @@ and cannot verify later repairs.
     //         flows to egress `print` without declassify()
     ```
 
+    The following table preserves the original `2160f4a4` W1 narrative. Its run artifact was not
+    recovered for this correction, so these are reported historical results, not fresh checks.
+
     | verification | result |
     |---|---|
     | compiler lib | **766/766** — source-current W1 suite, including recursive malformed-slot tests |
     | tool unit suite | **351/351** plus all integration harnesses green |
-    | security corpus | **337/337** — includes the ten annotated list/map/generic/parameter fixtures |
-    | language corpus | **259/259** |
+    | security corpus | Historical W1 run not independently recovered; the original `2160f4a4` table reported **327/327**, including the ten annotated list/map/generic/parameter fixtures |
+    | language corpus | Historical W1 measurement **unknown** from retained run evidence; the original `2160f4a4` table reported **253/253**, while 259/259 belongs to a later fixture inventory |
     | stdlib fail-closed | **104/104**, `timed_out=0` |
-    | native-authoritative | current corpus **937 files**; this W1 receipt graded 916 files, 0 mismatches, 0 disagreements |
+    | native-authoritative | the historical narrative called **921 files** the July corpus and reported 916 W1 graded files, 0 mismatches, 0 disagreements; the run artifact was not recovered here |
     | formal | **162 theorems / 15 modules**, machine-checked; no `sorry`/`admit`/free `axiom` |
-    | immutable candidate | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; source-tree verification PASS |
+    | pre-change comparison instrument | `vm/pins/anubis-281e0e846948`, SHA-256 `281e0e84…5262`; the original narrative reported source-tree verification PASS for that instrument, not for a W1 candidate |
+
+    Correction 2026-09-26: `c0f5b884` later overwrote the language row with 271/271;
+    restoring 259/259 did not recover this W1 measurement. The cited `281e0e…` pin is identified
+    as a pre-change comparison instrument in `docs/evidence/PHASE_1_COMPLETION_2026-07-30.md`;
+    this correction did not rerun or establish the table's exact W1 corpus measurement.
 
     Fixtures added, including the over-rejection guard the project's rules require:
     `secret_field_via_annotated_list_index_rejects.anb`,
@@ -1541,9 +1934,9 @@ and cannot verify later repairs.
 
     Verification (candidate `9f0e46ed…`): struct-field / array-element / map-key / dynamic-index
     write-carriers all REJECT (secret + taint lanes); the literal-construction and direct-`let g =
-    key` controls still REJECT; the clean-value twins still ACCEPT. security **337/337**, language
+    key` controls still REJECT; the clean-value twins still ACCEPT. security **337/337** (historical), language
     **259/259**, stdlib-fail-closed **104/104**, walker completeness PASS, docs-drift 0 drift,
-    phase metrics OK, native-authoritative **937 files / 0 mismatches**, `cargo test --release`
+    phase metrics OK, native-authoritative **937 files / 0 mismatches** (historical), `cargo test --release`
     full workspace **1245/0**. Manual hostile matrix **59/59**. A 3-surface, 54-probe adversarial
     soundness hunt found **0 genuine false accepts and 0 over-rejections** (the single OVER_REJECT
     is an intentional fail-closed over-approximation on a loop-written symbolic index). Regression
@@ -1565,6 +1958,299 @@ and cannot verify later repairs.
       place-assignment write-carrier mechanism (row 6) is closed for the `let`-bound read shape on
       both security lanes; the contract-discharge, sink-direction bare-builtin, and type-precision
       mechanisms remain open. Green board does not invent completeness.
+
+    **UPDATE 2026-09-23 — further mechanisms closed (branch `item21/soundness-slices`).** The prose
+    above is retained as written; these two slices moved specific rows from open to closed, each with
+    a corpus verdict-diff of 0 real-program flips and a dated receipt under `docs/evidence/`:
+    - **Type-precision (rows 8-unannotated / 9 / 10) — CLOSED** (`029d5538`): a `secret`/`tainted`
+      field read off an unannotated array literal or an unannotated struct-factory return is now
+      looked up (element/return struct type recovered to the spelling the annotated form already
+      produces). The unannotated formal (D9) is NOT closed and remains open.
+    - **Contract-discharge (rows 1/2, the guarded-body and local-alias carrier) — CLOSED** (`84296cef`,
+      `middle/contract_carrier.rs`; receipt `docs/evidence/ITEM21_FAMILY1_CONTRACT_CARRIER_2026-09-23.md`).
+      A carried `requires` is discharged wherever the callee can reach it (guard, loop, alias, match,
+      builtin), firing only on known contracted-function identities; unresolvable cases refuse as
+      `ANUBIS_ASSERTION_UNDECIDED`, never silently. **Bounded honestly — still OPEN, NOT closed here:**
+      the direct `obj.f()` sink-direction bare-builtin row; a function value flowing through a local
+      container / pushed into a list / returned out of a callee (the item-10 join lane); and precision
+      losses (loop-carried mutation, requires-seeded recursion, call-result initializer) that refuse
+      as UNDECIDED rather than proving the valid case.
+
+    **UPDATE 2026-09-23 (later) — original reproduction fully closed (branch `mission/anubis-1.0`).**
+    All eleven leaks of the original item-21 reproduction (16 cases with their controls, matrix
+    `repro` category) now reject: D9, the unannotated formal, by call-site struct-type inference
+    (`fc645f8f`); the taint sink-argument place-assign carrier by recording the closure a field or
+    index write stores (`2047df10`). Further item-21-adjacent closures on the same branch: a violated
+    `requires` inside a statement `match`/`if let` arm (`e99db1d1`), a contracted function applied by
+    a higher-order builtin over a literal collection (`7465aa46`). **Still OPEN** (the expanded matrix,
+    `tests/soundness/matrix/`, is the authority; its `shared` category lists them): a direct call whose
+    `requires` mentions a parameter of a caller without its own `requires` emits no obligation (M-DIRECT-
+    REQ); stale facts across loop-carried and argument-embedded writes; a function value flowing through
+    a local container or out of a callee; a higher-order builtin over a non-literal collection; an
+    unannotated formal whose argument type is not provable (container element). "Original reproduction
+    closed" is a statement about those eleven specimens, not about the item-21 class.
+
+    **UPDATE 2026-09-26 — statement match/if-let contract probes remain open.**
+    The canonical matrix now registers separate `M-ARM-BINDER` and
+    `M-CALL-POSITION` mechanisms. A source-bound checker pin silently accepted
+    violated calls in a `match` scrutinee, a `match` guard, and an `if let`
+    scrutinee while direct-call twins were disproved. Same-binder violated
+    calls were undecided rather than disproved; valid same-binder, dead-path,
+    and guarded calls were also undecided. A guard assignment RHS silently
+    accepts a violated `requires` even though its direct twin disproves; the
+    satisfied RHS is a required valid control. The [focused result rows and
+    source hashes](evidence/ARM_BINDER_REGISTRATION_2026-09-26/README.md)
+    record the exact scope. Neither `e99db1d1` nor a binder-only repair closes
+    these expression-position omissions or the valid-case precision defects.
+
+    **UPDATE 2026-09-26 — IFC v2 (`e516b1f3`): the semantic foundation of mandate section 6.**
+    - An abstract interpreter over labeled values mirrors the runtime's value semantics, closures,
+      call resolution, method dispatch and builtins, and runs in every Safe-mode check beside the
+      lanes (decision D8). Its first adversarial review found 107 defects (67 leaks, 31
+      over-refusals, 9 robustness); all fixed, registered as `ifc2r1_*`. Decisions D6 (`exit` and
+      `panic` end the program like a return) and D7 (trap messages carry no operand) came with it.
+    - Closed by it: IFC-PC-EGRESS, FV-OPEN-6-R39, TY-UNENFORCED-R39, F-RESOLVE-1, the 19 open leaks
+      the reconciliation registered, and every other registered open leak (58 in all). Still open:
+      the lanes' own over-refusals (the registered valid programs the lanes refuse stay refused by
+      the union), the contract, capability and effect items, and review round 2's 75 confirmed
+      findings (41 leaks the lanes also accept; 22 valid programs the lanes accept that the union
+      newly refuses; the next unit).
+      Matrix at e516b1f3: 2319 cases, 2196 PASS, 0 silent accepts, 112 wrong-class, 11 INVALID.
+
+    **UPDATE 2026-09-26 — reconciliation of the open items (`d052f817`).**
+    - Every open item here and in DEFECTS.md was re-measured on the head checker; 15 turned out already
+      fixed (their entries were stale: among them the nested secret-selected constants heading and item
+      15), 42 are open. The witnessed leaks and controls that had no matrix case are registered (49
+      cases; 19 are open leaks the current lanes miss), and the open non-flow items (an unmodelable
+      assert dropped silently, expression if-let contracts, the contract lane's global-name resolution,
+      reduce over unknown callbacks, a module struct overridden by a same-named one, evidence
+      labelling, solver trust) are listed with their probes. Evidence:
+      docs/evidence/RECONCILE_2026-09-25/. Matrix at d052f817: 2206 cases, 2027 PASS, 58 silent
+      accepts, 111 wrong-class, 10 INVALID.
+
+    **UPDATE 2026-09-26 — whole-struct lane: review round 39, landing steps 2-4 (boundary `892df460`, fnret `9d46b7e5`, loose `a05b6100`).**
+    - Round 39's remaining fix designs land with the cross-check's two corrections for unsound
+      refinements (a reduce fold order; a declared place type the runtime does not check). Five
+      registered leaks close as the cross-check predicted (the L-SHADOW-1 branch-write case and four
+      literal-field cases) and a refused valid program is accepted; no existing case regresses.
+    - 215 cases added (210 with a runtime witness). Six leaks are registered open, all shapes where a
+      declared type is trusted though the runtime does not check it (TY-UNENFORCED), and 14 documented
+      over-refusals, one of them an ordinary-lane precision loss of the alias unit. Matrix at a05b6100:
+      2157 cases, 1997 PASS, 39 silent accepts, 111 wrong-class, 10 INVALID.
+
+    **UPDATE 2026-09-25 — whole-struct lane: review round 39, first landing step (bands, `d8a714f9`).**
+    - The round-38 regression R39B-F1a/F1b (a rebound `call`/`apply` lost the function it forwards) is
+      closed, with R39B-F2, O1, P1 and P2; 108 cases added, each with a runtime witness. No existing
+      case changes. Four ordinary-lane-dependent leaks are registered open. Matrix at d8a714f9: 1942
+      cases, 1798 PASS, 38 silent accepts, 98 wrong-class, 8 INVALID.
+
+    **UPDATE 2026-09-25 — ordinary lane: review of `1696925b`, second landing step (alias, `d61c33d8`).**
+    - The alias cluster (16 findings + a latent one): function values written in branches, loops,
+      value blocks and places, held in containers, forwarded by builtins or aliased to higher-order
+      functions now reach their applications; a round-35 main-binder leak closes with it.
+    - The whole-struct lane's closure-resolution cycle, which overflowed the checker's stack once
+      alias gave it loop-written closures, now ends in the analysis limit's refusal.
+    - Two valid self-referential closures reassigned in a loop are refused by that limit (a precision
+      defect, OR-ALIAS-SELFREF-LIMIT), and three capture-by-value leaks are registered open. Matrix at
+      d61c33d8: 1834 cases, 1695 PASS, 34 silent accepts, 97 wrong-class, 8 INVALID.
+
+    **UPDATE 2026-09-25 — ordinary lane: review of `1696925b`, first landing step (`e7b56507`).**
+    - Both regressions of 1696925b fixed (or-pattern arms in the return summary; a function ending in
+      `push(xs, v);`), with their older siblings in every lane; 13 findings and 128 more programs
+      added to the matrix. The review's other clusters land next.
+    - Matrix at this pin: 1761 cases, 1632 PASS, 32 silent accepts (all `open_*`), 97 wrong-class.
+
+    **UPDATE 2026-09-25 — whole-struct lane, review round 38, fnreturns (`2f0b2805`).**
+    - A call returns the function values its body returns: 10 more round-38 findings fixed (3
+      regressions against whole10 among them) and 3 older open cases closed; the nested-operand cost
+      of f878d41c is gone (fns_at).
+    - Matrix at this pin: 1620 cases, 1492 PASS, 32 silent accepts (all `open_*`), 96 wrong-class.
+
+    **UPDATE 2026-09-25 — whole-struct lane, review round 38 (`f878d41c`).**
+    - Round 38 confirmed 46 findings; this commit fixes 34 of them (12 regressions among them: nine
+      against the pin before round 37, three against whole10), each a matrix case with a runtime
+      witness. The next unit fixes 10 more (a call returning a function value); R38B-13 (a
+      pre-existing cost) stays open and R38B-14 is a documented over-refusal.
+    - Matrix at this pin: 1565 cases, 1435 PASS, 35 silent accepts (all `open_*`), 95 wrong-class;
+      one case (24 nested `reduce` seeds) times out at this commit and passes again at the next.
+
+    **UPDATE 2026-09-25 — ordinary lane: fixes for the review of `9dc7be91` (`1696925b`).**
+    - Both regressions of 9dc7be91 and 29 more leaks closed, including IFC-JOIN-BREAK-SHADOW's seven:
+      the join walkers track order, `break` / `continue` exits and shadows; a call through a binding
+      checks every function it may hold.
+    - Matrix at this pin: 1364 cases, 1242 PASS, 34 silent accepts (all `open_*`), 88 wrong-class.
+
+    **UPDATE 2026-09-25 — whole-struct lane, review round 37 (`8ea94c78`).**
+    - Round 37 confirmed 27 findings (2 regressions); all 16 leaks, 8 over-refusals and the 25 s cost
+      are fixed, each a matrix case with a runtime witness; TY-SHADOW-RETYPE's two leaks closed too.
+    - Matrix at this pin: 1286 cases, 1131 PASS, 65 silent accepts (all `open_*`), 90 wrong-class.
+
+    **UPDATE 2026-09-25 — review of `9dc7be91` (`28d21d21`).**
+    - An independent review confirmed 33 findings: 2 REGRESSIONS (a call through a function binding
+      whose identity set is Unknown no longer checks the other function's egress or capability),
+      22 pre-existing leaks near the change, 6 over-refusals and 3 costs 9dc7be91 introduced.
+      All 30 programs are matrix cases (`open_ro1_*`, `ro1_or*`); fixes are being designed.
+    - Matrix at `28d21d21`: 1237 cases, 1094 PASS, 58 silent accepts (all `open_*`), 85 wrong-class.
+
+    **UPDATE 2026-09-25 — the ordinary lane's return summaries (`9dc7be91`).**
+    - A secret or tainted value assigned in a nested block of a callee and returned is labelled
+      (IFC-ORDINARY-RETURN), and a call through a joined function binding checks every function it
+      may hold. 29 silent accepts closed (27 new matrix cases, 2 existing `open_*`).
+    - Matrix at this pin: 1207 cases, 1094 PASS, 34 silent accepts (all `open_*`), 79 wrong-class.
+    - **Still OPEN:** IFC-JOIN-BREAK-SHADOW (a label live at a loop break, or a path that shadows the
+      name, lost at the enforcing and value-block joins and in the parameter-return summary).
+
+    **UPDATE 2026-09-25 — whole-struct lane, review round 36 (`b72244c7`).**
+    - Round 36 confirmed 24 findings in the lane; 17 leaks and all 3 over-refusals and 2 of the 3
+      costs are fixed, each a matrix case with a runtime witness.
+    - Matrix at this pin: 1145 cases, 1041 PASS, 29 silent accepts (all `open_*`), 75 wrong-class.
+    - **Still OPEN:** TY-SHADOW-RETYPE, FV-OPEN-6 (a closure from a container, its name shadowed),
+      IFC-ORDINARY-RETURN (the ordinary lane's returns and joined aliases), PERF-STEP-SIZE.
+
+    **UPDATE 2026-09-24 (night) — checker limits (`66ac16ce`).**
+    - `anubis check` refuses (`ANUBIS_ANALYSIS_LIMIT`) instead of overflowing its stack or exhausting
+      the machine's memory: a stack guard at every recursive analysis walker, a bound on nested
+      descents that follow a name to a closure, and a counting allocator that bounds every check
+      (budgets follow the process's cgroup). Before it, a self-referring closure aborted the checker
+      and an exponential analysis grew until the OOM killer ended it and its session.
+    - The parser bounds expression chains (8192 operator and postfix links on one path), which used
+      to abort the checker, and the contract carrier bounds each resolution (4096 nodes; past it, an
+      unmodeled value).
+    - The language fixture runner matched `ERROR_CONTAINS:` in its own AST dump, so every needle
+      passed on any failure; it now reads the checker's output only (GATE-FIXTURE-NEEDLE).
+    - Matrix at this pin: 1112 cases, 1013 PASS, 23 silent accepts, 76 wrong-class.
+    - `d8404410`: the memory budgets come from the memory free (the first version refused valid
+      programs that fit several times over); a limit refusal is reported alone and classed as a
+      budget, not a defect in the program; parse-error rendering is bounded.
+    - `eac6baf7`: a limit refusal names the limit reached and keeps the findings the analysis made
+      beside it; `verify` says when it could not re-derive a claim at the limit; the JSON lane is
+      bounded for parse errors and never ends empty on the hard memory exit.
+    - `0275f5f3`: what a limit leaves behind is dropped by position, never by text; `verify` decides
+      integrity first; checks side by side in one memory-capped scope refuse instead of being
+      killed together (the allocator re-reads the scope's headroom as the check grows).
+    - `2536d046`: page cache, active or inactive, counts as free and is read again at every look; the
+      look comes before any large allocation; the evidence lane's re-check keeps the check's budget;
+      verify refutes a forged pass that a finding made before the limit disproves.
+    - `cf7e812c`: the reserve is sized to the memory left now (a long-lived language server no
+      longer refuses or exits with memory free); a limit in the evidence lane's own analysis is
+      reported as a limit and sealed as one, never as a program verdict; bundles appear under their
+      name only when complete; verify refutes claims no derivation produces.
+    - **Still OPEN:** PERF-LONG-SUM (a sum of n terms costs time and memory quadratic in n) and
+      PERF-FNCHAIN (CPU time is not bounded).
+
+    **UPDATE 2026-09-24 (night) — the whole-struct lane as an abstract interpreter (`0731ecf7`).**
+    - The lane is now `middle/whole.rs`: one walker and one sequential abstract interpreter, calls
+      specialized at the call site, and one classification of every builtin that fails closed.
+    - It closes FV-OPEN-5 and the 45 routes review round 26 found. Review rounds 27–35 reported 537
+      findings across nine uncommitted versions of the rewrite; 531 cases were added to the matrix.
+      The same receipt documented 36 new wrong-class refusals, so "all fixed" was incorrect.
+    - Matrix at this pin: 1108 cases, 1009 PASS, 23 silent accepts (all `open_*`; the pre-change pin
+      has 295 on the same matrix), 76 wrong-class (documented refusals).
+    - **Still OPEN:** implicit flow (IFC-PC-EGRESS), closures through containers, expressions,
+      reassignment or `compose`, and `panic` (FV-OPEN-6), `open_whole2_B2`, FV-OPEN-4, L-SHADOW-1,
+      FV-ENUM-SECRET, IFC-LOOP-CARRIED-VALUEBLOCK.
+
+    **UPDATE 2026-09-24 (evening) — whole-struct routes through list builtins, callbacks and
+    formals (`9aadfe41`).**
+    - A whole struct with a `secret` field is now followed through element-passing list builtins,
+      `map`/`flat_map` callbacks, local closure arguments, methods that return a formal, calls
+      through unresolved values, let-pattern binders, and a returned local list.
+    - This closes 15 of the 16 FV-OPEN-3 routes.
+    - Matrix at this pin: 512 cases, 466 PASS, 5 silent accepts (`open_whole2_B2` and FV-OPEN-4;
+      the pre-change pin has 22 on the same matrix), 41 wrong-class.
+    - **Still OPEN:** those 5, and ten more pre-existing pass-through shapes found in review
+      (FV-OPEN-5).
+
+    **UPDATE 2026-09-24 (later) — lowering and check-time fixes (`d70eb2ed`, `6fe90617`).**
+    - A closure that names a function as a value now compiles.
+    - The `6fe90617` code receipt measured the 40-function fan-out case at 23 s before
+      and 5.0 s after. This timing was not repeated for this correction.
+    - The secret lane's fallback scan resolves arguments through the caller's scope.
+    - Matrix at this pin: 509 cases, 448 PASS, 20 silent accepts (all `open_*`; immediate
+      predecessor `anubis-lamfn1` had 25 on this matrix; 173 belonged to older
+      `anubis-sortchk12`), 41 wrong-class.
+
+    **UPDATE 2026-09-24 — whole-struct secrets, field-value calls, alias-lane unknowns
+    (`3b90cd4b`, `c527a48d`).**
+    - `3b90cd4b` fixed a runtime defect: a struct string index read the first field
+      (RT-STRIDX).
+    - `c527a48d` closed 52 more silent accepts over nine more adversarial review rounds.
+    - Matrix at this pin: 489 cases, 432 PASS, 16 silent accepts (all `open_whole2_*`;
+      immediate predecessor `anubis-stridx1` had 68 on this matrix; 161 belonged to
+      older `anubis-sortchk12`), 41 wrong-class.
+    - **Still OPEN:** those 16 (FV-OPEN-3), PERF-FANOUT and RT-LAMBDA-FNNAME.
+
+    **UPDATE 2026-09-23 (later) — callee values, follow-up (`8424dc0c`).** Six more adversarial
+    review rounds on the callee-value lane closed 66 more silent accepts:
+    - closures whose arity or body shape the checker did not follow;
+    - value blocks and arm bodies that were never discharged;
+    - calls through struct fields;
+    - early returns of methods and trait defaults;
+    - whole structs with a `secret` field reaching `print`.
+
+    The model replay no longer mis-reports counterexamples over containers. A runtime defect was
+    found: `p["key"]` on a struct returns its first field (RT-STRIDX). The checker is conservative
+    about it for now, and the runtime fix is next.
+
+    Matrix at this pin: 420 cases, 364 PASS, 18 silent accepts (all `open_*`; the previous pin has
+    84 on the same matrix), 38 wrong-class (valid programs refused; DEFECTS FV-OVERREFUSE-2).
+
+    **UPDATE 2026-09-23 (late night) — callee values (`1b40f653`).** A call through a function
+    VALUE the checker cannot resolve is no longer read as "calls no function": when a contracted
+    function escapes as a value, such a call is refused UNDECIDED. Early returns are joined into the
+    identity, contract and secret/taint resolvers, and closures called through values or carriers
+    have their bodies checked. This closes the four long-standing silent accepts (c43, c64, c65,
+    `d9_unknown_arg_type`) and 19 more found in review.
+
+    Matrix at this pin: 338 cases, 288 PASS, 23 silent accepts, 27 wrong-class. Every silent accept
+    is an `open_*` case and is also silent on the previous pin: 16 were found by the fourth review
+    round (block-bodied closures, closure arity, methods with early returns, `map` with a closure),
+    7 are older. **Still OPEN:** those 23 (DEFECTS.md "Callee values and return joins"), and the
+    valid programs refused (P-PREC-1, FV-OVERREFUSE).
+
+    **UPDATE 2026-09-23 (night) — native solver sort safety and float-lane runtime fidelity
+    (`fb57f472`).** The native solver no longer decides an ill-sorted query. It used to lower
+    Float64/String to bit-vectors without their sort, so a wrongly sorted query could be "proved" with
+    a valid certificate for a CNF the query never meant (latent: its only known producer was fixed in
+    d90082d0). A native verdict on a query z3 rejects now fails closed at the primary, vacuity and raw
+    cross-checks, and the evidence
+    bundle publishes a refutation only for obligations the check accepted.
+
+    Review of that change found three pre-existing, compiler-reachable false proofs in the float lane
+    (`-0`, integer writes to float variables in loops, `f64` struct-literal fields), all fixed with
+    runtime witnesses. It also found and fixed an exponential-memory lowering that could abort the
+    compiler on a 241-byte query.
+
+    Matrix at this pin: 265 cases, 237 PASS, 4 silent accepts (c43, c64, c65, `d9_unknown_arg_type`,
+    all pre-existing), 24 wrong-class (valid programs refused, plus c53 and s09/s10).
+
+    **Still OPEN:** the four silent accepts; the valid programs refused UNDECIDED (P-PREC-1); z3-only
+    trust when the native solver declines (REG-002 / A-SOLVER-1); and the residuals in DEFECTS.md
+    "Native solver and float lane".
+
+    **UPDATE 2026-09-23 (evening) — direct-call preconditions and path precision (`d90082d0`,
+    branch `mission/anubis-1.0`).** A direct call whose `requires` mentions a parameter of a caller
+    that has no `requires` of its own is now checked (M-DIRECT-REQ closed). A clause that cannot be
+    encoded is refused as UNDECIDED (`requires-unresolved@`), not dropped. Matrix cases s01, s03 and
+    s11 now DISPROVE, and s02 and s04 are UNDECIDED; all five were silent accepts before. Checking is
+    path-sensitive, and values that loops and scopes over-approximate are refused as UNDECIDED rather
+    than disproved (SPEC "Contract checking: paths and refusals").
+
+    This fixed three pre-existing false proofs: an int literal into an `f64` slot, float facts
+    leaking out of branch and loop scopes, and wrap checks justified by later facts.
+
+    Soundness matrix at this pin (239 cases, `history.tsv` label `pathprec-final`): 211 PASS,
+    4 silent accepts, 24 wrong-class. The silent accepts are c43, c64, c65 and
+    `d9_unknown_arg_type`, all pre-existing and listed above. The wrong-class cases are valid
+    programs refused UNDECIDED plus c53 and the s09/s10 shadow chains.
+
+    **Still OPEN, new or newly measured:**
+    - an ill-sorted solver query can be filed as a refutation, and no sort check guards it (P-SORT-1,
+      latent);
+    - valid programs refused UNDECIDED (P-PREC-1).
+
+    Accepting a program remains a claim about its checked obligations only; it is not a claim about
+    item 21's class.
 
 Historical receipt `vm/pins/anubis-242902cfefc0` records head `0f407853`; it predates `889d9a7c`
 and cannot verify later repairs.
@@ -1600,12 +2286,17 @@ and cannot verify later repairs.
     |---|---|
     | compiler library | **766/766 PASS** |
     | CLI/tool package after `889d9a7c` | **357/357 PASS** plus every integration-test binary |
-    | security | **337/337 PASS** |
-    | language | **259/259 PASS** |
+    | security | **327/327 PASS** — historical result reported in `9a03c2b6` for this W1 pin |
+    | language | **252/252 PASS** — historical result reported in `9a03c2b6` for this W1 pin |
     | stdlib fail-closed | **104/104 PASS** |
-    | native-authoritative | current corpus **937 files**; this W1 receipt graded 916 files, 0 mismatches |
+    | native-authoritative | the original `9a03c2b6` W1 table reported **916 files, 0 mismatches**; no later corpus inventory is this W1 measurement |
     | formal inventory | **162 theorems / 15 modules**, gate PASS |
     | builtin inventory | **213 builtins**; inventory only, not whole-surface runtime proof |
+
+    Correction 2026-09-26: these are the original dated `9a03c2b6` W1 rows for commit
+    `03210603` and the source-matched `58ba4abc…` pin above. The later 259/259 fixture
+    inventory and `c0f5b884`'s 271/271 edit were not measurements of this W1 run. The
+    original PASS observations are reported here; no historical pin was rerun for this correction.
 
     *Instrument note against myself:* the workflow's own post-processing returned empty
     `raw_falsify`/`falsify_summary` arrays because I wrote a self-contradictory filter
@@ -2301,6 +2992,29 @@ tuning a constant to make one fixture green. The options, in order of preference
 SUCCESSFUL run's actual time and set a budget with real headroom; restate the obligation as the
 compiler's own error suggests; or give the FP lane its own budget separate from the integer lane.
 
+**Update 2026-09-21 — the first option was taken, and the mechanism is now measured.** A QF_FP
+obligation costs **91,502,028 z3 resource units / 8.18 s of CPU** against the old 10 s wall clock: a
+margin of 1.2x, which is why the fixture flipped under parallel load and not otherwise. The bound
+moved off the clock entirely — `Z3_ARGS` now passes `rlimit=200000000`, a deterministic resource
+counter, sized at 2.2x the measured cost, with a wall-clock argument left only as a hang backstop
+three orders of magnitude away from where any real obligation lands. The native solver's own wall
+clock is off by default (`DEFAULT_TIME_BUDGET_MS = 0`). The bound is now a function of the query rather than of
+the wall clock, which removes the mechanism that was demonstrably moving verdicts. It does not by
+itself establish load-independence: `-T` is still a wall clock in the loop as a hang guard, and a
+verdict-diff repeated under saturation is what would demonstrate the property. See the measurement
+note below.
+
+**The verdict-diff this record demanded has NOT been run.** That is the whole point of the record —
+a corpus whose verdict depends on solver luck cannot be a seal input, and neither can a corpus whose
+determinism is argued rather than measured. Until the full corpus is run repeatedly under saturation
+and compared byte-for-byte, this stays OPEN. What changed is the mechanism and the measurement, not
+the evidence. Criterion 5 of `docs/ROADMAP_AI_ERA.md` is the operationalisation.
+
+The diagnostic prose was corrected with it: the refusal said *time budget* while the binding bound
+was a resource counter, which tells a reader — and an agent reading the machine-readable stream — to
+retry on a quieter machine when the verdict will not change. It now says *work budget* and names the
+`rlimit`. The string lives at `middle::UNDECIDED_DETAIL` so its test cannot drift from production.
+
 ### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
 
 `anubis check` reports the failures that enforce the entire promise — the security lanes — as a bare
@@ -2335,6 +3049,19 @@ commit.
 **The real fix is compiler-side: give each semantic diagnostic the span of the construct that
 violated.** The CLI rendering is then a few lines and is worth having. Until then this is a named
 residual, not a papered-over one.
+
+**Update 2026-09-21 — still open, and the machine-readable lane was built to respect it.**
+`anubis check --message-format=json` emits `anubis-diagnostics/1`, in which `location` is an
+OPTIONAL field. The parse lane fills it from the compiler's own structured spans, so a parse error
+now carries file, 1-based line and column, and the byte extent. The semantic lanes leave it
+**absent**, because their span is still start-of-file, and this record is the reason: a field
+asserting 1:1 would be the same mislead-with-authority failure as the caret, except aimed at an
+agent that will act on it without looking. An absent field says "not tracked"; a wrong one says
+"here". That asymmetry is why the field is optional rather than defaulted.
+
+So the residual is unchanged and still named. What exists now is a format with a place to put the
+answer once the compiler can give it, and a consumer contract that does not depend on the answer
+arriving.
 
 ### Generics are a STRING HEURISTIC — two measured defects in opposite directions (OPEN 2026-07-28)
 
@@ -2525,7 +3252,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **337/337** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **356/356** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 882 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
@@ -2545,7 +3272,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Evidence bundle + tamper detection | package gate path `scripts/run_package_gate.sh` (seal history); unit evidence/tamper tests | Re-run package gate for live CI claims |
 | RISC0 receipt path (in-process) | prove/verify path + A15 gate history; shape + `Receipt::verify` API | Hosted Metal proving **not claimed** |
 | Metal parity (local Apple Silicon) | local Tier-2 parity history in A15 / doctor | Not hosted GPU prove |
-| Language core (fixtures + repro) | **259/259** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
+| Language core (fixtures + repro) | **271/271** on historical `anubis-ifc2land-3` pin at `e516b1f3`; [source-bound receipt](evidence/IFC2_2026-09-26/README.md) and [gate log](evidence/IFC2_2026-09-26/verify.txt). This is not a current-source pass. | Seal must set `ANUBIS_BIN` to the same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures; vault contacts `run` EXIT=0 post-PTAH | Research/exploit needs `--allow-research` + VZ where required; **proof/shell constructs are non-run by design** (CLAIMS open §2 (B)); (R) preflight false-rejects **closed**; *check ≠ run for proof/shell* is a named product residual, not a checker gap |
 | Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical narrative in `docs/language/ROADMAP.md` | **Named residual:** published reds empty ≠ Class D / D1–D6 closed; green board is not COMPLETE |

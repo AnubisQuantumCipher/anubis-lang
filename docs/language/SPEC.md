@@ -150,6 +150,97 @@ A contract that can wrap at `i64::MAX` (e.g. an unbounded `int` param's `x + 1 >
 *not* provable; the same contract on a `u32` param *is* provable because the mask keeps `x < 2^32`, so
 `x + 1 < 2^33 < 2^63` cannot wrap.
 
+## Contract checking: paths and refusals (normative)
+
+`check` checks every `requires` of a called function, every `assert`, and every wrap-safety obligation
+under the facts that hold **on the path that reaches it**. It has three outcomes: proved, disproved
+(with a counterexample), or refused as **UNDECIDED**. Unknown is never treated as "the precondition
+holds".
+
+- **Guards and early exits.** In the then-branch, `if c` contributes `c`; in the else-branch it
+  contributes `not c`. `while c` contributes `c` in its body. For `for v in a..b`, `a <= v < b` holds in
+  the body only when `a` and `b` are modelable and neither is written in the body. A path ends at
+  `return`, `break`, `continue`, `?`, or a call of the builtin `panic(x)` / `exit(x)` with exactly one
+  argument, provided no user function or local of that name exists. Code after such an exit is
+  unreachable, so `if bad { return; }` relieves every later obligation.
+- **User functions are not assumed to diverge.** A call to a user function never ends the caller's
+  path, even when the function always panics (a precision gap, P-DIVERGE-1). A user function named
+  `panic` shadows the builtin and returns normally (matrix `pp_user_defined_panic_not_diverging`).
+  `exit()` with no argument is a no-op at runtime and does not end the path
+  (`pp_exit_without_arg_not_diverging`). A user function that *may* exit
+  (it reaches `panic`/`exit`/`?`, directly or transitively) makes an enclosing range loop's variable
+  unconstrained after the loop.
+- **Checked narrowing** is the supported idiom for bounding a value the checker cannot follow:
+  `if v < 0 || v > 100 { panic("out of range"); }` (or `return`/`break`). After the guard,
+  `0 <= v <= 100` is a fact.
+- **Joins.** After `if`/`match`, the state is the disjunction of the end facts of the branches that
+  reach the join. An integer `let` bound to an `if`/`match` value takes the disjunction of its arm
+  values.
+- **Loops and scopes over-approximate; they never drop.** An integer written inside a loop keeps its
+  name, but its facts are lost (it is havoced), so a later obligation over it cannot be proved from
+  stale facts. When an obligation fails *only* because of a havoced value, or because of a parameter
+  modeled only for its calls, `check` refuses it as UNDECIDED (evidence proof status
+  `undecided_overapproximated`, no counterexample). It is not reported as disproved, because the
+  counterexample may be unreachable. Loop-invariant step obligations are exempt: their counterexample
+  refutes inductiveness itself.
+- **Unencodable preconditions are refused.** If a called function's `requires` cannot be encoded at a
+  call site (an argument or clause is not modelable, e.g. an untyped parameter), the obligation is
+  `requires-unresolved@…` and `check` fails as UNDECIDED. It is never dropped.
+- **Call-site folding.** A read of a literal struct field is folded to its value. A call to an
+  *expression function* is unfolded at the call site. An expression function is a free function
+  whose whole body is one `return <expr>` or one tail expression. It is unfolded only when all of
+  these hold:
+  - it is non-generic and not recursive, and unfolding nests at most 4 deep;
+  - its parameters are untyped, `int`, `i64`, `string`, or `bool`;
+  - its return type is absent, `int`, `i64`, `string`, or `bool` (so parameter passing and
+    return are the identity at runtime);
+  - its body reads only its parameters (no free variables);
+  - its body never calls a parameter by name, and contains no lambda and no call of a computed
+    callee.
+
+  The result of any other call is opaque (unconstrained).
+- **Values are modeled with their runtime kind.** The checker follows the runtime's coercions
+  exactly:
+  - an integer literal that fits `i64` is an integer;
+  - a literal beyond `i64::MAX` but within `u64` is the integer it wraps to (18446744073709551615 is
+    -1);
+  - anything larger is a float;
+  - assignment does not coerce, so `s = 7` stores an integer even in a float variable;
+  - a struct literal's field takes its declared type (`P { x: 7 }.x` is 7.0 for `x: f64`);
+  - `-0` is the integer 0 (+0.0 when mixed with floats).
+
+  A value whose kind the checker cannot establish is not modeled, and an obligation over it is
+  refused.
+- **Wrap safety is per statement.** Each arithmetic operation's no-wrap check uses the facts that hold
+  immediately before its statement. Facts established later (a later assignment, a loop's
+  post-state, an in-body invariant) never justify it.
+
+History: before 2026-09-23 (`d90082d0`):
+- direct-call preconditions over unmodeled parameters were silently not checked (M-DIRECT-REQ);
+- facts from branches and loops could leak past them;
+- wrap checks used the end-of-body state.
+
+Programs that relied on those gaps are now UNDECIDED or DISPROVED; the six shipped examples that did
+were repaired with checked narrowing.
+
+## Implementation limits (normative)
+
+Limits are part of the language surface: exceeding one is a diagnostic, never a crash, a hang, or a
+silent pass. A limit may be raised in a later release; lowering one is a compatibility change.
+
+| Limit | Value | On exceeding it |
+|---|---|---|
+| Syntactic nesting depth (expressions, statements, patterns, string interpolation, counted together) | 256 | parse error `program is nested too deeply (more than 256 levels)`; `check` exits 1 with `verdict: "fail"` |
+
+History: before 2026-09-23 there was no nesting bound. Nesting between 257 and a few thousand
+levels was accepted; deeper input exhausted the stack and aborted the compiler (`SIGABRT`). The bound
+is a deliberate compatibility change for programs nested more than 256 deep, recorded as matrix case
+`limit_nesting_1000`.
+
+Known lowering limit (not yet a diagnostic at `check`): an array literal nested more than about 128
+levels fails native lowering (`ANUBIS_UNSUPPORTED_NATIVE_LOWERING`) because the generated Rust exceeds
+rustc's default macro recursion limit. Tracked as N-LOWER-1.
+
 ## Lowering & Evidence Contract
 
 - Every `let` / call / control node produces HIR bindings + MIR blocks.

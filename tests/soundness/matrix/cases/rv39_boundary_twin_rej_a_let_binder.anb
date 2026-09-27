@@ -1,0 +1,18 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) { return 0; }
+fn zero2(x) { return 2; }
+fn id1(x) { return x; }
+fn mk() { return id1; }
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let g = zero;
+    let o = Some(id1);
+    for i in 0..2 {
+        if let Some(f) = o {
+            let t = if true { let u = f; u } else { zero };
+            g = t;
+        }
+    }
+    print(map([p], g));
+}

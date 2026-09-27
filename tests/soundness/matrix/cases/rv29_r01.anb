@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(g) { return g(0) }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print([map([1], |x| run(|y| 0)), map([1], |x| run(|y| p))]);
+}

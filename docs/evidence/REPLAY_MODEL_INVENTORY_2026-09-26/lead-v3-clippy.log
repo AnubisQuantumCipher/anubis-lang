@@ -1,0 +1,33 @@
+    Checking anubis-compiler v0.1.0 ($CHECKOUT/compiler)
+error: this `if` has identical blocks
+   --> compiler/src/middle/replay_inventory.rs:197:99
+    |
+197 |                       if quote == b'"' && byte == b'"' && bytes.get(self.cursor + 1) == Some(&b'"') {
+    |  ___________________________________________________________________________________________________^
+198 | |                         self.cursor += 2;
+199 | |                     } else if byte == b'\\' && bytes.get(self.cursor + 1).is_some() {
+    | |_____________________^
+    |
+note: same as this
+   --> compiler/src/middle/replay_inventory.rs:199:85
+    |
+199 |                       } else if byte == b'\\' && bytes.get(self.cursor + 1).is_some() {
+    |  _____________________________________________________________________________________^
+200 | |                         self.cursor += 2;
+201 | |                     } else if byte == quote {
+    | |_____________________^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#if_same_then_else
+    = note: `-D clippy::if-same-then-else` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::if_same_then_else)]`
+
+error: useless use of `format!`
+   --> compiler/src/middle/replay_inventory.rs:738:30
+    |
+738 |             inventory(&smt, &format!("sat\n((define-fun anb_x () String \"x\"))")),
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `"sat\n((define-fun anb_x () String \"x\"))".to_string()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_format
+    = note: `-D clippy::useless-format` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::useless_format)]`
+
+error: could not compile `anubis-compiler` (lib test) due to 2 previous errors

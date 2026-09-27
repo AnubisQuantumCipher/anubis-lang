@@ -1,0 +1,9 @@
+# Independent final review: staged M-IFLET-EXPR selected-check receipt
+
+Decision: **GO for the revised staged docs-only diff**, SHA-256 `8ebbb14994e0b189e3f5d431f35ecb03c7a41dec8099a42242756a0fe5a62881`, at code/fixture HEAD `f344987dfe9c05ead6d1a4584a165b64e9519f10`. This supersedes the prior HOLD on staged diff `a24cdd6a4da318df8d1625799b8a955cce53f8710ec4925679088c7aaff14957`.
+
+The unsupported assertion that an initial failed user-bus attempt was retained has been removed. The revised README now says only that the per-process user-bus environment reached the systemd user scope and that retained outputs came from successful scoped checks. The staged diff passes `git diff --cached --check`; unstaged scanner edits remain outside review.
+
+The receipt's archived and registered source bytes match each other and the captured source digests. Every retained stdout/stderr file byte-matches the lead's raw Work result and SHA-256 fields. `selected-results.json` matches the raw exit codes, typed diagnostic fields, summary verdicts, and summary counts. The recorded binary path's current digest matches the receipt. The checked and registered source commits resolve as stated; the checker code commit is an ancestor of the registered source commit, and the claimed scoped paths have no diff between those commits. The sanitized independent fixture-review copy is exactly the original with its two local path prefixes replaced, and both review hashes match the README. No private-path or personal-detail string was found in this receipt.
+
+The receipt states the current negative checks are `UNDECIDED`, not checked disproofs, and that the valid control passes. It does not claim defect closure, a full-matrix pass, full build provenance at the later tree, or clean-room reproduction. This review read the prior raw files and staged bytes; it did not rerun the CLI, native executable, build, or matrix runner.

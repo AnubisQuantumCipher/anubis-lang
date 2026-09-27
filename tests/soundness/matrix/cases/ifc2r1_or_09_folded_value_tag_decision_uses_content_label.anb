@@ -1,0 +1,26 @@
+// A ledger kept as a linked list of entries with secret amounts; the walker logs one line
+// per entry without showing the amounts.
+enum Ledger {
+    Empty,
+    Entry(str, secret<i64>, Ledger),
+}
+
+fn walk(l) {
+    match l {
+        Ledger::Empty => print("-- end of ledger --"),
+        Ledger::Entry(memo, amt, rest) => {
+            print("entry");
+            walk(rest);
+        }
+    }
+}
+
+fn main() {
+    let base: secret<i64> = 42;
+    let items = ["rent", "food", "fuel", "gift", "tax"];
+    let mut l = Ledger::Empty;
+    for it in items {
+        l = Ledger::Entry(it, base, l);
+    }
+    walk(l);
+}

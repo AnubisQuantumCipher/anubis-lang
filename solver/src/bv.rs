@@ -7,7 +7,7 @@
 
 /// A bit-vector term of a fixed width (bits). Every constructor's result width is determined by its
 /// operands and recorded so the bit-blaster allocates the right number of SAT variables.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Term {
     /// A declared constant `(declare-const name (_ BitVec w))` — a symbolic bit-vector variable.
     Var(String, u32),
@@ -47,7 +47,7 @@ pub enum Term {
 }
 
 /// A boolean predicate over bit-vector terms — the assertions in the obligation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Pred {
     Const(bool),
     /// Equality of two same-width terms.

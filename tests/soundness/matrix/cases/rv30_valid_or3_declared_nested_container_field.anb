@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Board { seed: secret<i64>, cells: list<list<S>>, w: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let q = S { k: 7, pub_n: 1 };
+    let b = Board { seed: 99, cells: [[p, q], [q, p]], w: 2 };
+    print(len(b.cells[0]));
+}

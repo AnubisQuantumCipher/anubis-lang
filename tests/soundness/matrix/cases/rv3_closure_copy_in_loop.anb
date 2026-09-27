@@ -1,0 +1,16 @@
+fn f(n: i64) requires(n > 0) {
+    println(n);
+}
+fn go() {
+    let mut x = 5;
+    let g = || { x = -1; };
+    let mut i = 0;
+    while i < 3 {
+        g();
+        i = i + 1;
+    }
+    f(x);
+}
+fn main() {
+    go();
+}

@@ -1,0 +1,25 @@
+# Independent final staged documentation review — D9 branch-local binding sites
+
+**Decision: GO for the scoped staged documentation and evidence commit at the identities below.** This is a read-only review of the staged index and retained evidence. It is not a D9 closure, broad integration, full-matrix, clean-room, hosted, formal, or release sign-off. I did not edit the shared checkout, build, run Anubis, rerun documentation drift, or rehash the unversioned original logs. The lead remains responsible for committing and for subsequent integration gates.
+
+## Exact staged boundary
+
+- `HEAD` code commit: `e4bfe3001df96e2c1799710cf16532c4d57e4df7`; `HEAD^{tree}`: `a2054d2eb1a69f95a458e87cc48c5371d66055a7` (observed with `git rev-parse`).
+- Full staged-index entry manifest SHA-256: `b5c5b821f1a8ca2f5e05c0b7afe17bf157ca068aee329745b8e8effd6ecca28f`, computed over the exact NUL-delimited output of `git ls-files --stage -z`. This is a digest of index entries, not a Git tree object ID.
+- Changed staged-entry manifest SHA-256: `ffc00e86e7b136eedb8d0e0f8d50fe38b1ddb6ff1e918928dbdc6ee5f9ddfdfb`, computed over `git ls-files --stage -z --` followed by the names from `git diff --cached --name-only -z`.
+- Staged binary-diff SHA-256: `dccd6dbd39e0d699466d9a8a57140786e1400826d371fab3917b7c4a95d3072b`, computed over `git diff --cached --binary`.
+- Staged `docs/evidence/D9_PC_BINDING_SITES_2026-09-26/gate-receipt.json` SHA-256: `e8eaa3200a42f3b6f7dbd1f4b4619c2bc2cac6f6caff604da124f36c742fe07a`, read from the index with `git show :<path>`.
+- Staged `verify_raw_evidence.py` SHA-256: `7c671ebe675e097facd7823f1606a6c34942993bae9ce9e37871967b723d96be`.
+- `git status --short` showed documentation/evidence changes only; `git diff --name-only` returned no unstaged paths. The observed staged path count was `37`. Any later staging changes require a new review boundary.
+
+## Checks and observations
+
+I read the staged `docs/CLAIMS.md` and `docs/MISSION.md` changes, the D9 receipt README, the capture-receipt addendum, the independent applied/design/docs/static reviews, the machine receipt, the path-portable checker, normalized logs, and the documentation-drift report. The new wording limits the direct-PC protected-shadow repair to a closed straight-line grammar, preserves the nine valid D9q refusals and other D9 residuals, and does not claim full matrix, hosted, or release evidence. The capture-receipt addendum is separately scoped. The captured-solver scratch HOLD history remains explicitly unintegrated.
+
+`python3 -B docs/evidence/D9_PC_BINDING_SITES_2026-09-26/verify_raw_evidence.py` exited `0` with `errors=[]`. Its observed result lists `42` registered D9q sources, the two protected-shadow positives changing from direct refusal to acceptance, `40` byte-identical raw case records, `22` REJECT-intent sources still refusing, and nine ACCEPT-intent sources still refused. It checks case source hashes, recorded binary identities, exact raw stdout/stderr and exits, parsed typed diagnostics and summaries, the differential, and versioned artifact hashes. The current compiler source and registry hashes matched its receipt. This is selected-field consistency, not independent authentication of the compiler or source-to-binary closure.
+
+I compared the receipt artifact names with the staged index: no artifact, README, or receipt path was missing. The checker verified the hashes of all published normalized logs and other listed files. The receipt discloses `raw_sha256` for the unnormalized compiler/test/drift logs and labels each normalization. The earlier independent documentation review states that it matched those raw hashes to retained originals; I did not repeat that unversioned-original comparison. A read-only scan of the staged blobs in this documentation slice found no private home-prefix or account marker. `git diff --cached --check` exited `0`.
+
+The retained preliminary documentation-drift error is `PIN_MANIFEST_ERROR: source trust universe changed while building the manifest`; it is labeled as a failed concurrent-edit attempt, not a passed gate. The stable `docs-drift-report.json` reports `overall_verdict=PASS`, `stamps_checked=36`, `scan_failures=0`, and no failures. I inspected the report and its receipt-bound hash; I did not rerun the gate. The corrected focused tests, strict Clippy, formatting, candidate build, clean-head rebuild, matrix harness, and native positive run are lead-retained witnesses, not independently rerun by this review. The README discloses the earlier wrong-package test and pre-Cargo build failures rather than hiding them.
+
+This GO applies only to the staged boundary above. If this report or any other file is copied into the documentation tree before the commit, rerun the documentation-drift gate on that final tree, update the receipt if its artifact set changes, and repeat the staged-index checks. Full workspace, complete soundness matrix, hosted CI on the code commit, formal proof, guest-only lanes, clean-room reproduction, and release acceptance remain open as the staged README states.

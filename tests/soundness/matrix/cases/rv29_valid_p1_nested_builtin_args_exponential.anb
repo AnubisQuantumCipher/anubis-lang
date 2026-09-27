@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let ids = [1, 2];
+    print(len(map(enumerate(map(enumerate(map(enumerate(map(enumerate(map(enumerate(map(enumerate(map(enumerate(xs), |pr| pr[1])), |pr| pr[1])), |pr| pr[1])), |pr| pr[1])), |pr| pr[1])), |pr| pr[1])), |pr| pr[1])));
+}

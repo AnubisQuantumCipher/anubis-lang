@@ -1,0 +1,102 @@
+{
+  "gates": [
+    {
+      "cause": "parser-invalid stacked @exploit(authorization: ...) @safe test input; no production assertion failure",
+      "command": "cargo test -p anubis-compiler resolve::captured::tests -- --nocapture",
+      "exit_code": 101,
+      "log": "initial-captured-fail.log",
+      "status": "FAIL"
+    },
+    {
+      "command": "cargo test -p anubis-compiler resolve::captured::tests -- --nocapture",
+      "exit_code": 0,
+      "log": "captured-pass.log",
+      "observed_test_result": "26 passed; 0 failed; 0 ignored",
+      "status": "PASS"
+    },
+    {
+      "command": "cargo test -p anubis-compiler intrinsic_mode_elevators_never_inherit_a_safe_source_claim -- --nocapture",
+      "exit_code": 0,
+      "log": "evidence-pass.log",
+      "observed_test_result": "1 passed; 0 failed; 0 ignored",
+      "status": "PASS"
+    },
+    {
+      "command": "cargo test -p anubis-compiler research_mode_attribute_mapping_has_explicit_boundary -- --nocapture",
+      "exit_code": 0,
+      "log": "frontend-pass.log",
+      "observed_test_result": "1 passed; 0 failed; 0 ignored",
+      "status": "PASS"
+    },
+    {
+      "command": "cargo clippy -p anubis-compiler --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "clippy-pass.log",
+      "status": "PASS"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "status": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "status": "PASS"
+    },
+    {
+      "command": "bash scripts/run_docs_drift_gate.sh --out <isolated-output>",
+      "exit_code": 0,
+      "observed_result": "Overall: PASS (36 stamps checked, 0 drift)",
+      "report": "docs-drift-report.json",
+      "report_sha256": "51a92fbff078b2b96f7868f82b027172e86f8f9bb10d262dd7c86a352e9616b6",
+      "status": "PASS"
+    }
+  ],
+  "independent_final_diff_review": {
+    "report": "INDEPENDENT_REVIEW.md",
+    "sha256": "1481e26be7dc70ed1742d722ccc234457b292af06f5a9da0f839aae3525faa5e",
+    "status": "GO for scoped compiler-side diff"
+  },
+  "log_normalization": "complete stdout/stderr message lines; local checkout/isolated-target prefixes replaced with <checkout>/<target>, and terminal blank lines trimmed",
+  "not_run": [
+    "public CLI captured build",
+    "native artifact",
+    "evidence or package admission",
+    "full workspace suite",
+    "full soundness matrix",
+    "hosted source-matched CI",
+    "disposable-guest seal"
+  ],
+  "open_boundary": "Malformed solver streams are synthetic FAIL rows; public status adapters need a typed tool-error outcome before they can label a refusal disproved.",
+  "raw_log_sha256": {
+    "captured-pass.log": "3de902679e7359ce8bf81f551c710b55b54be0e6473583e06fd24856519fd231",
+    "clippy-pass.log": "2ea6894887064d4f3de532a850aad29f66e553812e16fe086d46f04ec171daa1",
+    "evidence-pass.log": "c501319d8caa13b9bfc6029e9fc7e411ac57d3787b4096454507fb18501f35d4",
+    "frontend-pass.log": "b144175d0cc5a23f89372241cb732c32a2071244924796df822f943d1363013f",
+    "initial-captured-fail.log": "0feac0940baa4b6c8a00717295f1af8d024152f627536a6efb58085a89f7a76e"
+  },
+  "receipt_correction": "The preceding local documentation commit retained terminal blank lines in three logs, causing git diff --check warnings. This docs-only correction trims those blank lines and updates stored hashes; the raw logs, code commit, commands and verdicts are unchanged.",
+  "retained_log_sha256": {
+    "captured-pass.log": "b0cca8291fc38e5e5cdc20b4e2f64f549e50a180a78c80e75cae16b2a1f62f6a",
+    "clippy-pass.log": "5fc8d9a8b3a60cfeafd2f8bf78d979e1c9c558511f303aeae39657d7fa136ebc",
+    "evidence-pass.log": "df6842da87f839911f48a6ded00711528e5bad08f03fe1566608e7eedb91f40b",
+    "frontend-pass.log": "eed5658d61c25c04a85f91caf8c14d844e30d013b4699dc66445e4d524a31833",
+    "initial-captured-fail.log": "489395657cc3a1226676f9482d45c46d978958bfe853bbf3323565d4f86d2ca0"
+  },
+  "schema": "anubis.captured-safe-check-result/1",
+  "source_commit": "365da05dbd4637323f646f95ec204d571a7ddcb1",
+  "source_sha256": {
+    "compiler/src/evidence/mod.rs": "c315034010c59ab7a3f39e0fd0f9eb4016c21c87adfc67574fd479f138c5dd74",
+    "compiler/src/frontend/mod.rs": "266c93dee549e117198d3b35cc1d74ed8e48c25c7cab46b5ffd93227667bdb90",
+    "compiler/src/middle/mod.rs": "b2193fab33792f6bc8af6ff69b6d4386f4def129b6b23a568fcc4c1bf0cdf8c0",
+    "compiler/src/resolve/captured.rs": "2f2b6f6e08ac57acf57721680880ebe07db0d06bf3b143e2b660f3e48ea89575"
+  },
+  "toolchain": {
+    "cargo": "cargo 1.97.0-nightly (a343accce 2026-05-08)",
+    "cargo_build_jobs": 2,
+    "cargo_target": "isolated local target directory, not a published binary pin",
+    "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+    "scope": "systemd user scope, MemoryMax=8G, MemorySwapMax=0"
+  }
+}

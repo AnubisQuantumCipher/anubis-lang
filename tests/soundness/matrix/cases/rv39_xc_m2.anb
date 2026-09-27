@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mk(q) { let r = q; return || println(r); }
+fn wrap(q) { let h = mk(q); return h; }
+fn helper(p) { let f = mk(p); let g = wrap(p); return 0; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    helper(p);
+    let a = wrap(p);
+    let b = mk(1);
+    a();
+}

@@ -57,31 +57,78 @@ if ! files="$(python3 scripts/lib/native_corpus_inventory.py 2>"$INVENTORY_ERR")
   exit 1
 fi
 rm -f "$INVENTORY_ERR"
-n=0; mismatches=0; disagreements=0
+# Per-file wall-clock budget, used by BOTH legs of the comparison.
+#
+# It is ONE number, and that is a correctness property rather than tidiness.
+# The legs previously ran under `timeout 60` and `timeout 120`, so any file
+# finishing between those two bounds reported a killed `base_rc=124` against a
+# completed `auth_rc` — a VERDICT MISMATCH manufactured entirely by the
+# harness, on the gate whose whole job is to report whether the native solver
+# and the reference AGREE. A comparison whose two sides are not given the same
+# budget is not a comparison.
+#
+# Sized from measurement rather than habit. Measured 2026-09-21 on aarch64
+# Linux with z3 4.16.0, the slowest members of the 937-file corpus:
+#
+#   examples/programs/snake/snake.anb                     46.2 s
+#   examples/showcase/anubis_vault/vault.anb              10.9 s
+#   tests/fixtures/language_core/float_contract_mono...    7.2 s
+#
+# The old 60 s budget left the worst member a margin of 1.3x on a fast
+# developer box, and hosted runners are slower. That is the same razor-thin
+# ratio that made the float fixture flap before the solver budget moved onto a
+# deterministic counter, and it produced the same symptom here: this gate
+# passed, then failed on a tree whose code was byte-identical.
+#
+# Note what no per-query solver bound can fix: a check issues MANY obligations,
+# so its wall time is a sum. `Z3_ARGS`' hang guard bounds one query; only this
+# budget bounds the check.
+CHECK_BUDGET="${ANUBIS_GATE_CHECK_BUDGET_SECS:-300}"
+TIMEOUT_RC=124
+
+n=0; mismatches=0; disagreements=0; timeouts=0
 DISAGREE_LOG="$(mktemp)"
 
 for f in $files; do
   n=$((n+1))
   set +e
-  timeout 60 "$BIN" check "$f" >/dev/null 2>&1
+  timeout "$CHECK_BUDGET" "$BIN" check "$f" >/dev/null 2>&1
   base_rc=$?
-  ANUBIS_NATIVE_AUTHORITATIVE=1 timeout 120 "$BIN" check "$f" >/dev/null 2>"$DISAGREE_LOG.cur"
+  ANUBIS_NATIVE_AUTHORITATIVE=1 timeout "$CHECK_BUDGET" "$BIN" check "$f" >/dev/null 2>"$DISAGREE_LOG.cur"
   auth_rc=$?
   set -e
   if grep -q "ANUBIS_NATIVE_DISAGREE" "$DISAGREE_LOG.cur"; then
     disagreements=$((disagreements+1))
     { echo "== $f =="; grep "ANUBIS_NATIVE_DISAGREE" "$DISAGREE_LOG.cur"; } >> "$DISAGREE_LOG"
   fi
-  if [ "$base_rc" != "$auth_rc" ]; then
+  # A killed run reached no verdict, so there is nothing to compare it against.
+  # Calling that a mismatch states a soundness conclusion the run never
+  # reached, on the flagship gate — the same class of defect as the absent
+  # toolchain in this file's header: a check that did not COMPLETE is not a
+  # check that FAILED. It still fails the gate, under its own name, because an
+  # unfinished comparison is not equivalence.
+  if [ "$base_rc" = "$TIMEOUT_RC" ] || [ "$auth_rc" = "$TIMEOUT_RC" ]; then
+    timeouts=$((timeouts+1))
+    echo "CHECK TIMEOUT: $f exceeded ${CHECK_BUDGET}s (default rc=$base_rc, authoritative rc=$auth_rc) - not a verdict mismatch"
+  elif [ "$base_rc" != "$auth_rc" ]; then
     mismatches=$((mismatches+1))
     echo "VERDICT MISMATCH: $f (default rc=$base_rc, authoritative rc=$auth_rc)"
   fi
 done
 rm -f "$DISAGREE_LOG.cur"
 
-echo "NATIVE_AUTHORITATIVE equivalence over $n files: mismatches=$mismatches disagreements=$disagreements"
+echo "NATIVE_AUTHORITATIVE equivalence over $n files: mismatches=$mismatches disagreements=$disagreements timeouts=$timeouts"
 if [ "$disagreements" -gt 0 ]; then cat "$DISAGREE_LOG"; fi
 rm -f "$DISAGREE_LOG"
+# Timeouts fail the gate, but only AFTER the disagreement detail is printed and
+# the tempfile removed. Exiting here first suppressed the MORE serious of the
+# two failure classes: a run with both a slow file and a real
+# ANUBIS_NATIVE_DISAGREE printed the timeout, never the soundness evidence, and
+# leaked the log. A cheap failure must not shadow an expensive one.
+if [ "$timeouts" -gt 0 ]; then
+  echo "NATIVE_AUTHORITATIVE_GATE: FAIL ($timeouts file(s) exceeded the ${CHECK_BUDGET}s per-check budget; an unfinished comparison is not equivalence. Raise ANUBIS_GATE_CHECK_BUDGET_SECS only with a measurement, never to make this green.)"
+  exit 1
+fi
 # Hollow PASS guard (Seshat R8): zero files compared is not equivalence.
 if ! require_nonempty_corpus "$n" "examples|tests/fixtures/**/*.anb"; then
   echo "NATIVE_AUTHORITATIVE_GATE: FAIL (zero files compared - hollow PASS forbidden)"
@@ -151,8 +198,8 @@ if [ $_floor_rc -ne 0 ]; then
   exit 1
 fi
 
-if [ "$mismatches" = 0 ] && [ "$disagreements" = 0 ] && [ "$demo_fail" = 0 ] && [ "$drift_fail" = 0 ]; then
-  echo "NATIVE_AUTHORITATIVE_GATE: PASS (cert suite + fragment/TCB-drop demo + verdict-equivalent on $n files, mismatches=0 disagreements=0; default native z3-hidden proves/rejects; opt-out=0 restores z3 dependence; danger op fails closed; allow-list ↔ Lean; DEFAULT=native-authoritative)"
+if [ "$mismatches" = 0 ] && [ "$disagreements" = 0 ] && [ "$timeouts" = 0 ] && [ "$demo_fail" = 0 ] && [ "$drift_fail" = 0 ]; then
+  echo "NATIVE_AUTHORITATIVE_GATE: PASS (cert suite + fragment/TCB-drop demo + verdict-equivalent on $n files, mismatches=0 disagreements=0 timeouts=0; default native z3-hidden proves/rejects; opt-out=0 restores z3 dependence; danger op fails closed; allow-list ↔ Lean; DEFAULT=native-authoritative)"
   exit 0
 fi
 echo "NATIVE_AUTHORITATIVE_GATE: FAIL"

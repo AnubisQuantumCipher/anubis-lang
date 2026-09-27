@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "source.anubis"
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "assert:(= anb_x (_ bv1 64))=PASS,assert:(= anb_x (_ bv2 64))=FAIL"
+          },
+          "ruleId": "ANUBIS_ASSERTION_COUNTEREXAMPLE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "source.anubis"
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:\n  assert:(= anb_x (_ bv2 64))\n  counterexample:\n    x = 0x0000000000000001  (1)"
+          },
+          "ruleId": "ANUBIS_ASSERTION_COUNTEREXAMPLE"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "anubis",
+          "rules": [
+            {
+              "id": "parse",
+              "shortDescription": {
+                "text": "parse"
+              }
+            },
+            {
+              "id": "typecheck",
+              "shortDescription": {
+                "text": "typecheck"
+              }
+            },
+            {
+              "id": "monomorphization",
+              "shortDescription": {
+                "text": "monomorphization"
+              }
+            },
+            {
+              "id": "symbolic",
+              "shortDescription": {
+                "text": "symbolic"
+              }
+            },
+            {
+              "id": "solver",
+              "shortDescription": {
+                "text": "solver"
+              }
+            },
+            {
+              "id": "command_rejection",
+              "shortDescription": {
+                "text": "command_rejection"
+              }
+            },
+            {
+              "id": "source_hash",
+              "shortDescription": {
+                "text": "source_hash"
+              }
+            },
+            {
+              "id": "build_log_hash",
+              "shortDescription": {
+                "text": "build_log_hash"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

@@ -1,0 +1,2 @@
+fn f(x: i64) -> bool requires(x > 0) { return true; }
+fn main() { let b = f(-1); }

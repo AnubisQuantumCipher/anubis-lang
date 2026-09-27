@@ -1,0 +1,8 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let k = "a";
+    let m1 = {"a": 1};
+    let m2 = {k: s};
+    let m = merge(m1, m2);
+    print(m["a"]);
+}

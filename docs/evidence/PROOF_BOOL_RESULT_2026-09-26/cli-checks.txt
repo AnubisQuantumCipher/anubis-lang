@@ -1,0 +1,15 @@
+{"id": "ifc2r2_proof_bool_method_fallback", "form": "carrier", "mode": "check", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"id": "ifc2r2_proof_bool_method_fallback", "form": "carrier", "mode": "ifc2-report", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"id": "ifc2r2_proof_bool_method_fallback", "form": "direct", "mode": "check", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"id": "ifc2r2_proof_bool_method_fallback", "form": "direct", "mode": "ifc2-report", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"id": "ifc2r2_proof_bool_public", "form": "carrier", "mode": "check", "rc": 0, "observed": "ACCEPT", "passed": true}
+{"id": "ifc2r2_proof_bool_public", "form": "carrier", "mode": "ifc2-report", "rc": 0, "observed": "ACCEPT", "passed": true}
+{"id": "ifc2r2_proof_bool_released", "form": "carrier", "mode": "check", "rc": 0, "observed": "ACCEPT", "passed": true}
+{"id": "ifc2r2_proof_bool_released", "form": "carrier", "mode": "ifc2-report", "rc": 0, "observed": "ACCEPT", "passed": true}
+{"id": "ifc2r2_proof_bool_ordinary_struct", "form": "carrier", "mode": "check", "rc": 0, "observed": "ACCEPT", "passed": true}
+{"id": "ifc2r2_proof_bool_ordinary_struct", "form": "carrier", "mode": "ifc2-report", "rc": 0, "observed": "ACCEPT", "passed": true}
+{"id": "ifc2r2_proof_bool_helper_return", "form": "carrier", "mode": "check", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"id": "ifc2r2_proof_bool_helper_return", "form": "carrier", "mode": "ifc2-report", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"id": "ifc2r2_proof_bool_secret_truth", "form": "carrier", "mode": "check", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"id": "ifc2r2_proof_bool_secret_truth", "form": "carrier", "mode": "ifc2-report", "rc": 1, "observed": "SEC_REJECT", "passed": true}
+{"PASS": 14}

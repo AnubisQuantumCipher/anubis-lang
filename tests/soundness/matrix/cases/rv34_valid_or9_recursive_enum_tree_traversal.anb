@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64, tag: str }
+enum Tree { Empty, Node(Tree, S, Tree) }
+fn size(t: Tree) -> i64 {
+    match t {
+        Tree::Empty => 0,
+        Tree::Node(l, _, r) => size(l) + 1,
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 5, tag: "e" };
+    let t = Tree::Node(Tree::Empty, p, Tree::Empty);
+    println(str(size(t)));
+}

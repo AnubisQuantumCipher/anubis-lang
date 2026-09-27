@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (<TARGET>/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 2 tests
+program-evidence.v3 skipped: no native artifact
+test evidence::pca_tests::safe_bundle_without_obligations_never_claims_a_replay ... ok
+program-evidence.v3 skipped: no native artifact
+test evidence::pca_tests::safe_bundle_replay_rows_match_every_solver_check_and_are_manifest_bound ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 916 filtered out; finished in 0.10s

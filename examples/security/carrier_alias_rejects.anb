@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Item-21 Family-1: requires carried through a local alias
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn app(g, y) { let h = g; h(-1); }
+fn main() { app(f, 0); }

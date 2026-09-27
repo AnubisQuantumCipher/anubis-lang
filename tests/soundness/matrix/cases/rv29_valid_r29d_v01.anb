@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn build(x, n) { if n == 0 { return { "v": x }; } return { "c": build(x, n - 1) }; }
+fn main() { let p = S { k: 42, pub_n: 3 }; let t = build(p, 3); print(len(t)); }

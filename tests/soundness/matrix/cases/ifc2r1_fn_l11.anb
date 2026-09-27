@@ -1,0 +1,10 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let second = if k > 100 { "a" } else { "b" };
+    let m = {"a": 1, second: 2};
+    let r = each(m, |key| {
+        println("tick");
+        0
+    });
+    println("end");
+}

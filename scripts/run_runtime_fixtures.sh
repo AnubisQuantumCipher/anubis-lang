@@ -53,7 +53,11 @@ STAMP="$(date +%Y%m%dT%H%M%S)_$$"
 OUT_DIR="out/runtime_fixtures/${STAMP}"
 FIXTURE_DIR="tests/fixtures/runtime"
 GLOB_PAT='*.anb'
-DEFAULT_TIMEOUT=120
+# Harness budget. Must stay ABOVE the compiler's per-query hang guard (`Z3_ARGS`'
+# `-T`, currently 120s): `anubis run`/`build` run the same solver pass, so a harness
+# that kills first turns a clean UNDECIDED into rc 124 with no diagnostic. See the
+# ordering note on `Z3_ARGS` in compiler/src/middle/mod.rs.
+DEFAULT_TIMEOUT=${ANUBIS_GATE_CHECK_BUDGET_SECS:-300}
 OUT_EXPLICIT=0
 
 while [[ $# -gt 0 ]]; do

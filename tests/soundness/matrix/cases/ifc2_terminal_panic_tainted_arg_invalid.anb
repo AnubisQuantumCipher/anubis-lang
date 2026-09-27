@@ -1,0 +1,4 @@
+fn main() {
+    let msg: tainted<string> = "untrusted message";
+    panic(msg);
+}

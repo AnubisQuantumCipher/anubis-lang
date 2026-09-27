@@ -1,0 +1,1 @@
+fn main() { let f = first([write_file]); f("/home/sicarii/.cache/anubis-item21/reconcile/tmp/t14_r6_first_extract_builtin.txt", "x"); }

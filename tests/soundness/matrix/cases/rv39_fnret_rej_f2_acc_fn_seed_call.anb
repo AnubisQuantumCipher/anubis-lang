@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+fn fold3(acc, x) { acc(x); return acc; }
+fn mk() { return show; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    reduce([p], fold3, mk());
+}

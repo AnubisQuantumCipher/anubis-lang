@@ -1,0 +1,8 @@
+fn main() {
+    let k: secret<i64> = 42;
+    if k > 100 {
+        let c = cap_acquire_nonexportable("net");
+        cap_use(c);
+    }
+    print(keychain_se_last_bind());
+}

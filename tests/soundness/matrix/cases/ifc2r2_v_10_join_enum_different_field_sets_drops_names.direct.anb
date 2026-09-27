@@ -1,0 +1,8 @@
+enum E {
+    V { a: i64, b: secret<i64> },
+}
+fn main() {
+    let sv = 42;
+    let e = E::V { b: sv };
+    println(e.b);
+}

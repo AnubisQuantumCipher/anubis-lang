@@ -1,0 +1,9 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn g(q: S) -> Result<i64, S> { let r = Result::Err { e: q, n: 1 }; let v = r?; return Ok(v); }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let xs = [p, S { k: 7, pub_n: 1 }];
+  let m = { "a": p };
+  let out = g(p);
+  print(out.e);
+}

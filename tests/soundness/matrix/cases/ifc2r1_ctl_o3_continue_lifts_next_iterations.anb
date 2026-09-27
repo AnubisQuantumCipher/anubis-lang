@@ -1,0 +1,12 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let mut hits = 0;
+    for x in [1, 2, 3] {
+        println(x);
+        if x > s {
+            continue;
+        }
+        hits = hits + 1;
+    }
+    println("done");
+}

@@ -1,0 +1,97 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let a0 = [p];
+    let a1 = [0];
+    let a2 = [0];
+    let a3 = [0];
+    let a4 = [0];
+    let a5 = [0];
+    let a6 = [0];
+    let a7 = [0];
+    let a8 = [0];
+    let a9 = [0];
+    let a10 = [0];
+    let a11 = [0];
+    let a12 = [0];
+    let a13 = [0];
+    let a14 = [0];
+    let a15 = [0];
+    let a16 = [0];
+    let a17 = [0];
+    let a18 = [0];
+    let a19 = [0];
+    for i0 in range(0, 2) {
+        a0 = {"x": a3};
+        for i1 in range(0, 2) {
+            a1 = {"x": a4};
+            for i2 in range(0, 2) {
+                a2 = {"x": a5};
+                for i3 in range(0, 2) {
+                    a3 = {"x": a6};
+                    for i4 in range(0, 2) {
+                        a4 = {"x": a7};
+                        for i5 in range(0, 2) {
+                            a5 = {"x": a8};
+                            for i6 in range(0, 2) {
+                                a6 = {"x": a9};
+                                for i7 in range(0, 2) {
+                                    a7 = {"x": a10};
+                                    for i8 in range(0, 2) {
+                                        a8 = {"x": a11};
+                                        for i9 in range(0, 2) {
+                                            a9 = {"x": a12};
+                                            for i10 in range(0, 2) {
+                                                a10 = {"x": a13};
+                                                for i11 in range(0, 2) {
+                                                    a11 = {"x": a14};
+                                                    for i12 in range(0, 2) {
+                                                        a12 = {"x": a15};
+                                                        for i13 in range(0, 2) {
+                                                            a13 = {"x": a16};
+                                                            for i14 in range(0, 2) {
+                                                                a14 = {"x": a17};
+                                                                for i15 in range(0, 2) {
+                                                                    a15 = {"x": a18};
+                                                                    for i16 in range(0, 2) {
+                                                                        a16 = {"x": a19};
+                                                                        for i17 in range(0, 2) {
+                                                                            a19 = a18;
+                                                                            a18 = a17;
+                                                                            a17 = a16;
+                                                                            a16 = a15;
+                                                                            a15 = a14;
+                                                                            a14 = a13;
+                                                                            a13 = a12;
+                                                                            a12 = a11;
+                                                                            a11 = a10;
+                                                                            a10 = a9;
+                                                                            a9 = a8;
+                                                                            a8 = a7;
+                                                                            a7 = a6;
+                                                                            a6 = a5;
+                                                                            a5 = a4;
+                                                                            a4 = a3;
+                                                                            a3 = a2;
+                                                                            a2 = a1;
+                                                                            a1 = a0;
+                                                                            print(len(a0));
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,29 @@
+struct Employee { k: secret<i64>, name: str, dept: str }
+struct Dept { name: str, staff: list<Employee> }
+impl Employee {
+    fn same(self, other: Employee) -> bool {
+        return self == other;
+    }
+}
+impl Dept {
+    fn same(self, other: Dept) -> bool {
+        return self.name == other.name;
+    }
+}
+fn build(n: str, xs: list<Employee>) -> Dept {
+    let d = Dept { name: n, staff: xs };
+    return d;
+}
+fn main() {
+    let ann = Employee { k: 42, name: "ann", dept: "eng" };
+    let bob = Employee { k: 7, name: "bob", dept: "eng" };
+    let eng = build("eng", [ann, bob]);
+    let ops = build("ops", []);
+    let mut tally = {};
+    for e in eng.staff {
+        tally[e.dept] = get(tally, e.dept, 0) + 1;
+    }
+    println("eng headcount ${tally["eng"]}");
+    println("eng is ops: ${eng.same(ops)}");
+    let kk = declassify(ann.k, "audit", "audited");
+}

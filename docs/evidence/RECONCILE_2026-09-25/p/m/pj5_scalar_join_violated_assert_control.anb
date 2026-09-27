@@ -1,0 +1,7 @@
+fn g(c: i64) -> i64 requires(c >= 0) requires(c <= 10) {
+    let x = 1;
+    if c > 5 { x = 0 - 1; }
+    assert(x > 0);
+    return x;
+}
+fn main() { print(g(7)); }

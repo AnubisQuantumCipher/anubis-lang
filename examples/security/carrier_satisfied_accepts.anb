@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Item-21 Family-1 over-rejection guard: a satisfied precondition
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn app(g, y) { if 1 == 1 { g(5); } }
+fn main() { app(f, 0); }

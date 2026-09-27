@@ -1,0 +1,4 @@
+fn dirty() { return taint_source("evil"); }
+fn clean() { return "ok"; }
+fn pick(c) { if c > 5 { return clean; } let h = dirty; return h; }
+fn main() { let h = pick(1); sink(h()); }

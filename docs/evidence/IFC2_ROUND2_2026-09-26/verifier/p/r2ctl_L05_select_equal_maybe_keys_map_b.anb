@@ -1,0 +1,16 @@
+fn main() {
+    let s: secret<i64> = 123456;
+    let k = len(args()) < 100;
+    let mut m1 = {"id": []};
+    let mut m2 = {"id": []};
+    if k {
+        m1["extra"] = [];
+    } else {
+        m2["extra"] = [];
+    }
+    let m = match s > 100 {
+        true => m1,
+        _ => m2,
+    };
+    println(len(m));
+}

@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+struct User { id: i64 }
+impl User { fn id2(self) { return self.id; } }
+fn main() { let us = [User { id: 1 }]; let idx = {}; for u in us { idx[u.id] = u.id; } for u in us { print(u.id2()); } print(map([1], f)); }

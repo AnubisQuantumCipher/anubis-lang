@@ -1,0 +1,11 @@
+struct User { name: secret<string>, id: i64 }
+struct Item { name: string, id: i64 }
+fn f(n) {
+    let mut names = "";
+    for i in 0..n {
+        let it = Item { name: "item${i}", id: i };
+        names = names + it.name;
+    }
+    return names;
+}
+fn main() { let u = User { name: "alice", id: 1 }; print(f(3)); }

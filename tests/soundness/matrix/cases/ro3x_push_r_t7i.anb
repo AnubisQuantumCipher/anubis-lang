@@ -1,0 +1,13 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q: S) {
+    let xs = [0];
+    if let Some(n) = Some(q.pub_n) {
+        push(xs, q.k);
+    } else {
+        [5]
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

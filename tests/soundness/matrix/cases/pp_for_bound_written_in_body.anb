@@ -1,0 +1,2 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn main() { let mut i = 5; for _j in 0..i { i = 0; f(i); } }

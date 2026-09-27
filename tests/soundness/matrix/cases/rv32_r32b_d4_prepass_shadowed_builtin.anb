@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let merge = |a, b| [0, 0];
+    let m = { "x": 1 };
+    let i = 0;
+    while i < 2 {
+        if i == 1 {
+            m["01"] = p;
+        } else {
+            m = merge(m, {});
+        }
+        i = i + 1;
+    }
+    print(m["1"]);
+}

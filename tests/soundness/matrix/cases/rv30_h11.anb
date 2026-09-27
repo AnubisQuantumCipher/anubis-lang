@@ -1,0 +1,20 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h(p) {
+    let c0 = |x| [x];
+    let c1 = |x| c0(c0(x));
+    let c2 = |x| c1(c1(x));
+    let c3 = |x| c2(c2(x));
+    let c4 = |x| c3(c3(x));
+    let c5 = |x| c4(c4(x));
+    let c6 = |x| c5(c5(x));
+    let c7 = |x| c6(c6(x));
+    let c8 = |x| c7(c7(x));
+    let c9 = |x| c8(c8(x));
+    let c10 = |x| c9(c9(x));
+    let c11 = |x| c10(c10(x));
+    return len(c11(p));
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(h(p));
+}

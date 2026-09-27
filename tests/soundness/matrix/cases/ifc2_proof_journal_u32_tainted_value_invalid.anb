@@ -1,0 +1,4 @@
+fn main() {
+    let t: tainted<i64> = 3;
+    proof_commit_u32("flag", t);
+}

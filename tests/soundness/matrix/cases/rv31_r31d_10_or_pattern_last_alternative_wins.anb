@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, 0];
+    let y = match xs {
+        [x, _] | [_, x] => x,
+        _ => 5,
+    };
+    print(y);
+}

@@ -1,0 +1,84 @@
+fn getsec() -> secret<i64> { let s: secret<i64> = 42; return s; }
+fn pub1() -> i64 { return 1; }
+struct T0 { n: i64 }
+impl T0 { fn get(self, k) { if k > 0 { return pub1; } let t = T1 { n: 1 }; return t.get(k + 1); } }
+struct T1 { n: i64 }
+impl T1 { fn get(self, k) { if k > 1 { return pub1; } let t = T2 { n: 1 }; return t.get(k + 1); } }
+struct T2 { n: i64 }
+impl T2 { fn get(self, k) { if k > 2 { return pub1; } let t = T3 { n: 1 }; return t.get(k + 1); } }
+struct T3 { n: i64 }
+impl T3 { fn get(self, k) { if k > 3 { return pub1; } let t = T4 { n: 1 }; return t.get(k + 1); } }
+struct T4 { n: i64 }
+impl T4 { fn get(self, k) { if k > 4 { return pub1; } let t = T5 { n: 1 }; return t.get(k + 1); } }
+struct T5 { n: i64 }
+impl T5 { fn get(self, k) { if k > 5 { return pub1; } let t = T6 { n: 1 }; return t.get(k + 1); } }
+struct T6 { n: i64 }
+impl T6 { fn get(self, k) { if k > 6 { return pub1; } let t = T7 { n: 1 }; return t.get(k + 1); } }
+struct T7 { n: i64 }
+impl T7 { fn get(self, k) { if k > 7 { return pub1; } let t = T8 { n: 1 }; return t.get(k + 1); } }
+struct T8 { n: i64 }
+impl T8 { fn get(self, k) { if k > 8 { return pub1; } let t = T9 { n: 1 }; return t.get(k + 1); } }
+struct T9 { n: i64 }
+impl T9 { fn get(self, k) { if k > 9 { return pub1; } let t = T10 { n: 1 }; return t.get(k + 1); } }
+struct T10 { n: i64 }
+impl T10 { fn get(self, k) { if k > 10 { return pub1; } let t = T11 { n: 1 }; return t.get(k + 1); } }
+struct T11 { n: i64 }
+impl T11 { fn get(self, k) { if k > 11 { return pub1; } let t = T12 { n: 1 }; return t.get(k + 1); } }
+struct T12 { n: i64 }
+impl T12 { fn get(self, k) { if k > 12 { return pub1; } let t = T13 { n: 1 }; return t.get(k + 1); } }
+struct T13 { n: i64 }
+impl T13 { fn get(self, k) { if k > 13 { return pub1; } let t = T14 { n: 1 }; return t.get(k + 1); } }
+struct T14 { n: i64 }
+impl T14 { fn get(self, k) { if k > 14 { return pub1; } let t = T15 { n: 1 }; return t.get(k + 1); } }
+struct T15 { n: i64 }
+impl T15 { fn get(self, k) { if k > 15 { return pub1; } let t = T16 { n: 1 }; return t.get(k + 1); } }
+struct T16 { n: i64 }
+impl T16 { fn get(self, k) { if k > 16 { return pub1; } let t = T17 { n: 1 }; return t.get(k + 1); } }
+struct T17 { n: i64 }
+impl T17 { fn get(self, k) { if k > 17 { return pub1; } let t = T18 { n: 1 }; return t.get(k + 1); } }
+struct T18 { n: i64 }
+impl T18 { fn get(self, k) { if k > 18 { return pub1; } let t = T19 { n: 1 }; return t.get(k + 1); } }
+struct T19 { n: i64 }
+impl T19 { fn get(self, k) { if k > 19 { return pub1; } let t = T20 { n: 1 }; return t.get(k + 1); } }
+struct T20 { n: i64 }
+impl T20 { fn get(self, k) { if k > 20 { return pub1; } let t = T21 { n: 1 }; return t.get(k + 1); } }
+struct T21 { n: i64 }
+impl T21 { fn get(self, k) { if k > 21 { return pub1; } let t = T22 { n: 1 }; return t.get(k + 1); } }
+struct T22 { n: i64 }
+impl T22 { fn get(self, k) { if k > 22 { return pub1; } let t = T23 { n: 1 }; return t.get(k + 1); } }
+struct T23 { n: i64 }
+impl T23 { fn get(self, k) { if k > 23 { return pub1; } let t = T24 { n: 1 }; return t.get(k + 1); } }
+struct T24 { n: i64 }
+impl T24 { fn get(self, k) { if k > 24 { return pub1; } let t = T25 { n: 1 }; return t.get(k + 1); } }
+struct T25 { n: i64 }
+impl T25 { fn get(self, k) { if k > 25 { return pub1; } let t = T26 { n: 1 }; return t.get(k + 1); } }
+struct T26 { n: i64 }
+impl T26 { fn get(self, k) { if k > 26 { return pub1; } let t = T27 { n: 1 }; return t.get(k + 1); } }
+struct T27 { n: i64 }
+impl T27 { fn get(self, k) { if k > 27 { return pub1; } let t = T28 { n: 1 }; return t.get(k + 1); } }
+struct T28 { n: i64 }
+impl T28 { fn get(self, k) { if k > 28 { return pub1; } let t = T29 { n: 1 }; return t.get(k + 1); } }
+struct T29 { n: i64 }
+impl T29 { fn get(self, k) { if k > 29 { return pub1; } let t = T30 { n: 1 }; return t.get(k + 1); } }
+struct T30 { n: i64 }
+impl T30 { fn get(self, k) { if k > 30 { return pub1; } let t = T31 { n: 1 }; return t.get(k + 1); } }
+struct T31 { n: i64 }
+impl T31 { fn get(self, k) { if k > 31 { return pub1; } let t = T32 { n: 1 }; return t.get(k + 1); } }
+struct T32 { n: i64 }
+impl T32 { fn get(self, k) { if k > 32 { return pub1; } let t = T33 { n: 1 }; return t.get(k + 1); } }
+struct T33 { n: i64 }
+impl T33 { fn get(self, k) { if k > 33 { return pub1; } let t = T34 { n: 1 }; return t.get(k + 1); } }
+struct T34 { n: i64 }
+impl T34 { fn get(self, k) { if k > 34 { return pub1; } let t = T35 { n: 1 }; return t.get(k + 1); } }
+struct T35 { n: i64 }
+impl T35 { fn get(self, k) { if k > 35 { return pub1; } let t = T36 { n: 1 }; return t.get(k + 1); } }
+struct T36 { n: i64 }
+impl T36 { fn get(self, k) { if k > 36 { return pub1; } let t = T37 { n: 1 }; return t.get(k + 1); } }
+struct T37 { n: i64 }
+impl T37 { fn get(self, k) { if k > 37 { return pub1; } let t = T38 { n: 1 }; return t.get(k + 1); } }
+struct T38 { n: i64 }
+impl T38 { fn get(self, k) { if k > 38 { return pub1; } let t = T39 { n: 1 }; return t.get(k + 1); } }
+struct T39 { n: i64 }
+impl T39 { fn get(self, k) { if k > 39 { return pub1; } let t = T0 { n: 1 }; return t.get(k + 1); } }
+fn a(c, g, h) { if c > 5 { return g; } let t = T0 { n: 1 }; let r = a(c + 1, h, t.get(0)); return r; }
+fn main() { let q = a(1, pub1, pub1); print(q()); }

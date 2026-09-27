@@ -1,0 +1,9 @@
+fn main() {
+    let pw: secret<str> = "hunter2";
+    let check = |x| {
+        println("checking password strength");
+        len(x) > 6
+    };
+    let strong = apply(check, pw);
+    println(declassify(strong, "policy", "strength bit only"));
+}

@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show_pub(s) { return "n=${s.pub_n}"; }
+fn show_short(s) { return "S"; }
+fn idle(s) { return "idle"; }
+fn busy(s) { return "busy ${s.pub_n}"; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut state = idle;
+    let mut tick = 0;
+    while tick < 4 {
+        println(state(p));
+        let next = if tick % 2 == 0 { busy } else { idle };
+        state = next;
+        tick = tick + 1;
+    }
+}

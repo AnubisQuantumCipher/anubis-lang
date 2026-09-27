@@ -1,0 +1,27 @@
+struct P {
+    a: i64,
+    b: i64,
+}
+
+impl P {
+    fn upd(self) -> P {
+        let s: secret<i64> = 42;
+        let mut q = self;
+        for i in [1] {
+            if s > 100 {
+                continue;
+            }
+            q.b = 7;
+        }
+        q
+    }
+}
+
+fn main() {
+    let mut p = P { a: 1 };
+    if false {
+        p.b = 2;
+    }
+    let r = p.upd();
+    println(len(r));
+}

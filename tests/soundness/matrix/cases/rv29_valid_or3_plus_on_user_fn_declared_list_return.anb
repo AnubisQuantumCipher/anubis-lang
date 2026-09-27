@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn defaults() -> list<S> {
+    return [];
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    let all = defaults() + xs;
+    print(len(all));
+}

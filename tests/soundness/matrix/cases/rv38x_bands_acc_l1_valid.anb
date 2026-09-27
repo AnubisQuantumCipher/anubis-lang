@@ -1,0 +1,29 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn run(p, n) {
+    let y = |q| { 0 };
+    let w = [y];
+    let r = identity(if n > 0 {
+        let y = w[0];
+        identity(if n > 1 {
+            let x = y;
+            identity(if n > 2 {
+                let v = [x];
+                let x = v[0];
+                identity(if n > 3 {
+                    let z = x;
+                    identity(if n > 4 {
+                        let u = [z];
+                        let z = u[0];
+                        identity(if n > 5 { let t = z; t } else { 0 })
+                    } else { 0 })
+                } else { 0 })
+            } else { 0 })
+        } else { 0 })
+    } else { 0 });
+    r(p);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p, 7);
+}

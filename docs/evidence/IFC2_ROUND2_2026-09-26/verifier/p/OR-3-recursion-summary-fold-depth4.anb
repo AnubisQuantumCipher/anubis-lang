@@ -1,0 +1,38 @@
+// A binary search tree of accounts: public ids as keys, secret balances as values, inserted
+// one by one. The report prints only how many accounts the tree holds.
+enum Tree {
+    Leaf,
+    Node(i64, secret<i64>, Tree, Tree),
+}
+
+fn insert(t, k, v) {
+    return match t {
+        Tree::Leaf => Tree::Node(k, v, Tree::Leaf, Tree::Leaf),
+        Tree::Node(k2, v2, l, r) => if k < k2 {
+            Tree::Node(k2, v2, insert(l, k, v), r)
+        } else {
+            Tree::Node(k2, v2, l, insert(r, k, v))
+        },
+    };
+}
+
+fn size(t) {
+    return match t {
+        Tree::Leaf => 0,
+        Tree::Node(k, v, l, r) => size(l) + 1 + size(r),
+    };
+}
+
+fn main() {
+    let base: secret<i64> = 42;
+    let t0 = insert(Tree::Leaf, 50, base + 50);
+    let t1 = insert(t0, 20, base + 20);
+    let t2 = insert(t1, 80, base + 80);
+    let t3 = insert(t2, 10, base + 10);
+    let t4 = insert(t3, 30, base + 30);
+    let t5 = insert(t4, 70, base + 70);
+    let t6 = insert(t5, 90, base + 90);
+    let t7 = insert(t6, 5, base + 5);
+    let t8 = insert(t7, 15, base + 15);
+    print("accounts: " + str(size(t8)));
+}

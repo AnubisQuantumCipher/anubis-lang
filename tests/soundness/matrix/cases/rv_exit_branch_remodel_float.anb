@@ -1,0 +1,14 @@
+fn f(n) requires(n >= 3) {
+    println(n);
+}
+fn main() {
+    let c = len(args()) < 0;
+    let mut x = 2.5;
+    if c {
+        x = 3;
+        return;
+    }
+    if x > 2 {
+        f(x);
+    }
+}

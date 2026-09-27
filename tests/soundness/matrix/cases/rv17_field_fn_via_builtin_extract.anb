@@ -1,0 +1,6 @@
+fn f(x: i64) -> i64 requires(x > 0) { print("f entered with ${x}"); return x; }
+struct H { h: any }
+struct O { n: i64 }
+impl O { fn h(self, x) { return x; } }
+fn mk(c) { let fs = [f]; let t = [H { h: first(fs) }]; if c > 0 { return t[0]; } return O { n: 1 }; }
+fn main() { print(mk(1).h(-1)); }

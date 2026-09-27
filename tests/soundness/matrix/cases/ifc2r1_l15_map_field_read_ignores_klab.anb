@@ -1,0 +1,6 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let key = if k == 42 { "a" } else { "b" };
+    let m = {"a": 1, key: 2};
+    print(m.a);
+}

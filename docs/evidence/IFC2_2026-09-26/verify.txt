@@ -1,0 +1,17 @@
+pin==build
+tests(release) passed=1461 failed=0 crashed_binaries=0 cargo_rc=0
+solver(debug) passed=123 failed=0
+ALL: 2319 cases -> FAIL-wrong-class=112, INVALID=11, PASS=2196
+rows=968
+956 968 rc flips []
+certified 955 -> 955  discharged 1421 -> 1421
+cert diffs 0
+run_nexus_gate.sh rc=0 ALL GATES PASS → /home/sicarii/.cache/anubis-wt/ifc2land/out/nexus_gate/report.txt
+run_package_gate.sh rc=0 PACKAGE_GATE: PASS
+run_security_fixtures.sh rc=0 Overall: PASS (356/356)
+run_language_fixtures.sh rc=0 Overall: PASS (271/271)
+run_docs_drift_gate.sh rc=0 Overall: PASS (38 stamps checked, 0 drift)
+run_walker_completeness_gate.sh rc=0 WALKER_COMPLETENESS_GATE: PASS
+run_phase3_label_census.sh rc=0 PHASE_3_LABEL_CENSUS: PASS
+test_phase_metrics_ledger.sh rc=0 PHASE_METRICS_LEDGER_TESTS: 10 passed, 0 failed
+verify rc=0

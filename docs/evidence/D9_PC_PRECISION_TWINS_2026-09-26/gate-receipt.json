@@ -1,0 +1,34 @@
+{
+  "docs_drift": {
+    "command": "bash scripts/run_docs_drift_gate.sh --out <scratch>",
+    "exit_code_observed": 0,
+    "overall_verdict": "PASS",
+    "report_sha256": "fe47f3a5d56c940f1ac90609ae487635ff9780923e2cc38736463cc868663dc9",
+    "stamps_checked": 36
+  },
+  "fixture_commit": "e6b4fb7e86286c6314595284c0e014ca6bd49813",
+  "fixture_tree": "544db1cb975504b7ee9097aade8be3ae27c0463f",
+  "limits": [
+    "No D9 candidate built or checked",
+    "No full matrix or whole-workspace gate",
+    "No native execution or disposable-guest witness",
+    "Local baseline binary is not a published immutable pin"
+  ],
+  "matrix_harness": {
+    "command": "python3 -m unittest tests.soundness.matrix.test_run",
+    "exit_code_observed": 0,
+    "log_sha256": "04e83a3544c35a5362317482a82e59624e00e020a276d697bbd747f3e0e5ac24",
+    "tests_reported": 48
+  },
+  "record_kind": "anubis-d9-registration-gates/1",
+  "selected_safe_check": {
+    "baseline_json_sha256": "358ab328a2c6031f8e6538111c9a92b7afced069cb7d2d5d975e2b890990f4bd",
+    "command": "<sha256-identified-anubis> check <source> --message-format=json",
+    "compiler_binary_sha256": "98e8090a07716e4876c65422c368e373d92717456edc235f296d8b687f17aac0",
+    "compiler_middle_source_sha256": "494a7752d946158411664bb15c09506033b8bfbf6a9c6dc436f171e368b71b2d",
+    "new_case_count": 14,
+    "protocol_error_count": 0,
+    "registry_sha256": "cc0446dd52512be0db111fa91ecebdb5b82d5f70dbab235a7cdb4d3688c9186e",
+    "timeout_count": 0
+  }
+}

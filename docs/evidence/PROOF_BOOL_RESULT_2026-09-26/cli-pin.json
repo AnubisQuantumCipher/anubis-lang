@@ -1,0 +1,19 @@
+{
+  "path": "/home/sicarii/.cache/anubis-item21/pins/anubis-proof-bool-c91445cdb04faab8",
+  "sha256": "c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7",
+  "code_commit": "b835b94b44fa8705dd973eb1133f862706fd04a8",
+  "head_after_build": "e3b8e1a11cd1dc05c76419bce56009fd901a819d",
+  "source_manifest": "docs/evidence/PROOF_BOOL_RESULT_2026-09-26/source-manifest.json",
+  "source_stability": "docs/evidence/PROOF_BOOL_RESULT_2026-09-26/source-stability.json",
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "-j",
+    "2",
+    "-p",
+    "anubis"
+  ],
+  "note": "Build began at code commit, docs-only commit followed during dependency compilation. Compiler/solver/CLI/vendor/toolchain input hashes remain unchanged. No byte-for-byte independent rebuild claim."
+}

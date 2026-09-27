@@ -2,41 +2,56 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+#[cfg(any(test, feature = "prove"))]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[cfg(any(test, feature = "prove"))]
 pub const INPUT_SCHEMA_VERSION: &str = "1";
 /// Anubis Binary Proof-input container magic (`ANBP` little-endian).
 /// Used by `encode_anbp_blob` for an optional binary sidecar next to JSON v1.
+#[cfg(any(test, feature = "prove"))]
 pub const ANBP_MAGIC: u32 = 0x414E_4250;
 
 #[derive(Debug, Clone)]
 pub struct ProofInputs {
     /// Sorted map of name → integer (bool as 0/1).
     pub values: BTreeMap<String, i64>,
-    pub mode: String,   // none | json | file
+    #[cfg(any(test, feature = "prove"))]
+    pub mode: String, // none | json | file
+    #[cfg(any(test, feature = "prove"))]
     pub source: String, // --input-json | path | empty
+    #[cfg(any(test, feature = "prove"))]
     pub canonical_json: String,
+    #[cfg(any(test, feature = "prove"))]
     pub sha256: String,
+    #[cfg(any(test, feature = "prove"))]
     pub redacted: bool,
 }
 
 impl ProofInputs {
     pub fn empty() -> Self {
+        #[cfg(any(test, feature = "prove"))]
         let canonical_json = "{}".to_string();
+        #[cfg(any(test, feature = "prove"))]
         let sha256 = hex::encode(Sha256::digest(canonical_json.as_bytes()));
         Self {
             values: BTreeMap::new(),
+            #[cfg(any(test, feature = "prove"))]
             mode: "none".into(),
+            #[cfg(any(test, feature = "prove"))]
             source: String::new(),
+            #[cfg(any(test, feature = "prove"))]
             canonical_json,
+            #[cfg(any(test, feature = "prove"))]
             sha256,
+            #[cfg(any(test, feature = "prove"))]
             redacted: false,
         }
     }
 
-    pub fn from_json_str(raw: &str, mode: &str, source: &str) -> Result<Self> {
+    pub fn from_json_str(raw: &str, _mode: &str, _source: &str) -> Result<Self> {
         let v: Value = serde_json::from_str(raw)
             .map_err(|e| anyhow!("ANUBIS_PROOF_INPUT_INVALID_JSON: {}", e))?;
         let obj = v.as_object().ok_or_else(|| {
@@ -71,15 +86,22 @@ impl ProofInputs {
             values.insert(k.clone(), n);
         }
         // Canonical JSON: sorted keys, compact
+        #[cfg(any(test, feature = "prove"))]
         let canonical_json = serde_json::to_string(&values)
             .map_err(|e| anyhow!("ANUBIS_PROOF_INPUT_INVALID_JSON: canonicalize: {}", e))?;
+        #[cfg(any(test, feature = "prove"))]
         let sha256 = hex::encode(Sha256::digest(canonical_json.as_bytes()));
         Ok(Self {
             values,
-            mode: mode.into(),
-            source: source.into(),
+            #[cfg(any(test, feature = "prove"))]
+            mode: _mode.into(),
+            #[cfg(any(test, feature = "prove"))]
+            source: _source.into(),
+            #[cfg(any(test, feature = "prove"))]
             canonical_json,
+            #[cfg(any(test, feature = "prove"))]
             sha256,
+            #[cfg(any(test, feature = "prove"))]
             redacted: false,
         })
     }
@@ -96,6 +118,7 @@ impl ProofInputs {
         Self::from_json_str(&raw, "file", &path.display().to_string())
     }
 
+    #[cfg(any(test, feature = "prove"))]
     pub fn metadata_json(&self) -> serde_json::Value {
         serde_json::json!({
             "input_mode": self.mode,
@@ -111,6 +134,7 @@ impl ProofInputs {
 
     /// Encode inputs as a length-prefixed ANBP blob:
     /// `magic_u32_le | n_u32_le | (key_len_u16_le, key_utf8, value_i64_le)*` (sorted keys).
+    #[cfg(any(test, feature = "prove"))]
     pub fn encode_anbp_blob(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&ANBP_MAGIC.to_le_bytes());
@@ -128,6 +152,7 @@ impl ProofInputs {
 }
 
 /// Decode and validate an ANBP blob; returns entry count on success.
+#[cfg(any(test, feature = "prove"))]
 pub fn decode_anbp_header(blob: &[u8]) -> Result<u32> {
     if blob.len() < 8 {
         return Err(anyhow!("ANUBIS_PROOF_INPUT_ANBP_SHORT"));
@@ -146,6 +171,7 @@ pub fn decode_anbp_header(blob: &[u8]) -> Result<u32> {
 }
 
 /// Decode a RISC0 journal as a sequence of little-endian u32 public outputs.
+#[cfg(any(test, feature = "prove"))]
 pub fn decode_journal_u32s(journal: &[u8]) -> Result<Vec<u32>> {
     if journal.is_empty() {
         return Ok(vec![]);
@@ -157,10 +183,9 @@ pub fn decode_journal_u32s(journal: &[u8]) -> Result<Vec<u32>> {
         ));
     }
     let mut out = Vec::with_capacity(journal.len() / 4);
-    for chunk in journal.chunks_exact(4) {
-        let mut b = [0u8; 4];
-        b.copy_from_slice(chunk);
-        out.push(u32::from_le_bytes(b));
+    let (words, _) = journal.as_chunks::<4>();
+    for word in words {
+        out.push(u32::from_le_bytes(*word));
     }
     Ok(out)
 }
@@ -168,6 +193,7 @@ pub fn decode_journal_u32s(journal: &[u8]) -> Result<Vec<u32>> {
 /// Extract ordered field names from guest source for
 /// `anubis_proof_commit_u32("name", …)` / `anubis_proof_commit_bool("name", …)`.
 /// Only call sites with a string-literal first arg count (wrapper defs skipped).
+#[cfg(any(test, feature = "prove"))]
 pub fn extract_commit_field_names(guest_source: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut pos = 0;
@@ -200,6 +226,7 @@ pub fn extract_commit_field_names(guest_source: &str) -> Vec<String> {
 }
 
 /// Pair decoded journal u32s with guest-declared names (or synthetic field_N).
+#[cfg(any(test, feature = "prove"))]
 pub fn journal_fields_json(journal: &[u8], guest_source: &str) -> Result<serde_json::Value> {
     let values = decode_journal_u32s(journal)?;
     let names = extract_commit_field_names(guest_source);

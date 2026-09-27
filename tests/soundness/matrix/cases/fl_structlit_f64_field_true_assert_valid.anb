@@ -1,0 +1,6 @@
+struct P { x: f64 }
+fn main() {
+    let r = P { x: 7 }.x / 2;
+    assert(r == 3.5);
+    println(r);
+}

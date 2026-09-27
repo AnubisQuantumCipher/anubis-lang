@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn getp() -> S { return S { k: 42, pub_n: 3 }; }
+fn f(n) { let x = 0; let i = 0; while i < 3 { x = getp().pub_n; i = i + 1; } return x; }
+fn main() { print(f(1)); }

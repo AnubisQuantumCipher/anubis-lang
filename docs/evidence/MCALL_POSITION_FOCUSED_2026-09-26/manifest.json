@@ -1,0 +1,66 @@
+{
+  "binary": {
+    "basename": "anubis-mcall-032bf0b0-1410837b",
+    "build_log": "out/mcall-position-repair/release-build-032bf0b0.log",
+    "build_log_sha256": "f05cb962127a7c09179b12582bfa42cf8aafdc805c43f057db519c4a05f4d899",
+    "kind": "local technical pin; not release seal",
+    "sha256": "1410837b5c195d2aaec41f880bd93afc2356c3005e3db2efaa4d5664bf63f026"
+  },
+  "compiler": {
+    "cargo_lock_sha256": "b27a735e13c848f7f26cc05229c4aeb0e7c435a20c26a92502a1635990b14703",
+    "host": "Linux aarch64 QEMU guest",
+    "source_commit": "032bf0b0c6e2ccf13ccf2794ffef4896c3e437e0",
+    "source_tree": "19073d84a0bec80e5db71b177b1a9d9005db0ca3",
+    "toolchain": "rustc 1.97.0-nightly (82bee9650 2026-05-09); aarch64-unknown-linux-gnu",
+    "z3": "4.16.0"
+  },
+  "focused_run": {
+    "carrier_counts": {
+      "M-ARM-BINDER": {
+        "FAIL-silent": 2,
+        "FAIL-wrong-class": 7,
+        "PASS": 3
+      },
+      "M-CALL-POSITION": {
+        "PASS": 33
+      }
+    },
+    "matrix_history_label": "mcall-position-focused-032bf0b0",
+    "raw_logs": "ignored local out/mcall-position-repair/focused-final-032bf0b0; hashes per row",
+    "result_sha256": "a5817b867006b1887f4042496d558c8b2e3cf1ebeedbefbdaf70030a716f9082",
+    "runner": "ignored local out/mcall-position-repair/focused_runner.py",
+    "runner_log_sha256": "8a7f6883557371b296c9966b3d206f5a94456fc97a781d64b8956db7db85218a",
+    "runner_scope": [
+      "M-CALL-POSITION",
+      "M-ARM-BINDER"
+    ],
+    "runner_sha256": "0b5e500458d1301a11eb9a1019f9b3404dce2d727a76cb9a8a5b5409ce3c5a5b"
+  },
+  "not_run": [
+    "full soundness matrix",
+    "mandatory disposable-guest research/crash/fuzz/exploit lanes",
+    "hosted gate on this candidate",
+    "independent clean-room reproduction",
+    "external expert review",
+    "release seal"
+  ],
+  "published": {
+    "checker-outputs.redacted.txt": "52fd012bf86e1db0e45f4ba1e840f430425c79f0e53bea0ed477d19e040a6eb9",
+    "clippy-all.redacted.log": "4d3a6d87e082194cfa2595794126fa32dc5e6b4f2aea38ffc85cec4c3f298a35",
+    "compiler-lib.redacted.log": "7bdf54108323f6b4d924ca09f8d70f811ba753d1bf594507c2e66cc15ec50704",
+    "final-results.tsv": "242a730dc9c1e41a088cfba5564d96e7f686500df5c5cbf66d65b06e88ee2b47",
+    "release-build.redacted.log": "8da4a31bed474f4f345f3b009a6f3f1f6ff45d6a83a59569da69988371730e1c",
+    "verdict-flips.tsv": "d77ddba0db1f5098b107a93f91ac815725f2681901511f42f2066a24a1dccdef"
+  },
+  "schema": "anubis-focused-soundness-review/1",
+  "status": "FOCUSED_PASS_MCALL_ONLY",
+  "validation": {
+    "compiler_lib_observed": "test result: ok. 912 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+    "compiler_lib_test_log": "out/mcall-position-repair/compiler-lib-candidate.log",
+    "compiler_lib_test_log_sha256": "d8541375491b8e385dd3de45ac825bf95e64b0925a6958ffbe3301fbdbb3906c",
+    "docs_drift": "PASS on an earlier uncommitted worktree; not source-bound",
+    "format_check": "PASS",
+    "workspace_clippy_log": "out/mcall-position-repair/clippy-all-candidate.log",
+    "workspace_clippy_log_sha256": "25b870cb512773b10fad038cd17356fe6ec8cee46b48e480f3c51711be49c54d"
+  }
+}

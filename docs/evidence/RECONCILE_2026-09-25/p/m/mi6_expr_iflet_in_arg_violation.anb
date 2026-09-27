@@ -1,0 +1,6 @@
+fn f(x: i64) -> i64 requires(x > 0) { print(x); return x; }
+fn g(a: i64) -> i64 { return a; }
+fn main() {
+    let o = Some(1);
+    print(g(if let Some(y) = o { f(0 - 1) } else { 0 }));
+}

@@ -1,0 +1,7 @@
+struct Row { k: secret<i64>, n: i64 }
+fn emit(s: secret<i64>, public_choice: i64) {
+    let row = Row { k: s, n: 0 };
+    if public_choice > 0 { row.n = 1; } else { row.n = 2; }
+    println(row.n);
+}
+fn main() { emit(42, 1); }

@@ -1,0 +1,21 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn group(xs) {
+    let g: map<string, list<S>> = {};
+    for x in xs {
+        let key = str(x.pub_n);
+        if has_key(g, key) {
+            g[key] = g[key] + [x];
+        } else {
+            g[key] = [x];
+        }
+    }
+    return g;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }, S { k: 9, pub_n: 3 }];
+    let g = group(xs);
+    for key in keys(g) {
+        print(key + " -> " + str(len(g[key])));
+    }
+}

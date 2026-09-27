@@ -1,0 +1,43 @@
+   Compiling anubis-solver v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/solver)
+   Compiling anubis-compiler v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/compiler)
+    Finished `release` profile [optimized] target(s) in 37.45s
+     Running tests/ifc2_minmax.rs (/home/sicarii/.cache/anubis-wt/target-codex-round2/release/deps/ifc2_minmax-619fd00f4d5ac42b)
+
+running 15 tests
+test minmax_feedback_covers_aliases_compound_keys_and_nested_arguments ... ok
+test minmax_observation_captured_before_callback_is_fixed ... ok
+test minmax_repeatability_is_per_fixed_capture_snapshot ... ok
+test minmax_rechecks_secret_selected_callback_arguments ... ok
+test minmax_repeatable_keys_do_not_authorize_direct_key_egress ... ok
+test minmax_preserves_fixed_callback_schedule ... ok
+test minmax_repeatable_keys_preserve_secret_callable_control ... ok
+test minmax_repeatable_explicit_returns_preserve_public_argument_transcript ... ok
+test minmax_secret_length_still_controls_callback_schedule ... ok
+test minmax_repeatable_keys_preserve_selected_value_labels ... FAILED
+test minmax_short_lists_do_not_feed_a_selected_winner_back ... FAILED
+test minmax_equal_captured_keys_preserve_public_argument_transcript ... ok
+test minmax_repeatable_keys_follow_aliases_rebinding_and_shadowing ... ok
+test minmax_unmodeled_calls_do_not_prove_secret_keys_repeatable ... ok
+test minmax_mutation_and_early_return_cannot_retain_a_stale_repeatability_proof ... ok
+
+failures:
+
+---- minmax_repeatable_keys_preserve_selected_value_labels stdout ----
+
+thread 'minmax_repeatable_keys_preserve_selected_value_labels' (2118995) panicked at compiler/tests/ifc2_minmax.rs:15:5:
+fn main() { let s: secret<i64> = 42; let m = min_by([1, 2, 3], |x| s); println(m); }: Err("ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `m` flows to egress `println` without declassify() — release a private value with declassify(value, policy=…, reason=…) before it leaves the program")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- minmax_short_lists_do_not_feed_a_selected_winner_back stdout ----
+
+thread 'minmax_short_lists_do_not_feed_a_selected_winner_back' (2118997) panicked at compiler/tests/ifc2_minmax.rs:15:5:
+fn main() { let s: secret<i64> = 42; let m = min_by([1], |x| { println(s); x }); }: Err("ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `s` flows to egress `println` without declassify() — release a private value with declassify(value, policy=…, reason=…) before it leaves the program")
+
+
+failures:
+    minmax_repeatable_keys_preserve_selected_value_labels
+    minmax_short_lists_do_not_feed_a_selected_winner_back
+
+test result: FAILED. 13 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p anubis-compiler --test ifc2_minmax`

@@ -1,0 +1,38 @@
+   Compiling anubis-compiler v0.1.0 (<HOME>/.cache/anubis-wt/codex-register-round2/compiler)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.25s
+     Running unittests src/lib.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 1 test
+test middle::certificate_coverage_tests::typed_stream_integrity_never_turns_a_malformed_row_into_a_verdict ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1050 filtered out; finished in 0.00s
+
+     Running tests/closure_analysis_limit.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/closure_analysis_limit-baf107946c9c3a34)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/ifc2_minmax.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/ifc2_minmax-71b6bf79a2e858dd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s
+
+     Running tests/ifc2_proof_commit_bool.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/ifc2_proof_commit_bool-75b9df0ad09cfb48)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/match_expr_enum_contract.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/match_expr_enum_contract-72032578f91e75a0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/security_label_correspondence_observer.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/security_label_correspondence_observer-a79c63def9a5f806)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s

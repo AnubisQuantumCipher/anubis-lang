@@ -1,0 +1,6 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn getn(s) { return s.pub_n; }
+fn apply_all(l, f) { return map(l, f); }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p };
+print(apply_all(xs, getn));
+}

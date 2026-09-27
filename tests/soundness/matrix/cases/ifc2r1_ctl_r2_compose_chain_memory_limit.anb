@@ -1,0 +1,10 @@
+fn inc(z) {
+    z + 1
+}
+fn main() {
+    let mut c = identity;
+    for i in 0..5 {
+        c = compose(inc, c);
+    }
+    println(c(0));
+}

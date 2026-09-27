@@ -1,0 +1,14 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let a = |x| {
+        println("A");
+        x
+    };
+    let b = |x| {
+        println("B");
+        x
+    };
+    let f = if k > 100 { compose(a, identity) } else { compose(b, identity) };
+    let r = f(1);
+    println("done");
+}

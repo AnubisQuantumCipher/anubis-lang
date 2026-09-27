@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn r(n) { if n == 0 { return { "pub_n": S { k: 42, pub_n: 3 } }; } return { "pub_n": r(n - 1) }; }
+fn main() { let v = r(10); print(v.pub_n.pub_n.pub_n.pub_n.pub_n.pub_n.pub_n.pub_n.pub_n); }

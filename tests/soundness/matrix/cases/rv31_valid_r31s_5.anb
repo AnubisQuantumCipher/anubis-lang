@@ -1,0 +1,26 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn app(f, x) { return f(x); }
+fn run(xs) {
+    let a0 = app(|y| len(y) + 0, xs);
+    let a1 = app(|y| len(y) + 1, xs);
+    let a2 = app(|y| len(y) + 2, xs);
+    let a3 = app(|y| len(y) + 3, xs);
+    let a4 = app(|y| len(y) + 4, xs);
+    let a5 = app(|y| len(y) + 5, xs);
+    let a6 = app(|y| len(y) + 6, xs);
+    let a7 = app(|y| len(y) + 7, xs);
+    let a8 = app(|y| len(y) + 8, xs);
+    let a9 = app(|y| len(y) + 9, xs);
+    let a10 = app(|y| len(y) + 10, xs);
+    let a11 = app(|y| len(y) + 11, xs);
+    let a12 = app(|y| len(y) + 12, xs);
+    let a13 = app(|y| len(y) + 13, xs);
+    let a14 = app(|y| len(y) + 14, xs);
+    let a15 = app(|y| len(y) + 15, xs);
+    return a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14 + a15;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let xs = [p, S { k: 7, pub_n: 1 }];
+    print(run(xs));
+}

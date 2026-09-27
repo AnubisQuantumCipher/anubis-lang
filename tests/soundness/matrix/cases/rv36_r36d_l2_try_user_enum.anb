@@ -1,0 +1,8 @@
+struct S { k: secret<i64>, pub_n: i64 }
+enum E { W(S), N }
+impl E { fn show(self) { match self { E::W(z) => print(z), E::N => print(0), } return 0; } }
+fn g(e) { let q = e?; let r = q.show(); return 0; }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let z = g(E::W(p));
+}

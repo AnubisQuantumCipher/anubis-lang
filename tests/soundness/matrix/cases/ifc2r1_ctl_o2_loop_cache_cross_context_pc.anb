@@ -1,0 +1,13 @@
+fn cnt(n) {
+    let mut i = 0;
+    while i < n {
+        i = i + 1;
+    }
+    let r = 5;
+    r
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let a = if s > 100 { cnt(3) } else { 0 };
+    println(cnt(3));
+}

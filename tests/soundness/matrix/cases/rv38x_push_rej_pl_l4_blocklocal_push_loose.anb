@@ -1,0 +1,27 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+impl T {
+    fn show(self, o) {
+        print(self.n);
+    }
+}
+impl S {
+    fn show(self, o) {
+        print(o);
+    }
+}
+fn second(xs) {
+    return xs[1];
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let q = S { k: 7, pub_n: 1 };
+    if p.pub_n > 100 {
+        let push = 1;
+        println("${push}");
+    }
+    let xs = [T { n: 1 }];
+    push(xs, declassify(q, "release-policy", "audited"));
+    let x: T = second(xs);
+    x.show(p);
+}

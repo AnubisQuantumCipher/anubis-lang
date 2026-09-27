@@ -1,0 +1,5 @@
+fn main() {
+    let stop = exit;
+    stop();
+    println("continued");
+}

@@ -1,0 +1,28 @@
+struct Account { k: secret<i64>, id: i64, owner: str }
+struct Ledger { count: i64, total: i64 }
+struct Audit { lines: list<str> }
+
+impl Ledger {
+    fn try_add(self, a: Account) -> Result<Ledger, str> {
+        if a.id < 0 { return Err("negative id"); }
+        return Ok(Ledger { count: self.count + 1, total: self.total + a.id });
+    }
+    fn show(self) -> str { return "count=" + str(self.count) + " total=" + str(self.total); }
+}
+impl Audit {
+    fn try_add(self, line: str) -> Result<Audit, str> { return Ok(Audit { lines: self.lines + [line] }); }
+    fn show(self) -> str { return join(self.lines, ";"); }
+}
+
+fn main() {
+    let p = Account { k: 42, id: 3, owner: "ann" };
+    let xs = [p, Account { k: 7, id: 1, owner: "bob" }];
+    let mut led = Ledger { count: 0, total: 0 };
+    for a in xs {
+        match led.try_add(a) {
+            Ok(l) => { led = l; },
+            Err(e) => { println("skip: " + e); },
+        }
+    }
+    println(led.show());
+}

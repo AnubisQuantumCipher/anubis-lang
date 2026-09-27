@@ -1,0 +1,17 @@
+{
+  "binary_sha256": "06ab383684f3e953c613748938719fade05f573176457cb8133071a4e580df51",
+  "build_log_sha256": "e43330e6e9ed95077d408f6258cfa261d9d3e3b0e6e33a0e582e6d663518287d",
+  "build_step": "cargo build -p anubis --release with CARGO_BUILD_JOBS=2 in a memory-capped local Linux aarch64 scope",
+  "cargo": "cargo 1.97.0-nightly (a343accce 2026-05-08)",
+  "cargo_lock_sha256": "0064eaf059d9f4072af0b0b744d2a1833d88c552b6f137d3e91b7d41f93530fe",
+  "limits": [
+    "Local source-bound technical pin only; no independent rebuild, hosted gate, or release claim.",
+    "Machine-local paths and environment values are retained outside the public receipt."
+  ],
+  "local_manifest_sha256": "f78bc83e4a55df84bc796ee1fb08a2927e79307622d81b7ef74e07f9892d8ddc",
+  "rust_toolchain_sha256": "14035986b8412e40f7865b1a8fea402a1047ec5a8be3140fb3b7afff98a82e9f",
+  "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+  "schema": "anubis-public-local-binary-pin/1",
+  "source_commit": "6b85cf2207e5b3126a18e2df1190a4efa49a2ecc",
+  "source_tree": "cbd437d949cb96febd99a2f6087002e6892d1193"
+}

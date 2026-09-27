@@ -1,0 +1,6 @@
+struct P { x: f64 }
+fn h(b: bool) requires(b) { println(b); }
+fn main() {
+    let r = P { x: 7 }.x / 2;
+    h(r == 3);
+}

@@ -1,0 +1,7 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mk(x) { return |z| x; }
+fn use_it(x) { let g = mk(x); return g(0); }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(use_it(p));
+}

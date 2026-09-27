@@ -1,0 +1,18 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let r = if true {
+        let x = p;
+        let a = [0, 0, 0, 0, 0, 0, 0, 0];
+        let i = 0;
+        while i < 3 {
+            a = [a[1], a[2], a[3], a[4], a[5], a[6], a[7], p];
+            if i > 100 { x = || 0; }
+            i = i + 1;
+        }
+        x
+    } else {
+        0
+    };
+    print(r);
+}

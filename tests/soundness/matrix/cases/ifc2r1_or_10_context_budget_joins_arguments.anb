@@ -1,0 +1,28 @@
+// Weekly metrics dashboard: one average per series. The payroll series is private; its
+// average is only sanity-checked, never shown.
+fn avg(xs) {
+    let mut s = 0;
+    for x in xs {
+        s = s + x;
+    }
+    return s / len(xs);
+}
+
+fn main() {
+    let salary: secret<i64> = 42;
+    print("visits    " + str(avg([120, 130, 125])));
+    print("signups   " + str(avg([3, 5, 4, 6])));
+    print("errors    " + str(avg([1, 0, 2, 1, 0])));
+    print("latency   " + str(avg([80, 85, 90, 70, 75, 95])));
+    print("uptime    " + str(avg([99, 100, 99, 98, 100, 100, 99])));
+    print("tickets   " + str(avg([7, 9, 8, 6, 5, 7, 8, 9])));
+    print("builds    " + str(avg([20, 22, 21, 19, 25, 23, 20, 24, 22])));
+    print("deploys   " + str(avg([2, 3, 1, 2, 4, 3, 2, 1, 3, 2])));
+    print("reviews   " + str(avg([11, 12, 10, 13, 9, 12, 11, 10, 14, 12, 11])));
+    print("commits   " + str(avg([40, 46, 38, 45, 41, 39, 44, 43, 40, 47, 41, 39])));
+    print("pages     " + str(avg([5, 6, 5, 7, 6, 5, 6, 7, 5, 6, 6, 5, 7])));
+    print("alerts    " + str(avg([0, 1, 0, 0, 2, 1, 0, 1, 0, 0, 1, 0, 0, 1])));
+    let payroll_avg = avg([salary, salary + 10, salary + 20, salary + 30, salary + 40, salary + 50, salary + 60, salary + 70, salary + 80, salary + 90, salary + 100, salary + 110, salary + 120, salary + 130, salary + 140]);
+    assert(payroll_avg >= 0);
+    print("refunds   " + str(avg([4, 2, 3, 5, 1, 2, 3, 4, 2, 3, 1, 2, 4, 3, 2, 1])));
+}

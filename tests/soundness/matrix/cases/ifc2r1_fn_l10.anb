@@ -1,0 +1,14 @@
+struct Job { v: i64 }
+impl Job {
+    fn run(self, x: i64) -> i64 { x }
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let name = if k > 100 { "run" } else { "skip" };
+    let handlers = {name: |x| {
+        println("ran");
+        x
+    }};
+    let r = handlers.run(1);
+    println("end");
+}

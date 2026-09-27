@@ -1,0 +1,19 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Box { g: u64 }
+fn h2(x) {
+    print(x);
+    return 0;
+}
+fn h1(q) {
+    let s: secret<i64> = 7;
+    return s;
+}
+
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let c = p.pub_n > 1;
+    let d = p.pub_n > 100;
+    let i = 1;
+    let f = if c { h2 } else { h1 };
+    let z = each([p.k], f);
+}

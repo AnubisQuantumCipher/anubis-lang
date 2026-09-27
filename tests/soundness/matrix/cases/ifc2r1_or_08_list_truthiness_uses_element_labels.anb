@@ -1,0 +1,12 @@
+// Payment queue: amounts are secret; whether the queue is non-empty is public.
+fn main() {
+    let amt: secret<i64> = 42;
+    let mut pending = [];
+    pending = pending + [amt];
+    pending = pending + [amt * 2];
+    if pending {
+        print("payments pending");
+    } else {
+        print("queue empty");
+    }
+}

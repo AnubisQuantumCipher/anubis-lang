@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+struct Cfg { name: string, n: i64 }
+struct User { id: i64 }
+impl User { fn name(self) { return "u${self.id}"; } }
+fn main() { let o = Some(User { id: 1 }); if let Some(u) = o { print(u.name()); } print(map([1], f)); }

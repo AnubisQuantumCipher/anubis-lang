@@ -1,0 +1,126 @@
+[
+  {
+    "binary": "baseline",
+    "binary_sha256": "1410837b5c195d2aaec41f880bd93afc2356c3005e3db2efaa4d5664bf63f026",
+    "case": "mixed",
+    "exit_code": 1,
+    "manifest_sha256": "41d8b32cdedf6ae741b4869a5e13a1cb3314eb4b380592380b56e40662bf873f",
+    "solver_checks": [
+      {
+        "detail": "assertion proved: assumptions imply assertion (native QF_BV solver; machine-checked bit-blaster)",
+        "name": "assert:(= anb_x (_ bv1 64))",
+        "status": "PASS"
+      },
+      {
+        "detail": "counterexample satisfies assumptions and negates assertion (replayed)",
+        "name": "assert:(= anb_x (_ bv2 64))",
+        "status": "FAIL"
+      }
+    ],
+    "solver_replay": {
+      "replay_valid": true,
+      "status": "counterexample_replayed"
+    },
+    "source_sha256": "fa7f82cca826343b1ebad4145061e5e39de3194c47bdda14d663912f42593d3c"
+  },
+  {
+    "binary": "candidate",
+    "binary_sha256": "3981e97a2ef8d515b42ac32b6e654845e74bb3df6367c9237a2bac4e92268e64",
+    "case": "mixed",
+    "exit_code": 1,
+    "manifest_sha256": "bd0012e8554c9a9014d3449fbc3cd766db74a2fc998db108ab1b191412f47409",
+    "solver_checks": [
+      {
+        "detail": "assertion proved: assumptions imply assertion (native QF_BV solver; machine-checked bit-blaster)",
+        "name": "assert:(= anb_x (_ bv1 64))",
+        "status": "PASS"
+      },
+      {
+        "detail": "counterexample satisfies assumptions and negates assertion (replayed)",
+        "name": "assert:(= anb_x (_ bv2 64))",
+        "status": "FAIL"
+      }
+    ],
+    "solver_replay": {
+      "obligations": [
+        {
+          "detail": "assertion proved: assumptions imply assertion (native QF_BV solver; machine-checked bit-blaster)",
+          "index": 0,
+          "obligation": "assert:(= anb_x (_ bv1 64))",
+          "replay_attempted": false,
+          "replay_valid": false,
+          "smt": "analysis/proofs/obligation_0000.smt2",
+          "solver_status": "PASS",
+          "status": "not_applicable"
+        },
+        {
+          "detail": "counterexample satisfies assumptions and negates assertion (replayed)",
+          "index": 1,
+          "obligation": "assert:(= anb_x (_ bv2 64))",
+          "replay_attempted": true,
+          "replay_valid": true,
+          "smt": "analysis/proofs/obligation_0001.smt2",
+          "solver_status": "FAIL",
+          "status": "counterexample_replayed"
+        }
+      ],
+      "replay_valid": true,
+      "schema": "anubis-solver-replay-v1",
+      "scope": "all_solver_checks",
+      "status": "counterexample_replayed"
+    },
+    "source_sha256": "fa7f82cca826343b1ebad4145061e5e39de3194c47bdda14d663912f42593d3c"
+  },
+  {
+    "binary": "baseline",
+    "binary_sha256": "1410837b5c195d2aaec41f880bd93afc2356c3005e3db2efaa4d5664bf63f026",
+    "case": "empty",
+    "exit_code": 0,
+    "manifest_sha256": "b9ea13465e42657d71ae262f0295d629e9efd94b9222217bf28a20450556cb30",
+    "solver_checks": [
+      {
+        "detail": "no assertions to discharge",
+        "name": "solver:no-obligations",
+        "status": "PASS"
+      }
+    ],
+    "solver_replay": {
+      "replay_valid": true,
+      "status": "counterexample_replayed"
+    },
+    "source_sha256": "4d6ab161876804e1375310d76f5b9d399282716fe26c8eb95dce6e9913aa877b"
+  },
+  {
+    "binary": "candidate",
+    "binary_sha256": "3981e97a2ef8d515b42ac32b6e654845e74bb3df6367c9237a2bac4e92268e64",
+    "case": "empty",
+    "exit_code": 0,
+    "manifest_sha256": "267b4413be86bbd84a71ba3d5adc1516cd168b3e151899307eb52870e4627f77",
+    "solver_checks": [
+      {
+        "detail": "no assertions to discharge",
+        "name": "solver:no-obligations",
+        "status": "PASS"
+      }
+    ],
+    "solver_replay": {
+      "obligations": [
+        {
+          "detail": "no assertions to discharge",
+          "index": 0,
+          "obligation": "solver:no-obligations",
+          "replay_attempted": false,
+          "replay_valid": false,
+          "smt": "analysis/proofs/obligation_0000.smt2",
+          "solver_status": "PASS",
+          "status": "not_applicable_no_obligations"
+        }
+      ],
+      "replay_valid": false,
+      "schema": "anubis-solver-replay-v1",
+      "scope": "all_solver_checks",
+      "status": "not_applicable"
+    },
+    "source_sha256": "4d6ab161876804e1375310d76f5b9d399282716fe26c8eb95dce6e9913aa877b"
+  }
+]

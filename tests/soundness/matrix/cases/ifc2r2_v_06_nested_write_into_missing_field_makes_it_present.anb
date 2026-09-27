@@ -1,0 +1,15 @@
+struct Q { c: i64 }
+struct P { a: i64, b: Q }
+fn addb(p, c) {
+    if c {
+        p.b = Q { c: 1 };
+    }
+    p
+}
+fn main() {
+    let k: secret<i64> = 42;
+    let mut p = P { a: 1 };
+    p.b.c = 5;
+    let r = addb(p, k > 100);
+    println(len(r));
+}

@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Cluster A2 (#7). The `for` twin of forwarder_while_loop_rejects.anb — same root cause, different
+// statement kind, which is exactly why the fix consults `collect_returns_in_stmt` (already total over
+// every statement kind) instead of adding a `Stmt::While` arm and then a `Stmt::For` arm and then
+// discovering the next sibling later.
+fn fwd_for(f) {
+    for i in 0..1 {
+        return f;
+    }
+}
+fn main() {
+    let k = secret_source("k");
+    let secret_closure = |x| print(k);
+    let leaked = fwd_for(secret_closure);
+    leaked(0);
+}

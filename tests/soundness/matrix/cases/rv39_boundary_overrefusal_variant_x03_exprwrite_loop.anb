@@ -1,0 +1,12 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show_pub(s) { return "n=${s.pub_n}"; }
+fn show_short(s) { return "S"; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut f = show_short;
+    for i in 0..3 {
+        let label = if i == 1 { let g = show_pub; f = g; "one" } else { "other" };
+        println(label);
+        println(f(p));
+    }
+}

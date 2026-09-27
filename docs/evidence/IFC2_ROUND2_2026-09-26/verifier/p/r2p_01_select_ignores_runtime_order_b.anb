@@ -1,0 +1,9 @@
+fn pick(c) {
+    let m = if c { {"a": 1, "b": 2} } else { {"b": 2, "a": 1} };
+    m
+}
+fn main() {
+    let s: secret<i64> = 123456;
+    let m = pick(s > 100);
+    println(keys(m));
+}

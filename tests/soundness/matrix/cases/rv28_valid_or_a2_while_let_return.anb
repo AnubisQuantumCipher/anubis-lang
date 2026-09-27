@@ -1,0 +1,24 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+fn at(ys, i) {
+    if i < len(ys) {
+        return Some(ys[i]);
+    }
+    return None;
+}
+
+fn first_rich(accts, floor) {
+    let i = 0;
+    while let Some(a) = at(accts, i) {
+        if a.balance > floor {
+            return a.owner;
+        }
+        i = i + 1;
+    }
+    return "nobody";
+}
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }];
+    print(first_rich(accts, 150));
+}

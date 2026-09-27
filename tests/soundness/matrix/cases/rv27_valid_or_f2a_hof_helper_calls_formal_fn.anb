@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn sum_by(ys, f) { let t = 0; for y in ys { t = t + f(y); } return t; }
+fn main() { let p = S { k: 42, pub_n: 3 }; let xs = [p, S { k: 7, pub_n: 1 }]; let m = { "a": p }; print(sum_by(xs, |s| s.pub_n)); }

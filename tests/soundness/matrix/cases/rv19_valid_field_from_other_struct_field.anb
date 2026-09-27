@@ -1,0 +1,5 @@
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+struct Cfg { name: string, n: i64 }
+struct User { id: i64, name0: string }
+impl User { fn name(self) { return "u${self.id}"; } }
+fn main() { let a = Cfg { name: "x", n: 1 }; let b = Cfg { name: a.name, n: 2 }; print(b.n); let us = [User { id: 1, name0: "q" }]; for u in us { print(u.name()); } print(map([1], f)); }

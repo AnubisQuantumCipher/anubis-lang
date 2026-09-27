@@ -1,0 +1,21 @@
+struct T { v: i64 }
+impl T {
+    fn foo(self, a) {
+        0
+    }
+}
+fn pick(c) {
+    let v = if c { 7 } else { 3 };
+    v
+}
+fn get() {
+    let r = Some();
+    let x = r?;
+    x
+}
+fn main() {
+    let s: secret<i64> = 123456;
+    let x = get();
+    let y = x.foo(println(pick(s > 100)));
+    println("end");
+}

@@ -1,0 +1,14 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn zero(x) {
+    return 0;
+}
+fn h3(x) {
+    print(x);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let h3 = zero;
+    let fs = [h3];
+    let z = each([p.k], fs[0]);
+}

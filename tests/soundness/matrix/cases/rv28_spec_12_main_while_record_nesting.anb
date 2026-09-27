@@ -1,0 +1,2 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() { let p = S { k: 42, pub_n: 3 }; let acc = { "b": p }; let i = 0; while i < 2 { acc = { "a": acc }; i = i + 1; } print(acc["a"]["a"]["b"]); }

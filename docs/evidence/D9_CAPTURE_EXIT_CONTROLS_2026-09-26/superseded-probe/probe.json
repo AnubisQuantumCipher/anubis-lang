@@ -1,0 +1,33 @@
+{
+  "compiler_binary_sha256": "e66747889003038301a0b97b9f6f2ef59693f440ee8870e6ec223a0b02ba1296",
+  "record_kind": "anubis.d9-pre-registration-probe/1",
+  "rows": [
+    {
+      "diagnostic_codes": [
+        "ANUBIS_IMPLICIT_FLOW",
+        "ANUBIS_IMPLICIT_FLOW"
+      ],
+      "diagnostic_messages": [
+        "ANUBIS_IMPLICIT_FLOW: a public return value is selected under a secret condition \u2014 secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`.",
+        "ANUBIS_IMPLICIT_FLOW: [ifc2] in `emit`: `println` runs under a condition a secret decides, so whether it runs discloses the secret (declassify the condition if that is intended)"
+      ],
+      "exit": 1,
+      "id": "d9q_secret_early_return_invalid",
+      "source_sha256": "555a4662962c5e42698ca9dfe90d3adebcd33ba11086001b6c6975987bc26192",
+      "stderr_sha256": "6a994475e33350d25bd1db65997ffd5e8a24c36525b27c72caffd3ac6350fc46",
+      "stdout_sha256": "7dce1491a31b35f3a91214e066c43ebe3a5a4a1b3e588c6aa367bfa757d986a2",
+      "summary_verdict": "fail"
+    },
+    {
+      "diagnostic_codes": [],
+      "diagnostic_messages": [],
+      "exit": 0,
+      "id": "d9q_secret_guard_assert_continue_valid",
+      "source_sha256": "3c7999ec9f8f5e2499363d5a8de9af7a09397f27f5aa2e8e6e321b7d102e1b46",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "8f7beb5e90f60bbbfdc71057a06ee09e9634c7be677fab6cc644bbc290f9150c",
+      "summary_verdict": "pass"
+    }
+  ],
+  "status": "superseded before matrix registration: public i64 return creates a second independent leak; v2 secret-return source is the registered case"
+}

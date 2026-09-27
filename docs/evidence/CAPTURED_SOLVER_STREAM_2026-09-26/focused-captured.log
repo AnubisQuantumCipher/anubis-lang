@@ -1,0 +1,62 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 26 tests
+test resolve::captured::tests::captured_solver_stream_preserves_typed_refusals ... ok
+test resolve::captured::tests::falls_back_to_mod_and_never_reopens_mutated_source ... ok
+test resolve::captured::tests::captured_combine_refuses_ambiguous_trait_sidecars ... ok
+test resolve::captured::tests::chooses_existing_project_candidates_in_legacy_order_and_preserves_import_occurrences ... ok
+test resolve::captured::tests::captured_combine_keeps_imported_trait_sidecar ... ok
+test resolve::captured::tests::captured_project_reports_malformed_entry_and_import_by_module ... ok
+test resolve::captured::tests::embedded_stdlib_ignores_project_shadow_file ... ok
+test resolve::captured::tests::later_extensions_and_output_named_directories_are_resolved_from_capture ... ok
+test resolve::captured::tests::prepared_project_refuses_contract_expression_mode_elevators ... ok
+test resolve::captured::tests::prepared_project_keeps_imported_trait_authority_through_check_and_lower ... ok
+test resolve::captured::tests::prepared_project_checks_and_lowers_the_saved_import_after_disk_mutation ... ok
+test resolve::captured::tests::prepared_project_refuses_non_safe_mode_before_check_or_lower ... ok
+test resolve::captured::tests::prepared_project_refuses_pre_desugar_trait_elevators_without_an_impl ... ok
+test resolve::captured::tests::prepared_project_refuses_pre_desugar_non_safe_trait_mode ... ok
+test resolve::captured::tests::captured_combine_uses_saved_module_bytes_and_existing_call_rewrite ... ok
+test resolve::captured::tests::prepared_project_refuses_overridden_trait_default_in_import ... ok
+test resolve::captured::tests::same_byte_span_in_different_modules_has_distinct_source_identity ... ok
+test resolve::captured::tests::prepared_project_retains_collision_and_source_limit_refusals ... ok
+test resolve::captured::tests::retains_imported_trait_sidecar ... ok
+test resolve::captured::tests::refuses_local_enum_alias_unknown_std_and_small_limits ... ok
+test resolve::captured::tests::refuses_nested_imports_with_source_qualified_spans ... ok
+test resolve::captured::tests::refuses_cycle_missing_module_and_invalid_utf8 ... ok
+test resolve::captured::tests::prepared_project_keeps_safe_acceptance_and_typed_typecheck_failure ... ok
+test resolve::captured::tests::refuses_alias_prefix_namespace_and_flat_function_collisions ... ok
+test resolve::captured::tests::prepared_project_refuses_nested_and_imported_mode_elevators ... ok
+test resolve::captured::tests::prepared_project_refuses_every_overwritten_research_attribute_before_typecheck ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1025 filtered out; finished in 0.02s
+
+     Running tests/closure_analysis_limit.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/closure_analysis_limit-baf107946c9c3a34)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/ifc2_minmax.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/ifc2_minmax-71b6bf79a2e858dd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s
+
+     Running tests/ifc2_proof_commit_bool.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/ifc2_proof_commit_bool-75b9df0ad09cfb48)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/match_expr_enum_contract.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/match_expr_enum_contract-72032578f91e75a0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/security_label_correspondence_observer.rs (<HOME>/Work/anubis-captured-build-bridge-v2-20260926/target-v2/debug/deps/security_label_correspondence_observer-a79c63def9a5f806)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s

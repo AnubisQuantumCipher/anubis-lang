@@ -1,0 +1,6 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let xs = [Ok(s)];
+    let [Some(x)] = xs;
+    print(x);
+}

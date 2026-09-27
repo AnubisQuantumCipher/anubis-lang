@@ -1,0 +1,62 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mut label = "start";
+    let mut a0 = 0;
+    let mut a1 = 0;
+    let mut a2 = 0;
+    let mut a3 = 0;
+    let mut a4 = 0;
+    let mut a5 = 0;
+    let mut a6 = 0;
+    let mut a7 = 0;
+    let mut a8 = 0;
+    let mut a9 = 0;
+    let mut a10 = 0;
+    let mut a11 = 0;
+    let mut a12 = 0;
+    let mut a13 = 0;
+    let mut a14 = 0;
+    let mut a15 = 0;
+    let mut a16 = 0;
+    let mut a17 = 0;
+    let mut a18 = 0;
+    let mut a19 = 0;
+    let mut a20 = 0;
+    let mut a21 = 0;
+    let mut a22 = 0;
+    let mut a23 = 0;
+    let mut a24 = 0;
+    let mut a25 = 0;
+    for i in 0..3 {
+        println(label);
+        a0 = a1;
+        a1 = a2;
+        a2 = a3;
+        a3 = a4;
+        a4 = a5;
+        a5 = a6;
+        a6 = a7;
+        a7 = a8;
+        a8 = a9;
+        a9 = a10;
+        a10 = a11;
+        a11 = a12;
+        a12 = a13;
+        a13 = a14;
+        a14 = a15;
+        a15 = a16;
+        a16 = a17;
+        a17 = a18;
+        a18 = a19;
+        a19 = a20;
+        a20 = a21;
+        a21 = a22;
+        a22 = a23;
+        a23 = a24;
+        a24 = a25;
+        a25 = p;
+        label = "step ${i}";
+    }
+    println(label);
+}

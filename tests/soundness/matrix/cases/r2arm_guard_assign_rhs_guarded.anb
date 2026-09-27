@@ -1,0 +1,2 @@
+fn f(x: i64) -> bool requires(x > 0) { return true; }
+fn main() { let x = 1; let b = false; match 1 { _ if (if x > 0 { b = f(x); b } else { false }) => { } _ => { } } }

@@ -1,0 +1,8 @@
+   Compiling risc0-sys v1.5.0 (/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/vendor/risc0-sys)
+   Compiling anubis-compiler v0.1.0 (/home/sicarii/.cache/anubis-wt/codex-minmax-repeatability/compiler)
+   Compiling risc0-zkp v3.0.4
+   Compiling risc0-binfmt v3.0.4
+   Compiling risc0-circuit-recursion-sys v4.0.2
+   Compiling risc0-circuit-keccak-sys v4.0.2
+   Compiling risc0-circuit-recursion v4.0.4
+   Compiling risc0-circuit-rv32im-sys v4.0.2

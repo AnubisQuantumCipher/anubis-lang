@@ -1,0 +1,20 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn show(s) { println(s); return 0; }
+fn other(s) { println(1); return 0; }
+struct T { n: i64 }
+struct U { n: i64 }
+impl T { fn pick(self) { return other; } }
+impl U { fn pick(self) { return show; } }
+fn mkt(c) {
+    if c > 0 { return T { n: 1 }; }
+    U { n: 2 }
+}
+fn run(p) {
+    let x = mkt(0);
+    x.pick()(p);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p);
+}

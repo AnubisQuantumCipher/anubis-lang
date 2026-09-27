@@ -1,0 +1,21 @@
+fn total(xs) {
+    sum(xs)
+}
+fn main() {
+    let k: secret<i64> = 42;
+    println(total([1]));
+    println(total([1, 2]));
+    println(total([1, 2, 3]));
+    println(total([1, 2, 3, 4]));
+    println(total([1, 2, 3, 4, 5]));
+    println(total([1, 2, 3, 4, 5, 6]));
+    println(total([1, 2, 3, 4, 5, 6, 7]));
+    println(total([1, 2, 3, 4, 5, 6, 7, 8]));
+    println(total([1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    println(total([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+    println(total([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]));
+    println(total([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+    let hidden = total([k, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    let ok = declassify(hidden > 0, "threshold", "only the sign is released");
+    println(total([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]));
+}

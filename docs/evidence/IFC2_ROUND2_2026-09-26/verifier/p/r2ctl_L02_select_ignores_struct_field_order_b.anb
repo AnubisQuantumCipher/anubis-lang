@@ -1,0 +1,14 @@
+struct Cfg {
+    a: list<i64>,
+    b: list<i64>,
+}
+
+fn main() {
+    let s: secret<i64> = 123456;
+    let c = match s > 100 {
+        true => Cfg { a: [], b: [0] },
+        _ => Cfg { b: [0], a: [] },
+    };
+    let first = c[0];
+    println(len(first));
+}

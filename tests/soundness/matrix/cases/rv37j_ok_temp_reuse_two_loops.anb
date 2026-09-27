@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q: S) {
+    let mut tmp = 0;
+    let mut ssum = 0;
+    let mut count = 0;
+    for i in 0..3 { tmp = q.k + i; ssum = ssum + tmp; }
+    for i in 0..3 { tmp = i; count = count + tmp; }
+    return count;
+}
+fn main() { let p = S { k: 42, pub_n: 3 }; print(f(p)); }

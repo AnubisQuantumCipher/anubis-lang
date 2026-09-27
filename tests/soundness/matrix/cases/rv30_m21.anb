@@ -1,0 +1,15 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct A { v: i64 }
+impl S {
+    fn m(self, x) { return x; }
+    fn go(self, a, x) { return a.run(|y| self.m(y), x); }
+}
+impl A {
+    fn m(self, x) { return 0; }
+    fn run(self, cb, x) { return cb(x); }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let a = A { v: 1 };
+    print(p.go(a, p));
+}

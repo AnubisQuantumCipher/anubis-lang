@@ -1,0 +1,6 @@
+fn g(c: i64) -> i64 requires(c >= 0) requires(c <= 10) {
+    let s = str(c);
+    assert(len(s) > 5);
+    return c;
+}
+fn main() { print(g(7)); }

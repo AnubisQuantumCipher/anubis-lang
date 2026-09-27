@@ -1,0 +1,16 @@
+// Proposed REJECT control: a previous closure captures a secret before wrapping.
+// Not executed by the design task.
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(p) {
+    let mut c = |z| print(p.k);
+    let mut i = 0;
+    while i < 2 {
+        c = |z| c(z);
+        i = i + 1;
+    }
+    c(p.pub_n);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    f(p);
+}

@@ -1,0 +1,4 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { k: i64, pub_n: i64 }
+fn show(s) { print(s.k); }
+fn main() { show(T { k: 1, pub_n: 1 }); }

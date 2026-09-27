@@ -1,0 +1,3 @@
+check input: out/a-evid-1-replay-final/mixed.anb
+mode: Safe
+taint pass: applied (if typecheck succeeded)

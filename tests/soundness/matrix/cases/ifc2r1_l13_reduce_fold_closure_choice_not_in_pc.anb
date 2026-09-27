@@ -1,0 +1,9 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let x = if k > 100 { |a, b| a } else { 0 };
+    let r = reduce([1], x, |a, b| {
+        print("B");
+        a
+    });
+    print("done");
+}

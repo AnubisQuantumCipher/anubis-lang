@@ -221,7 +221,7 @@ fn anubis_tuple_hash(label: AnubisValue, parts: AnubisValue) -> AnubisValue {
     for (i, p) in items.iter().enumerate() {
         let b = anubis_crypto_bytes(p);
         if b.len() > u32::MAX as usize {
-            panic!("ANUBIS_CRYPTO_TUPLE_HASH_PART_TOO_LARGE: index {i}");
+            panic!("ANUBIS_CRYPTO_TUPLE_HASH_PART_TOO_LARGE: a part is too large");
         }
         msg.extend_from_slice(&(b.len() as u32).to_be_bytes());
         msg.extend_from_slice(&b);
@@ -244,7 +244,7 @@ fn anubis_aead_nonce_from_counter(counter: AnubisValue) -> AnubisValue {
 fn anubis_random_bytes(n: AnubisValue) -> AnubisValue {
     let n_raw = n.as_i64();
     if n_raw < 0 {
-        panic!("ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH: byte count must be non-negative, got {}", n_raw);
+        panic!("ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH: byte count must be non-negative");
     }
     let n = n_raw as usize;
     if n > 1 << 20 {

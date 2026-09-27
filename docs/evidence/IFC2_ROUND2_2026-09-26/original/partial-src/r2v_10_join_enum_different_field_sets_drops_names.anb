@@ -1,0 +1,9 @@
+enum E {
+    V { a: i64, b: secret<i64> },
+}
+fn main() {
+    let sv = 42;
+    let c = len(args()) > 100;
+    let e = if c { E::V { a: 1 } } else { E::V { b: sv } };
+    println(e.b);
+}

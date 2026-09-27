@@ -71,17 +71,35 @@ fn declares_trait(src: &str) -> bool {
 fn strip_span_debug(ast: &AST) -> String {
     let s = format!("{ast:?}");
     let mut out = String::with_capacity(s.len());
-    let mut rest = s.as_str();
-    while let Some(idx) = rest.find("Span { start:") {
-        out.push_str(&rest[..idx]);
-        out.push_str("Span");
-        rest = &rest[idx..];
-        match rest.find('}') {
-            Some(close) => rest = &rest[close + 1..],
-            None => break,
+    let mut iter = s.char_indices().peekable();
+    let mut quoted = false;
+    let mut escaped = false;
+    while let Some((index, ch)) = iter.next() {
+        if quoted {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+        } else if ch == '"' {
+            quoted = true;
+            out.push(ch);
+        } else if s[index..].starts_with("Span { start:") {
+            let Some(close) = s[index..].find('}') else {
+                out.push_str(&s[index..]);
+                break;
+            };
+            out.push_str("Span");
+            while iter.peek().is_some_and(|(next, _)| *next <= index + close) {
+                iter.next();
+            }
+        } else {
+            out.push(ch);
         }
     }
-    out.push_str(rest);
     out
 }
 
@@ -96,6 +114,24 @@ pub fn format_ast(items: &[Item]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Render an already-resolved checker AST only when parsing the rendered source
+/// reconstructs the entire checker input, including its trait environment.
+/// `format_source` guards a source file before writing it; evidence needs this
+/// separate gate because its input has already been combined from imports.
+pub fn format_ast_checked(ast: &AST) -> Result<String, String> {
+    let output = format_ast(&ast.items);
+    let reparsed = parse_source(&output).map_err(|e| {
+        format!("ANUBIS_EVIDENCE_SNAPSHOT_REPARSE: rendered checker input did not parse: {e}")
+    })?;
+    if strip_span_debug(ast) != strip_span_debug(&reparsed) {
+        return Err(
+            "ANUBIS_EVIDENCE_SNAPSHOT_MISMATCH: rendered source changes the resolved checker AST or trait environment"
+                .into(),
+        );
+    }
+    Ok(output)
 }
 
 fn pad(indent: usize) -> String {
@@ -402,7 +438,7 @@ fn bin_prec(op: &str) -> u8 {
     }
 }
 
-fn fmt_expr(e: &Expr) -> String {
+pub(crate) fn fmt_expr(e: &Expr) -> String {
     fmt_expr_prec(e, 0)
 }
 
@@ -830,5 +866,43 @@ fn main() {
             "authorization metadata must survive AST rendering"
         );
         assert!(formatted.contains("authorization: \"authorized-lab\""));
+    }
+
+    #[test]
+    fn checked_snapshot_keeps_a_supported_checker_ast() {
+        let ast = parse_source("fn main() { let x = 1; print(x); }").unwrap();
+        let snapshot = format_ast_checked(&ast).expect("supported AST must round-trip");
+        let reparsed = parse_source(&snapshot).unwrap();
+        assert_eq!(strip_span_debug(&ast), strip_span_debug(&reparsed));
+    }
+
+    #[test]
+    fn checked_snapshot_refuses_an_unsupported_block() {
+        let ast = parse_source(
+            "fn h() { hybrid { gpu(metal){} cpu{} prove(risc0){ spec { forall x . true } } } }",
+        )
+        .expect("hybrid is valid source syntax");
+        assert!(format_ast_checked(&ast).is_err());
+    }
+
+    #[test]
+    fn checked_snapshot_refuses_trait_environment_loss() {
+        let ast = parse_source(
+            "trait Comparable { fn cmp(self, other) -> i64; }\n\
+             struct Blob { x: u32 }\n\
+             impl Comparable for Blob { fn cmp(self, other) -> i64 { 0 } }",
+        )
+        .expect("trait source must parse");
+        assert!(!ast.trait_env.traits.is_empty());
+        let error = format_ast_checked(&ast).expect_err("missing trait authority must refuse");
+        assert!(error.starts_with("ANUBIS_EVIDENCE_SNAPSHOT_"), "{error}");
+    }
+
+    #[test]
+    fn checked_snapshot_comparison_preserves_span_like_user_strings() {
+        let left = parse_source("fn main() { print(\"Span { start: 1, end: 2 }\"); }").unwrap();
+        let right = parse_source("fn main() { print(\"Span { start: 3, end: 4 }\"); }").unwrap();
+        assert_ne!(strip_span_debug(&left), strip_span_debug(&right));
+        format_ast_checked(&left).expect("quoted span text is ordinary source data");
     }
 }

@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct W { name: string, n: i64 }
+impl S { fn show(self, x) { print(x); return 0; } }
+impl W { fn show(self, x) { return 0; } }
+fn g(d, q) { return d.show(q); }
+fn main() {
+  let p = S { k: 42, pub_n: 3 };
+  let w = W { name: S { k: 1, pub_n: 0 }, n: 1 };
+  let d = declassify(w.name, "demo-policy", "public sample");
+  let z = g(d, p);
+}

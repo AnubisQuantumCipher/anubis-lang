@@ -1,0 +1,2 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn main() { let p = S { k: 42, pub_n: 1 }; print(p.pub_n); let q = p; print(q.pub_n); let xs = [p]; print(xs[0].pub_n); print(len(xs)); }

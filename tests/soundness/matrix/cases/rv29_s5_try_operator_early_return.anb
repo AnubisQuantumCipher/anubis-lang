@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn g(p, q) {
+    let o = if p == q { Some(1) } else { None }
+    let r = o?
+    return Some(2)
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 }
+    let q = S { k: 40 + 2, pub_n: 3 }
+    print(g(p, q))
+}

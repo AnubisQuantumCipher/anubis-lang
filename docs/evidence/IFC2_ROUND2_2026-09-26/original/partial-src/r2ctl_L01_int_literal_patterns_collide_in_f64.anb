@@ -1,0 +1,16 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let x = 9007199254740992.0;
+    match x {
+        9007199254740992 if s > 100 => {
+            let z = 0;
+        }
+        9007199254740993 => {
+            println("second arm");
+        }
+        _ => {
+            let z = 1;
+        }
+    }
+    println("done");
+}

@@ -1,0 +1,7 @@
+fn w(x) uses(fs.write) { write_file("/home/sicarii/.cache/anubis-item21/reconcile/tmp/gs5_written.txt", "x"); return 0; }
+fn show(x) { return 0; }
+fn main() {
+    let show = w;
+    let g = show;
+    g(1);
+}

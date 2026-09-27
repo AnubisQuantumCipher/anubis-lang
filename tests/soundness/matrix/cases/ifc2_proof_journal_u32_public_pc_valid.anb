@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let public_flag: i64 = 1;
+    if public_flag > 0 {
+        proof_commit_u32("flag", 1);
+    }
+}

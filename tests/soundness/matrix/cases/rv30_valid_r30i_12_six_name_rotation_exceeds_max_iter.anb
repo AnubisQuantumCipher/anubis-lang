@@ -1,0 +1,22 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(q) {
+    let a = 0;
+    let b = 0;
+    let c = 0;
+    let d = 0;
+    let e = 0;
+    let g = 0;
+    for i in 0..9 {
+        g = e;
+        e = d;
+        d = c;
+        c = b;
+        b = a;
+        a = [q];
+    }
+    return len(g);
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    print(f(p));
+}

@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct Point { x: i64, y: i64 }
+impl Point { fn show(self) -> string { return "${self}"; } }
+struct Team { lead: S, size: i64 }
+impl Team {
+    fn show(self) -> string { return "team of ${self.size}"; }
+}
+fn new_team(p: S, n: i64) -> Team { return Team { lead: p, size: n }; }
+struct League { top: Team, n: i64 }
+fn top(l: League) -> Team { return l.top; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let lg = League { top: new_team(p, 2), n: 1 };
+    let t = top(lg);
+    println(t.show());
+}

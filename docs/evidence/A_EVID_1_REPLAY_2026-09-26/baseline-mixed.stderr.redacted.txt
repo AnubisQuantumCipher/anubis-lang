@@ -1,0 +1,5 @@
+program-evidence.v3 skipped: no native artifact
+Error: check failed: ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  assert:(= anb_x (_ bv2 64))
+  counterexample:
+    x = 0x0000000000000001  (1)

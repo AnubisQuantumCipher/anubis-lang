@@ -7,7 +7,8 @@ cargo run -- build <file> [--allow-research]
 cargo run -- run <file.anb> [--evidence --out DIR]
 cargo run --release -p anubis -- prove <file> --backend risc0 --lane cpu|metal-hybrid \
   [--metal-reference /path/to/metal-hybrid-prover] [--allow-research] [--evidence]
-cargo run -- verify <bundle>            # (alias: validate) re-derive + tamper/signature check
+cargo run -- verify <bundle>            # re-derive the recorded PASS or FAIL claim; report its verdict
+cargo run -- validate <bundle>          # require an intact, re-derived PASS artifact
 cargo run -- verify-receipt --receipt <path> --image-id <path>
 cargo run -- doctor
 cargo run -- capabilities --apple-native --json [--evidence --out DIR]
@@ -30,15 +31,21 @@ Behavior:
   carry the diagnostic—never a proof claim.
 - `build`: verifies contracts by default, then emits a native artifact and optional evidence.
   `build --evidence` failures emit an artifact-free `FAIL` rejection bundle. `--no-verify` is an
-  explicit escape hatch and emits only clearly marked `UNVERIFIED` evidence. Research/Exploit
+  explicit escape hatch and emits only clearly marked `UNVERIFIED` evidence. `verify` can check
+  that envelope's recorded file integrity, but prints `assurance: UNVERIFIED`; `validate` and
+  `evidence-verify` refuse it as a verified artifact, even if its hashes match. Research/Exploit
   programs additionally require explicit `--allow-research` and a disposable Anubis VZ guest;
   consent or isolation failure occurs before native lowering and artifact emission.
 - `run`: verifies the same contracts as `check`/default `build` before native lowering, then executes
   ordinary Safe Anubis programs. Unsupported constructs fail with
   `ANUBIS_UNSUPPORTED_NATIVE_LOWERING`.
-- Evidence claim blocks use PCA schema v2. They record parse, bounded typecheck, and solver-obligation
-  results but do not assert an independent total-flow `taint_clean` theorem. Semantic verification
-  rejects retired PCA-v1 claim blocks rather than grandfathering the stronger field.
+- New evidence claim blocks use PCA schema v3. Its obligation count excludes the exact
+  `solver:no-obligations` reporting marker, which provides no proof. The verifier can read v2
+  using its historical count rule and re-derives solver outcomes under the current typed rule;
+  it refuses retired v1 claims. These blocks record parse, bounded typecheck, and solver results,
+  without asserting an independent total-flow `taint_clean` theorem. Re-derivation checks
+  consistency with the bundled source and this compiler; it does not independently prove that
+  source analysis emitted every required obligation.
 - `prove --backend risc0`: RISC0 receipt path (fresh, journal via verify-receipt).
 - `prove` and `repl` use the same complete-program Research/Exploit consent and disposable-VZ
   boundary as `build`/`run`; a command name or raw flag alone cannot bypass mode classification.
@@ -80,7 +87,11 @@ anubis sign <evidence-dir> --key ./keys/signing.key
 - `[dependencies]` in `Anubis.toml`: SemVer (local `~/.anubis/registry`), `{ path = ... }`, or
   `{ git = ..., rev = ... }` (rev required).
 - `Anubis.lock` pins version + content Merkle hash. Cache: `~/.anubis/cache/<name>-<ver>-<sha>/`.
-- Every dependency must present signed `evidence/`; signer must be in `~/.anubis/trust/signers.toml`.
+- A dependency admitted as verified needs Safe PASS evidence and a trusted signer. Current
+  admission refuses imports, additional source modules, declared package dependencies,
+  Research/Exploit code, and advertised ZK receipts until their complete source and proof
+  boundaries are checked. Locking can enumerate a transitive graph; that does not make its
+  packages admissible as verified dependencies.
 - Unsigned deps only with **both** `--allow-unsigned-deps` and `ANUBIS_ALLOW_UNSIGNED_DEPS=1`.
 - `check` / `run` / `build` automatically resolve and proof-check deps when declared.
 - Full docs: `docs/language/PACKAGES.md`. Gate: `bash scripts/run_package_gate.sh`.
@@ -199,7 +210,7 @@ cargo run --release -p anubis -- check examples/symbolic_assert_fail.anb --evide
 ```bash
 cargo run --release -p anubis -- prove examples/risc0_receipt.anb \
   --backend risc0 --lane cpu \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --evidence --out out/risc0_cpu
 # then
 cargo run --release -p anubis -- verify-receipt \
@@ -224,7 +235,7 @@ cargo run --release -p anubis -- doctor --metal-reference /path --require-metal 
 ```bash
 cargo run --release -p anubis -- capabilities \
   --apple-native \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --json --evidence --out out/apple_native_capabilities
 ```
 
@@ -237,7 +248,7 @@ The JSON contract is intentionally conservative:
 ### Runtime probe
 ```bash
 cargo run --release -p anubis -- runtime-probe \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --json --evidence --out out/runtime_probe
 ```
 
@@ -266,7 +277,7 @@ cargo run --release -p anubis -- runtime-plan examples/risc0_receipt.anb \
   --backend risc0 \
   --lane metal-hybrid \
   --apple-native \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
+  --metal-reference /path/to/metal-hybrid-prover \
   --json --evidence --out out/runtime_plan
 ```
 
@@ -289,8 +300,18 @@ jq . out/gate11/parity_report.json
 
 ### Verify bundle
 ```bash
-cargo run --release -p anubis -- verify out/.../evidence-*   # (alias: validate)
+cargo run --release -p anubis -- verify out/.../evidence-*  # inspect an intact PASS or FAIL claim
+cargo run --release -p anubis -- validate out/.../evidence-* # require an intact PASS artifact
 ```
+
+`verify` reports bundle integrity and the re-derived verdict separately. An honest `FAIL` bundle
+can be valid evidence of a failed check. A present invalid `pca.sig` fails verification even
+without `--pubkey`; use `--pubkey` to require a particular signer. A claimed ZK receipt also
+requires cryptographic receipt verification. Without a separately trusted signer, an editor can
+rewrite and rehash an unsigned bundle; neither a manifest hash nor a re-derived claim authenticates
+its provenance. Multi-file bundles now seal their supplied source bytes in `source-leaves/` for
+Merkle-root re-derivation. That does not prove that imports or package dependencies were resolved
+into the analyzed source.
 
 ### Independent portable evidence verify (host-side, no VZ)
 ```bash
@@ -299,6 +320,10 @@ anubis evidence-verify <path> [--json] [--pubkey HEX] [--run-cap-key KEY] [--str
 # path may be: evidence bundle dir | engagement dir | run_capability.json
 ```
 Honest labels: PCA re-derive `LAB_REAL`; receipt/run-cap MAC `LAB_REAL_HMAC` (not Ed25519).
+The report's `ok` describes the checks of the submitted evidence, not a deployment verdict for
+the program: inspect the PCA verdict and each required proof/capability condition. `--strict`
+does not itself require a certificate for every solver obligation. `UNVERIFIED` build envelopes
+have an integrity check plus an assurance failure, so this command returns failure for them.
 
 ### Security research domain packs
 ```bash

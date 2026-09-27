@@ -1,0 +1,65 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { v: i64 }
+impl T {
+    fn show(self) -> str {
+        return "t ${self.v}";
+    }
+    fn next(self) -> T {
+        return T { v: self.v + 1 };
+    }
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let mode = 1;
+    let a0: T = T { v: 1 };
+    let b0: T = T { v: 2 };
+    let a1: T = match mode { 0 => a0.next(), _ => b0.next() };
+    let b1: T = match mode { 0 => b0.next(), _ => a0.next() };
+    let a2: T = match mode { 0 => a1.next(), _ => b1.next() };
+    let b2: T = match mode { 0 => b1.next(), _ => a1.next() };
+    let a3: T = match mode { 0 => a2.next(), _ => b2.next() };
+    let b3: T = match mode { 0 => b2.next(), _ => a2.next() };
+    let a4: T = match mode { 0 => a3.next(), _ => b3.next() };
+    let b4: T = match mode { 0 => b3.next(), _ => a3.next() };
+    let a5: T = match mode { 0 => a4.next(), _ => b4.next() };
+    let b5: T = match mode { 0 => b4.next(), _ => a4.next() };
+    let a6: T = match mode { 0 => a5.next(), _ => b5.next() };
+    let b6: T = match mode { 0 => b5.next(), _ => a5.next() };
+    let a7: T = match mode { 0 => a6.next(), _ => b6.next() };
+    let b7: T = match mode { 0 => b6.next(), _ => a6.next() };
+    let a8: T = match mode { 0 => a7.next(), _ => b7.next() };
+    let b8: T = match mode { 0 => b7.next(), _ => a7.next() };
+    let a9: T = match mode { 0 => a8.next(), _ => b8.next() };
+    let b9: T = match mode { 0 => b8.next(), _ => a8.next() };
+    let a10: T = match mode { 0 => a9.next(), _ => b9.next() };
+    let b10: T = match mode { 0 => b9.next(), _ => a9.next() };
+    let a11: T = match mode { 0 => a10.next(), _ => b10.next() };
+    let b11: T = match mode { 0 => b10.next(), _ => a10.next() };
+    let a12: T = match mode { 0 => a11.next(), _ => b11.next() };
+    let b12: T = match mode { 0 => b11.next(), _ => a11.next() };
+    let a13: T = match mode { 0 => a12.next(), _ => b12.next() };
+    let b13: T = match mode { 0 => b12.next(), _ => a12.next() };
+    let a14: T = match mode { 0 => a13.next(), _ => b13.next() };
+    let b14: T = match mode { 0 => b13.next(), _ => a13.next() };
+    let a15: T = match mode { 0 => a14.next(), _ => b14.next() };
+    let b15: T = match mode { 0 => b14.next(), _ => a14.next() };
+    let a16: T = match mode { 0 => a15.next(), _ => b15.next() };
+    let b16: T = match mode { 0 => b15.next(), _ => a15.next() };
+    let a17: T = match mode { 0 => a16.next(), _ => b16.next() };
+    let b17: T = match mode { 0 => b16.next(), _ => a16.next() };
+    let a18: T = match mode { 0 => a17.next(), _ => b17.next() };
+    let b18: T = match mode { 0 => b17.next(), _ => a17.next() };
+    let a19: T = match mode { 0 => a18.next(), _ => b18.next() };
+    let b19: T = match mode { 0 => b18.next(), _ => a18.next() };
+    let a20: T = match mode { 0 => a19.next(), _ => b19.next() };
+    let b20: T = match mode { 0 => b19.next(), _ => a19.next() };
+    let a21: T = match mode { 0 => a20.next(), _ => b20.next() };
+    let b21: T = match mode { 0 => b20.next(), _ => a20.next() };
+    let a22: T = match mode { 0 => a21.next(), _ => b21.next() };
+    let b22: T = match mode { 0 => b21.next(), _ => a21.next() };
+    let a23: T = match mode { 0 => a22.next(), _ => b22.next() };
+    let b23: T = match mode { 0 => b22.next(), _ => a22.next() };
+    let a24: T = match mode { 0 => a23.next(), _ => b23.next() };
+    let b24: T = match mode { 0 => b23.next(), _ => a23.next() };
+    println(a24.show());
+}

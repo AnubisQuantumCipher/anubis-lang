@@ -1,0 +1,24 @@
+struct Account { id: i64, owner: string, k: secret<i64>, balance: i64 }
+
+enum Tx {
+    Deposit { acct: Account, amt: i64 },
+    Fee { amt: i64 },
+}
+
+fn amount(t) {
+    match t {
+        Tx::Deposit { acct: a, amt: n } => { return n; },
+        Tx::Fee { amt: n } => { return 0 - n; },
+    }
+    return 0;
+}
+
+fn main() {
+    let accts = [Account { id: 1, owner: "ann", k: 42, balance: 100 }, Account { id: 2, owner: "bob", k: 7, balance: 250 }, Account { id: 3, owner: "cy", k: 9, balance: 175 }];
+    let log = [Tx::Deposit { acct: accts[0], amt: 50 }, Tx::Fee { amt: 2 }, Tx::Deposit { acct: accts[1], amt: 20 }];
+    let net = 0;
+    for t in log {
+        net = net + amount(t);
+    }
+    print(net);
+}

@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (<TARGET>/debug/deps/anubis_compiler-41d9daaf4caff432)
+
+running 1 test
+test evidence::pca_tests::verify_pca_cold_verifies_the_migrated_v2_real_receipt_fixture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 917 filtered out; finished in 0.35s

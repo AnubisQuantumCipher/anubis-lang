@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn step(acc, x) {
+    return { "e": acc["d"], "d": acc["c"], "c": acc["b"], "b": acc["a"], "a": str(x) };
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let q = S { k: 7, pub_n: 1 };
+    let ys = [p, q, q, q, q];
+    let seed = { "a": "", "b": "", "c": "", "d": "", "e": "" };
+    print(reduce(ys, |acc, x| step(acc, x), seed)["e"]);
+}

@@ -1,0 +1,11 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn mkw() { return [|acc, x| x]; }
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    let c = p.pub_n - 3;
+    let f = |acc, x| 0;
+    if c > 0 { f = |acc, x| 1; }
+    let w = mkw();
+    let z = reduce([p], f, w[0]);
+    println(z);
+}

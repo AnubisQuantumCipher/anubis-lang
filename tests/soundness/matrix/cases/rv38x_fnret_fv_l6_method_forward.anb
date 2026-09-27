@@ -1,0 +1,16 @@
+struct S { k: secret<i64>, pub_n: i64 }
+struct T { n: i64 }
+impl T {
+    fn pass(self, f) { return f; }
+}
+fn showpub(q) { print(q.pub_n); return 0; }
+fn run(p) {
+    let t = T { n: 1 };
+    let r = t.pass(showpub);
+    r(p);
+    return 0;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    run(p);
+}

@@ -1,0 +1,93 @@
+{
+  "schema": "anubis-local-candidate-review/1",
+  "status": "WITHHELD",
+  "reason": "Valid-program disproofs and a nested-guard silent accept remain on this candidate.",
+  "candidate": {
+    "compiler_source_commit": "cb7fae981706342a3a531dfecdbfed33dbd48d60",
+    "git_tree": "46d1ceab4c63de9df5f2454b7909079fac2f0c3a",
+    "technical_pin_basename": "anubis-mcall-b3099e9e",
+    "binary_sha256": "b3099e9e768f1faff71a5ae830e933f9e349e463546ca179b5f4c6abd5ad496c",
+    "source_input_diff_to_fixture_commit": {
+      "fixture_commit": "0f34f186579542eed5ed089861fc28262b7fb565",
+      "paths": ".cargo compiler solver tools/anubis Cargo.toml Cargo.lock rust-toolchain.toml vendor build.rs",
+      "git_diff_quiet_exit_code": 0
+    }
+  },
+  "baseline": {
+    "compiler_source_commit": "b835b94b44fa8705dd973eb1133f862706fd04a8",
+    "git_tree": "3718c04453b626efc9781532f683a0c64b036d6a",
+    "technical_pin_basename": "anubis-proof-bool-c91445cdb04faab8",
+    "binary_sha256": "c91445cdb04faab827925289a1c426ac358d4491ae6732f63d1bfb752a4713e7"
+  },
+  "environment": {
+    "os": "Linux",
+    "architecture": "aarch64",
+    "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+    "cargo": "cargo 1.97.0-nightly (a343accce 2026-05-08)"
+  },
+  "lead_local_checks": [
+    {
+      "command": "cargo build --locked --release -j 2 -p anubis",
+      "observed": "Finished release",
+      "log": "out/mcall-position-candidate/release-build-cb7fae98.log",
+      "log_sha256": "40f752a6c7c39782901b420257c58df016a3d50832b3145dfa0c1cab83d280dd"
+    },
+    {
+      "command": "cargo clippy --all-targets -- -D warnings",
+      "observed": "Finished dev",
+      "log": "out/mcall-position-candidate/clippy-cb7fae98.log",
+      "log_sha256": "d1ca6541b3ba05bb8dcb4ff21dd03b60c5092e6ca2dfbf72727e756dd8d4f678"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "observed": "lead-reported pass; no retained log"
+    },
+    {
+      "test": "contracted_calls_in_statement_header_positions_discharge",
+      "observed": "ok",
+      "log_sha256": "32ab728c9a02972a1eab458ebfbdfbfeeddc4d3dbbfb0d52a7a82c487b484d62"
+    },
+    {
+      "test": "match_arm_body_calls_discharge_under_the_pattern_condition",
+      "observed": "ok",
+      "log_sha256": "88a299185cedb8950853c54048fd4f169160d05a0d4b34040e8b22be8ded94f2"
+    },
+    {
+      "test": "statement_match_positions_emit_passing_requires_obligations",
+      "observed": "ok; inline source, not the later exact tracked-fixture test",
+      "log_sha256": "41125a0d314f79dccf2f73fc110ef3a826cbdaf4a8ffdb1212e909641660cd6b"
+    }
+  ],
+  "observations": {
+    "focused_results": "focused-results.tsv",
+    "focused_results_sha256": "d60b6506790a676265c5be7d186d2057fbac25cc9d9dc179f409a3983a79834e",
+    "review_results": "review-results.tsv",
+    "matrix_history_label": "mcall-position-withheld-cb7fae98"
+  },
+  "subsequent_provisional_repair": {
+    "compiler_source_commit": "8f1589410c85a0f5b982913cb6a8bf089e89f464",
+    "git_tree": "578308880ee3fbca745557be46d96cfb7a11fb9c",
+    "technical_pin_basename": "anubis-mcall-repair-8aeab6a6",
+    "binary_sha256": "8aeab6a60607782c766e5a75aa0e535448351de8e9ddb68de8c9f1847ba4f3ff",
+    "release_build_log": "out/mcall-position-repair/release-build-8f158941.log",
+    "release_build_log_sha256": "3a8aa7358f3cdfd66c792dd36074152f22d25f39876b35b60a65c0c6b9b1869f",
+    "source_bound_positive_obligation_test": "round2_source_bound_match_controls_emit_passing_requires",
+    "source_bound_test_observed": "ok",
+    "source_bound_test_log_sha256": "a0ab19160eb2c70f4a750ec9af5b001c50ec3e96ad10b1005a89408c123b8059",
+    "focused_results": "repair-focused-results.tsv",
+    "focused_results_sha256": "fa183264300152eb815e30f80ac223eb091ee83af034fc5c1a44eebb1a141661",
+    "docs_drift": {
+      "command": "scripts/run_docs_drift_gate.sh",
+      "observed": "DOCS_DRIFT_GATE: PASS; 37 stamps checked, 0 drift",
+      "log_sha256": "7f16b9d00125e5dd0bf9a31333433ef741ab94133794a4740e2ec91a3acd6a5e"
+    },
+    "status": "PROVISIONAL; open wrong-class and soundness/precision cases remain"
+  },
+  "not_run": [
+    "full soundness matrix",
+    "mandatory disposable-guest lanes",
+    "whole-workspace final suite",
+    "hosted CI on candidate",
+    "independent reproducible rebuild"
+  ]
+}

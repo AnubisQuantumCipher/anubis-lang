@@ -1,0 +1,3 @@
+struct S { k: secret<i64>, pub_n: i64 }
+enum W { Box { pub_n: S }, Empty }
+fn main() { let p = S { k: 42, pub_n: 3 }; let w = W::Box { pub_n: p }; print(w.pub_n); }

@@ -1,0 +1,2 @@
+fn pure2(a, b) { return 0; }
+fn main() { let fs = [write_file]; fs[0] = pure2; fs[0]("/home/sicarii/.cache/anubis-item21/reconcile/tmp/gu06_concrete_refresh_pure_over_gated.txt", "x"); }

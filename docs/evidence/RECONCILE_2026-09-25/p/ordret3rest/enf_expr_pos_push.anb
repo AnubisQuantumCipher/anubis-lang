@@ -1,0 +1,6 @@
+fn main() {
+    let k: secret<i64> = 42;
+    let xs = [0];
+    let n = len(push(xs, k));
+    println(xs);
+}

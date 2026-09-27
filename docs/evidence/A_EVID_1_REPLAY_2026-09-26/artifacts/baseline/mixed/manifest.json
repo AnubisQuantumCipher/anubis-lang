@@ -1,0 +1,61 @@
+{
+  "timestamp": "20260926-094911",
+  "tool": "anubis 0.1.0",
+  "mode": "safe",
+  "source_hash": "fa7f82cca826343b1ebad4145061e5e39de3194c47bdda14d663912f42593d3c",
+  "build_log_hash": "e32f0716bfbe92ec08c00795626699d806bc8c00d06eb109950d3922aa624225",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "237ef3197f5500840ff22de64d232dfd20d09e41deda3eb1ee3cfd7b233d03cc",
+  "source_tree_hash": "aeb4f4d66b6c902f11c418ff63b2691dce84f72988db0cf7a417c169ff714c4f",
+  "sarif_hash": "b72781e5adfbd0e8b8844159f0d5d6fe05d4d51acb06dde2a2cfc1928bdc89a1",
+  "bounty_report_hash": "26415e32423480ba0c8ff4784ae143566e9bd4008e641492ca8c709c257e5764",
+  "manifest_sha256": "10a5d3c74776d15819b8ae947ecee29e072c8d4d28d206c057c556a5b3c4439a",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=safe symbols=1 functions=1 mono=0"
+    },
+    {
+      "name": "monomorphization",
+      "status": "PASS",
+      "detail": "static_specializations=0 (codegen remains AnubisValue-erased)"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=3"
+    },
+    {
+      "name": "solver",
+      "status": "FAIL",
+      "detail": "assert:(= anb_x (_ bv1 64))=PASS,assert:(= anb_x (_ bv2 64))=FAIL"
+    },
+    {
+      "name": "command_rejection",
+      "status": "FAIL",
+      "detail": "ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:\n  assert:(= anb_x (_ bv2 64))\n  counterexample:\n    x = 0x0000000000000001  (1)"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "fa7f82cca826343b1ebad4145061e5e39de3194c47bdda14d663912f42593d3c"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "e32f0716bfbe92ec08c00795626699d806bc8c00d06eb109950d3922aa624225"
+    }
+  ],
+  "verdict": "FAIL",
+  "security": {
+    "mode": "safe",
+    "note": "language attributes and effects recorded in checks and logs"
+  }
+}

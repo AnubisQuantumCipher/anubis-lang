@@ -1,0 +1,2 @@
+struct T { a: string, b: i64 }
+fn main() { let t = T { a: "x", b: 1 }; print(t[1]); }

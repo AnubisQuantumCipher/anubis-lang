@@ -1,0 +1,21 @@
+fn deep_len(x, v) {
+    len(x[0][0][0][0][0])
+}
+fn main() {
+    let s: secret<i64> = 42;
+    let n = [[[[["ab"]]]]];
+    deep_len(n, []);
+    deep_len(n, [1]);
+    deep_len(n, [1, 1]);
+    deep_len(n, [1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1, 1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1, 1, 1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    deep_len(n, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    let p = [[[[[str(s)]]]]];
+    print(deep_len(p, 0));
+}

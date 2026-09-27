@@ -1,0 +1,4 @@
+fn f(x: i64) -> i64 requires(x >= 0) { return x; }
+struct R { ok: bool }
+fn g(r: R, n: i64) -> i64 { if r.ok && n >= 0 { return 0; } return f(n); }
+fn main() { print(g(R { ok: false }, -3)); }

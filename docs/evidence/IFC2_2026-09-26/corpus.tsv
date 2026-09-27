@@ -1,0 +1,968 @@
+examples/anpu_recursive_sdf_renderer.anb	0	3	3	0
+examples/codex_20260709_language_tour.anb	0	\t	0
+examples/codex_20260725_recovery_quorum.anb	0	4	4	0
+examples/codex_language_study_demo.anb	0	\t	0
+examples/codex_thoth_external_witness.anb	0	\t	0
+examples/core_language_showcase.anb	0	10	10	0
+examples/crypto/rwc_hybrid_envelope.anb	0	\t	0
+examples/crypto/rwc_session_keys.anb	0	\t	0
+examples/crypto/rwc_tuple_hash.anb	0	\t	0
+examples/daily_focus.anb	0	\t	0
+examples/declassify_missing_policy.anb	1	\t	0
+examples/enum_status.anb	0	\t	0
+examples/enum_struct_variant.anb	0	\t	0
+examples/for_in_list.anb	0	\t	0
+examples/hall_of_two_truths.anb	0	1	1	0
+examples/hello.anb	0	\t	0
+examples/hello_normal.anb	0	\t	0
+examples/hermes_dual_path_seal.anb	0	\t	0
+examples/if_expr.anb	0	1	1	0
+examples/industry/aether_agent_governance.anb	1	12	12	0
+examples/industry/ennead_consensus_kernel.anb	0	34	34	0
+examples/industry/lifeline_resilience_optimizer.anb	0	12	12	0
+examples/industry/nexus_execution_kernel.anb	0	29	29	0
+examples/industry/nexus_zk_decision.anb	0	1	1	0
+examples/industry/nexus_zk_decision_proof.anb	0	\t	0
+examples/industry/sovereign_gl_risk_engine.anb	0	1	1	0
+examples/lang/mono_id_smoke.anb	0	\t	0
+examples/lang/mono_var_smoke.anb	0	\t	0
+examples/lang/multifile/main.anb	0	\t	0
+examples/lang/multifile/math.anb	0	\t	0
+examples/lang_power_trio.anb	0	\t	0
+examples/lang/stdlib_net_smoke.anb	0	\t	0
+examples/lang/stdlib_rand_smoke.anb	0	\t	0
+examples/lang/stdlib_time_smoke.anb	0	\t	0
+examples/map_dict.anb	0	\t	0
+examples/metal_parity_arithmetic.anb	0	1	1	0
+examples/metal_parity_hello.anb	0	\t	0
+examples/metal_parity_symbolic_safe.anb	0	1	1	0
+examples/physics/fast_magnetic_reconnection.anb	0	1	1	0
+examples/physics/orszag_tang_plasmoid_cascade.anb	0	2	2	0
+examples/policy_declassify_report.anb	0	\t	0
+examples/prime_sieve.anb	0	\t	0
+examples/programs/aegis_vm.anb	0	22	22	0
+examples/programs/double_entry_ledger/ledger.anb	1	18	18	0
+examples/programs/expense_ledger/expense_ledger.anb	1	14	14	0
+examples/programs/formal_kernel/formal_kernel.anb	0	17	17	0
+examples/programs/formal_kernel/formal_kernel_hard_tests.anb	0	7	7	0
+examples/programs/maat_recovery_authority/main.anb	0	67	67	0
+examples/programs/snake/snake.anb	1	71	72	1
+examples/programs/trifecta_attack_rejected.anb	1	\t	0
+examples/programs/trifecta_certifier.anb	1	46	46	0
+examples/programs/trifecta_taint_layer.anb	0	1	1	0
+examples/proof_factorial.anb	0	\t	0
+examples/proof_fib.anb	0	\t	0
+examples/proof/proof_assert_range.anb	0	\t	0
+examples/proof/proof_enum_status.anb	0	\t	0
+examples/proof/proof_factorial_input.anb	0	\t	0
+examples/proof/proof_for_in_sum.anb	0	\t	0
+examples/proof/proof_lang_trio.anb	0	\t	0
+examples/proof/proof_multi_field.anb	0	\t	0
+examples/proof/proof_named_fields.anb	0	\t	0
+examples/release_gate.anb	0	4	4	0
+examples/risc0_receipt.anb	0	\t	0
+examples/sealed_ledger.anb	0	\t	0
+examples/secret_declassify_hello.anb	0	\t	0
+examples/security/anvil_threat_hunter.anb	0	4	5	1
+examples/security/audit_file_scan_pass.anb	0	\t	0
+examples/security/authority_attribute_on_fn_accepts.anb	0	\t	0
+examples/security/block_attribute_typo_diagnoses.anb	1	\t	0
+examples/security/bounty_report_from_taint.anb	0	\t	0
+examples/security/branch_join_interproc_branch_reassign_rejects.anb	1	\t	0
+examples/security/branch_join_interproc_field_write_rejects.anb	1	\t	0
+examples/security/branch_join_loop_fn_alias_egress_rejects.anb	1	\t	0
+examples/security/branch_join_match_reassign_clean_accepts.anb	0	\t	0
+examples/security/branch_join_match_reassign_secret_rejects.anb	1	\t	0
+examples/security/branch_join_match_reassign_taint_shell_rejects.anb	1	\t	0
+examples/security/builtin_sink_alias_rejects.anb	1	\t	0
+examples/security/callable_extracted_from_param_then_applied_accepts.anb	0	\t	0
+examples/security/callable_extracted_from_param_then_applied_rejects.anb	1	\t	0
+examples/security/callable_in_nested_container_param_accepts.anb	0	\t	0
+examples/security/callable_in_nested_container_param_rejects.anb	1	\t	0
+examples/security/callable_param_applied_under_branch_accepts.anb	0	\t	0
+examples/security/callable_param_applied_under_branch_rejects.anb	1	\t	0
+examples/security/callexpr_field_closure_apply_taint_rejects.anb	1	\t	0
+examples/security/capability_alias_shell_launder_rejects.anb	1	\t	0
+examples/security/capability_alias_write_launder_rejects.anb	1	\t	0
+examples/security/cap_causal_double_spend_rejects.anb	1	\t	0
+examples/security/cap_causal_no_token_rejects.anb	1	\t	0
+examples/security/cap_causal_spend_accepts.anb	0	\t	0
+examples/security/cap_causal_then_builtin_double_spend_rejects.anb	1	\t	0
+examples/security/cap_causal_then_userfn_corrected_rejects.anb	1	\t	0
+examples/security/cap_causal_wrong_kind_rejects.anb	1	\t	0
+examples/security/cap_two_userfn_double_spend_rejects.anb	1	\t	0
+examples/security/carrier_alias_rejects.anb	1	\t	0
+examples/security/carrier_else_rejects.anb	1	1	1	0
+examples/security/carrier_for_rejects.anb	1	\t	0
+examples/security/carrier_guard_blocks_accepts.anb	0	1	1	0
+examples/security/carrier_if_dead_accepts.anb	0	1	1	0
+examples/security/carrier_if_live_rejects.anb	1	\t	0
+examples/security/carrier_loop_rejects.anb	1	\t	0
+examples/security/carrier_satisfied_accepts.anb	0	1	1	0
+examples/security/carrier_tuple_recursion_rejects.anb	1	\t	0
+examples/security/carrier_u32_coercion_rejects.anb	1	\t	0
+examples/security/carrier_weak_guard_rejects.anb	1	\t	0
+examples/security/carrier_while_rejects.anb	1	\t	0
+examples/security/clean_fn_via_dynamic_index_write_accepts.anb	0	\t	0
+examples/security/clean_fn_via_place_assign_field_accepts.anb	0	\t	0
+examples/security/closure_capture_through_callee_param_rejects.anb	1	\t	0
+examples/security/closure_capturing_passed_to_safe_fn_accepts.anb	0	\t	0
+examples/security/closure_container_reassigned_secret_egress_rejects.anb	1	\t	0
+examples/security/closure_early_return_clean_accepts.anb	0	\t	0
+examples/security/closure_early_return_in_branch_rejects.anb	1	\t	0
+examples/security/closure_identity_forwarder_chain_rejects.anb	1	\t	0
+examples/security/closure_identity_forwarder_clean_accepts.anb	0	\t	0
+examples/security/closure_identity_forwarder_in_list_rejects.anb	1	\t	0
+examples/security/closure_identity_forwarder_in_map_rejects.anb	1	\t	0
+examples/security/closure_identity_forwarder_secret_rejects.anb	1	\t	0
+examples/security/closure_in_enum_payload_clean_accepts.anb	0	\t	0
+examples/security/closure_in_enum_payload_secret_egress_rejects.anb	1	\t	0
+examples/security/closure_in_list_element_secret_egress_rejects.anb	1	\t	0
+examples/security/closure_in_map_value_secret_egress_rejects.anb	1	\t	0
+examples/security/closure_in_nested_field_clean_accepts.anb	0	\t	0
+examples/security/closure_in_nested_field_secret_egress_rejects.anb	1	\t	0
+examples/security/closure_in_struct_field_declassified_accepts.anb	0	\t	0
+examples/security/closure_in_struct_field_param_rejects.anb	1	\t	0
+examples/security/closure_in_struct_field_secret_egress_rejects.anb	1	\t	0
+examples/security/closure_in_struct_field_tainted_sink_rejects.anb	1	\t	0
+examples/security/closure_in_struct_in_list_secret_egress_rejects.anb	1	\t	0
+examples/security/closure_local_let_alias_clean_accepts.anb	0	\t	0
+examples/security/closure_local_let_alias_returned_rejects.anb	1	\t	0
+examples/security/closure_through_returning_fn_rejects.anb	1	\t	0
+examples/security/conditional_returned_closure_clean_accepts.anb	0	\t	0
+examples/security/conditional_returned_closure_rejects.anb	1	\t	0
+examples/security/container_push_readback_egress_rejects.anb	1	\t	0
+examples/security/contracted_fn_value_never_applied_accepts.anb	0	\t	0
+examples/security/contract_ensures_not_composed_to_requires_rejects.anb	1	1	1	0
+examples/security/contract_ensures_satisfies_requires_accepts.anb	0	2	2	0
+examples/security/contract_requires_direct_rejects.anb	1	\t	0
+examples/security/contract_requires_literal_rejects.anb	1	\t	0
+examples/security/contract_requires_via_alias_rejects.anb	1	\t	0
+examples/security/contract_requires_via_fn_value_rejects.anb	1	\t	0
+examples/security/contract_satisfied_via_fn_value_accepts.anb	0	1	1	0
+examples/security/d5_generic_field_instantiation_rejects.anb	1	\t	0
+examples/security/d5_generic_field_plain_accepts.anb	0	\t	0
+examples/security/d5_generic_field_via_param_rejects.anb	1	\t	0
+examples/security/d6_if_at_construction_public_accepts.anb	0	\t	0
+examples/security/d6_if_at_construction_rejects.anb	1	\t	0
+examples/security/d6_match_at_construction_rejects.anb	1	\t	0
+examples/security/declared_field_name_collision_across_structs_accepts.anb	0	\t	0
+examples/security/declared_public_enum_payload_accepts.anb	0	\t	0
+examples/security/declared_secret_enum_payload_rejects.anb	1	\t	0
+examples/security/declared_secret_enum_payload_via_summary_rejects.anb	1	\t	0
+examples/security/declared_secret_enum_payload_whilelet_rejects.anb	1	\t	0
+examples/security/declared_secret_enum_payload_whilelet_summary_rejects.anb	1	\t	0
+examples/security/declared_secret_enum_struct_payload_rejects.anb	1	\t	0
+examples/security/declared_secret_field_after_assign_method_rejects.anb	1	\t	0
+examples/security/declared_secret_field_after_assign_rejects.anb	1	\t	0
+examples/security/declared_secret_field_via_call_result_rejects.anb	1	\t	0
+examples/security/declared_secret_field_via_fn_alias_result_rejects.anb	1	\t	0
+examples/security/declared_secret_field_via_let_of_call_rejects.anb	1	\t	0
+examples/security/declared_secret_field_via_method_result_rejects.anb	1	\t	0
+examples/security/declared_secret_field_via_self_rejects.anb	1	\t	0
+examples/security/declared_secret_fn_value_alias_chain_rejects.anb	1	\t	0
+examples/security/declared_secret_fn_value_alias_print_rejects.anb	1	\t	0
+examples/security/declared_secret_fn_value_as_param_rejects.anb	1	\t	0
+examples/security/declared_secret_fn_value_composite_hof_clean_accepts.anb	0	\t	0
+examples/security/declared_secret_fn_value_in_list_apply_rejects.anb	1	\t	0
+examples/security/declared_secret_fn_value_in_map_apply_rejects.anb	1	\t	0
+examples/security/declared_secret_fn_value_in_struct_field_apply_rejects.anb	1	\t	0
+examples/security/declared_secret_fn_value_param_declassified_accepts.anb	0	\t	0
+examples/security/declared_secret_fn_value_param_never_applied_accepts.anb	0	\t	0
+examples/security/declared_secret_fn_value_param_shadowed_accepts.anb	0	\t	0
+examples/security/declared_secret_fn_value_param_stays_internal_accepts.anb	0	\t	0
+examples/security/declared_secret_fn_value_plain_param_applied_accepts.anb	0	\t	0
+examples/security/declared_secret_fn_value_returned_rejects.anb	1	\t	0
+examples/security/declared_secret_return_declassified_accepts.anb	0	\t	0
+examples/security/declared_secret_return_print_rejects.anb	1	\t	0
+examples/security/declared_secret_struct_field_declassified_accepts.anb	0	\t	0
+examples/security/declared_secret_struct_field_print_rejects.anb	1	\t	0
+examples/security/declared_tainted_enum_payload_via_summary_rejects.anb	1	\t	0
+examples/security/declared_tainted_enum_payload_whilelet_summary_rejects.anb	1	\t	0
+examples/security/declared_tainted_fn_value_alias_chain_rejects.anb	1	\t	0
+examples/security/declared_tainted_fn_value_alias_shell_rejects.anb	1	\t	0
+examples/security/declared_tainted_fn_value_as_param_rejects.anb	1	\t	0
+examples/security/declared_tainted_fn_value_in_list_apply_rejects.anb	1	\t	0
+examples/security/declared_tainted_fn_value_in_map_apply_rejects.anb	1	\t	0
+examples/security/declared_tainted_fn_value_in_struct_field_apply_rejects.anb	1	\t	0
+examples/security/declared_tainted_fn_value_returned_rejects.anb	1	\t	0
+examples/security/declared_tainted_return_declassified_accepts.anb	0	\t	0
+examples/security/declared_tainted_return_sink_rejects.anb	1	\t	0
+examples/security/declared_tainted_struct_field_sink_rejects.anb	1	\t	0
+examples/security/declassify_empty_policy_rejects.anb	1	\t	0
+examples/security/declassify_report_pass.anb	0	\t	0
+examples/security/declassify_valid_accepts.anb	0	\t	0
+examples/security/destructure_let_capability_launder_rejects.anb	1	\t	0
+examples/security/egress_builtin_field_carrier_secret_rejects.anb	1	\t	0
+examples/security/escaping_match_arm_closure_capture_rejects.anb	1	\t	0
+examples/security/factory_struct_field_pure_closure_accepts.anb	0	\t	0
+examples/security/factory_struct_field_write_closure_rejects.anb	1	\t	0
+examples/security/fn_param_closure_clean_accepts.anb	0	\t	0
+examples/security/fn_param_closure_egress_rejects.anb	1	\t	0
+examples/security/fn_param_closure_sink_rejects.anb	1	\t	0
+examples/security/fn_value_alias_branch_reassign_rejects.anb	1	\t	0
+examples/security/fn_value_alias_branch_reassign_to_safe_accepts.anb	0	\t	0
+examples/security/fn_value_alias_chain_secret_egress_rejects.anb	1	\t	0
+examples/security/fn_value_alias_reassigned_to_safe_accepts.anb	0	\t	0
+examples/security/fn_value_alias_secret_egress_rejects.anb	1	\t	0
+examples/security/fn_value_alias_tainted_sink_rejects.anb	1	\t	0
+examples/security/fn_value_in_list_apply_pure_accepts.anb	0	\t	0
+examples/security/fn_value_in_list_arg_clean_accepts.anb	0	\t	0
+examples/security/fn_value_in_list_arg_taint_sink_rejects.anb	1	\t	0
+examples/security/fn_value_in_map_arg_taint_sink_rejects.anb	1	\t	0
+examples/security/fn_value_in_struct_arg_taint_sink_rejects.anb	1	\t	0
+examples/security/for_push_write_closure_apply_rejects.anb	1	\t	0
+examples/security/forwarder_bare_loop_rejects.anb	1	\t	0
+examples/security/forwarder_closure_body_loop_return_rejects.anb	1	\t	0
+examples/security/forwarder_for_loop_rejects.anb	1	\t	0
+examples/security/forwarder_loop_nonsecret_accepts.anb	0	\t	0
+examples/security/forwarder_while_loop_rejects.anb	1	\t	0
+examples/security/for_write_closure_apply_rejects.anb	1	\t	0
+examples/security/fuzz_crash_demo.anb	1	\t	0
+examples/security/fuzz_parser_v1.anb	0	\t	0
+examples/security/generic_hof_plumbing_accepts.anb	0	\t	0
+examples/security/h2h3_method_forwarder_nonsecret_accepts.anb	0	\t	0
+examples/security/h2h3_method_forwarder_rejects.anb	1	\t	0
+examples/security/h2h3_method_returns_gated_lambda_rejects.anb	1	\t	0
+examples/security/h4_forwarder_via_alias_rejects.anb	1	\t	0
+examples/security/h5_branch_forwarder_nonsecret_accepts.anb	0	\t	0
+examples/security/h5_branch_forwarder_same_param_rejects.anb	1	\t	0
+examples/security/h5_return_alias_chain_rejects.anb	1	\t	0
+examples/security/h5_return_alias_reassigned_accepts.anb	0	\t	0
+examples/security/h5_return_alias_same_param_rejects.anb	1	\t	0
+examples/security/h5_return_if_expr_same_param_rejects.anb	1	\t	0
+examples/security/h5_return_match_expr_same_param_rejects.anb	1	\t	0
+examples/security/hermes_poc_threshold.anb	0	\t	0
+examples/security/hof_element_clean_accepts.anb	0	\t	0
+examples/security/hof_element_secret_egress_rejects.anb	1	\t	0
+examples/security/hof_element_taint_shell_rejects.anb	1	\t	0
+examples/security/hof_forwarded_arg_secret_rejects.anb	1	\t	0
+examples/security/hof_forwarded_arg_taint_rejects.anb	1	\t	0
+examples/security/hof_forwarded_clean_arg_accepts.anb	0	\t	0
+examples/security/hof_named_builtin_arg_taint_shell_rejects.anb	1	\t	0
+examples/security/hof_named_fn_arg_clean_accepts.anb	0	\t	0
+examples/security/hof_named_fn_arg_secret_rejects.anb	1	\t	0
+examples/security/http_beacon_no_capability_rejects.anb	1	\t	0
+examples/security/http_egress_declared_accepts.anb	0	\t	0
+examples/security/http_trifecta_leg3_rejects.anb	1	\t	0
+examples/security/if_expr_pure_closure_apply_accepts.anb	0	\t	0
+examples/security/if_expr_write_closure_apply_rejects.anb	1	\t	0
+examples/security/implicit_flow_for_rejects.anb	1	\t	0
+examples/security/implicit_flow_for_secret_local_accepts.anb	0	\t	0
+examples/security/implicit_flow_iflet_rejects.anb	1	\t	0
+examples/security/implicit_flow_match_guard_rejects.anb	1	\t	0
+examples/security/implicit_flow_match_rejects.anb	1	\t	0
+examples/security/implicit_flow_rejects.anb	1	\t	0
+examples/security/implicit_flow_return_rejects.anb	1	\t	0
+examples/security/implicit_flow_return_secret_accepts.anb	0	\t	0
+examples/security/implicit_flow_return_tail_rejects.anb	1	\t	0
+examples/security/implicit_flow_secret_local_accepts.anb	0	\t	0
+examples/security/implicit_flow_value_if_rejects.anb	1	\t	0
+examples/security/implicit_flow_value_match_rejects.anb	1	\t	0
+examples/security/implicit_flow_while_rejects.anb	1	\t	0
+examples/security/indirect_index_capture_literal_rejects.anb	1	\t	0
+examples/security/indirect_index_capture_symbolic_rejects.anb	1	\t	0
+examples/security/indirect_index_clean_accepts.anb	0	\t	0
+examples/security/interproc_egress_in_value_block_clean_accepts.anb	0	\t	0
+examples/security/interproc_egress_in_value_block_rejects.anb	1	\t	0
+examples/security/interproc_match_arm_sink_clean_accepts.anb	0	\t	0
+examples/security/interproc_match_arm_sink_rejects.anb	1	\t	0
+examples/security/interproc_sink_in_value_block_rejects.anb	1	\t	0
+examples/security/known_attribute_accepts.anb	0	\t	0
+examples/security/lambda_forwarder_block_return_clean_accepts.anb	0	\t	0
+examples/security/lambda_forwarder_block_return_declassified_accepts.anb	0	\t	0
+examples/security/lambda_forwarder_block_return_secret_egress_rejects.anb	1	\t	0
+examples/security/lambda_forwarder_clean_accepts.anb	0	\t	0
+examples/security/lambda_forwarder_nested_lambda_secret_egress_rejects.anb	1	\t	0
+examples/security/lambda_forwarder_return_rejects.anb	1	\t	0
+examples/security/lambda_forwarder_sink_rejects.anb	1	\t	0
+examples/security/loop_carried_clean_accepts.anb	0	\t	0
+examples/security/loop_carried_return_egress_rejects.anb	1	\t	0
+examples/security/loop_carried_send_before_reassign_rejects.anb	1	\t	0
+examples/security/loop_carried_to_sink_egress_rejects.anb	1	\t	0
+examples/security/loop_carried_twohop_for_taint_shell_rejects.anb	1	\t	0
+examples/security/match_expr_pure_closure_apply_accepts.anb	0	\t	0
+examples/security/match_expr_write_closure_apply_rejects.anb	1	\t	0
+examples/security/match_struct_pattern_secret_field_rejects.anb	1	\t	0
+examples/security/metal_backed_proof_parity.anb	0	1	1	0
+examples/security/method_contract_ambiguous_declaration_order_rejects.anb	1	\t	0
+examples/security/method_contract_unambiguous_single_impl_accepts.anb	0	1	1	0
+examples/security/method_contract_wrong_type_cross_application_rejects.anb	1	\t	0
+examples/security/method_effect_field_closure_accepts.anb	0	\t	0
+examples/security/method_effect_field_closure_gated_rejects.anb	1	\t	0
+examples/security/method_effect_honest_chain_accepts.anb	0	\t	0
+examples/security/method_effect_inherit_1hop_rejects.anb	1	\t	0
+examples/security/method_effect_inherit_2hop_rejects.anb	1	\t	0
+examples/security/method_effect_inherit_via_closure_rejects.anb	1	\t	0
+examples/security/method_effect_inherit_via_freefn_rejects.anb	1	\t	0
+examples/security/method_nested_lambda_secret_egress_rejects.anb	1	\t	0
+examples/security/method_return_pure_closure_apply_accepts.anb	0	\t	0
+examples/security/method_return_write_closure_apply_rejects.anb	1	\t	0
+examples/security/method_return_write_closure_declared_accepts.anb	0	\t	0
+examples/security/method_secret_return_held_accepts.anb	0	\t	0
+examples/security/method_secret_return_untyped_print_rejects.anb	1	\t	0
+examples/security/method_secret_scrutinee_public_return_rejects.anb	1	\t	0
+examples/security/method_secret_scrutinee_secret_return_accepts.anb	0	\t	0
+examples/security/method_secret_via_freefn_wrapper_rejects.anb	1	\t	0
+examples/security/method_secret_via_twohop_freefn_rejects.anb	1	\t	0
+examples/security/method_taint_via_freefn_wrapper_rejects.anb	1	\t	0
+examples/security/misplaced_authority_attribute_rejects.anb	1	\t	0
+examples/security/mixed_secret_taint_field_taint_only_sink_rejects.anb	1	\t	0
+examples/security/named_fn_in_container_nonegress_accepts.anb	0	\t	0
+examples/security/named_fn_in_container_secret_egress_rejects.anb	1	\t	0
+examples/security/nested_closure_capture_rejects.anb	1	\t	0
+examples/security/nested_closure_clean_accepts.anb	0	\t	0
+examples/security/nested_lambda_body_clean_accepts.anb	0	\t	0
+examples/security/nested_lambda_body_secret_egress_rejects.anb	1	\t	0
+examples/security/nested_lambda_body_tainted_sink_rejects.anb	1	\t	0
+examples/security/plain_fn_via_place_assign_callexpr_accepts.anb	0	\t	0
+examples/security/plain_loop_invariant_accepts.anb	0	2	2	0
+examples/security/poc_feel_threshold.anb	0	\t	0
+examples/security/poc_local_overflow.anb	0	\t	0
+examples/security/poc_missing_authorization_fail.anb	1	\t	0
+examples/security/poc_packing_smoke.anb	0	\t	0
+examples/security/poc_stdlib_overflow.anb	0	1	1	0
+examples/security/print_secret_egress_rejects.anb	1	\t	0
+examples/security/print_tainted_sink_rejects.anb	1	\t	0
+examples/security/proof_backed_policy_check.anb	0	1	1	0
+examples/security/public_field_via_annotated_generic_list_nested_index_accepts.anb	0	\t	0
+examples/security/public_field_via_annotated_list_index_accepts.anb	0	\t	0
+examples/security/public_field_via_annotated_list_param_return_accepts.anb	0	\t	0
+examples/security/public_field_via_annotated_map_index_accepts.anb	0	\t	0
+examples/security/public_field_via_unannotated_factory_return_accepts.anb	0	\t	0
+examples/security/public_field_via_unannotated_list_index_accepts.anb	0	\t	0
+examples/security/push_pure_closure_index_apply_accepts.anb	0	\t	0
+examples/security/push_write_closure_index_apply_rejects.anb	1	\t	0
+examples/security/research_authorized_taint_model.anb	0	\t	0
+examples/security/research_block_in_container_lambda_rejects.anb	1	\t	0
+examples/security/research_block_inside_authorized_fn_accepts.anb	0	\t	0
+examples/security/research_block_value_position_without_authorization_rejects.anb	1	\t	0
+examples/security/research_block_without_authorization_rejects.anb	1	\t	0
+examples/security/research_elevator_in_for_invariant_rejects.anb	1	\t	0
+examples/security/research_elevator_in_loop_invariant_rejects.anb	1	\t	0
+examples/security/research_elevator_in_while_invariant_rejects.anb	1	\t	0
+examples/security/returned_closure_clean_accepts.anb	0	\t	0
+examples/security/returned_closure_conditional_secret_egress_rejects.anb	1	\t	0
+examples/security/returned_closure_into_param_rejects.anb	1	\t	0
+examples/security/returned_closure_local_capture_secret_egress_rejects.anb	1	\t	0
+examples/security/returned_container_closure_capture_rejects.anb	1	\t	0
+examples/security/returned_container_closure_shadow_accepts.anb	0	\t	0
+examples/security/return_in_closure_clean_accepts.anb	0	\t	0
+examples/security/return_in_closure_declassified_accepts.anb	0	\t	0
+examples/security/return_in_closure_egress_rejects.anb	1	\t	0
+examples/security/return_in_closure_sink_rejects.anb	1	\t	0
+examples/security/return_match_arm_binding_clean_accepts.anb	0	\t	0
+examples/security/return_match_arm_binding_taint_rejects.anb	1	\t	0
+examples/security/return_push_container_taint_rejects.anb	1	\t	0
+examples/security/safe_command_injection_reject.anb	1	\t	0
+examples/security/secret_field_via_annotated_generic_list_nested_index_rejects.anb	1	\t	0
+examples/security/secret_field_via_annotated_list_index_rejects.anb	1	\t	0
+examples/security/secret_field_via_annotated_list_param_return_rejects.anb	1	\t	0
+examples/security/secret_field_via_annotated_map_index_rejects.anb	1	\t	0
+examples/security/secret_field_via_unannotated_factory_return_rejects.anb	1	\t	0
+examples/security/secret_field_via_unannotated_list_index_rejects.anb	1	\t	0
+examples/security/secret_fn_via_dynamic_index_write_rejects.anb	1	\t	0
+examples/security/secret_fn_via_place_assign_callexpr_rejects.anb	1	\t	0
+examples/security/secret_fn_via_place_assign_field_rejects.anb	1	\t	0
+examples/security/secret_fn_via_place_assign_index_rejects.anb	1	\t	0
+examples/security/secret_to_public_assign_rejects.anb	1	\t	0
+examples/security/secret_to_public_call_accepts.anb	0	\t	0
+examples/security/secret_to_public_call_rejects.anb	1	\t	0
+examples/security/secret_to_public_declassify_accepts.anb	0	\t	0
+examples/security/secret_to_public_field_rejects.anb	1	\t	0
+examples/security/secret_to_public_index_rejects.anb	1	\t	0
+examples/security/secret_to_public_let_rejects.anb	1	\t	0
+examples/security/secret_to_public_method_call_accepts.anb	0	\t	0
+examples/security/secret_to_public_method_call_rejects.anb	1	\t	0
+examples/security/secret_to_public_return_rejects.anb	1	\t	0
+examples/security/struct_field_contract_accepts.anb	0	5	5	0
+examples/security/struct_field_ensures_violation_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_declassified_accepts.anb	0	\t	0
+examples/security/struct_pattern_binder_mixed_struct_public_field_accepts.anb	0	\t	0
+examples/security/struct_pattern_binder_plain_field_accepts.anb	0	\t	0
+examples/security/struct_pattern_binder_renamed_field_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_renamed_field_taint_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_secret_field_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_stays_internal_accepts.anb	0	\t	0
+examples/security/struct_pattern_binder_via_call_result_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_call_result_taint_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_closure_body_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_closure_body_taint_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_for_loop_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_for_loop_taint_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_if_let_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_if_let_taint_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_self_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_self_taint_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_while_let_rejects.anb	1	\t	0
+examples/security/struct_pattern_binder_via_while_let_taint_rejects.anb	1	\t	0
+examples/security/sunk_container_closure_capture_rejects.anb	1	\t	0
+examples/security/tainted_field_via_annotated_generic_list_nested_index_rejects.anb	1	\t	0
+examples/security/tainted_field_via_flow_qualified_annotated_list_index_rejects.anb	1	\t	0
+examples/security/tainted_fn_via_place_assign_callexpr_rejects.anb	1	\t	0
+examples/security/tainted_fn_via_place_assign_field_rejects.anb	1	\t	0
+examples/security/tainted_input_to_connect_rejects.anb	1	\t	0
+examples/security/tainted_input_to_shell_declassified_accepts.anb	0	\t	0
+examples/security/tainted_input_to_shell_rejects.anb	1	\t	0
+examples/security/tainted_input_to_system_rejects.anb	1	\t	0
+examples/security/trifecta_closure_aliased_leg_rejects.anb	1	\t	0
+examples/security/trifecta_via_builtin_carrier_rejects.anb	1	\t	0
+examples/security/trifecta_via_userfn_carrier_rejects.anb	1	\t	0
+examples/security/uncontracted_fn_value_applied_accepts.anb	0	\t	0
+examples/security/undeclared_enum_payload_whilelet_summary_accepts.anb	0	\t	0
+examples/security/unknown_attribute_rejects.anb	1	\t	0
+examples/security/valueblock_match_reassign_clean_accepts.anb	0	\t	0
+examples/security/valueblock_match_reassign_secret_rejects.anb	1	\t	0
+examples/security/valueblock_match_reassign_taint_shell_rejects.anb	1	\t	0
+examples/security/value_block_nested_if_guard_discharges_accepts.anb	0	1	1	0
+examples/security/value_block_nested_if_requires_discharge_rejects.anb	1	\t	0
+examples/security/value_block_nested_if_requires_honest_accepts.anb	0	1	1	0
+examples/security/value_block_nested_match_return_rejects.anb	1	\t	0
+examples/security/vz_modular_exploit.anb	0	\t	0
+examples/showcase/amnesia_unlearning_witness.anb	0	\t	0
+examples/showcase/anubis_vault/app/vault.anb	1	121	272	151
+examples/showcase/anubis_vault/fresh_evidence_app/vault.anb	1	121	272	151
+examples/showcase/anubis_vault/product_app/vault_contacts.anb	0	1	1	0
+examples/showcase/anubis_vault/vault.anb	1	121	272	151
+examples/showcase/anubis_vault/vault_contacts.anb	0	1	1	0
+examples/showcase/anubis_vault/vault_secret_leak_rejects.anb	1	\t	0
+examples/showcase/anubis_vault/vault_verified_caps.anb	0	\t	0
+examples/showcase/keychain_ne_cap/main.anb	0	\t	0
+examples/showcase/nexus/nexus_checker_security.anb	1	\t	0
+examples/showcase/nexus/nexus_cognitive_kernel.anb	1	\t	0
+examples/showcase/ring_buffer_underflow.anb	1	6	6	0
+examples/showcase/seshat_planner/app/main.anb	0	9	9	0
+examples/showcase/seshat_planner/tests/false_contract_rejects.anb	1	3	3	0
+examples/showcase/seshat_planner/tests/secret_leak_rejects.anb	1	\t	0
+examples/showcase/seshat_planner/tests/undeclared_effect_rejects.anb	1	\t	0
+examples/showcase/suggest_contracts_demo.anb	0	\t	0
+examples/showcase/verified_loop.anb	0	3	3	0
+examples/showcase/verified_private_settlement.anb	0	15	15	0
+examples/showcase/vz_confine_demo.anb	0	10	10	0
+examples/symbolic_assert_fail.anb	1	\t	0
+examples/symbolic_assert_pass.anb	0	2	2	0
+examples/symbolic_bitmask_fail_or_pass.anb	0	1	1	0
+examples/symbolic_overflow_u8.anb	1	1	1	0
+examples/symbolic_proof_minimal.anb	0	1	1	0
+examples/taint_declassify.anb	0	\t	0
+examples/taint_reject.anb	1	\t	0
+examples/thoth_sealed_meta_machine.anb	0	\t	0
+tests/fixtures/capset_selfhost/c01_all_caps_declared.anb	1	\t	0
+tests/fixtures/capset_selfhost/c02_multi_fn_union.anb	0	\t	0
+tests/fixtures/capset_selfhost/c03_declared_empty_body_fold.anb	0	\t	0
+tests/fixtures/capset_selfhost/c04_none.anb	0	1	1	0
+tests/fixtures/capset_selfhost/c05_open_param_call.anb	0	\t	0
+tests/fixtures/dx/contracts_doc.anb	0	1	2	1
+tests/fixtures/dx/hello.anb	0	\t	0
+tests/fixtures/effects_selfhost/f01_trivial_noeffect_accept.anb	0	1	1	0
+tests/fixtures/effects_selfhost/f02_direct_undeclared_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/f03_direct_declared_accept.anb	0	\t	0
+tests/fixtures/effects_selfhost/f04_transitive_onehop_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/f05_transitive_declared_accept.anb	0	\t	0
+tests/fixtures/effects_selfhost/f06_threehop_chain_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/f07_mutual_recursion_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/f08_open_row_hof_accept.anb	0	\t	0
+tests/fixtures/effects_selfhost/f09_open_plus_concrete_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/f10_declared_callee_union_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/f11_overdeclared_accept.anb	0	\t	0
+tests/fixtures/effects_selfhost/f12_userfn_shadows_builtin_name_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/f13_direct_charge_non_propagation_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam01_map_declared_accept.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam02_map_undeclared_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam03_each_undeclared_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam04_apply_index0_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam05_compose_both_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam06_lambda_noeffect_accept.anb	0	\t	0
+tests/fixtures/effects_selfhost/lam07_userfn_map_shadow_accept.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam08_nested_lambda_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam09_varbound_closure_hof_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam10_varbound_closure_direct_reject.anb	1	\t	0
+tests/fixtures/effects_selfhost/lam11_varbound_closure_declared_accept.anb	1	\t	0
+tests/fixtures/effects_selfhost/mc01_method_call_open_accept.anb	0	\t	0
+tests/fixtures/effects_selfhost/mc02_field_then_method_accept.anb	0	\t	0
+tests/fixtures/effects_selfhost/mc03_effect_builtin_in_method_arg_reject.anb	1	\t	0
+tests/fixtures/language_core/analysis_deep_call_chain.anb	0	\t	0
+tests/fixtures/language_core/arithmetic_precedence.anb	0	3	3	0
+tests/fixtures/language_core/arm_join_numeric_accepts.anb	0	\t	0
+tests/fixtures/language_core/arm_join_unknown_accepts.anb	0	\t	0
+tests/fixtures/language_core/arm_type_conflict_if.anb	1	\t	0
+tests/fixtures/language_core/arm_type_conflict_match.anb	1	\t	0
+tests/fixtures/language_core/attribute_safe_parse.anb	0	\t	0
+tests/fixtures/language_core/buried_call_capability_declared_accepts.anb	0	\t	0
+tests/fixtures/language_core/buried_call_in_aggregate_forbidden.anb	1	\t	0
+tests/fixtures/language_core/buried_call_in_application_arg_forbidden.anb	1	\t	0
+tests/fixtures/language_core/buried_call_in_cast_forbidden.anb	1	\t	0
+tests/fixtures/language_core/buried_capability_launder_forbidden.anb	1	\t	0
+tests/fixtures/language_core/buried_clean_call_with_capability_accepts.anb	0	\t	0
+tests/fixtures/language_core/buried_declassify_in_branch_accepts.anb	0	\t	0
+tests/fixtures/language_core/buried_interproc_sink_through_match.anb	1	\t	0
+tests/fixtures/language_core/buried_read_file_in_aggregate_accepts.anb	0	\t	0
+tests/fixtures/language_core/buried_reassign_clean_before_sink_accepts.anb	0	\t	0
+tests/fixtures/language_core/buried_secret_egress_in_block_flagged.anb	1	\t	0
+tests/fixtures/language_core/buried_shell_launder_forbidden.anb	1	\t	0
+tests/fixtures/language_core/buried_sink_in_if_branch_flagged.anb	1	\t	0
+tests/fixtures/language_core/buried_sink_in_match_arm_flagged.anb	1	\t	0
+tests/fixtures/language_core/buried_tainted_sink_in_aggregate_flagged.anb	1	\t	0
+tests/fixtures/language_core/call_arg_type_mismatch.anb	1	\t	0
+tests/fixtures/language_core/call_return_type_mismatch.anb	1	\t	0
+tests/fixtures/language_core/call_site_requires_block_branch_guard_passes.anb	0	2	2	0
+tests/fixtures/language_core/call_site_requires_block_branch_passes.anb	0	2	2	0
+tests/fixtures/language_core/call_site_requires_block_branch_rejects.anb	1	1	1	0
+tests/fixtures/language_core/call_site_requires_block_else_branch_rejects.anb	1	1	1	0
+tests/fixtures/language_core/call_site_requires_closed_arg_in_branch_rejects.anb	1	1	1	0
+tests/fixtures/language_core/call_site_requires_satisfied_passes.anb	0	1	1	0
+tests/fixtures/language_core/call_site_requires_violated_rejects.anb	1	1	1	0
+tests/fixtures/language_core/capability_branch_default_accepts.anb	0	\t	0
+tests/fixtures/language_core/capability_branch_reuse_verified.anb	1	\t	0
+tests/fixtures/language_core/capability_double_use_via_param_rejects.anb	1	\t	0
+tests/fixtures/language_core/capability_effect_authorized_verified.anb	0	\t	0
+tests/fixtures/language_core/capability_effect_default_lane_free.anb	0	\t	0
+tests/fixtures/language_core/capability_effect_unauthorized_verified.anb	1	\t	0
+tests/fixtures/language_core/capability_forge_unknown_provenance_verified.anb	1	\t	0
+tests/fixtures/language_core/capability_missing.anb	1	\t	0
+tests/fixtures/language_core/capability_move_rebind_reuse.anb	1	\t	0
+tests/fixtures/language_core/capability_open_row_verified.anb	1	\t	0
+tests/fixtures/language_core/capability_reuse.anb	1	\t	0
+tests/fixtures/language_core/capability_single_use_via_param_accepts.anb	0	\t	0
+tests/fixtures/language_core/capability_surrendered.anb	0	\t	0
+tests/fixtures/language_core/capability_used_once.anb	0	\t	0
+tests/fixtures/language_core/capability_verified_no_effect_accepts.anb	0	1	1	0
+tests/fixtures/language_core/cast_signed_narrow_assert_rejects.anb	1	1	2	1
+tests/fixtures/language_core/cast_truncate_assert_rejects.anb	1	2	2	0
+tests/fixtures/language_core/clean_arg_to_egressing_method_accepts.anb	0	\t	0
+tests/fixtures/language_core/clean_container_to_sink_accepts.anb	0	\t	0
+tests/fixtures/language_core/clean_match_value_to_sink_accepts.anb	0	\t	0
+tests/fixtures/language_core/closure_analysis_clean_closure.anb	0	\t	0
+tests/fixtures/language_core/closure_analysis_closure_chain.anb	0	\t	0
+tests/fixtures/language_core/closure_analysis_deep_blocks.anb	0	\t	0
+tests/fixtures/language_core/closure_analysis_discarded_cycle.anb	1	\t	0
+tests/fixtures/language_core/closure_analysis_long_sum.anb	0	\t	0
+tests/fixtures/language_core/closure_analysis_mutual_cycle.anb	1	\t	0
+tests/fixtures/language_core/closure_analysis_nested_clean_closure.anb	0	\t	0
+tests/fixtures/language_core/closure_analysis_released_cycle.anb	1	\t	0
+tests/fixtures/language_core/closure_analysis_secret_chain.anb	1	\t	0
+tests/fixtures/language_core/closure_analysis_secret_closure.anb	1	\t	0
+tests/fixtures/language_core/closure_analysis_self_cycle.anb	1	\t	0
+tests/fixtures/language_core/comments_line.anb	0	\t	0
+tests/fixtures/language_core/comparison_bool.anb	0	2	2	0
+tests/fixtures/language_core/contract_early_return_reassigned_param_rejects.anb	1	\t	0
+tests/fixtures/language_core/contract_for_source_embedded_write_rejects.anb	1	\t	0
+tests/fixtures/language_core/control_flow_shadow_pattern_var_accepts.anb	0	\t	0
+tests/fixtures/language_core/declassify_in_branch_releases_accepts.anb	0	\t	0
+tests/fixtures/language_core/declassify_missing_reason.anb	1	\t	0
+tests/fixtures/language_core/declassify_policy_pass.anb	0	\t	0
+tests/fixtures/language_core/destructure_let_clean_accepts.anb	0	\t	0
+tests/fixtures/language_core/destructure_let_declassified_accepts.anb	0	\t	0
+tests/fixtures/language_core/destructure_let_method_return_secret_rejects.anb	1	\t	0
+tests/fixtures/language_core/destructure_let_secret_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/destructure_let_stmt_shadow_accepts.anb	0	\t	0
+tests/fixtures/language_core/destructure_let_taint_sink_rejects.anb	1	\t	0
+tests/fixtures/language_core/direct_secret_block_shadow_accepts.anb	0	\t	0
+tests/fixtures/language_core/direct_secret_clear_both_branches_accepts.anb	0	\t	0
+tests/fixtures/language_core/direct_secret_for_loopvar_rejects.anb	1	\t	0
+tests/fixtures/language_core/direct_secret_letpattern_shadow_accepts.anb	0	\t	0
+tests/fixtures/language_core/direct_secret_value_block_nested_cf_clean_accepts.anb	0	\t	0
+tests/fixtures/language_core/direct_secret_value_block_nested_cf_rejects.anb	1	\t	0
+tests/fixtures/language_core/direct_taint_value_block_nested_cf_rejects.anb	1	\t	0
+tests/fixtures/language_core/effect_declared_transitive_accepts.anb	0	\t	0
+tests/fixtures/language_core/effect_open_plus_concrete_rejects.anb	1	\t	0
+tests/fixtures/language_core/effect_open_row_hof_accepts.anb	0	\t	0
+tests/fixtures/language_core/effect_overdeclared_accepts.anb	0	\t	0
+tests/fixtures/language_core/effect_undeclared_transitive.anb	1	\t	0
+tests/fixtures/language_core/field_access_type_mismatch.anb	1	\t	0
+tests/fixtures/language_core/float_assert_false_rejects.anb	1	1	1	0
+tests/fixtures/language_core/float_contract_division_bounded_accepts.anb	0	2	3	1
+tests/fixtures/language_core/float_contract_false_ensures_rejects.anb	1	2	2	0
+tests/fixtures/language_core/float_contract_monotonicity_accepts.anb	0	2	3	1
+tests/fixtures/language_core/float_contract_nan_requires_safety.anb	1	1	1	0
+tests/fixtures/language_core/float_let_chain_accepts.anb	0	2	4	2
+tests/fixtures/language_core/float_let_frame_leak_rejects.anb	1	1	1	0
+tests/fixtures/language_core/float_let_match_reassign_rejects.anb	1	\t	0
+tests/fixtures/language_core/float_let_of_let_accepts.anb	0	0	1	1
+tests/fixtures/language_core/float_narrow_arith_operand_order_rejects.anb	1	\t	0
+tests/fixtures/language_core/function_call.anb	0	\t	0
+tests/fixtures/language_core/function_return_u32.anb	0	\t	0
+tests/fixtures/language_core/generic_arity_mismatch.anb	1	\t	0
+tests/fixtures/language_core/generic_param_conflict.anb	1	\t	0
+tests/fixtures/language_core/generic_use_accepts.anb	0	\t	0
+tests/fixtures/language_core/hello_minimal.anb	0	\t	0
+tests/fixtures/language_core/if_else.anb	0	\t	0
+tests/fixtures/language_core/ifexpr_false_branch_contract_rejects.anb	1	3	3	0
+tests/fixtures/language_core/ifexpr_guarded_max_accepts.anb	0	4	4	0
+tests/fixtures/language_core/imin_assert_rejects.anb	1	\t	0
+tests/fixtures/language_core/interproc_declassify_through_method_accepts.anb	0	\t	0
+tests/fixtures/language_core/interproc_discard_arg_method_accepts.anb	0	\t	0
+tests/fixtures/language_core/interproc_freefn_to_method_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/interproc_freefn_to_method_sink_rejects.anb	1	\t	0
+tests/fixtures/language_core/interproc_method_to_method_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/interproc_method_to_method_sink_rejects.anb	1	\t	0
+tests/fixtures/language_core/interproc_value_through_method_sink_rejects.anb	1	\t	0
+tests/fixtures/language_core/int_let_if_init_reassign_rejects.anb	1	\t	0
+tests/fixtures/language_core/int_let_match_reassign_rejects.anb	1	\t	0
+tests/fixtures/language_core/issue65_apply_idx0_shell_forbidden.anb	1	\t	0
+tests/fixtures/language_core/issue65_declared_cap_lambda_accepts.anb	0	\t	0
+tests/fixtures/language_core/issue65_declassify_in_lambda_accepts.anb	0	\t	0
+tests/fixtures/language_core/issue65_defined_but_uncalled_accepts.anb	0	\t	0
+tests/fixtures/language_core/issue65_pure_field_forward_accepts.anb	0	\t	0
+tests/fixtures/language_core/issue65_pure_lambda_accepts.anb	0	\t	0
+tests/fixtures/language_core/issue65_secret_exfil_in_lambda_rejects.anb	1	\t	0
+tests/fixtures/language_core/issue65_send_in_lambda_forbidden.anb	1	\t	0
+tests/fixtures/language_core/issue65_shell_in_lambda_forbidden.anb	1	\t	0
+tests/fixtures/language_core/issue65_tainted_sink_in_lambda_rejects.anb	1	\t	0
+tests/fixtures/language_core/issue65_times_shell_forbidden.anb	1	\t	0
+tests/fixtures/language_core/let_call_return_type_lie_rejects.anb	1	\t	0
+tests/fixtures/language_core/let_call_return_type_matches_accepts.anb	0	\t	0
+tests/fixtures/language_core/lethal_trifecta_declassified_verified.anb	0	\t	0
+tests/fixtures/language_core/lethal_trifecta_default_lane_free.anb	0	\t	0
+tests/fixtures/language_core/lethal_trifecta_interproc_helpers_verified.anb	1	\t	0
+tests/fixtures/language_core/lethal_trifecta_safe_lane_rejects.anb	1	\t	0
+tests/fixtures/language_core/lethal_trifecta_secret_no_read_verified.anb	1	\t	0
+tests/fixtures/language_core/lethal_trifecta_shell_egress_verified.anb	1	\t	0
+tests/fixtures/language_core/lethal_trifecta_two_legs_verified.anb	0	\t	0
+tests/fixtures/language_core/lethal_trifecta_verified.anb	1	\t	0
+tests/fixtures/language_core/loop_control_inside_loop_accept.anb	0	\t	0
+tests/fixtures/language_core/loop_control_outside_loop_nested_reject.anb	1	\t	0
+tests/fixtures/language_core/loop_control_outside_loop_reject.anb	1	\t	0
+tests/fixtures/language_core/loop_invariant_break_in_let_rejects.anb	1	\t	0
+tests/fixtures/language_core/loop_invariant_break_in_map_literal_rejects.anb	1	\t	0
+tests/fixtures/language_core/loop_invariant_break_in_struct_literal_rejects.anb	1	\t	0
+tests/fixtures/language_core/metal_parity_minimal.anb	0	2	2	0
+tests/fixtures/language_core/method_return_chain_clean_accepts.anb	0	\t	0
+tests/fixtures/language_core/method_return_chain_secret_rejects.anb	1	\t	0
+tests/fixtures/language_core/method_return_chain_taint_rejects.anb	1	\t	0
+tests/fixtures/language_core/method_return_secret_let_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/method_return_secret_nested_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/method_return_secret_valueblock_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/method_return_taint_let_sink_rejects.anb	1	\t	0
+tests/fixtures/language_core/method_return_taint_nested_sink_rejects.anb	1	\t	0
+tests/fixtures/language_core/missing_semicolon.anb	0	1	1	0
+tests/fixtures/language_core/mixed_theory_assert_false_conjunct_rejects.anb	1	2	2	0
+tests/fixtures/language_core/mutual_recursion_five_cycle_over_list_literals_accepts.anb	0	\t	0
+tests/fixtures/language_core/mutual_recursion_over_list_literals_accepts.anb	0	\t	0
+tests/fixtures/language_core/nonsecret_method_return_egress_accepts.anb	0	\t	0
+tests/fixtures/language_core/param_assert_noncontract_float_stays_failopen.anb	0	\t	0
+tests/fixtures/language_core/param_assert_noncontract_provable_passes.anb	0	2	2	0
+tests/fixtures/language_core/param_assert_noncontract_rejects.anb	1	\t	0
+tests/fixtures/language_core/param_double_read_outside_cap_use_accepts.anb	0	\t	0
+tests/fixtures/language_core/param_return_buffer_forwarder_rejects.anb	1	\t	0
+tests/fixtures/language_core/param_return_conditional_forwarder_rejects.anb	1	\t	0
+tests/fixtures/language_core/param_return_destructure_forwarder_rejects.anb	1	\t	0
+tests/fixtures/language_core/param_return_discard_forwarder_accepts.anb	0	\t	0
+tests/fixtures/language_core/param_return_method_forwarder_rejects.anb	1	\t	0
+tests/fixtures/language_core/param_return_straightline_reassign_clean_accepts.anb	0	\t	0
+tests/fixtures/language_core/param_return_value_block_nested_cf_clean_accepts.anb	0	\t	0
+tests/fixtures/language_core/param_return_value_block_nested_cf_rejects.anb	1	\t	0
+tests/fixtures/language_core/parenthesized_expr.anb	0	1	1	0
+tests/fixtures/language_core/path_sensitive_clamp_accepts.anb	0	2	2	0
+tests/fixtures/language_core/path_sensitive_false_clamp_rejects.anb	1	\t	0
+tests/fixtures/language_core/path_sensitive_guard_other_var_rejects.anb	1	\t	0
+tests/fixtures/language_core/path_sensitive_pick_accepts.anb	0	2	2	0
+tests/fixtures/language_core/path_sensitive_reassign_local_after_guard_rejects.anb	1	2	2	0
+tests/fixtures/language_core/path_sensitive_reassign_param_after_guard_rejects.anb	1	2	2	0
+tests/fixtures/language_core/path_sensitive_two_guards_accepts.anb	0	3	3	0
+tests/fixtures/language_core/qf_s_letpattern_shadow_no_false_accept.anb	1	\t	0
+tests/fixtures/language_core/qf_s_string_assert_discharges.anb	0	2	2	0
+tests/fixtures/language_core/qf_s_string_backslash_escape_no_false_accept.anb	1	1	1	0
+tests/fixtures/language_core/qf_s_string_ensures_discharges.anb	0	2	2	0
+tests/fixtures/language_core/qf_s_string_false_assert_rejects.anb	1	1	1	0
+tests/fixtures/language_core/qf_s_string_false_ensures_rejects.anb	1	1	1	0
+tests/fixtures/language_core/qf_s_string_let_backslash_no_false_accept.anb	1	\t	0
+tests/fixtures/language_core/qf_s_string_let_chain_discharges.anb	0	1	1	0
+tests/fixtures/language_core/qf_s_string_let_false_ensures_rejects.anb	1	\t	0
+tests/fixtures/language_core/qf_s_string_let_reassigned_stays_unmodeled.anb	1	\t	0
+tests/fixtures/language_core/qf_s_var_var_identity_discharges.anb	0	1	1	0
+tests/fixtures/language_core/qf_s_var_var_unrelated_rejects.anb	1	\t	0
+tests/fixtures/language_core/research_block_local_field_access_accepts.anb	0	\t	0
+tests/fixtures/language_core/risc0_minimal_pass.anb	0	\t	0
+tests/fixtures/language_core/secret_container_element_write_flagged.anb	1	\t	0
+tests/fixtures/language_core/secret_container_passthrough_helper.anb	1	\t	0
+tests/fixtures/language_core/secret_declassified_egress_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_discard_helper_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_egress_declassified_arg_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_exfiltration_reassign.anb	1	\t	0
+tests/fixtures/language_core/secret_exfiltration_send.anb	1	\t	0
+tests/fixtures/language_core/secret_exfiltration_shell.anb	1	\t	0
+tests/fixtures/language_core/secret_exfiltration_via_helper.anb	1	\t	0
+tests/fixtures/language_core/secret_if_branch_to_egress.anb	1	\t	0
+tests/fixtures/language_core/secret_in_container_to_egress.anb	1	\t	0
+tests/fixtures/language_core/secret_interproc_match_passthrough.anb	1	\t	0
+tests/fixtures/language_core/secret_into_discard_helper_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_into_egressing_helper_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_into_egressing_method_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_into_egress_transitive_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_into_local_write_param_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_into_nonleaking_method_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_into_shell_helper_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_local_write_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_match_destructure_to_egress.anb	1	\t	0
+tests/fixtures/language_core/secret_method_return_declassified_egress_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_qualifier_declassified_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_qualifier_let_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_qualifier_param_egress_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_qualifier_param_return_declassified_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_qualifier_param_return_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_qualifier_param_trifecta_leg1_rejects.anb	1	\t	0
+tests/fixtures/language_core/secret_qualifier_reassigned_clean_accepts.anb	0	\t	0
+tests/fixtures/language_core/secret_reassigned_clean_before_egress_accepts.anb	0	\t	0
+tests/fixtures/language_core/struct_field_access.anb	0	\t	0
+tests/fixtures/language_core/struct_literal.anb	0	\t	0
+tests/fixtures/language_core/struct_literal_field_type_mismatch_rejects.anb	1	\t	0
+tests/fixtures/language_core/symbolic_assert_fail.anb	1	\t	0
+tests/fixtures/language_core/symbolic_assert_pass.anb	0	2	2	0
+tests/fixtures/language_core/taint_block_let_passthrough_to_sink.anb	1	\t	0
+tests/fixtures/language_core/taint_container_element_write_flagged.anb	1	\t	0
+tests/fixtures/language_core/tainted_into_sinking_method_rejects.anb	1	\t	0
+tests/fixtures/language_core/tainted_qualifier_param_return_rejects.anb	1	\t	0
+tests/fixtures/language_core/tainted_sink_without_declassify.anb	1	\t	0
+tests/fixtures/language_core/taint_in_container_to_sink.anb	1	\t	0
+tests/fixtures/language_core/taint_reassign_branch.anb	1	\t	0
+tests/fixtures/language_core/taint_reassign_straightline.anb	1	\t	0
+tests/fixtures/language_core/taint_reassign_to_clean_accepts.anb	0	\t	0
+tests/fixtures/language_core/taint_reassign_to_clean_in_branch_accepts.anb	0	\t	0
+tests/fixtures/language_core/taint_reject_safe.anb	1	\t	0
+tests/fixtures/language_core/trait_bound_primitive_accepts.anb	0	\t	0
+tests/fixtures/language_core/trait_bound_satisfied_accepts.anb	0	\t	0
+tests/fixtures/language_core/trait_bound_unsatisfied_rejects.anb	1	\t	0
+tests/fixtures/language_core/trait_impl_accepts.anb	0	\t	0
+tests/fixtures/language_core/trait_missing_method.anb	1	\t	0
+tests/fixtures/language_core/trait_overlap.anb	1	\t	0
+tests/fixtures/language_core/try_outside_result_preserved.anb	1	\t	0
+tests/fixtures/language_core/try_type_matches_accepts.anb	0	\t	0
+tests/fixtures/language_core/try_type_mismatch_option_in_result.anb	1	\t	0
+tests/fixtures/language_core/try_type_mismatch_result_in_option.anb	1	\t	0
+tests/fixtures/language_core/typed_let_u32.anb	0	\t	0
+tests/fixtures/language_core/typed_let_u8.anb	0	\t	0
+tests/fixtures/language_core/typed_question_mark_call_option_rejects.anb	1	\t	0
+tests/fixtures/language_core/typed_question_mark_call_return_accepts.anb	0	\t	0
+tests/fixtures/language_core/typed_question_mark_call_return_type_lie_rejects.anb	1	\t	0
+tests/fixtures/language_core/typed_question_mark_ok_accepts.anb	0	\t	0
+tests/fixtures/language_core/typed_question_mark_option_unwrap_accepts.anb	0	\t	0
+tests/fixtures/language_core/typed_question_mark_type_lie_rejects.anb	1	\t	0
+tests/fixtures/language_core/type_mismatch_u32_bool.anb	1	\t	0
+tests/fixtures/language_core/unknown_variable.anb	1	\t	0
+tests/fixtures/language_core/unprovable_names_reassigned_var_rejects.anb	1	\t	0
+tests/fixtures/language_core/unsigned_signed_int_still_taxed_rejects.anb	1	\t	0
+tests/fixtures/language_core/unsigned_u32_callsite_coercion_rejects.anb	1	4	4	0
+tests/fixtures/language_core/unsigned_u32_nonneg_accepts.anb	0	2	2	0
+tests/fixtures/language_core/unterminated_block.anb	1	\t	0
+tests/fixtures/language_core/var_mul_obligation_discharged.anb	0	4	5	1
+tests/fixtures/language_core/while_loop_or_planned_skip.anb	0	1	1	0
+tests/fixtures/language_core/wrap_guarded_negation_accepts.anb	0	6	6	0
+tests/fixtures/language_core/wrap_guard_in_else_accepts.anb	0	6	6	0
+tests/fixtures/language_core/wrap_i64_min_boundary.anb	0	9	9	0
+tests/fixtures/language_core/wrap_unguarded_negation_rejects.anb	1	1	1	0
+tests/fixtures/language_core/z3_only_log_records_declined_obligation.anb	0	2	3	1
+tests/fixtures/modules/cycle/a.anb	1	\t	0
+tests/fixtures/modules/cycle/b.anb	1	\t	0
+tests/fixtures/modules/enum_vs_mod/geometry.anb	0	\t	0
+tests/fixtures/modules/enum_vs_mod/main.anb	0	\t	0
+tests/fixtures/modules/mathlib/main.anb	0	\t	0
+tests/fixtures/modules/mathlib/math.anb	0	\t	0
+tests/fixtures/modules/phase3_io/io.anb	0	\t	0
+tests/fixtures/modules/phase3_io/leak.anb	1	\t	0
+tests/fixtures/modules/phase3_io/main.anb	0	\t	0
+tests/fixtures/modules/private_reject/main.anb	1	\t	0
+tests/fixtures/modules/private_reject/secrets.anb	0	\t	0
+tests/fixtures/native_authoritative/int_contract_danger_defers.anb	0	0	1	1
+tests/fixtures/native_authoritative/int_contract_half_nonneg_proves.anb	0	2	2	0
+tests/fixtures/native_authoritative/int_contract_proves.anb	0	10	10	0
+tests/fixtures/native_authoritative/int_contract_violates.anb	1	1	1	0
+tests/fixtures/runtime/control_div_zero_fail.anb	0	\t	0
+tests/fixtures/runtime/control_drop_negative_fail.anb	0	\t	0
+tests/fixtures/runtime/control_index_oob_fail.anb	0	\t	0
+tests/fixtures/runtime/control_missing_map_key_fail.anb	0	\t	0
+tests/fixtures/runtime/control_read_empty_path_fail.anb	1	\t	0
+tests/fixtures/runtime/control_read_missing_path_fail.anb	1	\t	0
+tests/fixtures/runtime/control_substr_negative_fail.anb	0	\t	0
+tests/fixtures/runtime/control_take_negative_fail.anb	0	\t	0
+tests/fixtures/runtime/control_write_unwritable_fail.anb	0	\t	0
+tests/fixtures/runtime/failclosed_enforcement/div_zero_rejects_at_run.anb	0	\t	0
+tests/fixtures/runtime/failclosed_enforcement/taint_sink_rejects_at_run.anb	1	\t	0
+tests/fixtures/runtime/failclosed_open/entries_non_map_should_fail_closed.anb	0	\t	0
+tests/fixtures/runtime/failclosed_open/merge_non_map_first_should_fail_closed.anb	0	\t	0
+tests/fixtures/runtime/failclosed_open/remove_map_missing_key_should_fail_closed.anb	0	\t	0
+tests/fixtures/runtime/failclosed_open/reverse_scalar_should_fail_closed.anb	0	\t	0
+tests/fixtures/runtime/failclosed_open/slice_scalar_should_fail_closed.anb	0	\t	0
+tests/fixtures/runtime/happy_clamp_pass.anb	0	\t	0
+tests/fixtures/runtime/side_effect_write_ok.anb	0	\t	0
+tests/fixtures/stdlib/abs_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/aead_open_wrong_aad_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/aead_seal_short_key_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/aead_seal_short_nonce_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/argon2id_low_memory_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/argon2id_outlen_above_max_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/argon2id_outlen_below_min_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/argon2id_short_salt_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/asin_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/cbrt_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/ceil_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/chr_above_max_codepoint_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/chr_negative_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/chunk_zero_size_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/clamp_inverted_bounds_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/clamp_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/concat_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/contains_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/cos_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/cyclic_list_input_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/cyclic_negative_length_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/acos_out_of_domain_is_nan_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/aead_empty_plaintext_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/ed25519_verify_wrong_lengths_returns_false_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/ends_with_int_auto_stringify_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/float_bad_string_is_zero_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/float_div_zero_is_inf_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/hmac_sha256_empty_key_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/index_of_no_match_is_neg1_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/int_bad_string_is_zero_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/ln_negative_is_nan_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/ln_zero_is_neg_inf_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/lower_int_auto_stringify_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/parse_float_bad_is_zero_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/parse_int_bad_is_zero_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/parse_int_opt_none_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/password_verify_malformed_encoding_returns_false_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/position_predicate_no_match_is_neg1_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/product_empty_is_one_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/random_bytes_zero_length_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/sqrt_negative_is_nan_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/starts_with_int_auto_stringify_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/sum_empty_is_zero_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/doc_ok/upper_int_auto_stringify_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/drop_negative_count_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/ed25519_sign_short_sk_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/edges_all_modules.anb	0	6	6	0
+tests/fixtures/stdlib/effect_shell_forbidden.anb	1	\t	0
+tests/fixtures/stdlib/effect_write_forbidden.anb	1	\t	0
+tests/fixtures/stdlib/entries_non_map_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/exp_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/factorial_negative_domain_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/factorial_non_int_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/factorial_overflow_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/find_no_match_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/first_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/first_scalar_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/flat_nested_list_flattens_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/flatten_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/floor_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/gcd_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/has_key_non_map_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/hkdf_sha256_negative_length_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/hkdf_sha256_too_long_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/hkdf_sha256_zero_length_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/hybrid_seal_wrong_pk_len_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/hypot_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/index_of_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/insert_non_list_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/io_clean.anb	0	\t	0
+tests/fixtures/stdlib/io_leak.anb	1	\t	0
+tests/fixtures/stdlib/is_empty_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/join_non_list_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/keys_non_map_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/last_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/len_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/ln_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/map_scalar_argument_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/math_collections.anb	0	8	8	0
+tests/fixtures/stdlib/max_by_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/max_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/merge_non_map_first_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/merge_non_map_second_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/min_by_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/min_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/nonce_counter_negative_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/ord_empty_string_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/p16_list_input_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/p32_list_input_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/p64_map_input_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/p8_list_input_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pad_end_negative_width_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pad_start_negative_width_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pbkdf2_empty_salt_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pbkdf2_hmac_sha256_negative_length_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pbkdf2_hmac_sha256_zero_length_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pbkdf2_zero_iterations_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pop_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pop_non_list_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pow_non_numeric_base_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/pow_non_numeric_exp_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/push_expression_returns_container_doc_ok.anb	0	\t	0
+tests/fixtures/stdlib/push_non_list_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/random_bytes_negative_length_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/random_bytes_too_large_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/range_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/range_zero_step_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/reduce_seedless_empty_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/remove_map_missing_key_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/remove_non_list_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/remove_oob_index_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/repeat_negative_count_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/reverse_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/reverse_non_list_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/round_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sha256_bare_int_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sha256_bool_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sha256_byte_overflow_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sign_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sin_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/slice_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sort_scalar_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sqrt_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/substr_negative_len_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/substr_negative_start_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/sum_non_list_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/take_negative_count_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/tan_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/times_negative_count_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/times_non_int_count_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/trunc_non_numeric_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/values_non_map_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/window_zero_size_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/x25519_public_key_short_sk_should_fail_closed.anb	0	\t	0
+tests/fixtures/stdlib/zip_non_collection_should_fail_closed.anb	0	\t	0
+tests/fixtures/taint_selfhost/k01_input_send_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k02_declassified_accept.anb	1	\t	0
+tests/fixtures/taint_selfhost/k03_clean_var_accept.anb	1	\t	0
+tests/fixtures/taint_selfhost/k04_source_not_sunk_accept.anb	1	\t	0
+tests/fixtures/taint_selfhost/k05_readfile_write_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k06_direct_source_arg_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k07_binary_taint_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k08_interproc_sink_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k09_interproc_transitive_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k10_interproc_return_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k11_interproc_let_reject.anb	1	\t	0
+tests/fixtures/taint_selfhost/k12_interproc_clean_arg_accept.anb	0	\t	0
+tests/fixtures/taint_selfhost/k13_interproc_param_not_sunk_accept.anb	0	\t	0
+tests/fixtures/turing_core/array_dp.anb	0	\t	0
+tests/fixtures/turing_core/bubble_sort.anb	0	2	3	1
+tests/fixtures/turing_core/collatz.anb	0	\t	0
+tests/fixtures/turing_core/for_in_list.anb	0	\t	0
+tests/fixtures/turing_core/for_range_sum.anb	0	\t	0
+tests/fixtures/turing_core/loop_break.anb	0	\t	0
+tests/fixtures/turing_core/mutual_recursion.anb	0	\t	0
+tests/fixtures/turing_core/nested_loops.anb	0	\t	0
+tests/fixtures/turing_core/prime_sieve.anb	0	\t	0
+tests/fixtures/turing_core/recursive_factorial.anb	0	\t	0
+tests/fixtures/turing_core/recursive_fibonacci.anb	0	\t	0
+tests/fixtures/turing_core/turing_machine.anb	0	\t	0
+tests/fixtures/turing_core/while_counter.anb	0	\t	0
+tests/fixtures/types_selfhost/a01_arg_str_into_u32.anb	1	\t	0
+tests/fixtures/types_selfhost/a02_arg_var_mismatch.anb	1	\t	0
+tests/fixtures/types_selfhost/a03_arg_ok.anb	0	\t	0
+tests/fixtures/types_selfhost/a04_arg_bool_into_string.anb	1	\t	0
+tests/fixtures/types_selfhost/r01_return_tail_mismatch.anb	1	\t	0
+tests/fixtures/types_selfhost/r02_return_explicit_mismatch.anb	1	\t	0
+tests/fixtures/types_selfhost/r03_return_ok.anb	0	\t	0
+tests/fixtures/types_selfhost/r04_nested_return_ignored.anb	0	\t	0
+tests/fixtures/types_selfhost/t01_str_ok.anb	0	\t	0
+tests/fixtures/types_selfhost/t02_int_interop_i64.anb	0	\t	0
+tests/fixtures/types_selfhost/t03_bool_from_cmp.anb	0	\t	0
+tests/fixtures/types_selfhost/t04_arith_u32.anb	0	1	1	0
+tests/fixtures/types_selfhost/t05_var_u32.anb	0	\t	0
+tests/fixtures/types_selfhost/t06_numeric_widen.anb	0	\t	0
+tests/fixtures/types_selfhost/t07_generic_accept.anb	0	\t	0
+tests/fixtures/types_selfhost/t10_bool_into_u32.anb	1	\t	0
+tests/fixtures/types_selfhost/t11_str_into_u32.anb	1	\t	0
+tests/fixtures/types_selfhost/t12_int_into_string.anb	1	\t	0
+tests/fixtures/types_selfhost/t13_int_into_bool.anb	1	\t	0
+tests/fixtures/types_selfhost/t14_cmp_into_u32.anb	1	\t	0

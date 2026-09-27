@@ -1,0 +1,12 @@
+fn h(n: i64) requires(n > 0) {
+    println(n);
+}
+fn g(x: i64) {
+    h(1);
+    let y = x + 1;
+    assert(y > 0);
+    println(y);
+}
+fn main() {
+    g(5);
+}

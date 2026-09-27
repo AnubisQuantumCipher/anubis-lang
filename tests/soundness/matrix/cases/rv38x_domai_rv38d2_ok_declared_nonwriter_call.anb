@@ -1,0 +1,25 @@
+struct Account { k: secret<i64>, owner: str }
+struct Invoice { id: i64, total: i64, account: Account }
+struct Tag { label: str }
+impl Invoice {
+    fn summary(self) -> str {
+        return "invoice ${self.id}: ${self.total}";
+    }
+}
+impl Tag {
+    fn summary(self) -> str {
+        return "tag ${self}";
+    }
+}
+fn mk(acct: Account) -> Invoice {
+    return Invoice { id: 1, total: 10, account: acct };
+}
+fn main() {
+    let acct = Account { k: 42, owner: "ann" };
+    let t = Tag { label: "urgent" };
+    println(t.summary());
+    let inv = mk(acct);
+    println(inv.summary());
+    let acct2 = inv.account;
+    println("owner ${acct2.owner}");
+}

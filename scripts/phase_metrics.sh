@@ -25,7 +25,7 @@ cd "$ROOT" || exit 2
 LEDGER="$ROOT/docs/evidence/PHASE_METRICS_LEDGER.md"
 
 ledger_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 append_fatal() {

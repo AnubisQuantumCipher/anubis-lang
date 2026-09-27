@@ -1,0 +1,10 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn pick(p: S, n: i64) -> i64 {
+    let acc = [];
+    let v = Some(if n > 16 { acc = [acc, p]; Some(if n > 15 { acc = [acc, p]; Some(if n > 14 { acc = [acc, p]; Some(if n > 13 { acc = [acc, p]; Some(if n > 12 { acc = [acc, p]; Some(if n > 11 { acc = [acc, p]; Some(if n > 10 { acc = [acc, p]; Some(if n > 9 { acc = [acc, p]; Some(if n > 8 { acc = [acc, p]; Some(if n > 7 { acc = [acc, p]; Some(if n > 6 { acc = [acc, p]; Some(if n > 5 { acc = [acc, p]; Some(if n > 4 { acc = [acc, p]; Some(if n > 3 { acc = [acc, p]; Some(if n > 2 { acc = [acc, p]; Some(if n > 1 { acc = [acc, p]; Some(if n > 0 { acc = [acc, p]; Some(acc) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None }) } else { None });
+    return n + 1;
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 };
+    println(pick(p, 5));
+}

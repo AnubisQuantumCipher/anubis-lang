@@ -1,0 +1,32 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn h1() { return h2(); }
+fn h2() { return h3(); }
+fn h3() { return h4(); }
+fn h4() { return h5(); }
+fn h5() { return h6(); }
+fn h6() { return h7(); }
+fn h7() { return h8(); }
+fn h8() { return h9(); }
+fn h9() { return h10(); }
+fn h10() { return h11(); }
+fn h11() { return h12(); }
+fn h12() { return h13(); }
+fn h13() { return h14(); }
+fn h14() { return h15(); }
+fn h15() { return h16(); }
+fn h16() { return h17(); }
+fn h17() { return h18(); }
+fn h18() { return h19(); }
+fn h19() { return h20(); }
+fn h20() { return h21(); }
+fn h21() { return h22(); }
+fn h22() { return h23(); }
+fn h23() { return h24(); }
+fn h24() { return h25(); }
+fn h25() { return h26(); }
+fn h26() { return h27(); }
+fn h27() { return h28(); }
+fn h28() { return h29(); }
+fn h29() { return h30(); }
+fn h30() { return S { k: 42, pub_n: 3 }; }
+fn main() { print(h1()); }

@@ -1,0 +1,30 @@
+struct Account { k: secret<i64>, name: str }
+struct State { acct: Account, n: i64, mode: str }
+struct Report { title: str, lines: i64 }
+impl Report {
+    fn show(self) -> str {
+        return "${self}";
+    }
+}
+impl State {
+    fn show(self) -> str {
+        return "state ${self.mode} ${self.n} for ${self.acct.name}";
+    }
+}
+fn step(s: State, ev: str) -> State {
+    match ev {
+        "inc" => State { acct: s.acct, n: s.n + 1, mode: "run" },
+        "reset" => State { acct: s.acct, n: 0, mode: "idle" },
+        _ => s,
+    }
+}
+fn main() {
+    let r = Report { title: "t", lines: 1 };
+    println(r.show());
+    let a = Account { k: 42, name: "alice" };
+    let mut st = State { acct: a, n: 0, mode: "idle" };
+    for ev in ["inc", "inc", "reset", "inc"] {
+        st = step(st, ev);
+    }
+    println(st.show());
+}

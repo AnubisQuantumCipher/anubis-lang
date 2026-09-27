@@ -1,0 +1,10 @@
+fn f(n: i64) requires(n < 3) {
+    println(n);
+}
+fn main() {
+    let n = 3;
+    for i in 0..n {
+        let n = 1;
+        f(i);
+    }
+}

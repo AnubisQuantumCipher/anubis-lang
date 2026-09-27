@@ -1,0 +1,57 @@
+[
+  {
+    "case": "secret42",
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "check",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/secret42.anb"
+    ],
+    "rc": 0,
+    "stdout": "anubis check /home/sicarii/Work/anubis-mission-20260926/out/minmax/secret42.anb (evidence=false, verified=false)\ncheck passed\n",
+    "stderr": ""
+  },
+  {
+    "case": "secret42",
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "run",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/secret42.anb"
+    ],
+    "rc": 0,
+    "stdout": "1\n2\n2\n3\n",
+    "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+  },
+  {
+    "case": "secret142",
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "check",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/secret142.anb"
+    ],
+    "rc": 0,
+    "stdout": "anubis check /home/sicarii/Work/anubis-mission-20260926/out/minmax/secret142.anb (evidence=false, verified=false)\ncheck passed\n",
+    "stderr": ""
+  },
+  {
+    "case": "secret142",
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "run",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/secret142.anb"
+    ],
+    "rc": 0,
+    "stdout": "1\n2\n1\n3\n",
+    "stderr": "anubis run: compiling native binary (first build ~1\u20133s)...\nanubis run: compile done\n"
+  },
+  {
+    "case": "direct",
+    "command": [
+      "/home/sicarii/.cache/anubis-item21/pins/anubis-ifc2land-3",
+      "check",
+      "/home/sicarii/Work/anubis-mission-20260926/out/minmax/direct.anb"
+    ],
+    "rc": 1,
+    "stdout": "anubis check /home/sicarii/Work/anubis-mission-20260926/out/minmax/direct.anb (evidence=false, verified=false)\nautomatic rejection evidence: enabled\nevidence bundle: out/evidence-20260926-050847-safe\nverdict: FAIL\ncheck failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `s` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n",
+    "stderr": "program-evidence.v3 skipped: no native artifact\nError: check failed: ANUBIS_SECRET_EXFILTRATION: safe mode confidentiality violation: secret `s` flows to egress `println` without declassify() \u2014 release a private value with declassify(value, policy=\u2026, reason=\u2026) before it leaves the program; ANUBIS_SECRET_EXFILTRATION: [ifc2] in `main`: secret data reaches `println`\n"
+  }
+]

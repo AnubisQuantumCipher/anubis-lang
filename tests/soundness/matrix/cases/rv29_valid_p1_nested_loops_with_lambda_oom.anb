@@ -1,0 +1,18 @@
+struct S { k: secret<i64>, pub_n: i64 }
+fn f(xs) {
+    let total = 0
+    for a in xs {
+        for b in xs {
+            for c in xs {
+                let h = |t| t.pub_n
+                total = total + h(a) + h(b) + h(c)
+            }
+        }
+    }
+    return total
+}
+fn main() {
+    let p = S { k: 42, pub_n: 3 }
+    let xs = [p, S { k: 7, pub_n: 1 }]
+    print(f(xs))
+}
