@@ -15,8 +15,8 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**Local update 2026-09-27 — scoped IFC2 terminal checker and alias-lowering
-repairs; terminal family open.**
+**Local update 2026-09-27 — scoped IFC2 terminal, alias-lowering, and
+named proof-journal checker repairs; terminal family open.**
 At code commit `3b8d9bfe`, the [local terminal receipt](evidence/IFC2_TERMINAL_EGRESS_LOCAL_2026-09-27.md)
 records typed refusals for the registered secret-controlled builtin `panic`
 and `exit(status)` cases, with the frozen valid controls accepted. The first
@@ -27,11 +27,14 @@ final-diff review gave scoped checker-only GO. The later
 records the structural repair for first-class zero-argument `exit`, its
 registered direct/taken-branch control, source-bound local build, unchanged
 checker acceptance, and retained selected terminal refusals. Native parity
-remains unobserved until an authorized
-disposable-guest witness. Named proof-journal
-commits and device-path file egress remain open. The full matrix cannot be
-counted as a compliant Linux-VM gate here, and no terminal-family, product,
-or trust-chain completion is claimed.
+remains unobserved until an authorized disposable-guest witness. The later
+[proof-journal receipt](evidence/IFC2_PROOF_JOURNAL_PC_LOCAL_2026-09-27.md)
+records typed secret-path refusals and valid controls for supported named
+`u32`/`bool` commits. It separately records the tainted-value policy flip,
+the older proof-bool controls, and the missing guest witness. Other
+proof-journal boundaries and device-path file egress remain open. The full
+matrix cannot be counted as a compliant Linux-VM gate here, and no
+terminal-family, product, or trust-chain completion is claimed.
 
 **UPDATE 2026-09-26 — value-position `if let` witnesses registered.**
 The archived `mi1`, `mi2`, `mi6` and valid `mi7` sources are copied unchanged

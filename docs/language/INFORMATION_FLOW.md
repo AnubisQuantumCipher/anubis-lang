@@ -40,9 +40,9 @@ non-empty after trim. Empty strings do **not** release the label (see below).
 Day-one runnable sample: [`examples/secret_declassify_hello.anb`](../../examples/secret_declassify_hello.anb).
 Tutorial pointer: [`TUTORIAL.md`](TUTORIAL.md) §2.
 
-## Sinks are unified (integrity ⊇ confidentiality)
+## Egress is also an integrity sink by policy
 
-As of 2026-07-20 the sink sets satisfy a deliberate subset relationship: **every egress point is also a
+The policy requires a deliberate subset relationship: **every egress point is also a
 taint sink.** Untrusted data is dangerous both when it *leaves* the program (network / shell) and when
 it hits a *local* interpreter or buffer (SQL, `memcpy`, file write); a secret is dangerous only when it
 *leaves*. So:
@@ -53,15 +53,27 @@ it hits a *local* interpreter or buffer (SQL, `memcpy`, file write); a secret is
 - confidentiality sinks = the egress set only (a secret into a local write stays inside the trust
   boundary).
 
+This list describes the historical shared sink inventory; it is not exhaustive
+for the current IFC2 transfer. At local code commit `11086043538d732c4b1ddd1562792949c6a88e0d`,
+well-formed named `proof_commit_u32` and `proof_commit_bool` calls send their
+committed value and current program counter through IFC2 egress, so tainted
+values are refused as integrity-sink data. The legacy `is_sink` and
+`is_egress_sink` inventories do not yet include these names. Complete parity
+across analysis consumers, `u64`, invalid arities, and first-class aliases
+remains open; see the [scoped local receipt](../evidence/IFC2_PROOF_JOURNAL_PC_LOCAL_2026-09-27.md).
+
 **`print` is an egress sink** (added 2026-07-20). Standard output is an observable channel, so a secret
 printed leaves the program exactly as `send` does — the binary-extraction attack encodes one secret bit
 per printed line. It was the one common I/O op left unguarded while `send`/`shell`/`write` were gated. If
 your program legitimately prints a value that carries a label (e.g. content it authored itself), release
 it first with `declassify(value, policy, reason)`.
 
-Before this change, `input() → shell(cmd)` — command injection — slipped through the taint lane because
-`shell` was an egress sink but not a taint sink. It is now caught. There is no sink a user could reach in
-one lane and miss in the other for the same threat.
+Before the 2026-07-20 change, `input() → shell(cmd)` — command injection —
+slipped through the taint lane because `shell` was an egress sink but not a
+taint sink. That path is now caught. The
+named proof-journal inventory difference above remains an open cross-consumer
+coverage issue; the policy relationship alone does not establish that every
+consumer enforces it.
 
 ## `declassify` is a policy statement, not a syntactic escape hatch
 
