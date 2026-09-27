@@ -158,26 +158,14 @@ pub(crate) fn call<'a>(
         // A panic's message goes to stderr; exit's status is observable; the zkVM journal is
         // public. Either ends the program: the code after it runs only when it did not happen.
         "panic" => {
-            let data = deep_all(a);
-            if data.secret() {
-                it.report(
-                    "ANUBIS_SECRET_EXFILTRATION",
-                    "secret data reaches `panic` (its message is written to stderr)".into(),
-                );
-            }
+            it.egress(name, deep_all(a), p);
             it.end_program(p);
             V::bottom()
         }
         "exit" => {
-            let data = deep_all(a);
-            if data.secret() {
-                it.report(
-                    "ANUBIS_SECRET_EXFILTRATION",
-                    "secret data reaches `exit` (the exit status is observable)".into(),
-                );
-            }
             // `exit()` with no argument is lowered to Int(0) and does not end the program.
             if !a.is_empty() {
+                it.egress(name, deep_all(a), p);
                 it.end_program(p);
                 return Some(V::bottom());
             }
