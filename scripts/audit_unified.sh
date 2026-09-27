@@ -184,9 +184,13 @@ fi
 # Large clap CLI (AOP T1–T9) needs a bigger thread stack for Cli::try_parse unit tests.
 export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
 if cargo test --all >"$OUT/g3_test.log" 2>&1; then
+  g3_rc=$?
+  printf '%s\n' "$g3_rc" >"$OUT/g3_test.exit"
   TEST_COUNT=$(grep -oE '[0-9]+ passed' "$OUT/g3_test.log" | grep -oE '[0-9]+' | awk '{s+=$1} END{print s}')
   gate "G3_test" "PASS" "${TEST_COUNT:-?} tests passed"
 else
+  g3_rc=$?
+  printf '%s\n' "$g3_rc" >"$OUT/g3_test.exit"
   gate "G3_test" "FAIL" "test failures (see g3_test.log)"
 fi
 

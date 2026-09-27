@@ -1,0 +1,71 @@
+{
+  "base_commit": "e34d0c89c2181e8bd02ff52b0ab5d50cf97bac4b",
+  "patch_sha256": "b7685e67ba3a9d647fb6b6cd68a84d0eb913f2de9e8b05775ef3ee897a9b6d0c",
+  "sources": {
+    ".github/workflows/ci.yml": "937f2381e0737380d528eafd81e97d9be1bb4097a0d43b0b8c33ce5a8d65f9e6",
+    "scripts/audit_unified.sh": "e4228edef2b12e0ac6f2ac9b0024bdf4fbb4e6a497aca702ffab916f04f6d802",
+    "scripts/prepare_hosted_diagnostics.py": "c7a32d30be596288b8624b95612543fe11a7a87d8e33ba2126a89560f7f7ccac",
+    "scripts/test_hosted_diagnostics.py": "a8415e069441ea86373cdab422e6f24a0ae694b2503194355ac50c76415e7b9c"
+  },
+  "code_commit": "e9ee988031df9b09fed9336d721a16536b78d5e3",
+  "checks": {
+    "lead-unit.stderr": {
+      "sha256": "c36c3fbb74024a609555253800551c18654e73d520039b06e4ef0709aeb19680",
+      "exit": 0
+    },
+    "lead-unit.stdout": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": 0
+    },
+    "independent-unit.stderr": {
+      "sha256": "54a747705850e51ae7e7d66ab34c9545fddc1997036cd41cec2b528ba34b6888",
+      "exit": 0
+    },
+    "independent-unit.stdout": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit": 0
+    }
+  },
+  "review_sha256": "e01be8653d96d65e4c8cc82b869d9b9209725faf670de5cff9471fce0773fe78",
+  "shell_syntax_exit": 0,
+  "workflow_structure": {
+    "yaml_parse": "pass",
+    "diagnostics_self_test_precedes_gates": true,
+    "failed_job_diagnostics_separate_from_success_artifact": true,
+    "scope": "static local YAML parse and structure assertions; no GitHub execution"
+  },
+  "prior_runs": [
+    {
+      "id": 36274422605,
+      "html_url": "https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36274422605",
+      "event": "pull_request",
+      "head_sha": "472160b16e9daf395540417b44f9e71c4cfc8b6e",
+      "status": "completed",
+      "conclusion": "failure",
+      "original_metadata_sha256": "bb7cbdd6a2c5ab9250014f368f7c258162f3aeda4c782734b7dc19130349ff2e"
+    },
+    {
+      "id": 36274397254,
+      "html_url": "https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36274397254",
+      "event": "push",
+      "head_sha": "472160b16e9daf395540417b44f9e71c4cfc8b6e",
+      "status": "completed",
+      "conclusion": "success",
+      "original_metadata_sha256": "960918b1e9c4c3497c54a0279ad032fea8143de8dfe393e290b8cab84b57de99"
+    }
+  ],
+  "prior_checkout_commits": [
+    {
+      "sha": "472160b16e9daf395540417b44f9e71c4cfc8b6e",
+      "tree": "ec26c97b76322cea797773a977b20b1cc16d65f3",
+      "url": "https://github.com/AnubisQuantumCipher/anubis-lang/commit/472160b16e9daf395540417b44f9e71c4cfc8b6e",
+      "original_metadata_sha256": "1837364c967c888ab6f24754ce7557a8c22c344959785c6923fd819a2bb19e74"
+    },
+    {
+      "sha": "827bced0bbea2ca2c8e2b22b9f8a33687b0f9fca",
+      "tree": "ec26c97b76322cea797773a977b20b1cc16d65f3",
+      "url": "https://github.com/AnubisQuantumCipher/anubis-lang/commit/827bced0bbea2ca2c8e2b22b9f8a33687b0f9fca",
+      "original_metadata_sha256": "53dda08c75cf62811154434e6686c41218b68a3468676fbc3479573353a78175"
+    }
+  ]
+}
