@@ -1,0 +1,4 @@
+fn main() {
+    let stop = panic;
+    stop("public message");
+}

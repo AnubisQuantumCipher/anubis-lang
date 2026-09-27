@@ -1,0 +1,7 @@
+fn main() {
+    let s: secret<i64> = 42;
+    let released = declassify(s > 100, "threshold-release", "only the threshold decision is public");
+    if released {
+        panic("public message");
+    }
+}
