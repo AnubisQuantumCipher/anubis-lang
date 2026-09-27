@@ -254,9 +254,11 @@ is still open; do not merge both. The push run
 [passed](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36274397254),
 while the pull-request run [failed G3_test](https://github.com/AnubisQuantumCipher/anubis-lang/actions/runs/36274422605)
 on an identical Git tree. The failed run did not retain its Cargo log, so
-the underlying test/error is unknown. A separate main-based CI diagnostic
-artifact repair is being prepared; a successful retry cannot explain this
-failure. Draft [PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44)
+the underlying test/error is unknown. The separately approved main-based CI
+diagnostic repair is pushed as draft [PR #49](https://github.com/AnubisQuantumCipher/anubis-lang/pull/49),
+head `128a251753448ff8b3e62e2189b4d81324ae34c0`, with hosted checks pending
+at publication. It preserves bounded failure diagnostics; it does not explain
+the original G3 failure. Draft [PR #44](https://github.com/AnubisQuantumCipher/anubis-lang/pull/44)
 and the [local review stack](mission/PR44_LOCAL_SPLIT_2026-09-26.md) still need
 reviewable integration units and human review. Protected integration retains
 its applicable authorization boundary.
@@ -273,3 +275,10 @@ projection may suppress a legacy source. The proposed clause-based docs
 scanner patch remains withheld because independent review found dropped
 existing stamps. Preserve the scanner and gate floor while adding explicit
 structured claim coverage. These are open dependencies, not completed gates.
+
+The subsequent fixture-only checkpoint `59e4f1f94c4fd60d011b87eb6cb708fbcb84f4fa`
+registers [direct-field loop and sibling controls](evidence/D9_DIRECT_FIELD_CONTROLS_2026-09-26/README.md).
+Their immutable baseline refuses the valid projections and lacks a direct
+writer-located finding on the invalid loop. The coupled production field
+transfer and typed model-pinning candidates remain unintegrated pending
+independent review and lead-owned verification.
