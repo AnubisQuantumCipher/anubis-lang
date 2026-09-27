@@ -1,0 +1,2 @@
+struct Row { k: secret<i64>, n: i64 }
+fn main() { let s: secret<i64> = 42; let row = Row { k: s, n: 7 }; let copy = row; println(copy.n); }

@@ -5383,6 +5383,8 @@ struct SemanticContext {
     /// inference core can synthesize `FieldAccess` results (`p.x` → the declared type of `x` on
     /// `Point`). Purely additive analysis state — never consulted by codegen (types are erased).
     struct_fields: BTreeMap<String, BTreeMap<String, String>>,
+    /// Multiple nominal declarations or duplicate declared fields cannot certify a runtime layout.
+    duplicate_struct_names: BTreeSet<String>,
     /// The declared return type of the function whose body is currently being walked (`None` for a
     /// function with no `-> T`, and cleared inside a lambda body — a `?` there early-returns from the
     /// closure, not the enclosing function). Read by the typed-`?` check in `check_expr_semantics` to
@@ -5835,6 +5837,14 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 ..
             } => {
                 // Field name → declared type, for `FieldAccess` synthesis in the inference core.
+                let mut declared_names = BTreeSet::new();
+                if ctx.struct_fields.contains_key(name)
+                    || fields
+                        .iter()
+                        .any(|(field, _)| !declared_names.insert(field))
+                {
+                    ctx.duplicate_struct_names.insert(name.clone());
+                }
                 ctx.struct_fields.insert(
                     name.clone(),
                     fields.iter().map(|(f, t)| (f.clone(), t.clone())).collect(),
@@ -8550,6 +8560,10 @@ fn analyze_function(
         &mut effects,
         &mut assumptions,
         ctx,
+        // This local constructor certificate is valid only at the native, top-level entry:
+        // a zero-argument helper can be called under a secret PC, which this direct lane does
+        // not summarize. IFC2 remains a mandatory, independent PC backstop at this entry.
+        !is_method && module.is_none() && name == "main" && params.is_empty(),
     );
     mark_over_approx_obligations(ctx);
 
@@ -13675,7 +13689,16 @@ fn analyze_value_block(
                 }
                 _ => (stmts, tail.as_deref()),
             };
-            analyze_stmts(stmts, mode, scope, fn_symbols, effects, assumptions, ctx);
+            analyze_stmts(
+                stmts,
+                mode,
+                scope,
+                fn_symbols,
+                effects,
+                assumptions,
+                ctx,
+                false,
+            );
             if let Some(t) = tail {
                 // The tail runs after the statements: a write nested in it reaches the scope too.
                 seed_value_nested_labels(&[t], scope, ctx);
@@ -13845,6 +13868,103 @@ fn whole_captures_of(
     }
 }
 
+/// A deliberately narrow certificate for a direct public-field egress. The legacy secret walker
+/// labels a struct *root* when any constructor field is secret, so its `row.n` read inherits the
+/// label of a distinct `row.k`. We may discard only that inherited root result when the runtime
+/// value is known from this function's own straight-line bindings, not from a type annotation or
+/// a helper's return. All other confidentiality consumers still see the original root label.
+///
+/// The caller gates this to a parameter-free native `main` entry in a closed whole program; it
+/// is not a reusable helper summary. Requiring the sink to end that body and every preceding
+/// statement to be a unique, side-effect-free `let` excludes writes, control flow, dynamic
+/// arguments, and calls.
+/// Value-copy aliases are followed only to an actual, complete, unambiguous struct literal. The
+/// projected field itself must be a public literal, so a secret initializer or wrapper cannot be
+/// certified. The whole-value lane and mandatory IFC2 PC analysis still evaluate independently
+/// at the sink; neither inherits the local legacy-root suppression.
+fn direct_literal_public_projection_root(
+    stmts: &[Stmt],
+    stmt_index: usize,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<String> {
+    if stmt_index + 1 != stmts.len() {
+        return None;
+    }
+    let Stmt::ExprStmt(Expr::Call { callee, args }) = stmts.get(stmt_index)? else {
+        return None;
+    };
+    if callee != "println"
+        || args.len() != 1
+        || ctx.user_fn_names.contains(callee)
+        || scope.contains_key(callee)
+    {
+        return None;
+    }
+    let Expr::FieldAccess { base, field, .. } = &args[0] else {
+        return None;
+    };
+    let Expr::Var(root) = base.as_ref() else {
+        return None;
+    };
+
+    let mut lets: BTreeMap<&str, (&Expr, Option<&str>)> = BTreeMap::new();
+    for stmt in &stmts[..stmt_index] {
+        let Stmt::Let { name, ty, init, .. } = stmt else {
+            return None;
+        };
+        if lets.contains_key(name.as_str()) {
+            return None; // shadowing could change which value the source spelling denotes
+        }
+        let simple = match init {
+            Expr::Literal(_) | Expr::StrLiteral(_) => true,
+            Expr::Var(source) => lets.contains_key(source.as_str()),
+            Expr::StructLiteral { fields, .. } => fields.iter().all(|(_, value)| {
+                matches!(value.as_ref(), Expr::Literal(_) | Expr::StrLiteral(_))
+                    || matches!(value.as_ref(), Expr::Var(source) if lets.contains_key(source.as_str()))
+            }),
+            _ => false,
+        };
+        if !simple {
+            return None;
+        }
+        lets.insert(name, (init, ty.as_deref()));
+    }
+
+    let mut origin = root.as_str();
+    let (name, fields) = loop {
+        let (init, ty) = *lets.get(origin)?;
+        if is_secret_type(ty) {
+            return None; // `secret<Row>` protects every projection, including public fields
+        }
+        match init {
+            Expr::Var(source) => origin = source,
+            Expr::StructLiteral { name, fields, .. } => break (name, fields),
+            _ => return None,
+        }
+    };
+    if ctx.duplicate_struct_names.contains(name) {
+        return None;
+    }
+    let declared = ctx.struct_fields.get(name)?;
+    let projected_ty = declared.get(field)?;
+    if is_secret_type(Some(projected_ty)) || fields.len() != declared.len() {
+        return None;
+    }
+    let mut seen_fields = BTreeSet::new();
+    let mut projected_literal = false;
+    for (actual_field, value) in fields {
+        if !seen_fields.insert(actual_field) || !declared.contains_key(actual_field) {
+            return None;
+        }
+        if actual_field == field {
+            projected_literal = matches!(value.as_ref(), Expr::Literal(_) | Expr::StrLiteral(_));
+        }
+    }
+    projected_literal.then(|| root.to_string())
+}
+
+#[allow(clippy::too_many_arguments)] // threaded analysis state plus the native-entry-only projection scope
 fn analyze_stmts(
     stmts: &[Stmt],
     mode: Mode,
@@ -13853,6 +13973,7 @@ fn analyze_stmts(
     effects: &mut Vec<String>,
     assumptions: &mut Vec<String>,
     ctx: &mut SemanticContext,
+    direct_projection_body: bool,
 ) {
     if analysis_limit::cut() {
         note_return_values_trip();
@@ -13863,7 +13984,7 @@ fn analyze_stmts(
     // for the other lanes.
     let mut prev_exits = false;
     let mut marked_unreachable = false;
-    for stmt in stmts {
+    for (stmt_index, stmt) in stmts.iter().enumerate() {
         mark_over_approx_obligations(ctx);
         if prev_exits && !marked_unreachable {
             push_unreachable(ctx, assumptions);
@@ -14801,6 +14922,7 @@ fn analyze_stmts(
                     effects,
                     assumptions,
                     ctx,
+                    false,
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -14816,6 +14938,7 @@ fn analyze_stmts(
                     effects,
                     assumptions,
                     ctx,
+                    false,
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -14840,7 +14963,16 @@ fn analyze_stmts(
                 let seeded = scope.clone();
                 let mut lane_scopes = Vec::new();
                 for block in [gpu, cpu, prove].into_iter().flatten() {
-                    analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx);
+                    analyze_stmts(
+                        block,
+                        mode,
+                        scope,
+                        fn_symbols,
+                        effects,
+                        assumptions,
+                        ctx,
+                        false,
+                    );
                     lane_scopes.push(scope.clone());
                     restore_block_scope(scope, &seeded);
                 }
@@ -15543,7 +15675,19 @@ fn analyze_stmts(
                 check_expr_semantics(iflet_expr, scope, ctx);
             }
             Stmt::ExprStmt(expr) => {
-                analyze_expr_effect(expr, mode, scope, effects, ctx);
+                let direct_public_root = if direct_projection_body && mode == Mode::Safe {
+                    direct_literal_public_projection_root(stmts, stmt_index, scope, ctx)
+                } else {
+                    None
+                };
+                analyze_expr_effect_with_projection(
+                    expr,
+                    mode,
+                    scope,
+                    effects,
+                    ctx,
+                    direct_public_root.as_deref(),
+                );
                 // SECURITY (task #46, broad hunt wf_bf84c047 FP0): a mutating container builtin
                 // `push(xs, v)` / `insert(xs, k, v)` that stores a TAINTED/SECRET argument taints/secrets
                 // the container binding `xs` (whole-binding granularity, SET-only) — the CALL analog of the
@@ -16402,7 +16546,16 @@ fn analyze_stmts(
                 );
                 // The guard holds inside `then` — push it as a scoped path condition.
                 push_branch_path_condition(ctx, assumptions, cond, false);
-                analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(
+                    then,
+                    mode,
+                    scope,
+                    fn_symbols,
+                    effects,
+                    assumptions,
+                    ctx,
+                    false,
+                );
                 let then_asm = assumptions.clone();
                 let then_guards = ctx.active_branch_guards.clone();
                 let then_scope = scope.clone();
@@ -16422,6 +16575,7 @@ fn analyze_stmts(
                         effects,
                         assumptions,
                         ctx,
+                        false,
                     );
                     else_asm = Some(assumptions.clone());
                     else_guards = ctx.active_branch_guards.clone();
@@ -16721,7 +16875,16 @@ fn analyze_stmts(
                 // write in the body to a variable it mentions removes the fact from that point on.
                 let guard_snapshot = ctx.active_branch_guards.clone();
                 push_branch_path_condition(ctx, assumptions, cond, false);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(
+                    body,
+                    mode,
+                    scope,
+                    fn_symbols,
+                    effects,
+                    assumptions,
+                    ctx,
+                    false,
+                );
                 ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -16930,7 +17093,16 @@ fn analyze_stmts(
                 let later_effects = effects.split_off(scrut_effects_at);
                 analyze_expr_effect(expr, mode, &head, effects, ctx);
                 effects.extend(later_effects);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(
+                    body,
+                    mode,
+                    scope,
+                    fn_symbols,
+                    effects,
+                    assumptions,
+                    ctx,
+                    false,
+                );
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // What the lane's own interpretation found a binding may be as a function, on any path:
@@ -17008,7 +17180,16 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
                 );
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(
+                    body,
+                    mode,
+                    scope,
+                    fn_symbols,
+                    effects,
+                    assumptions,
+                    ctx,
+                    false,
+                );
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // What the lane's own interpretation found a binding may be as a function, on any path:
@@ -17555,7 +17736,16 @@ fn analyze_stmts(
                         }
                     }
                 }
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(
+                    body,
+                    mode,
+                    scope,
+                    fn_symbols,
+                    effects,
+                    assumptions,
+                    ctx,
+                    false,
+                );
                 ctx.active_branch_guards = guard_snapshot;
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -18438,6 +18628,19 @@ fn analyze_expr_effect(
     effects: &mut Vec<String>,
     ctx: &mut SemanticContext,
 ) {
+    analyze_expr_effect_with_projection(expr, mode, scope, effects, ctx, None);
+}
+
+/// The optional certificate applies to this exact direct call only. Recursive expression walks
+/// use `analyze_expr_effect` and therefore cannot inherit a suppression into another sink.
+fn analyze_expr_effect_with_projection(
+    expr: &Expr,
+    mode: Mode,
+    scope: &BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+    direct_public_root: Option<&str>,
+) {
     if analysis_limit::cut() {
         note_return_values_trip();
         return;
@@ -18797,7 +19000,7 @@ fn analyze_expr_effect(
                         .is_some_and(|tags| tags.contains(&BuiltinGateTag::EgressSink)))
             {
                 for arg in args {
-                    if let Some(source) = expr_source(
+                    let legacy_source = expr_source(
                         arg,
                         scope,
                         &ctx.secret_fns,
@@ -18805,8 +19008,23 @@ fn analyze_expr_effect(
                         &ctx.method_secret_fns,
                         &ctx.place_types(),
                         SourceLane::Secret,
-                    )
-                    .or_else(|| whole::whole_value_source(arg, scope, ctx).map(|w| w.text()))
+                    );
+                    // A constructor-certified public literal read is the one case where the
+                    // legacy root label is broader than the value that actually leaves. Do not
+                    // discard a declared-field source, an analysis-limit source, or an independent
+                    // whole-value finding. In particular, this is not a general `expr_source`
+                    // exception and cannot affect helpers, returns, or nested calls.
+                    let legacy_source = match (direct_public_root, arg) {
+                        (Some(root), Expr::FieldAccess { base, .. })
+                            if matches!(base.as_ref(), Expr::Var(name) if name == root)
+                                && legacy_source.as_deref() == Some(root) =>
+                        {
+                            None
+                        }
+                        _ => legacy_source,
+                    };
+                    if let Some(source) = legacy_source
+                        .or_else(|| whole::whole_value_source(arg, scope, ctx).map(|w| w.text()))
                     {
                         ctx.emit(
                             SemanticDiagnostic {
@@ -40935,6 +41153,7 @@ mod scope_binding_security_label_tests {
             &mut Vec::new(),
             &mut Vec::new(),
             &mut ctx,
+            false,
         );
 
         let target = scope.get("target").expect("target binding");
@@ -40991,6 +41210,7 @@ mod scope_binding_security_label_tests {
                 &mut Vec::new(),
                 &mut Vec::new(),
                 &mut ctx,
+                false,
             );
             return;
         }
