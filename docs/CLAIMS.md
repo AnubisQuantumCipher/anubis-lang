@@ -15,15 +15,20 @@ owned docs link here; they must not restate the list.
 **A green board is when a claim surface is most dangerous.** Read the disease theme, the green
 table, and "green = no KNOWN defects" with equal weight.
 
-**Local update 2026-09-27 — scoped IFC2 terminal checker repair; terminal family open.**
+**Local update 2026-09-27 — scoped IFC2 terminal checker and alias-lowering
+repairs; terminal family open.**
 At code commit `3b8d9bfe`, the [local terminal receipt](evidence/IFC2_TERMINAL_EGRESS_LOCAL_2026-09-27.md)
 records typed refusals for the registered secret-controlled builtin `panic`
 and `exit(status)` cases, with the frozen valid controls accepted. The first
 paired grader had an exact diagnostic-code typo; its failed receipt is retained
 and a corrected complete paired check is recorded separately. Independent
-final-diff review gave scoped checker-only GO. First-class zero-argument
-`exit` is still checker-accepted while native lowering appears to trap; this
-requires a semantic repair and authorized guest witness. Named proof-journal
+final-diff review gave scoped checker-only GO. The later
+[alias-lowering receipt](evidence/IFC2_EXIT_ALIAS_ZERO_LOCAL_2026-09-27.md)
+records the structural repair for first-class zero-argument `exit`, its
+registered direct/taken-branch control, source-bound local build, unchanged
+checker acceptance, and retained selected terminal refusals. Native parity
+remains unobserved until an authorized
+disposable-guest witness. Named proof-journal
 commits and device-path file egress remain open. The full matrix cannot be
 counted as a compliant Linux-VM gate here, and no terminal-family, product,
 or trust-chain completion is claimed.
